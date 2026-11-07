@@ -1070,12 +1070,151 @@ class TestTarget90ScarsHook(unittest.TestCase):
         self.assertNotIn("Target 50 Commit Gate", res["reason"])
 
 
+class TestPreToolGuardSelfModification(unittest.TestCase):
+  """Unit tests verifying pre_tool_guard denies self-modification of governance files."""
+
+  def test_denies_shell_redirection_targeting_governance_files(self):
+    bad_commands = [
+        "echo 'hacked' > scripts/tdd_guard.py",
+        "echo 'hacked' >> scripts/pre_tool_guard.py",
+        "cat /dev/null > scripts/workflow_gates.py",
+        "echo '{}' > hooks.json",
+        "cat bad.mk >> .workflow/state/Makefile",
+        "echo 'tamper' > ./scripts/tdd_guard.py",
+        "echo 'bad' 1> hooks.json",
+        "true >| .workflow/state/Makefile",
+        "echo 'x' &> scripts/workflow_gates.py",
+    ]
+    for cmd in bad_commands:
+      res = run_hook(
+          PRE_TOOL,
+          {
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              }
+          },
+      )
+      self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
+      self.assertIn(
+          "Blocked self-modification attempt on makeflow governance file",
+          res["reason"],
+          f"Expected blocked self-modification reason for cmd={cmd!r}",
+      )
+
+  def test_denies_removal_and_truncation_of_governance_files(self):
+    bad_commands = [
+        "rm scripts/tdd_guard.py",
+        "rm -f scripts/pre_tool_guard.py",
+        "rm -rf scripts/workflow_gates.py",
+        "rm hooks.json",
+        "rm -f .workflow/state/Makefile",
+        "rm -rf scripts/",
+        "unlink hooks.json",
+        "truncate -s 0 scripts/tdd_guard.py",
+        "truncate -s 0 hooks.json",
+        "truncate -s 0 .workflow/state/Makefile",
+        "sed -i 's/foo/bar/' scripts/tdd_guard.py",
+        "sed -i 's/foo/bar/' scripts/workflow_gates.py",
+        "sed -i.bak 's/foo/bar/' hooks.json",
+        "sed -i 's/foo/bar/' .workflow/state/Makefile",
+    ]
+    for cmd in bad_commands:
+      res = run_hook(
+          PRE_TOOL,
+          {
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              }
+          },
+      )
+      self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
+      self.assertIn(
+          "Blocked self-modification attempt on makeflow governance file",
+          res["reason"],
+          f"Expected blocked self-modification reason for cmd={cmd!r}",
+      )
+
+  def test_allows_safe_operations_on_non_governance_files(self):
+    safe_commands = [
+        "echo 'print(1)' > src/app.py",
+        "rm -f /tmp/test_scratch.txt",
+        "cat scripts/tdd_guard.py",
+        "cat hooks.json",
+        "cat .workflow/state/Makefile",
+        "python3 scripts/tdd_guard.py --help",
+        "grep -n 'def ' scripts/workflow_gates.py",
+    ]
+    for cmd in safe_commands:
+      res = run_hook(
+          PRE_TOOL,
+          {
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              }
+          },
+      )
+      self.assertEqual(res["decision"], "allow", f"Expected allow for safe cmd={cmd!r}")
+
+  def test_allows_copying_and_moving_into_governance_directories(self):
+    allowed_commands = [
+        "cp file.txt .workflow/state/",
+        "cp helper.py scripts/",
+        "mv file.txt .workflow/state/",
+        "mv helper.py scripts/",
+        "cp 10_ticket.md .workflow/state/",
+        "cp 20_plan.md .workflow/state/",
+    ]
+    for cmd in allowed_commands:
+      res = run_hook(
+          PRE_TOOL,
+          {
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              }
+          },
+      )
+      self.assertEqual(res["decision"], "allow", f"Expected allow for cmd={cmd!r}, got: {res}")
+
+  def test_denies_copying_and_moving_over_protected_governance_files(self):
+    denied_commands = [
+        "cp evil.py scripts/tdd_guard.py",
+        "cp fake_makefile .workflow/state/Makefile",
+        "cp fake_receipt.json .workflow/state/30_tdd_receipt.json",
+        "mv evil.py scripts/workflow_gates.py",
+        "mv evil.py scripts/base_script.py",
+        "mv evil.py scripts/emit_reflex.py",
+        "mv evil.py hooks.json",
+    ]
+    for cmd in denied_commands:
+      res = run_hook(
+          PRE_TOOL,
+          {
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              }
+          },
+      )
+      self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
+      self.assertIn(
+          "Blocked self-modification attempt on makeflow governance file",
+          res["reason"],
+          f"Expected blocked self-modification reason for cmd={cmd!r}",
+      )
+
+
 if __name__ == "__main__":
   test_pre_tool_guard()
   test_session_start()
   test_hook_mcp_parity()
   test_plugin_directory_isolation()
-  suite = unittest.defaultTestLoader.loadTestsFromTestCase(TestTarget90ScarsHook)
+  suite = unittest.TestSuite()
+  suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestTarget90ScarsHook))
+  suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSelfModification))
   runner = unittest.TextTestRunner(verbosity=2, failfast=True)
   if not runner.run(suite).wasSuccessful():
     sys.exit(1)
