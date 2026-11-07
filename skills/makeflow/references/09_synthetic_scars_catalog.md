@@ -16,7 +16,7 @@ references/
 ├── 09_synthetic_scars_catalog.md    <-- Master Routing Index Table (Hub)
 ├── scars/                           <-- Category Spokes (Universal Rules)
 │   ├── process.md                   <-- SCAR-PROC-*
-│   ├── testing.md                   <-- SCAR-TEST-*
+│   ├── testing.md                   <-- SCAR-TEST-*, SCAR-AST-*
 │   ├── git_and_shell.md             <-- SCAR-GIT-*, SCAR-SH-*
 │   ├── system_and_os.md             <-- SCAR-SYS-*, SCAR-ENV-*
 │   ├── data_and_database.md         <-- SCAR-DATA-*, SCAR-DB-*
@@ -84,6 +84,7 @@ Agents must use Socratic Probes during:
 | `SCAR-TEST-24` | Coverage-Driven Fallback Branch Deletion Trap | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-SH-01` | Prefer Temporary Script Files Over Complex Shell Quoting | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-SH-03` | Shell Redirection and Comment Stripping | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-GIT-17` | Unchecked Direct Push CI Bypass Trap | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |

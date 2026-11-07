@@ -1,6 +1,6 @@
 # Testing and Verification Scars
 
-This reference manual documents testing and verification scars (`SCAR-TEST-*`). These rules govern test environment isolation, hermetic execution, and test execution discipline.
+This reference manual documents testing and verification scars (`SCAR-TEST-*`, `SCAR-AST-*`). These rules govern test environment isolation, hermetic execution, and test execution discipline.
 
 ## Scars in this Category
 
@@ -16,6 +16,7 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`). 
 | `SCAR-TEST-24` | Coverage-Driven Fallback Branch Deletion Trap | Defensive Branch Safety & Coverage |
 | `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Red-Green TDD Discipline |
 | `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Test Flakiness & Defect Isolation |
+| `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Structural AST Anti-Shortcut Gate |
 
 ---
 
@@ -92,3 +93,11 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`). 
 - **Circuit Breaker**: If a local test fails, never re-run it blindly without investigating the root cause.
 - **Permanent Reflex**: Treat all local test failures as deterministic defects. If a test fails twice with the same stack trace, fix the defect before you proceed.
 - **Socratic Probe**: Are you re-running this test to get lucky, or did you locate the root cause?
+
+### SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate
+
+- **Wound**: An agent takes destructive shortcuts to pass failing tests in production code. The agent silences exceptions with empty handlers, returns trivial default values, or leaks test mocks into production modules.
+- **Trap**: Relying on negative prose instructions in prompts primes agents to use forbidden keywords, while runtime test suites fail to catch silent swallowing of errors.
+- **Permanent Reflex**: Enforce deterministic AST structural scrubbing in `ast-lint` and pre-flight static analysis gates. Parse source files into standard library abstract syntax trees, reject silent exception handlers, trivial fallback returns, and production mock imports with Vector 4 Reflex directives and exit code 2, and require specific exception handling or explicit logging.
+- **Socratic Probe**: Did production code legitimately handle or log the error, or did it swallow exceptions with a bare handler, return a trivial placeholder default, or leak test doubles into source modules?
+
