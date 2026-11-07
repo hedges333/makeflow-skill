@@ -28,6 +28,7 @@ if _SCRIPTS_DIR not in sys.path:
 
 from base_script import BaseScript
 from emit_reflex import SilentArgumentParser, emit_reflex
+from workflow_gates import generate_state_makefile
 
 _DEFAULT_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 DEFAULT_RECEIPT_REL = os.path.join(".workflow", "state", "30_tdd_receipt.json")
@@ -205,6 +206,32 @@ def compute_test_tree_hash(
   return tree_hasher.hexdigest(), sorted_manifest
 
 
+CORE_GOVERNANCE_FILES = (
+    "scripts/tdd_guard.py",
+    "scripts/workflow_gates.py",
+    "scripts/base_script.py",
+    "scripts/emit_reflex.py",
+)
+
+
+def compute_toolchain_hash(repo_root: str) -> str:
+  """Computes a deterministic SHA-256 digest over core makeflow governance scripts."""
+  hasher = hashlib.sha256()
+  abs_repo = os.path.abspath(repo_root)
+  for rel_path in sorted(CORE_GOVERNANCE_FILES):
+    target = os.path.join(abs_repo, rel_path)
+    if not os.path.isfile(target):
+      script_name = os.path.basename(rel_path)
+      alt = os.path.join(_SCRIPTS_DIR, script_name)
+      if os.path.isfile(alt):
+        target = alt
+    if os.path.isfile(target):
+      hasher.update(f"{rel_path}\0{_hash_file_sha256(target)}\n".encode("utf-8"))
+    else:
+      hasher.update(f"{rel_path}\0missing\n".encode("utf-8"))
+  return hasher.hexdigest()
+
+
 def _compute_receipt_seal(
     witnessed_head_sha: str,
     test_dir: str,
@@ -212,6 +239,7 @@ def _compute_receipt_seal(
     test_manifest: Dict[str, str],
     test_cmd: str,
     red_exit_code: int,
+    toolchain_hash: str,
 ) -> str:
   """Computes canonical SHA-256 seal over core Red-phase receipt fields."""
   canonical = json.dumps(
@@ -221,6 +249,7 @@ def _compute_receipt_seal(
           "test_dir": test_dir,
           "test_manifest": test_manifest,
           "test_tree_hash": test_tree_hash,
+          "toolchain_hash": toolchain_hash,
           "witnessed_head_sha": witnessed_head_sha,
       },
       sort_keys=True,
@@ -264,6 +293,7 @@ class TddGuardScript(BaseScript):
     self.cmd: str = ""
     self.allow_head_move: bool = False
     self.citations: List[str] = []
+    self.make_env: bool = False
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -326,6 +356,7 @@ class TddGuardScript(BaseScript):
     self.subcommand = ns.subcommand
 
     use_make_env = bool(getattr(ns, "make_env", False))
+    self.make_env = use_make_env
     raw_test_dir = ns.test_dir
     if raw_test_dir is None and use_make_env:
       raw_test_dir = os.environ.get("TEST_DIR", "")
@@ -357,11 +388,16 @@ class TddGuardScript(BaseScript):
     )
 
   def _fail(
-      self, code: str, trigger: str, rejected: str, reflex: str
+      self,
+      code: str,
+      trigger: str,
+      rejected: str,
+      reflex: str,
+      scar_id: str = "TEST-12",
   ) -> int:
     return emit_reflex(
         stderr=self.stderr,
-        scar_id="TEST-12",
+        scar_id=scar_id,
         violation_code=code,
         trigger=_single_line(trigger),
         rejected=_single_line(rejected),
@@ -517,13 +553,17 @@ class TddGuardScript(BaseScript):
     return f" (receipt rollback write failed: {err})" if err else ""
 
   def _record_collision(
-      self, receipt: Dict[str, Any], code: str, details: str
+      self,
+      receipt: Dict[str, Any],
+      code: str,
+      details: str,
+      scar_id: str = "SCAR-TEST-12",
   ) -> str:
     log_entries = receipt.setdefault("forensic_log", [])
     if isinstance(log_entries, list):
       log_entries.append({
           "details": _single_line(details),
-          "scar_id": "SCAR-TEST-12",
+          "scar_id": scar_id,
           "timestamp": datetime.now(timezone.utc).isoformat(),
           "violation_code": code,
       })
@@ -609,6 +649,7 @@ class TddGuardScript(BaseScript):
       )
 
     prior_log = self._load_prior_forensic_log()
+    toolchain_hash = compute_toolchain_hash(self.repo_root)
     seal = _compute_receipt_seal(
         witnessed_head_sha=head_sha,
         test_dir=rel_test_dir,
@@ -616,6 +657,7 @@ class TddGuardScript(BaseScript):
         test_manifest=before_manifest,
         test_cmd=cleaned_cmd,
         red_exit_code=proc.returncode,
+        toolchain_hash=toolchain_hash,
     )
     receipt: Dict[str, Any] = {
         "forensic_log": prior_log,
@@ -628,6 +670,7 @@ class TddGuardScript(BaseScript):
         "test_dir": rel_test_dir,
         "test_manifest": before_manifest,
         "test_tree_hash": before_hash,
+        "toolchain_hash": toolchain_hash,
         "verified_green": False,
         "verified_head_sha": None,
         "witnessed_at": datetime.now(timezone.utc).isoformat(),
@@ -679,6 +722,7 @@ class TddGuardScript(BaseScript):
     manifest = receipt.get("test_manifest")
     test_cmd = receipt.get("test_cmd")
     red_code = receipt.get("red_exit_code")
+    toolchain_hash = receipt.get("toolchain_hash")
     actual_seal = receipt.get("receipt_seal")
     forensic_log = receipt.get("forensic_log")
 
@@ -701,6 +745,8 @@ class TddGuardScript(BaseScript):
         and isinstance(test_cmd, str)
         and test_cmd.strip()
         and valid_red_code
+        and isinstance(toolchain_hash, str)
+        and toolchain_hash.strip()
         and isinstance(actual_seal, str)
         and actual_seal.strip()
         and isinstance(forensic_log, list)
@@ -719,6 +765,7 @@ class TddGuardScript(BaseScript):
         test_manifest=manifest,
         test_cmd=test_cmd,
         red_exit_code=red_code,
+        toolchain_hash=toolchain_hash,
     )
     if not hmac.compare_digest(actual_seal, expected_seal):
       return None, self._fail(
@@ -800,6 +847,14 @@ class TddGuardScript(BaseScript):
           rejected="Committing mid-phase between witness-red and verify-green to re-baseline working-tree history.",
           reflex="Do not commit during the Red-Green TDD loop; keep HEAD at witnessed_head_sha until Target 50 (or pass --allow-head-move only if explicitly authorized by the human operator).",
       )
+
+    toolchain_rc = self._verify_governance_toolchain(receipt, sealed_head)
+    if toolchain_rc is not None:
+      return toolchain_rc
+
+    mk_rc = self._verify_state_makefile(receipt)
+    if mk_rc is not None:
+      return mk_rc
 
     if self.citations:
       cite_rc = self._verify_citations(receipt, sealed_head)
@@ -916,6 +971,97 @@ class TddGuardScript(BaseScript):
           reflex="Check write permissions on .workflow/state/ and re-run verify-green.",
       )
     return 0
+
+  def _verify_governance_toolchain(
+      self, receipt: Dict[str, Any], sealed_head: str
+  ) -> Optional[int]:
+    sealed_hash = receipt.get("toolchain_hash")
+    current_hash = compute_toolchain_hash(self.repo_root)
+    hasher_mismatch = bool(sealed_hash and current_hash != sealed_hash)
+
+    diff_tampered = False
+    diff_desc = ""
+    try:
+      diff_proc = subprocess.run(
+          ["git", "diff", "--name-only", sealed_head, "--", "scripts/"],
+          cwd=self.repo_root,
+          capture_output=True,
+          text=True,
+          errors="replace",
+          check=False,
+          timeout=15,
+      )
+      if diff_proc.returncode == 0 and diff_proc.stdout.strip():
+        raw_lines = [
+            f.strip().replace(os.sep, "/")
+            for f in diff_proc.stdout.splitlines()
+            if f.strip()
+        ]
+        modified = [
+            f
+            for f in raw_lines
+            if f in CORE_GOVERNANCE_FILES
+            or any(
+                f.endswith("/" + os.path.basename(p))
+                for p in CORE_GOVERNANCE_FILES
+            )
+        ]
+        if modified:
+          diff_tampered = True
+          diff_desc = ", ".join(modified)
+    except (subprocess.SubprocessError, OSError):
+      pass
+
+    if hasher_mismatch or diff_tampered:
+      details = (
+          f"Core governance toolchain in 'scripts/' was tampered relative to witnessed state"
+          + (f" ({diff_desc})" if diff_desc else " (toolchain digest mismatch).")
+      )
+      rb_note = self._record_collision(
+          receipt, "GOVERNANCE_TOOLCHAIN_TAMPERED", details, scar_id="SCAR-TEST-12"
+      )
+      return self._fail(
+          code="GOVERNANCE_TOOLCHAIN_TAMPERED",
+          trigger=f"{details}{rb_note}",
+          rejected="Modifying or tampering with core makeflow governance scripts during the Green phase.",
+          reflex="Revert all changes to scripts/ relative to witnessed_head_sha and fix the defect strictly in production code.",
+          scar_id="TEST-12",
+      )
+    return None
+
+  def _verify_state_makefile(
+      self, receipt: Dict[str, Any]
+  ) -> Optional[int]:
+    mk_path = os.path.join(self.repo_root, ".workflow", "state", "Makefile")
+    if os.path.exists(mk_path):
+      try:
+        with open(mk_path, "r", encoding="utf-8") as f:
+          mk_content = f.read()
+      except OSError as exc:
+        rb_note = self._persist_rollback(receipt, green_exit_code=None)
+        return self._fail(
+            code="STATE_MAKEFILE_TAMPERED",
+            trigger=f"Failed to read {mk_path}: {exc}{rb_note}",
+            rejected="Verifying Green state when .workflow/state/Makefile is unreadable.",
+            reflex="Check filesystem permissions on .workflow/state/Makefile.",
+            scar_id="ARCH-06",
+        )
+      canonical = generate_state_makefile(self.repo_root)
+      if mk_content != canonical:
+        details = (
+            ".workflow/state/Makefile does not match canonical synthesis template."
+        )
+        rb_note = self._record_collision(
+            receipt, "STATE_MAKEFILE_TAMPERED", details, scar_id="SCAR-ARCH-06"
+        )
+        return self._fail(
+            code="STATE_MAKEFILE_TAMPERED",
+            trigger=f"{details}{rb_note}",
+            rejected="Tampering with .workflow/state/Makefile to alter test execution, flags, or workflow gates.",
+            reflex="Re-run 'python3 scripts/workflow_gates.py --repo-root . init-makefile' to restore canonical Makefile.",
+            scar_id="ARCH-06",
+        )
+    return None
 
   def _verify_citations(
       self, receipt: Dict[str, Any], sealed_head: str
@@ -1140,6 +1286,14 @@ class TddGuardScript(BaseScript):
           rejected="Committing mid-phase between witness-red and verify-citation to re-baseline working-tree history.",
           reflex="Do not commit during the Red-Green TDD loop; keep HEAD at witnessed_head_sha until Target 50 (or pass --allow-head-move only if explicitly authorized by the human operator).",
       )
+
+    toolchain_rc = self._verify_governance_toolchain(receipt, sealed_head)
+    if toolchain_rc is not None:
+      return toolchain_rc
+
+    mk_rc = self._verify_state_makefile(receipt)
+    if mk_rc is not None:
+      return mk_rc
 
     if not self.citations:
       details = "Missing citation specification for verify-citation."

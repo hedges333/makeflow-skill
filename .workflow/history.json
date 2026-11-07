@@ -1332,5 +1332,26 @@
     "scars_earned": [
       "SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate"
     ]
+  },
+  {
+    "id": "GH-58",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/58",
+    "title": "[FEAT] investigate fgrandon self-modification prevention",
+    "request": "Implement toolchain hashing and immutability checks in tdd_guard.py, dynamic canonical state Makefile verification, and shell interception for file truncation, redirection, and deletion in pre_tool_guard.py to prevent agent self-modification and reward-hacking.",
+    "branch": "feat/58-self-modification-prevention",
+    "subprojects": [
+      "scripts",
+      "skills"
+    ],
+    "started_at": "2026-11-07T00:00:00-08:00",
+    "completed_at": "2026-11-07T15:06:29-08:00",
+    "commit_sha": "df12be6",
+    "pr_number": 127,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/127",
+    "closes_issue": true,
+    "tests_added": 9,
+    "scars_earned": [
+      "SCAR-TEST-12: Cryptographically Anchored TDD Receipts and Toolchain Immutability"
+    ]
   }
 ]

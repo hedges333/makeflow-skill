@@ -42,6 +42,49 @@ _GH_CLOSE_RE = re.compile(
 _BARE_ISSUE_RE = re.compile(r"(?:^|[\s(\[])#\d+\b")
 
 
+def generate_state_makefile(repo_root: str) -> str:
+  """Returns the canonical content of .workflow/state/Makefile for repo_root."""
+  abs_root = os.path.abspath(repo_root)
+  gates_script = shlex.quote(
+      os.path.abspath(os.path.join(_SCRIPTS_DIR, "workflow_gates.py"))
+  ).replace("$", "$$")
+  guard_script = shlex.quote(
+      os.path.abspath(os.path.join(_SCRIPTS_DIR, "tdd_guard.py"))
+  ).replace("$", "$$")
+  scrub_script = shlex.quote(
+      os.path.abspath(os.path.join(_SCRIPTS_DIR, "ast_scrub.py"))
+  ).replace("$", "$$")
+  quoted_root = shlex.quote(abs_root).replace("$", "$$")
+  return (
+      "# Synthesized by workflow_gates.py init-makefile (SCAR-ARCH-06, SCAR-TEST-12)\n"
+      "PYTHON ?= python3\n"
+      "TICKET ?=\n"
+      "TEST_DIR =\n"
+      "TEST_CMD =\n"
+      "ALLOW_HEAD_MOVE =\n"
+      "CITE =\n"
+      "export TICKET\n"
+      "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
+      ".PHONY: check-intake release-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
+      "check-intake:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
+      "release-intake:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
+      "check-approved-tree:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
+      "check-commit-msg:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg\n\n"
+      "witness-red:\n"
+      f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
+      "verify-green:\n"
+      f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-green --make-env\n\n"
+      "verify-citation:\n"
+      f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-citation --make-env\n\n"
+      "ast-lint:\n"
+      f"\t@$(PYTHON) {scrub_script} --src-dir scripts --strict\n"
+  )
+
+
 class WorkflowGatesScript(BaseScript):
   """BaseScript runner for deterministic Makefile workflow gates."""
 
@@ -173,42 +216,7 @@ class WorkflowGatesScript(BaseScript):
 
     state_dir = os.path.join(self.repo_root, ".workflow", "state")
     mk_path = os.path.join(state_dir, "Makefile")
-    gates_script = shlex.quote(os.path.abspath(__file__)).replace("$", "$$")
-    guard_script = shlex.quote(
-        os.path.join(_SCRIPTS_DIR, "tdd_guard.py")
-    ).replace("$", "$$")
-    scrub_script = shlex.quote(
-        os.path.join(_SCRIPTS_DIR, "ast_scrub.py")
-    ).replace("$", "$$")
-    quoted_root = shlex.quote(self.repo_root).replace("$", "$$")
-    content = (
-        "# Synthesized by workflow_gates.py init-makefile (SCAR-ARCH-06, SCAR-TEST-12)\n"
-        "PYTHON ?= python3\n"
-        "TICKET ?=\n"
-        "TEST_DIR =\n"
-        "TEST_CMD =\n"
-        "ALLOW_HEAD_MOVE =\n"
-        "CITE =\n"
-        "export TICKET\n"
-        "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
-        ".PHONY: check-intake release-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
-        "check-intake:\n"
-        f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
-        "release-intake:\n"
-        f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
-        "check-approved-tree:\n"
-        f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
-        "check-commit-msg:\n"
-        f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg\n\n"
-        "witness-red:\n"
-        f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
-        "verify-green:\n"
-        f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-green --make-env\n\n"
-        "verify-citation:\n"
-        f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-citation --make-env\n\n"
-        "ast-lint:\n"
-        f"\t@$(PYTHON) {scrub_script} --src-dir scripts --strict\n"
-    )
+    content = generate_state_makefile(self.repo_root)
     try:
       os.makedirs(state_dir, exist_ok=True)
       with open(mk_path, "w", encoding="utf-8") as f:
