@@ -1353,5 +1353,26 @@
     "scars_earned": [
       "SCAR-TEST-12: Cryptographically Anchored TDD Receipts and Toolchain Immutability"
     ]
+  },
+  {
+    "id": "GH-100",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/100",
+    "title": "[FEAT] Multi-Workspace Ticket Mutual Exclusion and Collision Detection",
+    "request": "Implement multi-workspace ticket locking and collision detection to prevent duplicate work across clones and machines. Establish three-layer defense with atomic directory locks (Layer 1), local session registry with aliveness and reentrancy (Layer 2), and remote coordination with issue claiming and branch inspection (Layer 3).",
+    "branch": "feat/100-multi-workspace-mutex",
+    "subprojects": [
+      "scripts",
+      "skills"
+    ],
+    "started_at": "2026-11-06T23:52:27-08:00",
+    "completed_at": "2026-11-07T15:28:54-08:00",
+    "commit_sha": "8ed149b",
+    "pr_number": 125,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/125",
+    "closes_issue": true,
+    "tests_added": 20,
+    "scars_earned": [
+      "SCAR-SYS-08: Atomic Directory-Based Mutual Exclusion Locks (mkdir over lockfile)"
+    ]
   }
 ]
