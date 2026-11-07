@@ -11,7 +11,7 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 | `SCAR-TEST-09` | Fail-Fast Targeted TDD Loop | Red-Green Test Iteration (`-x -v`) |
 | `SCAR-TEST-10` | Pre-Flight Structural Static Analysis Gate | Fast Structural Syntax Pre-Flight Check |
 | `SCAR-TEST-11` | Shift-Left Testing Burden Balance | Up-Front Testing Feasibility & Burden Budget |
-| `SCAR-TEST-12` | Cryptographically Anchored TDD Receipts | Red-to-Green Receipt Sealing & Verification |
+| `SCAR-TEST-12` | Cryptographically Anchored TDD Receipts | Receipt Sealing, Citation & Toolchain Immutability |
 | `SCAR-TEST-22` | Traceable Test Naming and Artifact Longevity | Regression Test Naming & Tracing |
 | `SCAR-TEST-24` | Coverage-Driven Fallback Branch Deletion Trap | Defensive Branch Safety & Coverage |
 | `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Red-Green TDD Discipline |
@@ -55,12 +55,12 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 - **Permanent Reflex**: Shift-left Pillar 2 evaluation into Target 15 and Target 20. In Target 15 archaeology receipts, classify the failure mechanism and evaluate test feasibility within hermetic fixtures (< 100 ms). In Target 20 plans, disclose the testing balance and prohibit surface-only testing when hermetic boundary testing is possible.
 - **Socratic Probe**: Are you settling for superficial assertions when hermetic boundary tests are fast and feasible? Does your test plan strike the right balance between rigorous contract coverage and fast execution without heavy dependencies, or do you need to interview the user to determine if heavy dependencies are necessary for some tests to be comprehensive?
 
-### SCAR-TEST-12: Cryptographically Anchored TDD Receipts
+### SCAR-TEST-12: Cryptographically Anchored TDD Receipts and Toolchain Immutability
 
-- **Wound**: An agent passes the Green test gate by swapping `TEST_CMD`, dropping an untracked fixture, citing uncommitted scratch files, or committing mid-phase.
-- **Trap**: Unanchored test runs trust conversational compliance, and `git write-tree` ignores untracked fixtures inside test directories.
-- **Permanent Reflex**: Run `witness-red` to write a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, and all test files in `30_tdd_receipt.json`. Run `verify-green` to confirm that the receipt matches and to replay the sealed command. Run `verify-citation` to verify line citations against immutable Git blobs in witnessed `HEAD`. If a cited file is uncommitted or missing, emit `UNCOMMITTED_WITNESS_FILE` with exit code `2` and record the collision in `forensic_log`. If a citation is blank or a comment line, emit `TRIVIAL_WITNESS_LINE` with exit code `2` and record the collision in `forensic_log`.
-- **Socratic Probe**: Did production code fix the bug, or did a test file, fixture, command, citation, or commit change after `witness-red`?
+- **Wound**: An agent passes the Green test gate by swapping `TEST_CMD`, dropping an untracked fixture, citing uncommitted scratch files, committing mid-phase, or tampering with governance scripts and Makefiles.
+- **Trap**: Unanchored test runs trust conversational compliance, `git write-tree` ignores untracked fixtures, and autonomous agents have filesystem write access to verification scripts.
+- **Permanent Reflex**: Run `witness-red` to write a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, all test files, and core governance scripts in `30_tdd_receipt.json`. Run `verify-green` to confirm that the receipt matches, verify governance toolchain integrity, and replay the sealed command. If governance scripts change after `witness-red`, emit `GOVERNANCE_TOOLCHAIN_TAMPERED` with exit code `2` and record a collision in `forensic_log`. If `.workflow/state/Makefile` changes, emit `STATE_MAKEFILE_TAMPERED` with exit code `2` and record a collision. Run `verify-citation` to verify line citations against immutable Git blobs in witnessed `HEAD`. If a cited file is uncommitted or missing, emit `UNCOMMITTED_WITNESS_FILE` with exit code `2` and record the collision in `forensic_log`. If a citation is blank or a comment line, emit `TRIVIAL_WITNESS_LINE` with exit code `2` and record the collision in `forensic_log`. Intercept shell redirection, truncation, and deletion commands targeting governance files in `pre_tool_guard.py`.
+- **Socratic Probe**: Did production code fix the bug, or did a test file, fixture, command, citation, commit, governance script, or Makefile change after `witness-red`?
 
 ### SCAR-TEST-22: Traceable Test Naming and Artifact Longevity
 
@@ -100,4 +100,3 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 - **Trap**: Relying on negative prose instructions in prompts primes agents to use forbidden keywords, while runtime test suites fail to catch silent swallowing of errors.
 - **Permanent Reflex**: Enforce deterministic AST structural scrubbing in `ast-lint` and pre-flight static analysis gates. Parse source files into standard library abstract syntax trees, reject silent exception handlers, trivial fallback returns, and production mock imports with Vector 4 Reflex directives and exit code 2, and require specific exception handling or explicit logging.
 - **Socratic Probe**: Did production code legitimately handle or log the error, or did it swallow exceptions with a bare handler, return a trivial placeholder default, or leak test doubles into source modules?
-

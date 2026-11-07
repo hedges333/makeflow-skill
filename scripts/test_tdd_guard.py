@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -2284,6 +2285,241 @@ class TestTddGuardScript(unittest.TestCase):
           check=False,
       )
       self.assertEqual(p_green.returncode, 0, p_green.stderr)
+
+  def test_witness_red_records_and_seals_toolchain_hash(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      expected_head = _init_fixture_repo(tmpdir)
+      cmd = _unit_test_cmd()
+      out = io.StringIO()
+      err = io.StringIO()
+      code = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 0, err.getvalue())
+
+      rpath = _receipt_path(tmpdir)
+      with open(rpath, "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+
+      self.assertIn("toolchain_hash", receipt)
+      self.assertIsInstance(receipt["toolchain_hash"], str)
+      self.assertEqual(len(receipt["toolchain_hash"]), 64)
+
+      # Tampering toolchain_hash in receipt invalidates receipt_seal
+      receipt["toolchain_hash"] = "0" * 64
+      with open(rpath, "w", encoding="utf-8") as f:
+        json.dump(receipt, f)
+
+      err_seal = io.StringIO()
+      code_tampered = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_seal,
+      )
+      self.assertEqual(code_tampered, 2)
+      self.assertIn("[SCAR-ID: TEST-12] CORRUPT_RED_RECEIPT", err_seal.getvalue())
+
+  def test_verify_green_and_citation_detect_governance_toolchain_tampering(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      expected_head = _init_fixture_repo(tmpdir)
+      scripts_dir = os.path.join(tmpdir, "scripts")
+      os.makedirs(scripts_dir, exist_ok=True)
+      for fname in ("tdd_guard.py", "workflow_gates.py", "base_script.py", "emit_reflex.py"):
+        src_path = os.path.join(_SCRIPTS_DIR, fname)
+        dst_path = os.path.join(scripts_dir, fname)
+        shutil.copyfile(src_path, dst_path)
+
+      with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
+        f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+
+      subprocess.run(["git", "add", "scripts", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
+      subprocess.run(["git", "commit", "-q", "-m", "chore: add governance scripts and spec"], cwd=tmpdir, check=True, capture_output=True)
+
+      cmd = _unit_test_cmd()
+      code_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(code_red, 0)
+
+      # Tamper with scripts/tdd_guard.py in working tree
+      with open(os.path.join(scripts_dir, "tdd_guard.py"), "a", encoding="utf-8") as f:
+        f.write("\n# MALICIOUS_TAMPER = True\n")
+
+      _fix_calc_bug(tmpdir)
+
+      # verify-green detects tampering
+      err_green = io.StringIO()
+      code_green = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_green,
+      )
+      self.assertEqual(code_green, 2)
+      self.assertIn("[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED", err_green.getvalue())
+
+      # Check collision logged in forensic_log and rollback verified_green
+      rpath = _receipt_path(tmpdir)
+      with open(rpath, "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+      self.assertFalse(receipt["verified_green"])
+      collisions = [c for c in receipt.get("forensic_log", []) if c.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"]
+      self.assertTrue(collisions, "Expected GOVERNANCE_TOOLCHAIN_TAMPERED collision in forensic_log")
+
+      # verify-citation also detects tampering
+      err_cite = io.StringIO()
+      code_cite = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+          stdout=io.StringIO(),
+          stderr=err_cite,
+      )
+      self.assertEqual(code_cite, 2)
+      self.assertIn("[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED", err_cite.getvalue())
+
+  def test_non_governance_scripts_modification_allowed_during_green(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      expected_head = _init_fixture_repo(tmpdir)
+      scripts_dir = os.path.join(tmpdir, "scripts")
+      os.makedirs(scripts_dir, exist_ok=True)
+      for fname in ("tdd_guard.py", "workflow_gates.py", "base_script.py", "emit_reflex.py"):
+        src_path = os.path.join(_SCRIPTS_DIR, fname)
+        dst_path = os.path.join(scripts_dir, fname)
+        shutil.copyfile(src_path, dst_path)
+
+      # Add a non-governance script in scripts/ (e.g. scripts/safe_copy.py)
+      safe_copy_src = os.path.join(_SCRIPTS_DIR, "safe_copy.py")
+      safe_copy_dst = os.path.join(scripts_dir, "safe_copy.py")
+      if os.path.isfile(safe_copy_src):
+        shutil.copyfile(safe_copy_src, safe_copy_dst)
+      else:
+        with open(safe_copy_dst, "w", encoding="utf-8") as f:
+          f.write("#!/usr/bin/env python3\ndef safe_copy(): pass\n")
+
+      with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
+        f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+
+      subprocess.run(["git", "add", "scripts", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
+      subprocess.run(["git", "commit", "-q", "-m", "chore: add governance scripts, non-governance script, and spec"], cwd=tmpdir, check=True, capture_output=True)
+
+      cmd = _unit_test_cmd()
+      code_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(code_red, 0)
+
+      # Modify non-governance file in scripts/
+      with open(safe_copy_dst, "a", encoding="utf-8") as f:
+        f.write("\n# NON_GOVERNANCE_EDIT = True\n")
+
+      _fix_calc_bug(tmpdir)
+
+      # verify-green should succeed and NOT trigger GOVERNANCE_TOOLCHAIN_TAMPERED
+      out_green = io.StringIO()
+      err_green = io.StringIO()
+      code_green = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=out_green,
+          stderr=err_green,
+      )
+      self.assertNotIn("GOVERNANCE_TOOLCHAIN_TAMPERED", err_green.getvalue())
+      self.assertEqual(code_green, 0, f"verify-green failed: {err_green.getvalue()}")
+
+      rpath = _receipt_path(tmpdir)
+      with open(rpath, "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+      self.assertTrue(receipt["verified_green"])
+
+      # verify-citation should also succeed and NOT trigger GOVERNANCE_TOOLCHAIN_TAMPERED
+      out_cite = io.StringIO()
+      err_cite = io.StringIO()
+      code_cite = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+          stdout=out_cite,
+          stderr=err_cite,
+      )
+      self.assertNotIn("GOVERNANCE_TOOLCHAIN_TAMPERED", err_cite.getvalue())
+      self.assertEqual(code_cite, 0, f"verify-citation failed: {err_cite.getvalue()}")
+
+  def test_verify_green_detects_state_makefile_tampering(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      out_init = io.StringIO()
+      code_init = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "init-makefile"],
+          stdout=out_init,
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(code_init, 0)
+      mk_path = os.path.join(tmpdir, ".workflow", "state", "Makefile")
+      self.assertTrue(os.path.isfile(mk_path))
+
+      cmd = _unit_test_cmd()
+      code_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(code_red, 0)
+
+      # Tamper with .workflow/state/Makefile
+      with open(mk_path, "a", encoding="utf-8") as f:
+        f.write("\n# BACKDOOR_TARGET: malicious\n")
+
+      _fix_calc_bug(tmpdir)
+
+      err_green = io.StringIO()
+      code_green = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_green,
+      )
+      self.assertEqual(code_green, 2)
+      self.assertIn("[SCAR-ID: ARCH-06] STATE_MAKEFILE_TAMPERED", err_green.getvalue())
+
+      rpath = _receipt_path(tmpdir)
+      with open(rpath, "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+      self.assertFalse(receipt["verified_green"])
+      collisions = [c for c in receipt.get("forensic_log", []) if c.get("violation_code") == "STATE_MAKEFILE_TAMPERED"]
+      self.assertTrue(collisions, "Expected STATE_MAKEFILE_TAMPERED collision in forensic_log")
+      self.assertEqual(collisions[0].get("scar_id"), "SCAR-ARCH-06")
 
 
 if __name__ == "__main__":
