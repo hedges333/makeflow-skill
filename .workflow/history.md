@@ -63,3 +63,4 @@
 | 2026-11-06 | [GH-62](https://github.com/hedges333/makeflow-skill/issues/62) | Add explicit timeout to child subprocess in validate_arbitrary_cwd_execution | `feat/62-subprocess-timeout` | [PR #115](https://github.com/hedges333/makeflow-skill/pull/115) | +5 | None |
 | 2026-11-06 | [GH-54](https://github.com/hedges333/makeflow-skill/issues/54) | Investigate fgrandon red-green bypass prevention | `feat/54-red-green-bypass-prevention` | [PR #116](https://github.com/hedges333/makeflow-skill/pull/116) | +7 | `SCAR-TEST-12` |
 
+| 2026-11-07 | [GH-41](https://github.com/hedges333/makeflow-skill/issues/41) | Codify 16 core universal workflow scars into reference catalog | `feat/41-analyze-synthetic-scars` | [PR #122](https://github.com/hedges333/makeflow-skill/pull/122) | +1 | 16 Scars (`SCAR-PROC-45`, `89`, `110`, `120`, `122`, `150`, `152`, `158`, `SCAR-TEST-22`, `24`, `29`, `44`, `SCAR-GIT-17`, `22`, `23`, `24`) |
