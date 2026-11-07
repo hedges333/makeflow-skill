@@ -24,6 +24,23 @@ DEFAULT_SIGNALS: Tuple[int, ...] = (signal.SIGTERM, signal.SIGINT)
 class SignalTrap:
   """POSIX signal handler and cleanup manager for long-running workers."""
 
+  _instance: Optional["SignalTrap"] = None
+
+  @classmethod
+  def get_instance(cls) -> "SignalTrap":
+    """Return singleton SignalTrap instance, creating and installing if necessary."""
+    if cls._instance is None:
+      cls._instance = cls()
+      cls._instance.install()
+    return cls._instance
+
+  @classmethod
+  def reset_instance(cls) -> None:
+    """Reset singleton instance (useful for hermetic tests)."""
+    if cls._instance is not None:
+      cls._instance.restore()
+      cls._instance = None
+
   def __init__(
       self,
       signals: Sequence[int] = DEFAULT_SIGNALS,
@@ -208,6 +225,12 @@ class SignalTrap:
 
     for path in lock_dirs_to_remove:
       try:
+        if os.path.isdir(path):
+          for fname in os.listdir(path):
+            try:
+              os.unlink(os.path.join(path, fname))
+            except OSError:
+              pass
         os.rmdir(path)
       except FileNotFoundError:
         pass

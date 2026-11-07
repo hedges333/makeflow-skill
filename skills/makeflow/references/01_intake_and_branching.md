@@ -30,16 +30,51 @@ When the user provides a task description, issue number, or issue URL, run these
    git check-ignore -q .workflow/archive/ || echo ".workflow/archive/" >> .git/info/exclude
    ```
 5. Run clean intake pre-flight check: If leftover state cards or `approved_tree.txt` from prior sessions exist in `.workflow/state/`, remove them (`unlink`, default) or move them to `.workflow/archive/<old-id>/` (`archive`) per `state.completedCardAction` before writing `10_ticket.md`.
-6. Create and switch to a feature branch that matches standard Git naming rules:
+6. Acquire the ticket lock to prevent collisions across multiple workspaces (`SCAR-SYS-08`). If another active workspace holds the ticket, stop intake immediately.
+7. Create and switch to a feature branch that matches standard Git naming rules:
    - GitHub Bug (`#<number>` or `GH-<number>`): `fix/<number>-<slug>`, for example `fix/42-login-redirect`. Ticket ID is `GH-<number>`.
    - GitHub Feature (`#<number>` or `GH-<number>`): `feat/<number>-<slug>`, for example `feat/101-csv-export`. Ticket ID is `GH-<number>`.
    - General GitHub Issue (`#<number>` or `GH-<number>`): `ticket/<number>-<slug>`, for example `ticket/55-upgrade-deps`. Ticket ID is `GH-<number>`.
    - Jira or Linear Issue (`<PROJECT>-<NUMBER>`): `feat/<project>-<number>-<slug>` or `fix/<project>-<number>-<slug>`.
    - Ad-hoc Chat Task / Pure Git Session (no external tracker): Determine next local count `N` from the highest `LOCAL-<N>` in `.workflow/history.json`. Use `feat/local-<N+1>-<slug>` or `fix/local-<N+1>-<slug>`. Ticket ID is `LOCAL-<N+1>`. Never use bare integers for local branches.
-7. Format `<slug>` with lowercase letters, digits, and single hyphens (`[a-z0-9-]`), up to 40 characters.
-8. Write the consolidated ticket and comment details to `<workspace>/.workflow/state/10_ticket.md`.
-9. Update the terminal title to `{ticket_name} {project_name}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
-10. Advance to Target 15.
+8. Format `<slug>` with lowercase letters, digits, and single hyphens (`[a-z0-9-]`), up to 40 characters.
+9. Write the consolidated ticket and comment details to `<workspace>/.workflow/state/10_ticket.md`.
+10. Update the terminal title to `{ticket_name} {project_name}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
+11. Advance to Target 15.
+
+### Multi-Workspace Mutual Exclusion (`SCAR-SYS-08`)
+
+A mutual exclusion lock prevents two workspaces from using one ticket.
+
+Before you create a branch, acquire the ticket lock:
+
+1. If you start intake, verify that no other workspace holds the ticket.
+2. Compute the repository hash from the first Git commit.
+3. Create the atomic lock directory at `~/.workflow/locks/<repo-hash>-<ticket>.lock`.
+4. If the directory exists, read the recorded process ID and workspace path.
+5. If the recorded workspace matches the current workspace, grant reentrant access.
+6. If the session is active in another workspace, stop intake and report the collision.
+7. If the session in the other workspace is dead or complete, purge the stale lock.
+8. Record repository path, branch name, and process ID in `session.json`.
+9. Register the lock with SignalTrap to clean it upon abnormal termination.
+10. At Target 80 and Target 90, run `make -f .workflow/state/Makefile release-intake`.
+
+### Operational Lock Commands
+
+Use these commands to inspect or clear ticket locks:
+
+1. To inspect lock status for a ticket, run:
+   ```bash
+   python3 scripts/workspace_mutex.py status --ticket <ticket-id>
+   ```
+2. To release an active lock directly, run:
+   ```bash
+   python3 scripts/workspace_mutex.py release --ticket <ticket-id>
+   ```
+3. To release the current ticket lock through make, run:
+   ```bash
+   make -f .workflow/state/Makefile release-intake TICKET=<ticket-id>
+   ```
 
 ### Mode B: Open Backlog Discovery
 

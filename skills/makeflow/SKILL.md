@@ -155,8 +155,8 @@ Read `references/07`, `references/09`, and `references/12` for triage and ledger
 2. In Antigravity, fork `triage-worker` using `agyModelTiers["triage-worker"]` (default `inherit`) and stop tool calls. In single-agent sessions, call MCP `workflow_poll_ci` with `maxWaitSeconds: 1`.
 3. Write `70_bot_triage.md`. If accepted bot findings require code edits, return to Target 30.
 4. At Target 75, print CI status and the 7-criteria policy table, then pause for `human-landing-approval`.
-5. At Target 80, run `gh pr merge <PR> --squash --delete-branch` and fast-forward `main`. In Pure Git Mode, run `git merge --squash` on `main` instead.
-6. At Target 90, record merged scar IDs in `.workflow/history.json` and `.workflow/history.md` without editing core catalog files on `main`. In external projects, record project-local lessons in `.workflow/scars/`. If direct push is permitted, push `origin main`. Clean `10_`..`80_` cards and `approved_tree.txt` per `state.completedCardAction` and mark `99_next_action.md` `COMPLETE`.
+5. At Target 80, run `gh pr merge <PR> --squash --delete-branch`, fast-forward `main`, and run `make -f .workflow/state/Makefile release-intake`. In Pure Git Mode, run `git merge --squash` on `main` instead.
+6. At Target 90, record merged scar IDs in `.workflow/history.json` and `.workflow/history.md` without editing core catalog files on `main`. In external projects, record project-local lessons in `.workflow/scars/`. If direct push is permitted, push `origin main`. Run `make -f .workflow/state/Makefile release-intake`. Clean `10_`..`80_` cards and `approved_tree.txt` per `state.completedCardAction` and mark `99_next_action.md` `COMPLETE`.
 
 ---
 
