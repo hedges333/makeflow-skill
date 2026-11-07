@@ -58,14 +58,18 @@ def generate_state_makefile(repo_root: str) -> str:
   return (
       "# Synthesized by workflow_gates.py init-makefile (SCAR-ARCH-06, SCAR-TEST-12)\n"
       "PYTHON ?= python3\n"
+      "TICKET ?=\n"
       "TEST_DIR =\n"
       "TEST_CMD =\n"
       "ALLOW_HEAD_MOVE =\n"
       "CITE =\n"
+      "export TICKET\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
-      ".PHONY: check-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
+      ".PHONY: check-intake release-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
       "check-intake:\n"
-      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake\n\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
+      "release-intake:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
       "check-approved-tree:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
       "check-commit-msg:\n"
@@ -87,6 +91,7 @@ class WorkflowGatesScript(BaseScript):
   def __init__(self) -> None:
     super().__init__()
     self.repo_root: str = _DEFAULT_REPO_ROOT
+    self.lock_dir: Optional[str] = None
     self.as_json: bool = False
     self.gate: str = ""
     self.max_bytes: int = DEFAULT_SKILL_MAX_BYTES
@@ -99,6 +104,7 @@ class WorkflowGatesScript(BaseScript):
     super().parse_args(args)
     parser = SilentArgumentParser(prog="workflow_gates.py", add_help=False)
     parser.add_argument("--repo-root", default=_DEFAULT_REPO_ROOT)
+    parser.add_argument("--lock-dir", default=None)
     parser.add_argument("--json", action="store_true", dest="as_json")
 
     subparsers = parser.add_subparsers(
@@ -118,7 +124,19 @@ class WorkflowGatesScript(BaseScript):
     p_budget.add_argument("--json", action="store_true", dest="sub_json")
 
     p_intake = subparsers.add_parser("intake", add_help=False)
+    p_intake.add_argument("--ticket", default=None)
+    p_intake.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
     p_intake.add_argument("--json", action="store_true", dest="sub_json")
+
+    p_rel = subparsers.add_parser("release-intake", add_help=False)
+    p_rel.add_argument("--ticket", default=None)
+    p_rel.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
+    p_rel.add_argument("--json", action="store_true", dest="sub_json")
+
+    p_rel_lock = subparsers.add_parser("release-lock", add_help=False)
+    p_rel_lock.add_argument("--ticket", default=None)
+    p_rel_lock.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
+    p_rel_lock.add_argument("--json", action="store_true", dest="sub_json")
 
     p_tree = subparsers.add_parser("approved-tree", add_help=False)
     p_tree.add_argument("--json", action="store_true", dest="sub_json")
@@ -137,10 +155,11 @@ class WorkflowGatesScript(BaseScript):
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
-          "intake, approved-tree, commit-msg, or terminal-title."
+          "intake, approved-tree, commit-msg, terminal-title, release-intake, or release-lock."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
+    self.lock_dir = getattr(ns, "sub_lock_dir", None) or getattr(ns, "lock_dir", None)
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
     self.gate = ns.gate
     if ns.gate == "skill-budget":
@@ -149,7 +168,7 @@ class WorkflowGatesScript(BaseScript):
       self.max_bytes = ns.max_bytes
     elif ns.gate == "commit-msg":
       self.commit_msg_file = ns.commit_msg_file
-    elif ns.gate == "terminal-title":
+    elif ns.gate in ("terminal-title", "intake", "release-intake", "release-lock"):
       self.ticket = getattr(ns, "ticket", None)
       self.project = getattr(ns, "project", None)
       self.title = getattr(ns, "title", None)
@@ -310,6 +329,106 @@ class WorkflowGatesScript(BaseScript):
     except (ImportError, OSError):
       pass
 
+    ticket_id = self.ticket
+    if not ticket_id:
+      try:
+        from terminal_title import detect_ticket_id
+        ticket_id = detect_ticket_id(repo_root=self.repo_root)
+      except Exception:
+        ticket_id = ""
+
+    if ticket_id:
+      from workspace_mutex import WorkspaceMutex
+      mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+      branch_proc = self._git("branch", "--show-current")
+      branch_name = branch_proc.stdout.strip() if branch_proc.returncode == 0 else ""
+      res = mutex.acquire(
+          ticket_id=ticket_id,
+          workspace_path=self.repo_root,
+          branch_name=branch_name,
+      )
+      if not res.get("acquired"):
+        sess = res.get("session") or {}
+        colliding_workspace = sess.get("workspace_path", "unknown")
+        colliding_pid = sess.get("pid", "unknown")
+        return self._fail(
+            scar_id="SYS-08",
+            code="TICKET_COLLISION_DETECTED",
+            trigger=(
+                f"Ticket {ticket_id} is actively held by PID {colliding_pid} "
+                f"in {colliding_workspace}."
+            ),
+            rejected=f"Concurrent intake on ticket {ticket_id} across multiple workspaces.",
+            reflex=(
+                "Coordinate with the engineer in the active workspace or wait "
+                "for session completion before proceeding."
+            ),
+        )
+
+      if not res.get("reentrant"):
+        hosting_mode = "GITHUB"
+        if ticket_id.startswith("LOCAL-"):
+          hosting_mode = "PURE_GIT"
+        else:
+          origin_proc = self._git("remote", "get-url", "origin")
+          if (
+              origin_proc.returncode != 0
+              or "github.com" not in (origin_proc.stdout or "").lower()
+          ):
+            hosting_mode = "PURE_GIT"
+
+        rem = mutex.check_remote(ticket_id=ticket_id, hosting_mode=hosting_mode)
+        if rem.get("conflict"):
+          mutex.release(ticket_id)
+          reason = rem.get("reason", "REMOTE_CONFLICT")
+          if reason == "REMOTE_ASSIGNED_OR_IN_PROGRESS":
+            assignees = ", ".join(rem.get("assignees", [])) or "none"
+            labels = ", ".join(rem.get("labels", [])) or "none"
+            trigger_msg = (
+                f"Remote ticket {ticket_id} has active assignments or labels: "
+                f"assignees=[{assignees}], labels=[{labels}]."
+            )
+          elif reason == "REMOTE_BRANCH_EXISTS":
+            refs = ", ".join(rem.get("refs", []))
+            trigger_msg = f"Remote branch exists for ticket {ticket_id}: {refs}."
+          else:
+            trigger_msg = f"Remote conflict detected for ticket {ticket_id}: {reason}."
+
+          return self._fail(
+              scar_id="SYS-08",
+              code="REMOTE_TICKET_COLLISION",
+              trigger=trigger_msg,
+              rejected=f"Concurrent intake on ticket {ticket_id} with remote assignment or branch.",
+              reflex="Coordinate with the ticket assignee or remove remote conflict before intake.",
+          )
+
+        if hosting_mode == "GITHUB" and not ticket_id.startswith("LOCAL-"):
+          try:
+            mutex.claim_issue(ticket_id)
+          except (OSError, subprocess.SubprocessError):
+            pass
+
+      mutex.register_signal_trap(ticket_id)
+
+    return 0
+
+  def _release_intake(self) -> int:
+    ticket_id = self.ticket
+    if not ticket_id:
+      try:
+        from terminal_title import detect_ticket_id
+        ticket_id = detect_ticket_id(repo_root=self.repo_root)
+      except Exception:
+        ticket_id = ""
+
+    try:
+      from workspace_mutex import WorkspaceMutex
+      mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+      if ticket_id:
+        mutex.release(ticket_id)
+      mutex.release_workspace(self.repo_root)
+    except (ImportError, OSError):
+      pass
     return 0
 
   def _check_approved_tree(self) -> int:
@@ -492,6 +611,8 @@ class WorkflowGatesScript(BaseScript):
       return self._check_commit_msg()
     if self.gate == "terminal-title":
       return self._gate_terminal_title()
+    if self.gate in ("release-intake", "release-lock"):
+      return self._release_intake()
     raise ValueError(f"Unsupported gate: {self.gate}")
 
 

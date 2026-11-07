@@ -93,4 +93,5 @@ After the user approves landing, merge the pull request and clean up local Git s
    ```bash
    git branch -d <branch>
    ```
-5. Advance to Target 90 (`finish`).
+5. Release the intake lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
+6. Advance to Target 90 (`finish`).

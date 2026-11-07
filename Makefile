@@ -6,8 +6,9 @@ PLUGIN_NAME = makeflow
 INSTALL_DIR = $(HOME)/.gemini/config/plugins/$(PLUGIN_NAME)
 PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
+TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard check-plugin-files check-skill-budget help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -26,6 +27,7 @@ help:
 	@echo "  make test-hooks         - Test SessionStart and PreToolUse hook scripts"
 	@echo "  make test-reflex        - Test Vector 4 Reflex emitter and workflow gates (SCAR-ARCH-06)"
 	@echo "  make test-tdd-guard     - Test cryptographically anchored TDD receipts (SCAR-TEST-12)"
+	@echo "  make test-workspace-mutex - Test multi-workspace mutual exclusion (SCAR-SYS-08)"
 	@echo "  make check-plugin-files - Check required plugin manifests and core skill files"
 	@echo "  make check-skill-budget - Check SKILL.md context size ceiling (SCAR-PROC-99)"
 	@echo "  make install            - Install plugin into ~/.gemini/config/plugins/$(PLUGIN_NAME)"
@@ -53,6 +55,12 @@ check-skill-budget:
 ast-lint:
 	@echo "Running structural AST scrubber..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir scripts --strict
+
+check-intake:
+	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" intake $(if $(TICKET),--ticket $(TICKET),)
+
+release-intake:
+	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" release-intake $(if $(TICKET),--ticket $(TICKET),)
 
 test-static: ast-lint
 	@echo "Running pre-flight structural static analysis..."
@@ -177,7 +185,16 @@ test-ast-scrub:
 		--rejected "Weakening structural AST scrubber detection rules or execution speed." \
 		--reflex "Run $(PYTHON) -m unittest -v scripts.test_ast_scrub directly, fix the regression, and re-run make test-ast-scrub."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-hooks test-reflex test-tdd-guard test-ast-scrub
+test-workspace-mutex:
+	@echo "Testing multi-workspace ticket mutual exclusion and collision detection..."
+	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_workspace_mutex.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id SYS-08 \
+		--code WORKSPACE_MUTEX_SUITE_FAILED \
+		--trigger "scripts/test_workspace_mutex.py failed." \
+		--rejected "Allowing parallel sessions on the same ticket across workspaces." \
+		--reflex "Run $(PYTHON) -m unittest -v scripts/test_workspace_mutex.py, fix failing tests, and re-run make test-workspace-mutex."
+
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget
