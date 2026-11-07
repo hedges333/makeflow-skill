@@ -6,7 +6,9 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 
 | ID | Title | Scope |
 | :--- | :--- | :--- |
+| `SCAR-PROC-45` | Subagent System Prompt Paraphrasing and Rubric Mutagenesis | Subagent Prompting & Rubric Integrity |
 | `SCAR-PROC-53` | Prohibit Shell Sleep Polling | Subagent & Task Notification |
+| `SCAR-PROC-89` | Subagent IPC Back-Channel Conflation and Reactive Wakeup Airlock | Critic Blocker Triage & IPC |
 | `SCAR-PROC-95` | Depth-0 Supervisor and Subagent Isolation | Orchestration Architecture |
 | `SCAR-PROC-99` | Single-Page SKILL.md Size Ceiling | Context Budget & Skill Files |
 | `SCAR-PROC-102` | Human Declaration Authority | Pause Gate Enforcement |
@@ -16,9 +18,23 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 | `SCAR-PROC-106` | Predetermined Subagent Tool Mounting via tools Lists | Subagent Tool Mounting |
 | `SCAR-PROC-107` | Full Discussion and Comment Thread Ingestion at Intake | Ticket Intake & Triage |
 | `SCAR-PROC-108` | Critic Observation Triage and Anti-Proliferation Protocol | Review Triage & Issue Management |
+| `SCAR-PROC-110` | Premature Subagent Termination and Speculative Verdict Hallucination | Subagent Lifecycle & Verdicts |
+| `SCAR-PROC-120` | Belnap Four-Valued Epistemic State Ledger and Fact Retraction | Fact State Ledger & Archaeology |
+| `SCAR-PROC-122` | Upfront Human-Review Policy Evaluation Matrix | Landing Gate Policy Evaluation |
 | `SCAR-PROC-138` | Yield on Repeated Timer Conflicts | Schedule Conflict Handling |
+| `SCAR-PROC-150` | Target Transition Header Dead-Air Cliff | Automated Target Transitions |
+| `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | State Machine Graph Completeness |
+| `SCAR-PROC-158` | Persistent Memento Readerboard Truncation Trap | Persistent Memento State Integrity |
 
 ---
+
+### SCAR-PROC-45: Subagent System Prompt Paraphrasing and Rubric Mutagenesis
+
+- **Wound**: An orchestrator agent defines a review subagent but summarizes the review rubric in the prompt. The subagent misses security defects and accepts broken code.
+- **Trap**: The model compresses instructions into conversational prose. It drops negative constraints that look redundant.
+- **Circuit Breaker**: If you summarize a review rubric, stop immediately. You must use the unabridged text.
+- **Permanent Reflex**: If you dispatch a critic subagent, mount the canonical review manual by exact file path. Instruct the subagent to read the manual directly from disk.
+- **Socratic Probe**: Did you pass the exact path of the review manual, or did you paraphrase the review rules?
 
 ### SCAR-PROC-53: Prohibit Shell Sleep Polling
 
@@ -26,6 +42,14 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 - **Trap**: Writing shell `sleep` loops instead of yielding control to event-driven reactive wakeups.
 - **Permanent Reflex**: Stop calling tools immediately after dispatching tasks and wait for system notifications. Never poll in a loop with shell `sleep` commands.
 - **Socratic Probe**: If you pause execution by calling shell `sleep` in a loop, will you block the conversation context and miss reactive system wakeups? Would it be safer to stop calling tools and wait for event notifications, or if you need to monitor a log file, can you write a temporary script and run it as a task that exits to notify you of a match?
+
+### SCAR-PROC-89: Subagent IPC Back-Channel Conflation and Reactive Wakeup Airlock
+
+- **Wound**: An independent critic subagent rejects a code change with blockers. The main agent fails to halt at the triage gate and argues with the critic through chat messages.
+- **Trap**: The agent treats the critic as a chat partner. It attempts to explain away blockers instead of halting.
+- **Circuit Breaker**: If the critic reports a blocker, stop tool calls immediately. Do not send messages to the critic.
+- **Permanent Reflex**: When a critic returns blockers, halt execution at Target 42. Present the blockers to the human operator for decision.
+- **Socratic Probe**: Did the critic find blockers? If so, why are you continuing tool calls instead of halting for human triage?
 
 ### SCAR-PROC-95: Depth-0 Supervisor and Subagent Isolation
 
@@ -90,9 +114,57 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 - **Permanent Reflex**: Apply the 4-step observation triage protocol: (1) search open issues with `gh issue list` for deduplication; (2) evaluate scope relationship: very related becomes a blocker for `tdd-worker`, somewhat related offers a choice to roll up into current changes, and totally unrelated proposes a ticket; (3) consciously dismiss negligible-risk or high-complexity observations with documented rationale; (4) enforce the human escalation gate prohibiting autonomous ticket creation without explicit human declaration.
 - **Socratic Probe**: Did you search `gh issue list` for duplicates and evaluate whether this observation is very related (blocker), somewhat related (rollup candidate), or consciously dismissible before proposing a new ticket? Did you obtain explicit human declaration before opening an issue?
 
+### SCAR-PROC-110: Premature Subagent Termination and Speculative Verdict Hallucination
+
+- **Wound**: An orchestrator kills a running background critic subagent. It writes an approval state card before the critic finishes. The true result was a rejection.
+- **Trap**: The agent assumes that a long-running subagent has stalled. It fabricates an approval to avoid waiting.
+- **Circuit Breaker**: If a critic subagent runs, never terminate it to forge an approval card.
+- **Permanent Reflex**: Before you accept any verdict, verify that the subagent process exits with code 0. Verify the final report file on disk.
+- **Socratic Probe**: Did the subagent process finish cleanly, or are you guessing the verdict while it still runs?
+
+### SCAR-PROC-120: Belnap Four-Valued Epistemic State Ledger and Fact Retraction
+
+- **Wound**: An agent uses true and false states for task facts. When code facts disprove an assumption, the agent cannot retract the premise and enters a loop.
+- **Trap**: The agent treats technical facts as binary values instead of four knowledge states.
+- **Circuit Breaker**: If facts disprove a claim, do not erase the claim from the ledger. You must mark the claim as retracted.
+- **Permanent Reflex**: Belnap logic uses four states for technical facts. Tag every technical claim in archaeology cards with one Belnap state: ESTABLISHED, CONTRADICTED, UNKNOWN, or RETRACTED. If new facts disprove a premise, update the state to RETRACTED and renegotiate the plan.
+- **Socratic Probe**: What concrete file evidence proves this claim? Did you tag it with an explicit Belnap state?
+
+### SCAR-PROC-122: Upfront Human-Review Policy Evaluation Matrix
+
+- **Wound**: An agent uses conversational prose to declare that landing criteria are met. It skips required human approval and lands unverified commits.
+- **Trap**: The agent believes its own text output is proof of compliance.
+- **Circuit Breaker**: If you reach a landing gate, never self-approve the merge. Stop tool calls immediately.
+- **Permanent Reflex**: Evaluate landing conditions against the mechanical seven-criteria matrix. Before merging, verify that CI passes, zero blockers remain, and the human operator approves.
+- **Socratic Probe**: Are you evaluating an objective mechanical matrix, or are you grading your own work with prose?
+
 ### SCAR-PROC-138: Yield on Repeated Timer Conflicts
 
 - **Wound**: Repeated timer conflicts cause infinite rescheduling loops and consume tokens without making forward progress.
 - **Trap**: Continuously retrying failed timer schedules without human intervention.
 - **Permanent Reflex**: If a timer conflict happens twice in a row, stop calling tools and yield directly to the user.
 - **Socratic Probe**: If a scheduled timer fails twice consecutively, will repeated retries consume context without making progress? Should you stop tool calls immediately and yield the conflict to the user?
+
+### SCAR-PROC-150: Target Transition Header Dead-Air Cliff
+
+- **Wound**: An agent outputs a target transition header in chat but calls zero tools. Execution halts in the middle of an automated step and strands the user.
+- **Trap**: The agent treats a transition heading as a stopping point instead of calling the execution tool.
+- **Circuit Breaker**: If a target has an automated recipe, never emit a transition header without a matching tool call in the same turn.
+- **Permanent Reflex**: When you advance to an automated target, call the required worker tool in the same turn. Only stop tool calls at declared human pause gates.
+- **Socratic Probe**: Does this target run automatically? If so, why did you stop calling tools?
+
+### SCAR-PROC-152: Graphviz Attributed Graph IR for Mealy Automaton Completeness
+
+- **Wound**: A workflow description omits error or cancellation transitions. When an error occurs, the state machine hangs without an exit path.
+- **Trap**: The designer draws linear happy-path state diagrams that ignore error and disposal branches.
+- **Circuit Breaker**: If non-terminal states lack error exits, do not approve the state machine graph.
+- **Permanent Reflex**: A Mealy automaton is a state machine with outputs on transitions. Make sure that every non-terminal state in a workflow graph has at least two exit transitions. Provide explicit paths for success, failure, and cancellation.
+- **Socratic Probe**: Does every state in this workflow graph have an explicit exit path for errors and cancellations?
+
+### SCAR-PROC-158: Persistent Memento Readerboard Truncation Trap
+
+- **Wound**: An agent overwrites `99_next_action.md` with informal notes. When context compaction occurs, the agent forgets the active milestone and branch.
+- **Trap**: The agent treats the persistent readerboard as a scratchpad for temporary notes.
+- **Circuit Breaker**: If you update the readerboard, never replace it with unstructured notes or truncated milestone lists.
+- **Permanent Reflex**: Keep the complete milestone checklist and active target header in `99_next_action.md`. On state transitions, update only the status markers.
+- **Socratic Probe**: Did you preserve the full milestone checklist and active target in `99_next_action.md`?

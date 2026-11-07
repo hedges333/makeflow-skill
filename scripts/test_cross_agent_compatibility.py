@@ -3114,8 +3114,8 @@ def validate():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 40:
-    errors.append(f"Expected 40 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 56:
+    errors.append(f"Expected 56 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)

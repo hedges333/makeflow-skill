@@ -55,7 +55,9 @@ Agents must use Socratic Probes during:
 
 | Scar ID | Title | Category | Spoke File |
 | :--- | :--- | :--- | :--- |
+| `SCAR-PROC-45` | Subagent System Prompt Paraphrasing and Rubric Mutagenesis | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-53` | Prohibit Shell Sleep Polling | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-89` | Subagent IPC Back-Channel Conflation and Reactive Wakeup Airlock | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-95` | Depth-0 Supervisor and Subagent Isolation | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-99` | Single-Page SKILL.md Size Ceiling | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-102` | Human Declaration Authority | Process | [`scars/process.md`](./scars/process.md) |
@@ -65,17 +67,31 @@ Agents must use Socratic Probes during:
 | `SCAR-PROC-106` | Predetermined Subagent Tool Mounting via tools Lists | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-107` | Full Discussion and Comment Thread Ingestion at Intake | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-108` | Critic Observation Triage and Anti-Proliferation Protocol | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-110` | Premature Subagent Termination and Speculative Verdict Hallucination | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-120` | Belnap Four-Valued Epistemic State Ledger and Fact Retraction | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-122` | Upfront Human-Review Policy Evaluation Matrix | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-138` | Yield on Repeated Timer Conflicts | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-150` | Target Transition Header Dead-Air Cliff | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-158` | Persistent Memento Readerboard Truncation Trap | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-TEST-05` | Isolated Test Environments | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-08` | Two-Tier Test Isolation | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-09` | Fail-Fast Targeted TDD Loop | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-10` | Pre-Flight Structural Static Analysis Gate | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-11` | Shift-Left Testing Burden Balance | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-12` | Cryptographically Anchored TDD Receipts | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-22` | Traceable Test Naming and Artifact Longevity | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-24` | Coverage-Driven Fallback Branch Deletion Trap | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-SH-01` | Prefer Temporary Script Files Over Complex Shell Quoting | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-SH-03` | Shell Redirection and Comment Stripping | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
+| `SCAR-GIT-17` | Unchecked Direct Push CI Bypass Trap | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-GIT-20` | Pre-Push Merge Check | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
+| `SCAR-GIT-22` | Pre-Commit Working Tree Cleanliness Deadlock | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
+| `SCAR-GIT-23` | Native Merkle Tree Lock and TOCTOU Drift Attribution | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
+| `SCAR-GIT-24` | Conventional Commits Type-Scope Decoupling | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-GIT-25` | Destructive Working-Tree and History Guards | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-GIT-30` | Pure Git Mode and Repository-Scoped Hosting Discovery | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-ENV-04` | Shared Workspace Umask Permissions | System & OS | [`scars/system_and_os.md`](./scars/system_and_os.md) |

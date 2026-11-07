@@ -12,6 +12,10 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 | `SCAR-TEST-10` | Pre-Flight Structural Static Analysis Gate | Fast Structural Syntax Pre-Flight Check |
 | `SCAR-TEST-11` | Shift-Left Testing Burden Balance | Up-Front Testing Feasibility & Burden Budget |
 | `SCAR-TEST-12` | Cryptographically Anchored TDD Receipts | Red-to-Green Receipt Sealing & Verification |
+| `SCAR-TEST-22` | Traceable Test Naming and Artifact Longevity | Regression Test Naming & Tracing |
+| `SCAR-TEST-24` | Coverage-Driven Fallback Branch Deletion Trap | Defensive Branch Safety & Coverage |
+| `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Red-Green TDD Discipline |
+| `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Test Flakiness & Defect Isolation |
 | `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Structural AST Anti-Shortcut Gate |
 
 ---
@@ -57,6 +61,38 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 - **Trap**: Unanchored test runs trust conversational compliance, and `git write-tree` ignores untracked fixtures inside test directories.
 - **Permanent Reflex**: Run `witness-red` to write a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, and all test files in `30_tdd_receipt.json`. Run `verify-green` to confirm that the receipt matches and to replay the sealed command. Run `verify-citation` to verify line citations against immutable Git blobs in witnessed `HEAD`. If a cited file is uncommitted or missing, emit `UNCOMMITTED_WITNESS_FILE` with exit code `2` and record the collision in `forensic_log`. If a citation is blank or a comment line, emit `TRIVIAL_WITNESS_LINE` with exit code `2` and record the collision in `forensic_log`.
 - **Socratic Probe**: Did production code fix the bug, or did a test file, fixture, command, citation, or commit change after `witness-red`?
+
+### SCAR-TEST-22: Traceable Test Naming and Artifact Longevity
+
+- **Wound**: A developer writes tests named with temporary review finding numbers. After the ticket closes, future maintainers cannot trace why the test exists or what defect it guards.
+- **Trap**: Using short-lived review comment numbers in permanent test names.
+- **Circuit Breaker**: If you create a test, never name it after temporary review finding numbers.
+- **Permanent Reflex**: Name regression tests after permanent ticket keys and concrete failure behaviors. Include the ticket identifier in the test docstring.
+- **Socratic Probe**: Does this test name describe the concrete behavior and reference a permanent ticket key?
+
+### SCAR-TEST-24: Coverage-Driven Fallback Branch Deletion Trap
+
+- **Wound**: An agent deletes a defensive fallback branch to achieve 100 percent branch coverage. When an unexpected input arrives in production, the process crashes.
+- **Trap**: Prioritizing artificial test coverage metrics over defensive code safety.
+- **Circuit Breaker**: If a coverage tool flags an unreached fallback branch, never delete the branch to satisfy the tool.
+- **Permanent Reflex**: Preserve all fallback branches that guard system boundaries. If a branch is hard to reach in tests, write a failure injection fixture instead of deleting code.
+- **Socratic Probe**: Did you delete this fallback branch because it is unreachable, or did you delete it to inflate coverage metrics?
+
+### SCAR-TEST-29: Red-Green Marginal-Line Test Law
+
+- **Wound**: An agent writes a new test that passes before any production edits occur. The test verifies nothing new and allows silent regressions.
+- **Trap**: Accepting an immediate green test without witnessing it fail first on broken code.
+- **Circuit Breaker**: If a new test passes before you modify production code, stop immediately.
+- **Permanent Reflex**: Before you apply production edits, make sure that every new test fails on unmodified code. Apply production edits only after you witness the red failure.
+- **Socratic Probe**: Did you witness this test fail red before you wrote the fix?
+
+### SCAR-TEST-44: Phase-Separated Flakiness Discrimination
+
+- **Wound**: A test fails during local development. The agent blames flakiness and re-runs the suite until it passes, masking a real race condition.
+- **Trap**: Assuming that an intermittent failure is external noise rather than a code defect.
+- **Circuit Breaker**: If a local test fails, never re-run it blindly without investigating the root cause.
+- **Permanent Reflex**: Treat all local test failures as deterministic defects. If a test fails twice with the same stack trace, fix the defect before you proceed.
+- **Socratic Probe**: Are you re-running this test to get lucky, or did you locate the root cause?
 
 ### SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate
 
