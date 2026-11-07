@@ -1311,5 +1311,26 @@
       "SCAR-GIT-23: Native Merkle Tree Lock and TOCTOU Drift Attribution",
       "SCAR-GIT-24: Conventional Commits Type-Scope Decoupling"
     ]
+  },
+  {
+    "id": "GH-56",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/56",
+    "title": "[FEAT] investigate fgrandon structural linter target",
+    "request": "Implement fast, deterministic AST and static structural scrubbing gate to prevent autonomous coding agents from taking destructive shortcuts (bare/broad exceptions with pass/continue/ellipsis, trivial fallback returns, production mock leakage).",
+    "branch": "feat/56-structural-linter",
+    "subprojects": [
+      "scripts",
+      "skills"
+    ],
+    "started_at": "2026-11-06T23:54:13-08:00",
+    "completed_at": "2026-11-07T14:36:50-08:00",
+    "commit_sha": "33c6a9c",
+    "pr_number": 123,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/123",
+    "closes_issue": true,
+    "tests_added": 38,
+    "scars_earned": [
+      "SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate"
+    ]
   }
 ]
