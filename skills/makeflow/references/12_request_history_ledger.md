@@ -113,4 +113,5 @@ Run these steps during Target 90 after a pull request merges:
 7. Archive or clean up completed state cards and `approved_tree.txt` per `state.completedCardAction`:
    - If `state.completedCardAction` is `unlink` (default), remove intermediate cards `10_` through `80_` and `approved_tree.txt` from `.workflow/state/`.
    - If `state.completedCardAction` is `archive`, move intermediate cards `10_` through `80_` and `approved_tree.txt` to `.workflow/archive/<ticket-id>/`.
-8. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.
+8. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
+9. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.
