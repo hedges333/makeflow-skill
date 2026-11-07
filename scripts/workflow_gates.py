@@ -162,6 +162,9 @@ class WorkflowGatesScript(BaseScript):
     guard_script = shlex.quote(
         os.path.join(_SCRIPTS_DIR, "tdd_guard.py")
     ).replace("$", "$$")
+    scrub_script = shlex.quote(
+        os.path.join(_SCRIPTS_DIR, "ast_scrub.py")
+    ).replace("$", "$$")
     quoted_root = shlex.quote(self.repo_root).replace("$", "$$")
     content = (
         "# Synthesized by workflow_gates.py init-makefile (SCAR-ARCH-06, SCAR-TEST-12)\n"
@@ -171,7 +174,7 @@ class WorkflowGatesScript(BaseScript):
         "ALLOW_HEAD_MOVE =\n"
         "CITE =\n"
         "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
-        ".PHONY: check-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation\n\n"
+        ".PHONY: check-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
         "check-intake:\n"
         f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake\n\n"
         "check-approved-tree:\n"
@@ -183,7 +186,9 @@ class WorkflowGatesScript(BaseScript):
         "verify-green:\n"
         f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-green --make-env\n\n"
         "verify-citation:\n"
-        f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-citation --make-env\n"
+        f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-citation --make-env\n\n"
+        "ast-lint:\n"
+        f"\t@$(PYTHON) {scrub_script} --src-dir scripts --strict\n"
     )
     try:
       os.makedirs(state_dir, exist_ok=True)
@@ -294,7 +299,7 @@ class WorkflowGatesScript(BaseScript):
     try:
       from terminal_title import set_terminal_title
       set_terminal_title(repo_root=self.repo_root)
-    except Exception:
+    except (ImportError, OSError):
       pass
 
     return 0

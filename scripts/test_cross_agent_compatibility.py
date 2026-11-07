@@ -1178,6 +1178,96 @@ def validate_tdd_guard_scar():
   return errors
 
 
+def validate_ast_scrubber_scar_ast_01():
+  """Validates structural AST scrubber gate and SCAR-AST-01 (GH-56)."""
+  errors = []
+
+  testing_spoke_rel = "skills/makeflow/references/scars/testing.md"
+  testing_spoke = repo_path(testing_spoke_rel)
+  if not os.path.exists(testing_spoke):
+    errors.append(f"Missing {testing_spoke_rel}")
+  else:
+    with open(testing_spoke, "r", encoding="utf-8") as f:
+      test_text = f.read()
+    if "### SCAR-AST-01" not in test_text:
+      errors.append(f"{testing_spoke_rel} must document SCAR-AST-01")
+    else:
+      scar_section = (
+          test_text.split("### SCAR-AST-01")[1].split("### SCAR-")[0]
+      )
+      for field in ("Wound", "Trap", "Permanent Reflex", "Socratic Probe"):
+        if f"**{field}**:" not in scar_section:
+          errors.append(f"{testing_spoke_rel} SCAR-AST-01 missing '**{field}**:'")
+    table_match = re.search(
+        r"## Scars in this Category.*?(?=\n###|\Z)", test_text, re.DOTALL
+    )
+    table_section = table_match.group(0) if table_match else ""
+    if "SCAR-AST-01" not in table_section:
+      errors.append(f"{testing_spoke_rel} category table must list SCAR-AST-01")
+
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_path = repo_path(cat_rel)
+  if not os.path.exists(cat_path):
+    errors.append(f"Missing {cat_rel}")
+  else:
+    with open(cat_path, "r", encoding="utf-8") as f:
+      cat_text = f.read()
+    if "SCAR-AST-01" not in cat_text:
+      errors.append(f"{cat_rel} must index SCAR-AST-01")
+    if not check_scar_catalog_routing(cat_text, "SCAR-AST-01", "testing.md"):
+      errors.append(f"{cat_rel} must route SCAR-AST-01 to scars/testing.md")
+
+  mk_rel = "Makefile"
+  mk_path = repo_path(mk_rel)
+  if not os.path.exists(mk_path):
+    errors.append(f"Missing {mk_rel}")
+  else:
+    with open(mk_path, "r", encoding="utf-8") as f:
+      mk_text = f.read()
+    if "ast-lint:" not in mk_text:
+      errors.append(f"{mk_rel} must define 'ast-lint:' target")
+    if "test-ast-scrub:" not in mk_text:
+      errors.append(f"{mk_rel} must define 'test-ast-scrub:' target")
+    if (
+        "test-static:" not in mk_text
+        or "ast-lint" not in mk_text.split("test-static:")[1].split("\n")[0]
+    ):
+      errors.append(f"{mk_rel} 'test-static:' must list 'ast-lint' prerequisite")
+    if (
+        "test:" not in mk_text
+        or "test-ast-scrub" not in mk_text.split("test:")[1].split("\n")[0]
+    ):
+      errors.append(f"{mk_rel} 'test:' must list 'test-ast-scrub' prerequisite")
+
+  gates_rel = "scripts/workflow_gates.py"
+  gates_path = repo_path(gates_rel)
+  if not os.path.exists(gates_path):
+    errors.append(f"Missing {gates_rel}")
+  else:
+    with open(gates_path, "r", encoding="utf-8") as f:
+      gates_text = f.read()
+    if "ast-lint:" not in gates_text:
+      errors.append(f"{gates_rel} _init_makefile must include 'ast-lint:'")
+
+  for script_rel in ("scripts/ast_scrub.py", "scripts/test_ast_scrub.py"):
+    script_path = repo_path(script_rel)
+    if not os.path.exists(script_path):
+      errors.append(f"Missing {script_rel}")
+
+  # Negative Falsification
+  mock_misrouted = (
+      "| `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Testing |"
+      " [`scars/process.md`](./scars/process.md) |"
+  )
+  if check_scar_catalog_routing(mock_misrouted, "SCAR-AST-01", "testing.md"):
+    errors.append(
+        "Falsification failed: misrouted SCAR-AST-01 catalog row was accepted"
+    )
+
+  return errors
+
+
+
 def validate_anti_speculation_scar():
   """Validates Anti-Speculative Defenses and Caller Grounding (GH-85, SCAR-ARCH-07)."""
   errors = []
@@ -3024,8 +3114,8 @@ def validate():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 39:
-    errors.append(f"Expected 39 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 40:
+    errors.append(f"Expected 40 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -3645,6 +3735,15 @@ def validate():
   if not tdd_guard_errors:
     print(
         "✔ Cryptographically anchored TDD receipts invariants (GH-53, SCAR-TEST-12)"
+        " verified."
+    )
+
+  # Structural AST Anti-Shortcut Scrubbing Gate (GH-56, SCAR-AST-01)
+  ast_scrub_errors = validate_ast_scrubber_scar_ast_01()
+  errors.extend(ast_scrub_errors)
+  if not ast_scrub_errors:
+    print(
+        "✔ Structural AST anti-shortcut scrubbing gate invariants (GH-56, SCAR-AST-01)"
         " verified."
     )
 

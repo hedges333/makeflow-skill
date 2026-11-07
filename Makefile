@@ -7,7 +7,7 @@ INSTALL_DIR = $(HOME)/.gemini/config/plugins/$(PLUGIN_NAME)
 PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 
-.PHONY: all validate install uninstall test test-static test-safe-copy test-env-preflight test-signal-trap test-mcp test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard check-plugin-files check-skill-budget help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard check-plugin-files check-skill-budget help
 
 all: validate test
 
@@ -50,7 +50,11 @@ check-plugin-files:
 check-skill-budget:
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget
 
-test-static:
+ast-lint:
+	@echo "Running structural AST scrubber..."
+	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir scripts --strict
+
+test-static: ast-lint
 	@echo "Running pre-flight structural static analysis..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/static_check.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id TEST-10 \
@@ -164,7 +168,16 @@ test-tdd-guard:
 		--rejected "Weakening witness-red sealing, verify-green replay, or forensic collision logging." \
 		--reflex "Run $(PYTHON) -m unittest -v -f scripts/test_tdd_guard.py, fix the failing guard check, and re-run make test-tdd-guard."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-hooks test-reflex test-tdd-guard
+test-ast-scrub:
+	@echo "Testing structural AST scrubber..."
+	@$(PYTHON) -m unittest -v scripts.test_ast_scrub || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id AST-01 \
+		--code AST_SCRUB_SUITE_FAILED \
+		--trigger "scripts.test_ast_scrub failed." \
+		--rejected "Weakening structural AST scrubber detection rules or execution speed." \
+		--reflex "Run $(PYTHON) -m unittest -v scripts.test_ast_scrub directly, fix the regression, and re-run make test-ast-scrub."
+
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-hooks test-reflex test-tdd-guard test-ast-scrub
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget

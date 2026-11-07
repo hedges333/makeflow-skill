@@ -1,6 +1,6 @@
 # Testing and Verification Scars
 
-This reference manual documents testing and verification scars (`SCAR-TEST-*`). These rules govern test environment isolation, hermetic execution, and test execution discipline.
+This reference manual documents testing and verification scars (`SCAR-TEST-*`, `SCAR-AST-*`). These rules govern test environment isolation, hermetic execution, and test execution discipline.
 
 ## Scars in this Category
 
@@ -12,6 +12,7 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`). 
 | `SCAR-TEST-10` | Pre-Flight Structural Static Analysis Gate | Fast Structural Syntax Pre-Flight Check |
 | `SCAR-TEST-11` | Shift-Left Testing Burden Balance | Up-Front Testing Feasibility & Burden Budget |
 | `SCAR-TEST-12` | Cryptographically Anchored TDD Receipts | Red-to-Green Receipt Sealing & Verification |
+| `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Structural AST Anti-Shortcut Gate |
 
 ---
 
@@ -56,3 +57,11 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`). 
 - **Trap**: Unanchored test runs trust conversational compliance, and `git write-tree` ignores untracked fixtures inside test directories.
 - **Permanent Reflex**: Run `witness-red` to write a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, and all test files in `30_tdd_receipt.json`. Run `verify-green` to confirm that the receipt matches and to replay the sealed command. Run `verify-citation` to verify line citations against immutable Git blobs in witnessed `HEAD`. If a cited file is uncommitted or missing, emit `UNCOMMITTED_WITNESS_FILE` with exit code `2` and record the collision in `forensic_log`. If a citation is blank or a comment line, emit `TRIVIAL_WITNESS_LINE` with exit code `2` and record the collision in `forensic_log`.
 - **Socratic Probe**: Did production code fix the bug, or did a test file, fixture, command, citation, or commit change after `witness-red`?
+
+### SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate
+
+- **Wound**: An agent takes destructive shortcuts to pass failing tests in production code. The agent silences exceptions with empty handlers, returns trivial default values, or leaks test mocks into production modules.
+- **Trap**: Relying on negative prose instructions in prompts primes agents to use forbidden keywords, while runtime test suites fail to catch silent swallowing of errors.
+- **Permanent Reflex**: Enforce deterministic AST structural scrubbing in `ast-lint` and pre-flight static analysis gates. Parse source files into standard library abstract syntax trees, reject silent exception handlers, trivial fallback returns, and production mock imports with Vector 4 Reflex directives and exit code 2, and require specific exception handling or explicit logging.
+- **Socratic Probe**: Did production code legitimately handle or log the error, or did it swallow exceptions with a bare handler, return a trivial placeholder default, or leak test doubles into source modules?
+
