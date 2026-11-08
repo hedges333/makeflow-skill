@@ -1495,5 +1495,24 @@
     "scars_earned": [
       "SCAR-TOOL-16"
     ]
+  },
+  {
+    "id": "GH-120",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/120",
+    "title": "[FEAT] integrate \"circuit breaker\" into our scar format",
+    "request": "Integrate Circuit Breaker as an optional fifth vector in the Makeflow synthetic scar anatomy, backport Simple English circuit breakers to SCAR-PROC-108 and SCAR-HCI-08, and add non-tautological test verification in test_cross_agent_compatibility.py.",
+    "branch": "feat/120-circuit-breaker-scar-format",
+    "subprojects": [
+      "skills",
+      "scripts"
+    ],
+    "started_at": "2026-11-07T16:53:00-08:00",
+    "completed_at": "2026-11-07T17:16:00-08:00",
+    "commit_sha": "e1cd5bf",
+    "pr_number": 138,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/138",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
