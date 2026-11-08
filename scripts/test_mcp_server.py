@@ -12,9 +12,11 @@ Checks JSON-RPC 2.0 communication over standard input/output:
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER_SCRIPT = os.path.join(REPO_ROOT, "mcp", "server.py")
@@ -60,9 +62,10 @@ def run_test():
           "workflow_safety_check",
           "workflow_get_config",
           "workflow_poll_ci",
+          "workflow_query_scars",
       ):
         assert expected in tool_names
-      assert len(tool_names) == 6
+      assert len(tool_names) == 7
       print(f"✔ MCP tools/list returned {len(tool_names)} tools: {tool_names}")
 
       # 3. Safety check: production hostname and underscore prod_db
@@ -485,6 +488,176 @@ def run_test():
             f"Expected operator approval reason on '{adv_cmd}', got {adv_sc_data}"
         )
       print("✔ MCP destructive Git command safety checks passed.")
+
+      # 8c. workflow_query_scars JSON-RPC checks
+      # Case a: Query without query argument -> error
+      no_query_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 250,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {"workspaceDir": non_git_cwd},
+              },
+          },
+      )
+      assert no_query_resp["result"]["isError"] is True
+      assert "Missing required argument 'query'" in no_query_resp["result"]["content"][0]["text"]
+
+      # Case b: Query when database does not exist -> UNINITIALIZED status
+      uninit_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 251,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "BaseScript",
+                      "workspaceDir": non_git_cwd,
+                      "dbPath": os.path.join(non_git_cwd, "nonexistent.db"),
+                  },
+              },
+          },
+      )
+      uninit_data = json.loads(uninit_resp["result"]["content"][0]["text"])
+      assert uninit_data["status"] == "UNINITIALIZED"
+      assert "Run 'python3 scripts/sync_synthetic_scars.py'" in uninit_data["message"]
+      assert uninit_data["scars"] == []
+
+      # Case c: Query when database exists with sample scars
+      test_scars_db = os.path.join(non_git_cwd, "test_scars.db")
+      conn = sqlite3.connect(test_scars_db)
+      conn.execute("""
+          CREATE TABLE scars (
+              id TEXT PRIMARY KEY,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT
+          )
+      """)
+      conn.execute("""
+          CREATE VIRTUAL TABLE scars_fts USING fts5(
+              id UNINDEXED,
+              title,
+              category,
+              applies_when,
+              wound,
+              trap,
+              reflex
+          )
+      """)
+      test_scars = [
+          (
+              "SCAR-ARCH-05",
+              "BaseScript Lifecycle Template Method Pattern",
+              "Architecture",
+              "architecture",
+              "public",
+              json.dumps(["T30", "T50"]),
+              "Implementing CLI scripts or command runners in Python",
+              "graduated",
+              "Direct sys.exit calls in business logic prevent test execution",
+              "Running CLI scripts that terminate test suites",
+              "Wrap all CLI scripts in BaseScript execute template",
+              "Inherit from BaseScript and override run and cleanup",
+          ),
+          (
+              "SCAR-TEST-08",
+              "Hermetic In-Memory Test Isolation",
+              "Testing",
+              "testing",
+              "public",
+              json.dumps(["T30"]),
+              "Writing unit and integration tests without network sockets",
+              "graduated",
+              "Tests connecting to live databases or remote APIs fail intermittently",
+              "Using unmocked socket connections or live databases in unit tests",
+              "Use tempfile.TemporaryDirectory and mock urllib.request",
+              "Point tests to temporary directories or in-memory SQLite fixtures",
+          ),
+      ]
+      for s in test_scars:
+        conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
+        conn.execute("INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?)", (s[0], s[1], s[2], s[6], s[8], s[9], s[11]))
+      conn.commit()
+      conn.close()
+
+      # Query matching BaseScript
+      query_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 252,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "BaseScript",
+                      "dbPath": test_scars_db,
+                  },
+              },
+          },
+      )
+      query_data = json.loads(query_resp["result"]["content"][0]["text"])
+      assert query_data["status"] == "OK"
+      assert query_data["totalResults"] >= 1
+      assert query_data["scars"][0]["id"] == "SCAR-ARCH-05"
+
+      # Query with category filter
+      cat_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 253,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "isolation",
+                      "category": "Testing",
+                      "dbPath": test_scars_db,
+                  },
+              },
+          },
+      )
+      cat_data = json.loads(cat_resp["result"]["content"][0]["text"])
+      assert cat_data["status"] == "OK"
+      assert cat_data["totalResults"] == 1
+      assert cat_data["scars"][0]["id"] == "SCAR-TEST-08"
+
+      # Query with limit filter
+      lim_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 254,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "SCAR",
+                      "limit": 1,
+                      "dbPath": test_scars_db,
+                  },
+              },
+          },
+      )
+      lim_data = json.loads(lim_resp["result"]["content"][0]["text"])
+      assert lim_data["status"] == "OK"
+      assert len(lim_data["scars"]) == 1
+      print("✔ MCP workflow_query_scars JSON-RPC checks passed.")
     finally:
       p.kill()
       p.wait()
@@ -927,6 +1100,13 @@ def run_test():
   print("✔ detect_hosting_mode 6 branch cases and poll_ci_status pure_git integration passed.")
 
   print("\nAll MCP Server test cases passed.")
+
+
+class TestMcpServer(unittest.TestCase):
+  """Unittest wrapper for MCP server test suite."""
+
+  def test_mcp_server(self):
+    run_test()
 
 
 if __name__ == "__main__":

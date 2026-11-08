@@ -13,9 +13,21 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+if _SCRIPTS_DIR not in sys.path:
+  sys.path.insert(0, _SCRIPTS_DIR)
+
+try:
+  from sync_synthetic_scars import query_scars, resolve_scars_db_path
+except ImportError:
+  query_scars = None
+  resolve_scars_db_path = None
 
 DB_TOOLS = (
     "psql",
@@ -1780,6 +1792,43 @@ def handle_tools_list(request_id):
               "required": ["prNumber"],
           },
       },
+      {
+          "name": "workflow_query_scars",
+          "description": (
+              "Queries public synthetic scars database using full-text search"
+              " (FTS5) or keywords with category and language filters."
+          ),
+          "inputSchema": {
+              "type": "object",
+              "properties": {
+                  "query": {
+                      "type": "string",
+                      "description": "Keyword search query for scars (e.g. 'BaseScript', 'isolation')",
+                  },
+                  "category": {
+                      "type": "string",
+                      "description": "Optional category or slug filter (e.g. 'Testing', 'Architecture')",
+                  },
+                  "language": {
+                      "type": "string",
+                      "description": "Optional programming language filter (e.g. 'Python', 'Go')",
+                  },
+                  "limit": {
+                      "type": "integer",
+                      "description": "Maximum number of scars to return (default 3)",
+                  },
+                  "workspaceDir": {
+                      "type": "string",
+                      "description": "Optional project root directory",
+                  },
+                  "dbPath": {
+                      "type": "string",
+                      "description": "Optional explicit SQLite scars database path",
+                  },
+              },
+              "required": ["query"],
+          },
+      },
   ]
   return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
 
@@ -2081,6 +2130,108 @@ def handle_tools_call(request_id, tool_name, arguments):
             "content": [{
                 "type": "text",
                 "text": json.dumps(res, indent=2),
+            }]
+        },
+    }
+
+  elif tool_name == "workflow_query_scars":
+    query = (arguments.get("query") or "").strip()
+    if not query:
+      return _error_result(
+          request_id,
+          "Missing required argument 'query'. Provide a keyword or search query.",
+      )
+
+    ws = resolve_workspace_dir(arguments)
+    category = arguments.get("category")
+    language = arguments.get("language")
+    try:
+      limit = int(arguments.get("limit", 3))
+    except (ValueError, TypeError):
+      limit = 3
+
+    if resolve_scars_db_path is None or query_scars is None:
+      return _error_result(
+          request_id,
+          "Scars query engine is unavailable. Ensure scripts/sync_synthetic_scars.py is present.",
+      )
+
+    explicit_db = arguments.get("dbPath") or arguments.get("db_path")
+    db_path = resolve_scars_db_path(
+        db_path=explicit_db,
+        workspace_dir=ws,
+    )
+
+    if not os.path.isfile(db_path):
+      return {
+          "jsonrpc": "2.0",
+          "id": request_id,
+          "result": {
+              "content": [{
+                  "type": "text",
+                  "text": json.dumps({
+                      "status": "UNINITIALIZED",
+                      "message": (
+                          f"Scars database not found at '{db_path}'. "
+                          "Run 'python3 scripts/sync_synthetic_scars.py' to download "
+                          "and index public synthetic scars."
+                      ),
+                      "scars": [],
+                  }, indent=2),
+              }]
+          },
+      }
+
+    results = query_scars(
+        db_path=db_path,
+        query=query,
+        category=category,
+        language=language,
+        limit=limit,
+    )
+
+    if not results:
+      is_empty = False
+      try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM scars")
+        if cur.fetchone()[0] == 0:
+          is_empty = True
+        conn.close()
+      except Exception:
+        is_empty = True
+
+      if is_empty:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "status": "EMPTY",
+                        "message": (
+                            f"Scars database at '{db_path}' contains 0 scars. "
+                            "Run 'python3 scripts/sync_synthetic_scars.py' to sync."
+                        ),
+                        "scars": [],
+                    }, indent=2),
+                }]
+            },
+        }
+
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": json.dumps({
+                    "status": "OK",
+                    "totalResults": len(results),
+                    "scars": results,
+                }, indent=2),
             }]
         },
     }

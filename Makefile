@@ -8,7 +8,7 @@ PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -21,6 +21,7 @@ help:
 	@echo "  make test-env-preflight - Test native runtime environment path pre-flight (SCAR-SYS-06)"
 	@echo "  make test-signal-trap   - Test POSIX signal trapping and worker cleanup (SCAR-SYS-07)"
 	@echo "  make test-mcp           - Test Model Context Protocol (MCP) server over stdio"
+	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync and query"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
 	@echo "  make test-base-script   - Test BaseScript execution lifecycle (SCAR-ARCH-05)"
@@ -113,6 +114,15 @@ test-mcp:
 		--rejected "Breaking MCP state transition, tree check, or safety guard contracts." \
 		--reflex "Run $(PYTHON) scripts/test_mcp_server.py directly, inspect failing JSON-RPC case, and fix mcp/server.py."
 
+test-sync-scars:
+	@echo "Testing synthetic scars SQLite sync and query..."
+	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_sync_synthetic_scars.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id ARCH-05 \
+		--code SCARS_SYNC_SUITE_FAILED \
+		--trigger "scripts/test_sync_synthetic_scars.py failed." \
+		--rejected "Failing synthetic scars synchronization, FTS5 indexing, or query tests." \
+		--reflex "Run $(PYTHON) -m unittest -v scripts/test_sync_synthetic_scars.py, fix failing tests, and re-run make test-sync-scars."
+
 test-compat:
 	@echo "Testing cross-agent compatibility..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/test_cross_agent_compatibility.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
@@ -194,7 +204,7 @@ test-workspace-mutex:
 		--rejected "Allowing parallel sessions on the same ticket across workspaces." \
 		--reflex "Run $(PYTHON) -m unittest -v scripts/test_workspace_mutex.py, fix failing tests, and re-run make test-workspace-mutex."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget
