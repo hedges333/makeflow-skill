@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Dynamically detects terminal capabilities and updates terminal titles (GH-103).
+"""Dynamically detects terminal capabilities and updates terminal titles (GH-103, GH-113).
 
 Detects whether running in an interactive terminal supporting title changes (OSC 0,
-tmux DCS passthrough, GNU screen), resolves project name and active ticket ID,
-and sets the terminal title to '{ticket_name} {project_name}'.
+tmux DCS passthrough, GNU screen), resolves project name, active ticket ID, and issue tag,
+and sets the terminal title to '{ticket_number} {project_name}: {issue_tag}'.
 """
 
 import json
@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Any, Dict, List, Optional, TextIO, Tuple
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,12 +24,57 @@ from emit_reflex import SilentArgumentParser
 _TICKET_CARD_RE = re.compile(
     r"(?i)(?:-\s*\*\*)?Ticket\s*ID(?:\*\*)?:\s*([A-Za-z0-9_-]+)"
 )
+_TICKET_INTAKE_RE = re.compile(
+    r"(?i)#\s*Ticket\s*Intake:\s*([A-Za-z0-9_-]+)"
+)
+_TICKET_BULLET_RE = re.compile(
+    r"(?i)-\s*Ticket:\s*\[([A-Za-z0-9_-]+):"
+)
 _NEXT_ACTION_RE = re.compile(
     r"(?i)-\s*Ticket:\s*\[([A-Za-z0-9_-]+):"
 )
 _BRANCH_TICKET_RE = re.compile(
     r"^(?:feat|fix|ticket)/(?:local-([1-9][0-9]*)|([1-9][0-9]*))(?:-|$)"
 )
+_CARD_ISSUE_BULLET_RE = re.compile(
+    r"(?i)-\s*Ticket:\s*\[[A-Za-z0-9_-]+:\s*(.+?)(?:\]\([^\)\n]*\)|\](?:\s*\(|\s*$))"
+)
+_CARD_INTAKE_HEADER_RE = re.compile(
+    r"(?i)#\s*Ticket\s*Intake:\s*[A-Za-z0-9_-]+:\s*([^\n]+)"
+)
+_CARD_DESC_RE = re.compile(
+    r"(?i)##\s*Description\s*\n+([^\n#]+)"
+)
+_BRANCH_SLUG_RE = re.compile(
+    r"^(?:feat|fix|ticket)/(?:local-[1-9][0-9]*|[1-9][0-9]*)-(.*)$"
+)
+_BRANCH_GENERIC_SLUG_RE = re.compile(
+    r"^(?:feat|fix|ticket)/(.*)$"
+)
+_TEMP_PATTERN_RE = re.compile(
+    r"^tmp(?:[a-z0-5]{8}|[a-z0-9_]{6,})$", re.IGNORECASE
+)
+_TEMP_IN_STRING_RE = re.compile(
+    r"(?:^|[/\\]|\btmp)tmp(?:[a-z0-5]{8}|[a-z0-9_]{6,})\b", re.IGNORECASE
+)
+
+
+def is_temporary_directory_name(path_or_name: str) -> bool:
+  """Detects whether a directory path or name matches temporary directory patterns."""
+  if not path_or_name:
+    return False
+  clean = str(path_or_name).strip()
+  base = os.path.basename(clean.rstrip("/\\"))
+  if _TEMP_PATTERN_RE.match(base):
+    return True
+  norm = os.path.normpath(clean)
+  norm_fwd = norm.replace("\\", "/")
+  if norm_fwd.startswith("/tmp/tmp") or "/tmp/tmp" in norm_fwd:
+    return True
+  temp_dir = tempfile.gettempdir()
+  if (norm.startswith(temp_dir) or norm.startswith(os.path.realpath(temp_dir))) and base.startswith("tmp"):
+    return True
+  return False
 
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -198,12 +244,12 @@ def detect_project_name(
     if ":" in cleaned and not cleaned.startswith(("http://", "https://")):
       parts = cleaned.split(":")[-1].split("/")
       candidate = parts[-1].strip()
-      if candidate:
+      if candidate and not is_temporary_directory_name(candidate):
         return candidate
     else:
       parts = cleaned.rstrip("/").split("/")
       candidate = parts[-1].strip()
-      if candidate:
+      if candidate and not is_temporary_directory_name(candidate):
         return candidate
 
   # Check local package manifests
@@ -220,12 +266,15 @@ def detect_project_name(
             data = json.load(f)
             if isinstance(data, dict) and isinstance(data.get(key), str):
               name_val = data[key].strip()
-              if name_val:
+              if name_val and not is_temporary_directory_name(name_val):
                 return name_val
-      except Exception:
+      except (json.JSONDecodeError, OSError):
         pass
 
-  return os.path.basename(root)
+  base = os.path.basename(root)
+  if is_temporary_directory_name(base) or is_temporary_directory_name(root):
+    return ""
+  return base
 
 
 def detect_ticket_id(
@@ -242,10 +291,11 @@ def detect_ticket_id(
     try:
       with open(card_10, "r", encoding="utf-8") as f:
         content = f.read()
-      m = _TICKET_CARD_RE.search(content)
-      if m:
-        return m.group(1).strip()
-    except Exception:
+      for regex in (_TICKET_CARD_RE, _TICKET_BULLET_RE, _TICKET_INTAKE_RE):
+        m = regex.search(content)
+        if m:
+          return m.group(1).strip()
+    except OSError:
       pass
 
   # 2. Git branch
@@ -283,16 +333,118 @@ def detect_ticket_id(
       m = _NEXT_ACTION_RE.search(content)
       if m:
         return m.group(1).strip()
-    except Exception:
+    except OSError:
       pass
 
   return ""
 
 
-def format_terminal_title(ticket_id: str, project_name: str) -> str:
-  """Formats title string as '{ticket_name} {project_name}'."""
+def detect_issue_tag(
+    repo_root: Optional[str] = None,
+    branch: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> str:
+  """Extracts active issue tag/description from state cards or Git branch slug."""
+  root = os.path.abspath(repo_root or os.getcwd())
+
+  def _clean_tag(raw: str) -> str:
+    if not raw:
+      return ""
+    tag = sanitize_terminal_title(raw)
+    without_type = re.sub(r"^\s*\[[A-Za-z0-9_-]+\]\s*", "", tag).strip()
+    if without_type:
+      tag = without_type
+    return tag[:30].strip(" -_")
+
+  # 1. State card .workflow/state/10_ticket.md
+  card_10 = os.path.join(root, ".workflow", "state", "10_ticket.md")
+  if os.path.isfile(card_10):
+    try:
+      with open(card_10, "r", encoding="utf-8") as f:
+        content = f.read()
+      m_bullet = _CARD_ISSUE_BULLET_RE.search(content)
+      if m_bullet:
+        candidate = _clean_tag(m_bullet.group(1))
+        if candidate:
+          return candidate
+      m_intake = _CARD_INTAKE_HEADER_RE.search(content)
+      if m_intake:
+        candidate = _clean_tag(m_intake.group(1))
+        if candidate:
+          return candidate
+      m_desc = _CARD_DESC_RE.search(content)
+      if m_desc:
+        candidate = _clean_tag(m_desc.group(1))
+        if candidate:
+          return candidate
+    except OSError:
+      pass
+
+  # 2. Readerboard .workflow/state/99_next_action.md
+  card_99 = os.path.join(root, ".workflow", "state", "99_next_action.md")
+  if os.path.isfile(card_99):
+    try:
+      with open(card_99, "r", encoding="utf-8") as f:
+        content = f.read()
+      m_bullet = _CARD_ISSUE_BULLET_RE.search(content)
+      if m_bullet:
+        candidate = _clean_tag(m_bullet.group(1))
+        if candidate:
+          return candidate
+    except OSError:
+      pass
+
+  # 3. Git branch slug
+  current_branch = branch
+  if current_branch is None:
+    try:
+      proc = subprocess.run(
+          ["git", "branch", "--show-current"],
+          cwd=root,
+          capture_output=True,
+          text=True,
+          check=False,
+          timeout=5,
+      )
+      if proc.returncode == 0:
+        current_branch = proc.stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+      current_branch = None
+
+  if current_branch:
+    bm = _BRANCH_SLUG_RE.match(current_branch)
+    if not bm:
+      bm = _BRANCH_GENERIC_SLUG_RE.match(current_branch)
+    if bm:
+      slug = bm.group(1).replace("-", " ").replace("_", " ")
+      candidate = _clean_tag(slug)
+      if candidate:
+        return candidate
+
+  return ""
+
+
+def format_terminal_title(
+    ticket_id: str,
+    project_name: str,
+    issue_tag: Optional[str] = None,
+) -> str:
+  """Formats title string as '{ticket_id} {project_name}: {issue_tag}'."""
   t = sanitize_terminal_title(ticket_id)
   p = sanitize_terminal_title(project_name)
+  tag = ""
+  if issue_tag:
+    tag = sanitize_terminal_title(issue_tag)[:30].strip()
+
+  if tag:
+    if t and p:
+      return f"{t} {p}: {tag}"
+    if t:
+      return f"{t}: {tag}"
+    if p:
+      return f"{p}: {tag}"
+    return tag
+
   if t and p:
     return f"{t} {p}"
   if t:
@@ -307,6 +459,7 @@ def set_terminal_title(
     repo_root: Optional[str] = None,
     ticket_id: Optional[str] = None,
     project_name: Optional[str] = None,
+    issue_tag: Optional[str] = None,
     stream: Optional[TextIO] = None,
     env: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
@@ -320,11 +473,18 @@ def set_terminal_title(
 
   final_title = title
   if not final_title:
-    t_id = ticket_id or detect_ticket_id(repo_root=root, env=target_env)
-    p_name = project_name or detect_project_name(repo_root=root, env=target_env)
-    final_title = format_terminal_title(t_id, p_name)
+    t_id = ticket_id if ticket_id is not None else detect_ticket_id(repo_root=root, env=target_env)
+    p_name = project_name if project_name is not None else detect_project_name(repo_root=root, env=target_env)
+    i_tag = issue_tag
+    if i_tag is None and ticket_id is None:
+      i_tag = detect_issue_tag(repo_root=root, env=target_env)
+    final_title = format_terminal_title(t_id, p_name, i_tag)
 
   if not final_title:
+    return False, ""
+
+  # Refuse temporary directory patterns in title
+  if is_temporary_directory_name(final_title) or _TEMP_IN_STRING_RE.search(final_title):
     return False, ""
 
   opened_file = None
@@ -362,7 +522,7 @@ def set_terminal_title(
     if opened_file is not None:
       try:
         opened_file.close()
-      except Exception:
+      except OSError:
         pass
 
 
@@ -375,6 +535,7 @@ class TerminalTitleScript(BaseScript):
     self.repo_root: str = os.getcwd()
     self.ticket: Optional[str] = None
     self.project: Optional[str] = None
+    self.issue_tag: Optional[str] = None
     self.title: Optional[str] = None
     self.as_json: bool = False
     self.env_override: Optional[Dict[str, str]] = None
@@ -410,19 +571,26 @@ class TerminalTitleScript(BaseScript):
     p_info = subparsers.add_parser("info", add_help=False)
     p_info.add_argument("--ticket", default=None)
     p_info.add_argument("--project", default=None)
+    p_info.add_argument("--issue-tag", default=None)
     p_info.add_argument("--repo-root", default=None)
     p_info.add_argument("--json", action="store_true", dest="sub_json")
 
     p_set = subparsers.add_parser("set", add_help=False)
     p_set.add_argument("--ticket", default=None)
     p_set.add_argument("--project", default=None)
+    p_set.add_argument("--issue-tag", default=None)
     p_set.add_argument("--title", default=None)
     p_set.add_argument("--repo-root", default=None)
     p_set.add_argument("--json", action="store_true", dest="sub_json")
 
+    p_reset = subparsers.add_parser("reset", add_help=False)
+    p_reset.add_argument("--project", default=None)
+    p_reset.add_argument("--repo-root", default=None)
+    p_reset.add_argument("--json", action="store_true", dest="sub_json")
+
     ns = parser.parse_args(self.raw_args)
     if not ns.command:
-      parser.error("Specify a subcommand: detect, info, or set.")
+      parser.error("Specify a subcommand: detect, info, set, or reset.")
 
     self.command = ns.command
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
@@ -430,6 +598,7 @@ class TerminalTitleScript(BaseScript):
       self.repo_root = os.path.abspath(ns.repo_root)
     self.ticket = getattr(ns, "ticket", None)
     self.project = getattr(ns, "project", None)
+    self.issue_tag = getattr(ns, "issue_tag", None)
     self.title = getattr(ns, "title", None)
 
   def run(self) -> int:
@@ -451,16 +620,55 @@ class TerminalTitleScript(BaseScript):
         )
       return 0
 
+    if self.command == "reset":
+      project_name = self.project or detect_project_name(
+          repo_root=self.repo_root, env=env
+      )
+      ok = False
+      applied = ""
+      if project_name and not is_temporary_directory_name(project_name):
+        ok, applied = set_terminal_title(
+            title=project_name,
+            repo_root=self.repo_root,
+            stream=stream_to_check,
+            env=env,
+        )
+      if self.as_json:
+        self.stdout.write(
+            json.dumps(
+                {
+                    "success": ok,
+                    "title": applied,
+                    "mechanism": mechanism,
+                }
+            )
+            + "\n"
+        )
+      else:
+        if ok:
+          self.stdout.write(f"Reset terminal title to: {applied}\n")
+        else:
+          self.stdout.write(
+              f"Could not reset terminal title (mechanism: {mechanism})\n"
+          )
+      return 0
+
     ticket_id = self.ticket or detect_ticket_id(repo_root=self.repo_root, env=env)
     project_name = self.project or detect_project_name(
         repo_root=self.repo_root, env=env
     )
-    title = self.title or format_terminal_title(ticket_id, project_name)
+    issue_tag = self.issue_tag
+    if issue_tag is None and self.ticket is None:
+      issue_tag = detect_issue_tag(repo_root=self.repo_root, env=env)
+    title = self.title or format_terminal_title(
+        ticket_id, project_name, issue_tag
+    )
 
     if self.command == "info":
       data = {
           "ticket_id": ticket_id,
           "project_name": project_name,
+          "issue_tag": issue_tag,
           "title": title,
           "can_change": can_change,
           "mechanism": mechanism,
@@ -471,6 +679,7 @@ class TerminalTitleScript(BaseScript):
         self.stdout.write(
             f"Ticket: {ticket_id}\n"
             f"Project: {project_name}\n"
+            f"Issue Tag: {issue_tag}\n"
             f"Title: {title}\n"
             f"Supported: {can_change} ({mechanism})\n"
         )

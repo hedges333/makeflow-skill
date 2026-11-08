@@ -9,7 +9,7 @@ At the start of every turn, inspect `<workspace>/.workflow/state/`:
 1. If `.workflow/state/` does not exist, start at Target 10.
 2. If `.workflow/state/` exists, read all `.md` files in alphabetical order (`00_governance.md` through `99_next_action.md`).
 3. Restore the active ticket ID, branch name, and active target.
-4. If an active ticket is restored, update the terminal tab title to `{ticket_name} {project_name}`.
+4. If an active ticket is restored, update the terminal tab title to `{ticket_number} {project_name}: {issue_tag}`.
 5. If the user only asks for status, print the readerboard in chat and stop.
 
 ## 2. Target 10: Ticket Intake and Git Branching
@@ -39,7 +39,7 @@ When the user provides a task description, issue number, or issue URL, run these
    - Ad-hoc Chat Task / Pure Git Session (no external tracker): Determine next local count `N` from the highest `LOCAL-<N>` in `.workflow/history.json`. Use `feat/local-<N+1>-<slug>` or `fix/local-<N+1>-<slug>`. Ticket ID is `LOCAL-<N+1>`. Never use bare integers for local branches.
 8. Format `<slug>` with lowercase letters, digits, and single hyphens (`[a-z0-9-]`), up to 40 characters.
 9. Write the consolidated ticket and comment details to `<workspace>/.workflow/state/10_ticket.md`.
-10. Update the terminal title to `{ticket_name} {project_name}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
+10. Update the terminal title to `{ticket_number} {project_name}: {issue_tag}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
 11. Advance to Target 15.
 
 ### Multi-Workspace Mutual Exclusion (`SCAR-SYS-08`)

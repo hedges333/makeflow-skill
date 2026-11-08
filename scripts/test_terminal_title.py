@@ -20,11 +20,13 @@ if _REPO_ROOT not in sys.path:
 from base_script import BaseScript
 from terminal_title import (
     TerminalTitleScript,
+    detect_issue_tag,
     detect_project_name,
     detect_terminal_capability,
     detect_ticket_id,
     format_terminal_title,
     generate_escape_sequence,
+    is_temporary_directory_name,
     sanitize_terminal_title,
     set_terminal_title,
 )
@@ -265,6 +267,130 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     self.assertEqual(format_terminal_title("", "engine"), "engine")
     self.assertEqual(format_terminal_title("", ""), "")
 
+  def test_format_terminal_title_with_issue_tag(self):
+    self.assertEqual(
+        format_terminal_title(
+            "GH-113", "makeflow-skill", "enhance terminal title"
+        ),
+        "GH-113 makeflow-skill: enhance terminal title",
+    )
+    self.assertEqual(
+        format_terminal_title("LOCAL-42", "engine", "offline mode"),
+        "LOCAL-42 engine: offline mode",
+    )
+    self.assertEqual(
+        format_terminal_title("", "engine", "offline mode"),
+        "engine: offline mode",
+    )
+    self.assertEqual(
+        format_terminal_title("GH-113", "", "enhance terminal title"),
+        "GH-113: enhance terminal title",
+    )
+    self.assertEqual(
+        format_terminal_title("", "", "enhance terminal title"),
+        "enhance terminal title",
+    )
+    # Backwards compatibility with None and empty issue_tag
+    self.assertEqual(
+        format_terminal_title("GH-113", "makeflow-skill", None),
+        "GH-113 makeflow-skill",
+    )
+    self.assertEqual(
+        format_terminal_title("GH-113", "makeflow-skill", ""),
+        "GH-113 makeflow-skill",
+    )
+
+  def test_issue_tag_length_ceiling_30_chars(self):
+    long_tag = "Fix authentication timeout on redirect and retry"  # 48 chars
+    result = format_terminal_title("GH-42", "backend", long_tag)
+    tag_part = result.split(": ", 1)[1]
+    self.assertLessEqual(len(tag_part), 30)
+    self.assertEqual(tag_part, long_tag[:30].strip())
+    self.assertEqual(result, f"GH-42 backend: {long_tag[:30].strip()}")
+
+  def test_detect_issue_tag_from_state_cards_and_branch(self):
+    self.assertIsNotNone(
+        detect_issue_tag, "detect_issue_tag must be exported from terminal_title"
+    )
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+
+    # 1. State card 10_ticket.md with - Ticket: [GH-113: [FEAT] enhance terminal title](url)
+    card_10 = os.path.join(state_dir, "10_ticket.md")
+    with open(card_10, "w", encoding="utf-8") as f:
+      f.write(
+          "# Ticket Intake: GH-113\n\n"
+          "- Ticket: [GH-113: [FEAT] enhance terminal title](https://github.com/...)\n"
+          "- Branch: `feat/113-enhance-terminal-title`\n"
+      )
+    tag = detect_issue_tag(repo_root=self.temp_dir)
+    self.assertEqual(tag, "enhance terminal title")
+
+    # 2. State card 10_ticket.md with # Ticket Intake: GH-113: enhance terminal title
+    with open(card_10, "w", encoding="utf-8") as f:
+      f.write("# Ticket Intake: GH-113: enhance terminal title\n")
+    tag = detect_issue_tag(repo_root=self.temp_dir)
+    self.assertEqual(tag, "enhance terminal title")
+
+    # 3. State card 10_ticket.md with ## Description fallback
+    with open(card_10, "w", encoding="utf-8") as f:
+      f.write("# Ticket Intake: GH-113\n\n## Description\n\nenhance terminal title\n")
+    tag = detect_issue_tag(repo_root=self.temp_dir)
+    self.assertEqual(tag, "enhance terminal title")
+
+    # 4. State card 99_next_action.md
+    os.remove(card_10)
+    card_99 = os.path.join(state_dir, "99_next_action.md")
+    with open(card_99, "w", encoding="utf-8") as f:
+      f.write(
+          "- Ticket: [LOCAL-456: Test local ticket](url) (In Progress)\n"
+      )
+    tag = detect_issue_tag(repo_root=self.temp_dir)
+    self.assertEqual(tag, "Test local ticket")
+
+    # 5. Git branch slug fallback
+    os.remove(card_99)
+    tag = detect_issue_tag(
+        repo_root=self.temp_dir, branch="feat/113-enhance-terminal-title"
+    )
+    self.assertEqual(tag, "enhance terminal title")
+    tag = detect_issue_tag(
+        repo_root=self.temp_dir, branch="fix/local-42-login-redirect-timeout"
+    )
+    self.assertEqual(tag, "login redirect timeout")
+
+  def test_detect_project_name_rejects_temporary_directory_patterns(self):
+    self.assertIsNotNone(
+        is_temporary_directory_name,
+        "is_temporary_directory_name must be exported from terminal_title",
+    )
+    # Python tempfile standard name tmp[a-z0-5]{8}
+    self.assertTrue(is_temporary_directory_name("tmp1a2b3c4d"))
+    self.assertTrue(is_temporary_directory_name("/tmp/tmp1a2b3c4d"))
+    self.assertTrue(is_temporary_directory_name("tmpabcdef0"))
+
+    # Hex/alphanumeric tempfile pattern tmp[a-z0-9_]{6,}
+    self.assertTrue(is_temporary_directory_name("tmp_123456"))
+    self.assertTrue(is_temporary_directory_name("tmp_abcdef123"))
+
+    # Non-temp project names should NOT be rejected
+    self.assertFalse(is_temporary_directory_name("makeflow-skill"))
+    self.assertFalse(is_temporary_directory_name("my-cool-project"))
+
+    # detect_project_name on temporary directories must return ""
+    temp_dir = tempfile.mkdtemp(prefix="tmp")
+    try:
+      name = detect_project_name(repo_root=temp_dir, git_remote_url="")
+      self.assertEqual(name, "")
+    finally:
+      shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # Synthetic temporary path fallback check
+    name = detect_project_name(repo_root="/tmp/tmpabcdef1", git_remote_url="")
+    self.assertEqual(name, "")
+    name = detect_project_name(repo_root="/tmp/tmp_99887766", git_remote_url="")
+    self.assertEqual(name, "")
+
 
 class TestSetTerminalTitle(unittest.TestCase):
   """Tests for set_terminal_title integration function."""
@@ -306,6 +432,48 @@ class TestSetTerminalTitle(unittest.TestCase):
     self.assertFalse(ok)
     self.assertEqual(applied, "")
     self.assertEqual(stream.getvalue(), "")
+
+  def test_set_terminal_title_rejects_temp_titles(self):
+    stream = MockTtyStream()
+    # Explicit temporary title
+    ok, applied = set_terminal_title(
+        title="tmpa1b2c3d4",
+        stream=stream,
+        env={"TERM": "xterm-256color"},
+    )
+    self.assertFalse(ok)
+    self.assertEqual(applied, "")
+    self.assertEqual(stream.getvalue(), "")
+
+    # Temporary directory as repo_root with no ticket or remote
+    temp_dir = tempfile.mkdtemp(prefix="tmp")
+    try:
+      ok, applied = set_terminal_title(
+          repo_root=temp_dir,
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+      )
+      self.assertFalse(ok)
+      self.assertEqual(applied, "")
+      self.assertEqual(stream.getvalue(), "")
+    finally:
+      shutil.rmtree(temp_dir, ignore_errors=True)
+
+  def test_set_terminal_title_with_issue_tag(self):
+    stream = MockTtyStream()
+    ok, applied = set_terminal_title(
+        ticket_id="GH-113",
+        project_name="makeflow-skill",
+        issue_tag="enhance terminal title",
+        stream=stream,
+        env={"TERM": "xterm-256color"},
+    )
+    self.assertTrue(ok)
+    self.assertEqual(applied, "GH-113 makeflow-skill: enhance terminal title")
+    self.assertEqual(
+        stream.getvalue(),
+        "\033]0;GH-113 makeflow-skill: enhance terminal title\007",
+    )
 
 
 class TestTerminalTitleScriptLifecycle(unittest.TestCase):
@@ -382,6 +550,96 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     self.assertEqual(exit_code, 0)
     self.assertIn("\033]0;LOCAL-999 super-tool\007", err.getvalue())
 
+  def test_info_command_with_issue_tag(self):
+    script = TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    script.stdout = out
+    script.stderr = err
+    exit_code = script.execute(
+        [
+            "info",
+            "--ticket",
+            "GH-113",
+            "--project",
+            "makeflow-skill",
+            "--issue-tag",
+            "enhance terminal title",
+            "--json",
+        ],
+        env_override={"TERM": "xterm-256color"},
+        mock_tty=True,
+    )
+    self.assertEqual(exit_code, 0)
+    data = json.loads(out.getvalue())
+    self.assertEqual(data["ticket_id"], "GH-113")
+    self.assertEqual(data["project_name"], "makeflow-skill")
+    self.assertEqual(data["issue_tag"], "enhance terminal title")
+    self.assertEqual(
+        data["title"], "GH-113 makeflow-skill: enhance terminal title"
+    )
+
+  def test_set_command_with_issue_tag(self):
+    script = TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    script.stdout = out
+    script.stderr = err
+    exit_code = script.execute(
+        [
+            "set",
+            "--ticket",
+            "GH-113",
+            "--project",
+            "makeflow-skill",
+            "--issue-tag",
+            "enhance terminal title",
+        ],
+        env_override={"TERM": "xterm-256color"},
+        mock_tty=True,
+    )
+    self.assertEqual(exit_code, 0)
+    self.assertIn(
+        "\033]0;GH-113 makeflow-skill: enhance terminal title\007",
+        err.getvalue(),
+    )
+
+  def test_reset_command_restores_project_title(self):
+    script = TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    script.stdout = out
+    script.stderr = err
+    exit_code = script.execute(
+        [
+            "reset",
+            "--project",
+            "makeflow-skill",
+        ],
+        env_override={"TERM": "xterm-256color"},
+        mock_tty=True,
+    )
+    self.assertEqual(exit_code, 0)
+    self.assertIn("\033]0;makeflow-skill\007", err.getvalue())
+
+  def test_reset_command_rejects_temporary_project_title(self):
+    script = TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    script.stdout = out
+    script.stderr = err
+    exit_code = script.execute(
+        [
+            "reset",
+            "--project",
+            "tmpa1b2c3d4",
+        ],
+        env_override={"TERM": "xterm-256color"},
+        mock_tty=True,
+    )
+    self.assertEqual(exit_code, 0)
+    self.assertEqual(err.getvalue(), "")
+
 
 class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
   """Tests for workflow_gates.py terminal-title delegation and option forwarding."""
@@ -409,6 +667,62 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
     data = json.loads(out.getvalue())
     self.assertEqual(data["title"], "GH-103 makeflow-skill")
     self.assertTrue(data["success"])
+
+  def test_workflow_gates_forwards_issue_tag(self):
+    from workflow_gates import WorkflowGatesScript
+
+    script = WorkflowGatesScript()
+    out = io.StringIO()
+    err = MockTtyStream()
+    with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+      exit_code = script.execute(
+          [
+              "terminal-title",
+              "--ticket",
+              "GH-113",
+              "--project",
+              "makeflow-skill",
+              "--issue-tag",
+              "enhance terminal title",
+              "--json",
+          ],
+          stdout=out,
+          stderr=err,
+      )
+    self.assertEqual(exit_code, 0)
+    data = json.loads(out.getvalue())
+    self.assertEqual(
+        data["title"], "GH-113 makeflow-skill: enhance terminal title"
+    )
+    self.assertTrue(data["success"])
+
+  def test_workflow_gates_release_intake_restores_title(self):
+    from workflow_gates import WorkflowGatesScript
+
+    script = WorkflowGatesScript()
+    out = io.StringIO()
+    err = MockTtyStream()
+    temp_dir = tempfile.mkdtemp(prefix="makeflow_release_test_")
+    try:
+      manifest = os.path.join(temp_dir, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        json.dump({"name": "restored-project"}, f)
+
+      with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+        exit_code = script.execute(
+            [
+                "--repo-root",
+                temp_dir,
+                "release-intake",
+            ],
+            stdout=out,
+            stderr=err,
+        )
+      self.assertEqual(exit_code, 0)
+      # Must set terminal title to restored-project
+      self.assertIn("\033]0;restored-project\007", err.getvalue())
+    finally:
+      shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
