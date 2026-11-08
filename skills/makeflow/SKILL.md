@@ -144,7 +144,7 @@ Read `references/05` and `references/06` for pre-commit hygiene and pull request
 2. Write `.workflow/state/50_commit_msg.txt` (`Ticket: LOCAL-<N>` for local tasks).
 3. Run `make -f .workflow/state/Makefile check-commit-msg`, which traps `closes #<N>` on `LOCAL-<N>` tasks.
 4. Print the commit proposal, pause for `human-commit-approval`, then run `git commit -F .workflow/state/50_commit_msg.txt`.
-5. At Target 60, run `git merge-tree` and pause for `human-push-approval`. Push the branch and run `gh pr create`.
+5. At Target 60, run `git merge-tree` and pause for `human-push-approval`. If rebase conflicts are resolved under operator direction, re-lock `approved_tree.txt`, run `make test-static`, and return to Target 40 for critic re-audit. Otherwise, push the branch and run `gh pr create`.
 6. In Pure Git Mode (`SCAR-GIT-30`), set `HOSTING_MODE: PURE_GIT` and skip PR creation.
 
 ### Target 70, Target 75, Target 80, and Target 90: CI, Landing, and Ledger

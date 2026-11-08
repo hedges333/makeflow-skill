@@ -15,6 +15,18 @@ Never push a branch that conflicts with the remote default branch.
    git merge-tree $(git merge-base HEAD origin/main) HEAD origin/main
    ```
 3. If `git merge-tree` reports conflict markers, stop tool calls immediately without altering Git state (`SCAR-GIT-25`). Print the conflicting files and upstream conflict details in chat. Pause and await explicit operator direction before any rebase or merge action.
+4. If the human operator directs a rebase, resolve conflicts with the operator.
+5. Rebase conflict resolution invalidates the staged Merkle tree.
+6. Re-stage all resolved files and update the approved tree lock:
+   ```bash
+   git add -A && git write-tree > .workflow/state/approved_tree.txt
+   ```
+7. Run pre-flight static checks:
+   ```bash
+   make test-static
+   ```
+8. Re-dispatch `adversarial-critic` with explicit manual path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) before push.
+9. Advance target from `T60` to `T40` to complete the fresh review.
 
 ## 2. Human Push Approval Gate
 

@@ -2748,6 +2748,249 @@ def validate_target_40_model_picker_invariants():
   return errors
 
 
+def check_mcp_t60_transitions(server_text):
+  """Checks that mcp/server.py VALID_TRANSITIONS maps T60 to a set containing T40 and T70."""
+  errors = []
+  match = re.search(r'"T60"\s*:\s*\{([^}]+)\}', server_text)
+  if not match:
+    errors.append("mcp/server.py VALID_TRANSITIONS missing 'T60' entry")
+    return errors
+  targets = {t.strip(' "\'') for t in match.group(1).split(",") if t.strip(' "\'')}
+  if "T40" not in targets:
+    errors.append("mcp/server.py VALID_TRANSITIONS['T60'] must contain 'T40'")
+  if "T70" not in targets:
+    errors.append("mcp/server.py VALID_TRANSITIONS['T60'] must contain 'T70'")
+  return errors
+
+
+def check_clean_commit_rebase_reaudit(commit_text):
+  """Checks that 06_clean_commit_and_pr.md Section 1 mandates post-rebase approved_tree.txt locking, static checks, and critic re-dispatch under SCAR-PROC-105."""
+  errors = []
+  sec1_match = re.search(
+      r"(?m)^##\s+1\.\s+Pre-Push Merge Check\b.*?(?=^##\s+2\b|\Z)",
+      commit_text,
+      re.DOTALL,
+  )
+  sec1_text = sec1_match.group(0) if sec1_match else commit_text
+  sec1_lower = sec1_text.lower()
+
+  if "approved_tree.txt" not in sec1_text or "git write-tree" not in sec1_text:
+    errors.append(
+        "06_clean_commit_and_pr.md Section 1 must mandate re-locking approved_tree.txt (git add -A && git write-tree > .workflow/state/approved_tree.txt)"
+    )
+  if "make test-static" not in sec1_text:
+    errors.append(
+        "06_clean_commit_and_pr.md Section 1 must mandate pre-flight static checks (make test-static)"
+    )
+  if "adversarial-critic" not in sec1_lower:
+    errors.append(
+        "06_clean_commit_and_pr.md Section 1 must mandate re-dispatching adversarial-critic"
+    )
+  if "skills/makeflow/references/04_six_pillars_adversarial_review.md" not in sec1_text:
+    errors.append(
+        "06_clean_commit_and_pr.md Section 1 must include explicit manual path skills/makeflow/references/04_six_pillars_adversarial_review.md"
+    )
+  if "scar-proc-105" not in sec1_lower:
+    errors.append(
+        "06_clean_commit_and_pr.md Section 1 must cite SCAR-PROC-105"
+    )
+  return errors
+
+
+def check_scars_rebase_reaudit(spoke_text):
+  """Checks that scars/git_and_shell.md SCAR-GIT-20 and SCAR-GIT-23 document Merkle tree invalidation and critic re-audit upon rebase."""
+  errors = []
+  if "### SCAR-GIT-20" not in spoke_text:
+    errors.append("missing SCAR-GIT-20 in scars/git_and_shell.md")
+    return errors
+  if "### SCAR-GIT-23" not in spoke_text:
+    errors.append("missing SCAR-GIT-23 in scars/git_and_shell.md")
+    return errors
+
+  sec20 = spoke_text.split("### SCAR-GIT-20")[1].split("### SCAR-")[0].lower()
+  sec23 = spoke_text.split("### SCAR-GIT-23")[1].split("### SCAR-")[0].lower()
+
+  if not ("invalidate" in sec20 and ("merkle tree" in sec20 or "tree lock" in sec20)):
+    errors.append("SCAR-GIT-20 must document that human-approved rebase invalidates the staged Merkle tree")
+  if not ("critic" in sec20 and ("re-audit" in sec20 or "re-dispatch" in sec20 or "review" in sec20)):
+    errors.append("SCAR-GIT-20 must document that human-approved rebase requires fresh critic re-audit")
+
+  if not ("rebase" in sec23 and "invalidate" in sec23):
+    errors.append("SCAR-GIT-23 must document that human-approved rebase invalidates the Merkle tree")
+  if not ("critic" in sec23 and ("re-audit" in sec23 or "re-dispatch" in sec23 or "review" in sec23)):
+    errors.append("SCAR-GIT-23 must document that human-approved rebase requires fresh critic re-audit")
+
+  return errors
+
+
+def check_agents_rule_1_10_rebase_reaudit(agents_text):
+  """Checks that rules/AGENTS.md defines Rule 1.10 for Target 60 pre-push rebase critic re-audit invariant."""
+  errors = []
+  if not re.search(r"(?m)^###\s+1\.10\b", agents_text):
+    errors.append("rules/AGENTS.md missing Section 1.10")
+    return errors
+  sec1_10_match = re.search(
+      r"(?m)^###\s+1\.10\b.*?(?=^##\s+2\b|\Z)",
+      agents_text,
+      re.DOTALL,
+  )
+  sec1_10 = sec1_10_match.group(0) if sec1_10_match else agents_text
+  sec1_10_lower = sec1_10.lower()
+
+  if "target 60" not in sec1_10_lower:
+    errors.append("rules/AGENTS.md Section 1.10 must reference Target 60")
+  if "approved_tree.txt" not in sec1_10 and "write-tree" not in sec1_10:
+    errors.append("rules/AGENTS.md Section 1.10 must mandate re-locking approved_tree.txt")
+  if "make test-static" not in sec1_10:
+    errors.append("rules/AGENTS.md Section 1.10 must require make test-static")
+  if "adversarial-critic" not in sec1_10_lower:
+    errors.append("rules/AGENTS.md Section 1.10 must mandate re-dispatching adversarial-critic")
+  if "skills/makeflow/references/04_six_pillars_adversarial_review.md" not in sec1_10:
+    errors.append("rules/AGENTS.md Section 1.10 must include explicit manual path skills/makeflow/references/04_six_pillars_adversarial_review.md")
+  if "scar-proc-105" not in sec1_10_lower:
+    errors.append("rules/AGENTS.md Section 1.10 must reference SCAR-PROC-105")
+  return errors
+
+
+def check_quickstart_mermaid_t60_rebase_loop(quickstart_text):
+  """Checks that skills/makeflow/references/00_quickstart_and_mental_model.md includes T60 -> T40 loop."""
+  errors = []
+  if 'T60 -. "Rebase Conflict" .-> T40' not in quickstart_text:
+    errors.append(
+        'skills/makeflow/references/00_quickstart_and_mental_model.md Mermaid chart must contain \'T60 -. "Rebase Conflict" .-> T40\''
+    )
+  return errors
+
+
+def validate_target_60_rebase_critic_reaudit_invariants():
+  """Validates Target 60 pre-push rebase conflict resolution and critic re-audit invariants (GH-126).
+
+  Verifies:
+  1. mcp/server.py VALID_TRANSITIONS maps T60 to a set containing T40 and T70.
+  2. skills/makeflow/references/06_clean_commit_and_pr.md Section 1 mandates
+     re-locking approved_tree.txt, running make test-static, and re-dispatching
+     adversarial-critic with explicit manual path references/04_six_pillars_adversarial_review.md
+     under SCAR-PROC-105 upon rebase.
+  3. skills/makeflow/references/scars/git_and_shell.md SCAR-GIT-20 and SCAR-GIT-23
+     document Merkle tree invalidation and fresh critic re-audit upon rebase.
+  4. rules/AGENTS.md defines Rule 1.10 for the Target 60 pre-push rebase critic re-audit invariant.
+  5. skills/makeflow/references/00_quickstart_and_mental_model.md Mermaid chart
+     includes T60 -. "Rebase Conflict" .-> T40.
+  6. Negative falsification tests verifying rejection of omitted instructions or missing DAG edge.
+  """
+  errors = []
+
+  # 1. mcp/server.py
+  server_rel = "mcp/server.py"
+  server_path = repo_path(server_rel)
+  if not os.path.exists(server_path):
+    errors.append(f"Missing {server_rel}")
+  else:
+    with open(server_path, "r", encoding="utf-8") as f:
+      server_text = f.read()
+    errors.extend(check_mcp_t60_transitions(server_text))
+
+  # 2. references/06_clean_commit_and_pr.md
+  commit_rel = "skills/makeflow/references/06_clean_commit_and_pr.md"
+  commit_path = repo_path(commit_rel)
+  if not os.path.exists(commit_path):
+    errors.append(f"Missing {commit_rel}")
+  else:
+    with open(commit_path, "r", encoding="utf-8") as f:
+      commit_text = f.read()
+    errors.extend(check_clean_commit_rebase_reaudit(commit_text))
+
+  # 3. references/scars/git_and_shell.md
+  spoke_rel = "skills/makeflow/references/scars/git_and_shell.md"
+  spoke_path = repo_path(spoke_rel)
+  if not os.path.exists(spoke_path):
+    errors.append(f"Missing {spoke_rel}")
+  else:
+    with open(spoke_path, "r", encoding="utf-8") as f:
+      spoke_text = f.read()
+    errors.extend(check_scars_rebase_reaudit(spoke_text))
+
+  # 4. rules/AGENTS.md
+  agents_rel = "rules/AGENTS.md"
+  agents_path = repo_path(agents_rel)
+  if not os.path.exists(agents_path):
+    errors.append(f"Missing {agents_rel}")
+  else:
+    with open(agents_path, "r", encoding="utf-8") as f:
+      agents_text = f.read()
+    errors.extend(check_agents_rule_1_10_rebase_reaudit(agents_text))
+
+  # 5. references/00_quickstart_and_mental_model.md
+  qs_rel = "skills/makeflow/references/00_quickstart_and_mental_model.md"
+  qs_path = repo_path(qs_rel)
+  if not os.path.exists(qs_path):
+    errors.append(f"Missing {qs_rel}")
+  else:
+    with open(qs_path, "r", encoding="utf-8") as f:
+      qs_text = f.read()
+    errors.extend(check_quickstart_mermaid_t60_rebase_loop(qs_text))
+
+  # 6. Negative Falsification Tests
+  bad_mcp = 'VALID_TRANSITIONS = {"T60": {"T70"}}'
+  bm_errors = check_mcp_t60_transitions(bad_mcp)
+  if not any("t40" in e.lower() for e in bm_errors):
+    errors.append("Negative falsification failed: mcp/server.py missing T40 was not rejected")
+
+  bad_commit_no_tree = (
+      "## 1. Pre-Push Merge Check (`SCAR-GIT-20`)\n"
+      "make test-static\n"
+      "adversarial-critic skills/makeflow/references/04_six_pillars_adversarial_review.md SCAR-PROC-105\n"
+      "## 2. Push Gate\n"
+  )
+  if not check_clean_commit_rebase_reaudit(bad_commit_no_tree):
+    errors.append("Negative falsification failed: clean commit missing approved_tree.txt was not rejected")
+
+  bad_commit_no_critic = (
+      "## 1. Pre-Push Merge Check (`SCAR-GIT-20`)\n"
+      "git add -A && git write-tree > .workflow/state/approved_tree.txt\n"
+      "make test-static\n"
+      "## 2. Push Gate\n"
+  )
+  if not check_clean_commit_rebase_reaudit(bad_commit_no_critic):
+    errors.append("Negative falsification failed: clean commit missing critic re-audit was not rejected")
+
+  bad_commit_no_path = (
+      "## 1. Pre-Push Merge Check (`SCAR-GIT-20`)\n"
+      "git add -A && git write-tree > .workflow/state/approved_tree.txt\n"
+      "make test-static\n"
+      "adversarial-critic SCAR-PROC-105\n"
+      "## 2. Push Gate\n"
+  )
+  if not check_clean_commit_rebase_reaudit(bad_commit_no_path):
+    errors.append("Negative falsification failed: clean commit missing 04 manual path was not rejected")
+
+  bad_scars_no_inv = (
+      "### SCAR-GIT-20\nrebase critic re-audit\n"
+      "### SCAR-GIT-23\nrebase critic re-audit\n"
+      "### SCAR-GIT-24\n"
+  )
+  if not check_scars_rebase_reaudit(bad_scars_no_inv):
+    errors.append("Negative falsification failed: scars missing Merkle tree invalidation was not rejected")
+
+  bad_scars_no_critic = (
+      "### SCAR-GIT-20\nrebase invalidates Merkle tree lock\n"
+      "### SCAR-GIT-23\nrebase invalidates Merkle tree\n"
+      "### SCAR-GIT-24\n"
+  )
+  if not check_scars_rebase_reaudit(bad_scars_no_critic):
+    errors.append("Negative falsification failed: scars missing critic re-audit was not rejected")
+
+  bad_agents = "## 1. Rules\n### 1.9 Target 40\n## 2. Production Data"
+  if not check_agents_rule_1_10_rebase_reaudit(bad_agents):
+    errors.append("Negative falsification failed: AGENTS.md missing Rule 1.10 was not rejected")
+
+  bad_quickstart = "flowchart LR\nT50 --> T60 --> T70"
+  if not check_quickstart_mermaid_t60_rebase_loop(bad_quickstart):
+    errors.append("Negative falsification failed: quickstart missing T60 -> T40 loop was not rejected")
+
+  return errors
+
+
 def validate():
   errors = []
 
@@ -3795,6 +4038,15 @@ def validate():
   if not t40_model_errors:
     print(
         "✔ Target 40 model picker config bypass and pause invariants (GH-81)"
+        " verified."
+    )
+
+  # Target 60 Pre-Push Rebase and Critic Re-Audit Invariants (GH-126)
+  rebase_reaudit_errors = validate_target_60_rebase_critic_reaudit_invariants()
+  errors.extend(rebase_reaudit_errors)
+  if not rebase_reaudit_errors:
+    print(
+        "✔ Target 60 pre-push rebase and critic re-audit invariants (GH-126)"
         " verified."
     )
 
