@@ -1394,5 +1394,26 @@
     "scars_earned": [
       "SCAR-AST-01: Structural AST Scrubber Gate (Reject Silent Broad Exception Handlers)"
     ]
+  },
+  {
+    "id": "GH-126",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/126",
+    "title": "[FEAT] Re-run adversarial-critic upon Target 60 pre-push rebase conflict resolution",
+    "request": "Codify an explicit DAG transition from Target 60 back to Target 40 when resolving pre-push rebase conflicts, re-staging the tree, running static checks, and re-dispatching adversarial-critic before push.",
+    "branch": "feat/126-critic-re-audit-on-rebase",
+    "subprojects": [
+      "mcp",
+      "scripts",
+      "skills",
+      "rules"
+    ],
+    "started_at": "2026-11-07T15:36:16-08:00",
+    "completed_at": "2026-11-07T16:19:23-08:00",
+    "commit_sha": "114465a",
+    "pr_number": 132,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/132",
+    "closes_issue": true,
+    "tests_added": 9,
+    "scars_earned": []
   }
 ]
