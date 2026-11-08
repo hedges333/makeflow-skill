@@ -1374,5 +1374,25 @@
     "scars_earned": [
       "SCAR-SYS-08: Atomic Directory-Based Mutual Exclusion Locks (mkdir over lockfile)"
     ]
+  },
+  {
+    "id": "GH-121",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/121",
+    "title": "[TECH-DEBT] Refactor pre_tool_guard.py broad exception handlers to specific error types",
+    "request": "Refactor pre_tool_guard.py broad exception handlers in is_plugin_dir, load_database_config, and _detect_target_90 to specific exception tuples (OSError, json.JSONDecodeError, UnicodeDecodeError) to satisfy SCAR-AST-01 and pass ast_scrub.py --all.",
+    "branch": "fix/121-refactor-pre-tool-guard-exceptions",
+    "subprojects": [
+      "scripts"
+    ],
+    "started_at": "2026-11-07T15:37:56-08:00",
+    "completed_at": "2026-11-07T16:12:56-08:00",
+    "commit_sha": "aba03d9",
+    "pr_number": 131,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/131",
+    "closes_issue": true,
+    "tests_added": 6,
+    "scars_earned": [
+      "SCAR-AST-01: Structural AST Scrubber Gate (Reject Silent Broad Exception Handlers)"
+    ]
   }
 ]
