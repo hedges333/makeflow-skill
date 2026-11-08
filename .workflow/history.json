@@ -1591,5 +1591,24 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-146",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/146",
+    "title": "Add persistent test script to validate synthetic scar candidate JSON files",
+    "request": "Create a persistent CLI test utility scripts/test_scar_candidate.py implementing BaseScript to validate synthetic scar candidate JSON files, eliminate exploratory tool calls by synthetic-scar-importer subagents, and add hermetic unit tests under 100 ms.",
+    "branch": "feat/146-validate-scar-candidate",
+    "subprojects": [
+      "scripts",
+      "agents"
+    ],
+    "started_at": "2026-11-08T07:58:20Z",
+    "completed_at": "2026-11-08T08:25:15Z",
+    "commit_sha": "19e0229a951022f6d69ee2a73da3605fec896007",
+    "pr_number": 147,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/147",
+    "closes_issue": true,
+    "tests_added": 16,
+    "scars_earned": []
   }
 ]

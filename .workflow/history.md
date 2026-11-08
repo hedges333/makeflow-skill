@@ -79,3 +79,4 @@
 
 | 2026-11-07 | [GH-136](https://github.com/hedges333/makeflow-skill/issues/136) | Fix scars SQLite path discovery and bundle pre-built registry database in package | `fix/136-bundle-scars-sqlite-db` | [PR #141](https://github.com/hedges333/makeflow-skill/pull/141) | +10 | None |
 | 2026-11-07 | [GH-142](https://github.com/hedges333/makeflow-skill/issues/142) | Implement managed agentic SimpleEnglish and Socratic Probe transformation workflow | `feat/142-simple-english-scars-pipeline` | [PR #144](https://github.com/hedges333/makeflow-skill/pull/144) | +7 | None |
+| 2026-11-08 | [GH-146](https://github.com/hedges333/makeflow-skill/issues/146) | Add persistent test script to validate synthetic scar candidate JSON files | `feat/146-validate-scar-candidate` | [PR #147](https://github.com/hedges333/makeflow-skill/pull/147) | +16 | None |
