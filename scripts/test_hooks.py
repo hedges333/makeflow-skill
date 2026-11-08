@@ -2,6 +2,7 @@
 """Test suite for SessionStart and PreToolUse hook scripts."""
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -1330,6 +1331,226 @@ class TestPreToolGuardSpecificExceptions(unittest.TestCase):
           self.guard._detect_target_90("git commit -m 'feat: test'", state_dir=td)
 
 
+class TestSessionStartSpecificExceptions(unittest.TestCase):
+  """Unit tests verifying session_start catches only expected exceptions (GH-130)."""
+
+  @classmethod
+  def setUpClass(cls):
+    cls.session_start = _load_module("session_start", SESSION_START)
+
+  def test_load_default_config_handles_expected_exceptions(self):
+    # 1. json.JSONDecodeError
+    with mock.patch("os.path.isfile", return_value=True):
+      with mock.patch("builtins.open", mock.mock_open(read_data="{invalid json")):
+        res = self.session_start.load_default_config()
+        self.assertEqual(res["models"]["tdd-worker"], "inherit")
+
+    # 2. UnicodeDecodeError
+    with mock.patch("os.path.isfile", return_value=True):
+      with mock.patch(
+          "builtins.open",
+          side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte"),
+      ):
+        res = self.session_start.load_default_config()
+        self.assertEqual(res["models"]["tdd-worker"], "inherit")
+
+    # 3. OSError
+    with mock.patch("os.path.isfile", return_value=True):
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        res = self.session_start.load_default_config()
+        self.assertEqual(res["models"]["tdd-worker"], "inherit")
+
+  def test_load_default_config_does_not_suppress_unrelated_exceptions(self):
+    with mock.patch("os.path.isfile", return_value=True):
+      with mock.patch("builtins.open", mock.mock_open(read_data="{}")):
+        with mock.patch.object(
+            self.session_start.json,
+            "load",
+            side_effect=TypeError("Synthetic TypeError"),
+        ):
+          with self.assertRaises(TypeError):
+            self.session_start.load_default_config()
+        with mock.patch.object(
+            self.session_start.json,
+            "load",
+            side_effect=RuntimeError("Synthetic RuntimeError"),
+        ):
+          with self.assertRaises(RuntimeError):
+            self.session_start.load_default_config()
+
+  def test_is_plugin_dir_handles_expected_exceptions(self):
+    # 1. json.JSONDecodeError: invalid JSON in plugin.json
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        f.write("{invalid json")
+      self.assertFalse(self.session_start.is_plugin_dir(td))
+
+    # 2. UnicodeDecodeError: invalid UTF-8 bytes in plugin.json
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01")
+      self.assertFalse(self.session_start.is_plugin_dir(td))
+
+    # 3. OSError: file read I/O error
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        f.write("{}")
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        self.assertFalse(self.session_start.is_plugin_dir(td))
+
+  def test_is_plugin_dir_does_not_suppress_unrelated_exceptions(self):
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        f.write('{"name": "makeflow"}')
+      with mock.patch.object(
+          self.session_start.json,
+          "load",
+          side_effect=TypeError("Synthetic TypeError"),
+      ):
+        with self.assertRaises(TypeError):
+          self.session_start.is_plugin_dir(td)
+      with mock.patch.object(
+          self.session_start.json,
+          "load",
+          side_effect=RuntimeError("Synthetic RuntimeError"),
+      ):
+        with self.assertRaises(RuntimeError):
+          self.session_start.is_plugin_dir(td)
+
+  def test_get_workflow_config_handles_expected_exceptions(self):
+    # 1. json.JSONDecodeError: invalid JSON in config.json
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "w", encoding="utf-8") as f:
+        f.write("{invalid json")
+      cfg_dict, src = self.session_start.get_workflow_config([td])
+      self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
+
+    # 2. UnicodeDecodeError: invalid UTF-8 bytes in config.json
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01")
+      cfg_dict, src = self.session_start.get_workflow_config([td])
+      self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
+
+    # 3. OSError: file read I/O error
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "w", encoding="utf-8") as f:
+        f.write("{}")
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        cfg_dict, src = self.session_start.get_workflow_config([td])
+        self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
+
+  def test_get_workflow_config_does_not_suppress_unrelated_exceptions(self):
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "w", encoding="utf-8") as f:
+        f.write('{"models": {}}')
+      with mock.patch.object(
+          self.session_start.json,
+          "load",
+          side_effect=TypeError("Synthetic TypeError"),
+      ):
+        with self.assertRaises(TypeError):
+          self.session_start.get_workflow_config([td])
+      with mock.patch.object(
+          self.session_start.json,
+          "load",
+          side_effect=RuntimeError("Synthetic RuntimeError"),
+      ):
+        with self.assertRaises(RuntimeError):
+          self.session_start.get_workflow_config([td])
+
+  def test_is_ticket_active_handles_expected_exceptions(self):
+    # 1. UnicodeDecodeError: invalid UTF-8 in 99_next_action.md
+    with tempfile.TemporaryDirectory() as td:
+      card = os.path.join(td, "99_next_action.md")
+      with open(card, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01")
+      self.assertTrue(self.session_start.is_ticket_active(td))
+
+    # 2. OSError: file read I/O error
+    with tempfile.TemporaryDirectory() as td:
+      card = os.path.join(td, "99_next_action.md")
+      with open(card, "w", encoding="utf-8") as f:
+        f.write("# Target 90 Finished: COMPLETE\n")
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        self.assertTrue(self.session_start.is_ticket_active(td))
+
+  def test_is_ticket_active_does_not_suppress_unrelated_exceptions(self):
+    with tempfile.TemporaryDirectory() as td:
+      card = os.path.join(td, "99_next_action.md")
+      with open(card, "w", encoding="utf-8") as f:
+        f.write("# Target 90 Finished: COMPLETE\n")
+      mock_file = mock.MagicMock()
+      mock_file.__enter__.return_value.read.side_effect = TypeError("Synthetic TypeError")
+      with mock.patch("builtins.open", return_value=mock_file):
+        with self.assertRaises(TypeError):
+          self.session_start.is_ticket_active(td)
+      mock_file.__enter__.return_value.read.side_effect = RuntimeError("Synthetic RuntimeError")
+      with mock.patch("builtins.open", return_value=mock_file):
+        with self.assertRaises(RuntimeError):
+          self.session_start.is_ticket_active(td)
+
+  def test_dynamic_terminal_title_handles_expected_exceptions(self):
+    # 1. ImportError in set_dynamic_terminal_title
+    with mock.patch(
+        "terminal_title.set_terminal_title",
+        side_effect=ImportError("No module named terminal_title"),
+    ):
+      getattr(self.session_start, "set_dynamic_terminal_title", lambda p: None)("/fake/ws")
+    # 2. OSError in set_dynamic_terminal_title
+    with mock.patch(
+        "terminal_title.set_terminal_title",
+        side_effect=OSError("TTY write error"),
+    ):
+      getattr(self.session_start, "set_dynamic_terminal_title", lambda p: None)("/fake/ws")
+
+  def test_dynamic_terminal_title_does_not_suppress_unrelated_exceptions(self):
+    set_dyn = getattr(self.session_start, "set_dynamic_terminal_title", None)
+    if set_dyn is not None:
+      with mock.patch(
+          "terminal_title.set_terminal_title",
+          side_effect=TypeError("Synthetic TypeError"),
+      ):
+        with self.assertRaises(TypeError):
+          set_dyn("/fake/ws")
+      with mock.patch(
+          "terminal_title.set_terminal_title",
+          side_effect=RuntimeError("Synthetic RuntimeError"),
+      ):
+        with self.assertRaises(RuntimeError):
+          set_dyn("/fake/ws")
+
+  def test_main_dynamic_terminal_title_integration(self):
+    with tempfile.TemporaryDirectory() as td:
+      state_dir = os.path.join(td, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8") as f:
+        f.write("# Ticket\n")
+      for exc in (ImportError("Synthetic ImportError"), OSError("Synthetic OSError")):
+        with mock.patch("terminal_title.set_terminal_title", side_effect=exc):
+          with mock.patch("sys.stdin", io.StringIO(json.dumps({"workspacePaths": [td]}))):
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+              self.session_start.main()
+              res = json.loads(mock_out.getvalue())
+              self.assertIn("injectSteps", res)
+
+
 if __name__ == "__main__":
   test_pre_tool_guard()
   test_session_start()
@@ -1339,6 +1560,7 @@ if __name__ == "__main__":
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestTarget90ScarsHook))
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSelfModification))
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSpecificExceptions))
+  suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestSessionStartSpecificExceptions))
   runner = unittest.TextTestRunner(verbosity=2, failfast=True)
   if not runner.run(suite).wasSuccessful():
     sys.exit(1)
