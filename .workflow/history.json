@@ -1472,5 +1472,28 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-128",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/128",
+    "title": "[FEAT] Codify SCAR-TOOL-16: Prohibit arbitrary output limits and require volume triage interview",
+    "request": "Codify SCAR-TOOL-16 to prohibit arbitrary output limits during investigation and triage tasks. Add wound, trap, circuit breaker, permanent reflex, and probe to tooling_and_hci.md, update master routing catalog, add Rule 1.11 to AGENTS.md, synchronize adapters, and add compatibility assertions.",
+    "branch": "feat/128-codify-scar-tool-16-volume-triage",
+    "subprojects": [
+      "skills",
+      "rules",
+      "scripts",
+      "adapters"
+    ],
+    "started_at": "2026-11-07T16:40:42-08:00",
+    "completed_at": "2026-11-07T17:07:08-08:00",
+    "commit_sha": "79ec491",
+    "pr_number": 137,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/137",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": [
+      "SCAR-TOOL-16"
+    ]
   }
 ]
