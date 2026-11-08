@@ -33,6 +33,6 @@ You transform one pending synthetic scar (a recorded engineering failure pattern
    - Stay focused on the technical matters of the `wound`, `trap`, `circuit_breaker`, and `reflex`, and the core reasons for following the scar.
    - Write up to 3 question sentences of 20 words or fewer each, ending with a question mark (`?`).
 9. Save the result JSON to a temporary JSON file inside a temporary directory.
-10. Run `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --apply-transformed <temporary_json_file_path>` to validate spans, update SQLite, and rebuild the search index.
+10. Validate the candidate JSON with `python3 scripts/test_scar_candidate.py <temporary_json_file_path>`. Then apply the candidate with `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --apply-transformed <temporary_json_file_path>`.
 11. If an error occurs on a scar, resolve the error before returning to the supervisor agent.
 12. Return the transformed scar ID and verification status to the supervisor agent with `send_message`.

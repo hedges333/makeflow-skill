@@ -8,7 +8,7 @@ PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -22,6 +22,7 @@ help:
 	@echo "  make test-signal-trap   - Test POSIX signal trapping and worker cleanup (SCAR-SYS-07)"
 	@echo "  make test-mcp           - Test Model Context Protocol (MCP) server over stdio"
 	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync and query"
+	@echo "  make test-scar-candidate - Test synthetic scar candidate validator (GH-146)"
 	@echo "  make sync-scars         - Sync public synthetic scars registry into bundled package database"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
@@ -132,6 +133,15 @@ sync-scars:
 
 sync-scars-registry: sync-scars
 
+test-scar-candidate:
+	@echo "Testing synthetic scar candidate validator..."
+	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_test_scar_candidate.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id ARCH-05 \
+		--code SCAR_CANDIDATE_SUITE_FAILED \
+		--trigger "scripts/test_test_scar_candidate.py failed." \
+		--rejected "Failing synthetic scar candidate validation, sentence length checks, or span preservation." \
+		--reflex "Run $(PYTHON) -m unittest -v scripts/test_test_scar_candidate.py, fix failing tests, and re-run make test-scar-candidate."
+
 test-compat:
 	@echo "Testing cross-agent compatibility..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/test_cross_agent_compatibility.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
@@ -222,7 +232,7 @@ test-commit-msg:
 		--rejected "Failing Conventional Commits parsing, formatting, or trailer validation." \
 		--reflex "Run $(PYTHON) -m unittest -v scripts/test_commit_msg.py, fix failing tests, and re-run make test-commit-msg."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-scar-candidate test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget
