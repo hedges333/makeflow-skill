@@ -17,6 +17,7 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `MAKEFILE_WORKFLOW_WORKER_MODEL` or `MAKEFILE_WORKFLOW_ARCHAEOLOGY_MODEL` for `archaeology-worker`.
    - `MAKEFILE_WORKFLOW_TDD_MODEL` for `tdd-worker`.
    - `MAKEFILE_WORKFLOW_TRIAGE_MODEL` for `triage-worker`.
+   - `MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL` for `synthetic-scar-importer`.
    - `MAKEFILE_WORKFLOW_PROD_DBS` for comma-separated live database names to block.
    - `MAKEFILE_WORKFLOW_TEST_DBS` for comma-separated safe test database names to allow.
    - `MAKEFILE_WORKFLOW_PROD_HOSTS` for comma-separated live database hosts to block.
@@ -29,6 +30,7 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `archaeology-worker`: `inherit`
    - `tdd-worker`: `inherit`
    - `triage-worker`: `inherit`
+   - `synthetic-scar-importer`: `inherit`
    - `ci.quiescenceSeconds`: `180`
    - `ci.pollIntervalSeconds`: `30`
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
@@ -44,7 +46,8 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
     "adversarial-critic": "inherit",
     "archaeology-worker": "inherit",
     "tdd-worker": "inherit",
-    "triage-worker": "inherit"
+    "triage-worker": "inherit",
+    "synthetic-scar-importer": "inherit"
   },
   "review": {
     "maxReviewRounds": 3,

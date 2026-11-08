@@ -4,7 +4,8 @@
     "adversarial-critic": "inherit",
     "archaeology-worker": "inherit",
     "tdd-worker": "inherit",
-    "triage-worker": "inherit"
+    "triage-worker": "inherit",
+    "synthetic-scar-importer": "inherit"
   },
   "review": {
     "maxReviewRounds": 3,

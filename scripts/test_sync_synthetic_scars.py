@@ -843,5 +843,426 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
       self.assertLess(os.path.getsize(bundled_db), 25 * 1024 * 1024)
 
 
+class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
+  """Tests 10-field Simple English & Socratic Probe SQLite pipeline (GH-142)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.TemporaryDirectory()
+    self.db_path = os.path.join(self.temp_dir.name, "scars_se.db")
+
+  def tearDown(self):
+    self.temp_dir.cleanup()
+
+  def test_ten_field_schema_and_absence_of_flag_columns(self):
+    payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-10f"'),
+    ):
+      code = script.execute(
+          args=["--db-path", self.db_path], stdout=io.StringIO()
+      )
+    self.assertEqual(code, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(scars)")
+    col_names = {row[1] for row in cur.fetchall()}
+
+    for expected_col in (
+        "raw_wound",
+        "raw_trap",
+        "raw_circuit_breaker",
+        "raw_reflex",
+        "raw_hash",
+        "wound",
+        "trap",
+        "circuit_breaker",
+        "reflex",
+        "socratic_probe",
+    ):
+      self.assertIn(expected_col, col_names)
+
+    for forbidden_col in (
+        "simple_english_transformed",
+        "socratic_probe_generated",
+        "transformed_hash",
+    ):
+      self.assertNotIn(forbidden_col, col_names)
+
+    cur.execute("PRAGMA table_info(scars_fts)")
+    fts_cols = {row[1] for row in cur.fetchall()}
+    self.assertIn("socratic_probe", fts_cols)
+    conn.close()
+
+  def test_raw_hash_populates_raw_and_nulls_in_use_then_preserves_and_resets(self):
+    scars_v1 = [
+        {
+            "id": "SCAR-MATH-01",
+            "title": "Math & Code Invariant",
+            "category": "Architecture",
+            "category_slug": "architecture",
+            "visibility": "public",
+            "workflow_phases": ["T30"],
+            "applies_when": "Transforming scars with formulas",
+            "graduation_status": "graduated",
+            "wound": "Lost inline $x_i + y_i = z_i$ formula.",
+            "trap": "Stripping LaTeX $$\\sum_{i=1}^n x_i$$ during rewrite.",
+            "circuit_breaker": "Verify spans before commit.",
+            "reflex": "Preserve `$VAR` and ```python\nprint(1)\n``` blocks.",
+        },
+        {
+            "id": "SCAR-NOCB-01",
+            "title": "Empty Circuit Breaker Scar",
+            "category": "Testing",
+            "category_slug": "testing",
+            "visibility": "public",
+            "workflow_phases": ["T30"],
+            "applies_when": "Testing empty optional circuit_breaker",
+            "graduation_status": "graduated",
+            "wound": "Raw wound text.",
+            "trap": "Raw trap text.",
+            "circuit_breaker": "",
+            "reflex": "Raw reflex text.",
+        },
+    ]
+    payload_v1 = json.dumps(scars_v1).encode("utf-8")
+
+    # Create a workspace .workflow/config.json with synthetic-scar-importer model
+    ws_dir = os.path.join(self.temp_dir.name, "ws")
+    os.makedirs(os.path.join(ws_dir, ".workflow"), exist_ok=True)
+    with open(
+        os.path.join(ws_dir, ".workflow", "config.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"models": {"synthetic-scar-importer": "flash"}}, f)
+
+    out_sync = io.StringIO()
+    script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload_v1, etag='"etag-v1"'),
+    ):
+      with patch.dict(os.environ, {"MAKEFILE_WORKFLOW_WORKSPACE": ws_dir}):
+        code = script.execute(
+            args=["--db-path", self.db_path], stdout=out_sync
+        )
+    self.assertEqual(code, 0)
+    sync_stdout = out_sync.getvalue()
+    self.assertIn("2", sync_stdout)
+    self.assertIn("synthetic-scar-importer", sync_stdout)
+    self.assertIn("one scar at a time", sync_stdout.lower())
+    self.assertIn("flash", sync_stdout)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,"
+        " wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-MATH-01'"
+    )
+    row_math = cur.fetchone()
+    self.assertEqual(row_math[0], "Lost inline $x_i + y_i = z_i$ formula.")
+    self.assertEqual(
+        row_math[1], "Stripping LaTeX $$\\sum_{i=1}^n x_i$$ during rewrite."
+    )
+    self.assertEqual(row_math[2], "Verify spans before commit.")
+    self.assertEqual(
+        row_math[3], "Preserve `$VAR` and ```python\nprint(1)\n``` blocks."
+    )
+    self.assertTrue(row_math[4])
+    self.assertIsNone(row_math[5])
+    self.assertIsNone(row_math[6])
+    self.assertIsNone(row_math[7])
+    self.assertIsNone(row_math[8])
+    self.assertIsNone(row_math[9])
+
+    cur.execute(
+        "SELECT raw_circuit_breaker, circuit_breaker, wound, trap, reflex,"
+        " socratic_probe FROM scars WHERE id = 'SCAR-NOCB-01'"
+    )
+    row_nocb = cur.fetchone()
+    self.assertEqual(row_nocb[0], "")
+    self.assertEqual(row_nocb[1], "")
+    self.assertIsNone(row_nocb[2])
+    self.assertIsNone(row_nocb[3])
+    self.assertIsNone(row_nocb[4])
+    self.assertIsNone(row_nocb[5])
+
+    # Status command also reports pending count and synthetic-scar-importer instruction
+    out_status = io.StringIO()
+    script_status = SyncSyntheticScarsScript()
+    with patch.dict(os.environ, {"MAKEFILE_WORKFLOW_WORKSPACE": ws_dir}):
+      code_st = script_status.execute(
+          args=["--db-path", self.db_path, "--status"], stdout=out_status
+      )
+    self.assertEqual(code_st, 0)
+    self.assertIn("synthetic-scar-importer", out_status.getvalue())
+
+    # Populate Simple English fields for SCAR-MATH-01
+    cur.execute(
+        "UPDATE scars SET wound = ?, trap = ?, circuit_breaker = ?, reflex = ?,"
+        " socratic_probe = ? WHERE id = 'SCAR-MATH-01'",
+        (
+            "Simple wound with $x_i + y_i = z_i$ preserved.",
+            "Simple trap with $$\\sum_{i=1}^n x_i$$ preserved.",
+            "Simple circuit breaker.",
+            "Simple reflex with `$VAR` and ```python\nprint(1)\n``` preserved.",
+            "Did you preserve every formula and code block?",
+        ),
+    )
+    conn.commit()
+
+    # Re-download unchanged upstream payload -> transformed values preserved
+    script_same = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload_v1, etag='"etag-v1b"'),
+    ):
+      code_same = script_same.execute(
+          args=["--db-path", self.db_path, "--force"], stdout=io.StringIO()
+      )
+    self.assertEqual(code_same, 0)
+
+    cur.execute(
+        "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-MATH-01'"
+    )
+    preserved = cur.fetchone()
+    self.assertEqual(
+        preserved[0], "Simple wound with $x_i + y_i = z_i$ preserved."
+    )
+    self.assertEqual(
+        preserved[4], "Did you preserve every formula and code block?"
+    )
+
+    # Modify upstream SCAR-MATH-01 -> raw_hash changes -> in-use fields reset to NULL
+    scars_v2 = json.loads(payload_v1.decode("utf-8"))
+    scars_v2[0]["reflex"] = (
+        "Updated upstream reflex with `$VAR` and ```python\nprint(2)\n```."
+    )
+    payload_v2 = json.dumps(scars_v2).encode("utf-8")
+
+    script_changed = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload_v2, etag='"etag-v2"'),
+    ):
+      code_changed = script_changed.execute(
+          args=["--db-path", self.db_path, "--force"], stdout=io.StringIO()
+      )
+    self.assertEqual(code_changed, 0)
+
+    cur.execute(
+        "SELECT raw_reflex, wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-MATH-01'"
+    )
+    reset_row = cur.fetchone()
+    self.assertEqual(
+        reset_row[0],
+        "Updated upstream reflex with `$VAR` and ```python\nprint(2)\n```.",
+    )
+    self.assertIsNone(reset_row[1])
+    self.assertIsNone(reset_row[2])
+    self.assertIsNone(reset_row[3])
+    self.assertIsNone(reset_row[4])
+    self.assertIsNone(reset_row[5])
+    conn.close()
+
+  def test_extract_protected_spans_and_verify_scar_transformation(self):
+    from sync_synthetic_scars import (
+        extract_protected_spans,
+        verify_scar_transformation,
+    )
+
+    sample_text = (
+        "Check `$HOME` and `$PATH` in shell, then compute $a + b = c$ and\n"
+        "$$E = mc^2$$\n"
+        "before running:\n"
+        "```bash\necho $USER\n```"
+    )
+    spans = extract_protected_spans(sample_text)
+    self.assertEqual(spans["fenced_code"], ["```bash\necho $USER\n```"])
+    self.assertEqual(spans["display_math"], ["$$E = mc^2$$"])
+    self.assertEqual(spans["inline_math"], ["$a + b = c$"])
+
+    raw_row = {
+        "raw_wound": "Wound with $a + b = c$ and `$ENV_VAR`.",
+        "raw_trap": "Trap with $$E = mc^2$$ equation.",
+        "raw_circuit_breaker": "Stop if `x` fails.",
+        "raw_reflex": "Run ```python\nx = 1; y = 2\n``` in test.",
+    }
+    valid_transformed = {
+        "wound": "Simple wound with $a + b = c$ and `$ENV_VAR`.",
+        "trap": "Simple trap with $$E = mc^2$$ equation.",
+        "circuit_breaker": "If `x` fails, stop the build.",
+        "reflex": "Run ```python\nx = 1; y = 2\n``` in the test.",
+        "socratic_probe": "Did you verify $a + b = c$ before running the test?",
+    }
+    errors = verify_scar_transformation(raw_row, valid_transformed)
+    self.assertEqual(errors, [])
+
+    # Drop inline math -> rejected
+    bad_math = dict(valid_transformed, wound="Simple wound without formula.")
+    self.assertTrue(verify_scar_transformation(raw_row, bad_math))
+
+    # Alter fenced code block -> rejected
+    bad_code = dict(
+        valid_transformed, reflex="Run ```python\nx = 99\n``` in the test."
+    )
+    self.assertTrue(verify_scar_transformation(raw_row, bad_code))
+
+    # Semicolon in prose (outside code/math) -> rejected
+    bad_semi = dict(
+        valid_transformed, wound="Simple wound with $a + b = c$; bad semicolon."
+    )
+    self.assertTrue(verify_scar_transformation(raw_row, bad_semi))
+
+    # Em-dash in prose -> rejected
+    bad_emdash = dict(
+        valid_transformed, trap="Simple trap — with $$E = mc^2$$ equation."
+    )
+    self.assertTrue(verify_scar_transformation(raw_row, bad_emdash))
+
+    # Socratic probe missing question mark -> rejected
+    bad_probe = dict(
+        valid_transformed, socratic_probe="Verify the formula before running."
+    )
+    self.assertTrue(verify_scar_transformation(raw_row, bad_probe))
+
+    # Empty required field -> rejected
+    bad_empty = dict(valid_transformed, reflex="")
+    self.assertTrue(verify_scar_transformation(raw_row, bad_empty))
+
+  def test_export_pending_apply_transformed_verify_and_query_scars(self):
+    scars_input = [
+        {
+            "id": "SCAR-PIPE-01",
+            "title": "Pipeline Transformation Test",
+            "category": "Architecture",
+            "category_slug": "architecture",
+            "visibility": "public",
+            "workflow_phases": ["T20", "T30"],
+            "applies_when": "Testing export and apply CLI flags",
+            "graduation_status": "graduated",
+            "wound": "Raw wound with $k = 1$.",
+            "trap": "Raw trap text.",
+            "circuit_breaker": "Raw circuit breaker text.",
+            "reflex": "Raw reflex with ```sh\ntest -f a\n```.",
+        }
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-pipe"'),
+    ):
+      self.assertEqual(
+          script.execute(args=["--db-path", self.db_path], stdout=io.StringIO()),
+          0,
+      )
+
+    # Pre-populate wound directly so we can verify --apply-transformed only updates NULL fields
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        "UPDATE scars SET wound = ? WHERE id = 'SCAR-PIPE-01'",
+        ("Existing Simple English wound with $k = 1$.",),
+    )
+    conn.commit()
+    conn.close()
+
+    # 1. --export-pending exports 1 scar by default and lists null_fields
+    out_exp = io.StringIO()
+    script_exp = SyncSyntheticScarsScript()
+    self.assertEqual(
+        script_exp.execute(
+            args=["--db-path", self.db_path, "--export-pending"],
+            stdout=out_exp,
+        ),
+        0,
+    )
+    exported = json.loads(out_exp.getvalue())
+    self.assertEqual(len(exported), 1)
+    self.assertEqual(exported[0]["id"], "SCAR-PIPE-01")
+    self.assertNotIn("wound", exported[0]["null_fields"])
+    for nf in ("trap", "circuit_breaker", "reflex", "socratic_probe"):
+      self.assertIn(nf, exported[0]["null_fields"])
+
+    # 2. --apply-transformed merges only into NULL fields and keeps existing non-null wound
+    apply_path = os.path.join(self.temp_dir.name, "transformed.json")
+    with open(apply_path, "w", encoding="utf-8") as f:
+      json.dump(
+          [
+              {
+                  "id": "SCAR-PIPE-01",
+                  "wound": "Attempted overwrite of non-null wound with $k = 1$.",
+                  "trap": "Simple trap text.",
+                  "circuit_breaker": "If the check fails, stop.",
+                  "reflex": "Run ```sh\ntest -f a\n``` to verify.",
+                  "socratic_probe": "Did you run the check before proceeding?",
+              }
+          ],
+          f,
+      )
+
+    script_apply = SyncSyntheticScarsScript()
+    self.assertEqual(
+        script_apply.execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--apply-transformed",
+                apply_path,
+            ],
+            stdout=io.StringIO(),
+        ),
+        0,
+    )
+
+    # Verify query_scars returns Simple English fields and socraticProbe, keeping existing wound
+    results = query_scars(self.db_path, query="Simple trap")
+    self.assertEqual(len(results), 1)
+    self.assertEqual(
+        results[0]["wound"], "Existing Simple English wound with $k = 1$."
+    )
+    self.assertEqual(results[0]["trap"], "Simple trap text.")
+    self.assertEqual(results[0]["circuitBreaker"], "If the check fails, stop.")
+    self.assertEqual(
+        results[0]["reflex"], "Run ```sh\ntest -f a\n``` to verify."
+    )
+    self.assertEqual(
+        results[0]["socraticProbe"],
+        "Did you run the check before proceeding?",
+    )
+
+    # 3. --verify-transformed exits 0 when valid
+    script_ver = SyncSyntheticScarsScript()
+    self.assertEqual(
+        script_ver.execute(
+            args=["--db-path", self.db_path, "--verify-transformed"],
+            stdout=io.StringIO(),
+        ),
+        0,
+    )
+
+    # Corrupt the transformed wound in SQLite (drop $k = 1$) -> --verify-transformed exits 1
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        "UPDATE scars SET wound = 'Corrupted wound missing formula.' WHERE id = 'SCAR-PIPE-01'"
+    )
+    conn.commit()
+    conn.close()
+
+    script_ver_fail = SyncSyntheticScarsScript()
+    self.assertEqual(
+        script_ver_fail.execute(
+            args=["--db-path", self.db_path, "--verify-transformed"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ),
+        1,
+    )
+
+
 if __name__ == "__main__":
   unittest.main()
