@@ -1415,5 +1415,24 @@
     "closes_issue": true,
     "tests_added": 9,
     "scars_earned": []
+  },
+  {
+    "id": "GH-118",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/118",
+    "title": "[FEAT] Sync and store public synthetic scars in SQLite with on-demand JIT query MCP tool",
+    "request": "Implement an automated synchronization subsystem that downloads the public Synthetic Scars Registry into SQLite with FTS5, and expose a Just-in-Time dynamic query tool (workflow_query_scars) via the Makeflow MCP server.",
+    "branch": "feat/118-sync-scars-sqlite-mcp",
+    "subprojects": [
+      "mcp",
+      "scripts"
+    ],
+    "started_at": "2026-11-07T15:43:29-08:00",
+    "completed_at": "2026-11-07T16:22:38-08:00",
+    "commit_sha": "493ef08",
+    "pr_number": 133,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/133",
+    "closes_issue": true,
+    "tests_added": 19,
+    "scars_earned": []
   }
 ]
