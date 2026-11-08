@@ -1434,5 +1434,24 @@
     "closes_issue": true,
     "tests_added": 19,
     "scars_earned": []
+  },
+  {
+    "id": "GH-113",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/113",
+    "title": "[FEAT] enhance terminal title",
+    "request": "Enhance intake terminal title helper to be '{ticket_number} {project_name}: {issue_tag}' where '{issue_tag}' is a description of the issue that must be 30 characters or less. Also avoid setting a weird 'tmp[a-z0-5]{8}' title when the task finishes or 'agy' exits.",
+    "branch": "feat/113-enhance-terminal-title",
+    "subprojects": [
+      "scripts",
+      "skills"
+    ],
+    "started_at": "2026-11-07T15:36:29-08:00",
+    "completed_at": "2026-11-07T16:27:50-08:00",
+    "commit_sha": "dd2068f",
+    "pr_number": 134,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/134",
+    "closes_issue": true,
+    "tests_added": 12,
+    "scars_earned": []
   }
 ]
