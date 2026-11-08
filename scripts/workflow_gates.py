@@ -99,6 +99,7 @@ class WorkflowGatesScript(BaseScript):
     self.ticket: Optional[str] = None
     self.project: Optional[str] = None
     self.title: Optional[str] = None
+    self.issue_tag: Optional[str] = None
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -149,6 +150,7 @@ class WorkflowGatesScript(BaseScript):
     p_title.add_argument("--ticket", default=None)
     p_title.add_argument("--project", default=None)
     p_title.add_argument("--title", default=None)
+    p_title.add_argument("--issue-tag", default=None)
     p_title.add_argument("--json", action="store_true", dest="sub_json")
 
     ns = parser.parse_args(self.raw_args)
@@ -172,6 +174,7 @@ class WorkflowGatesScript(BaseScript):
       self.ticket = getattr(ns, "ticket", None)
       self.project = getattr(ns, "project", None)
       self.title = getattr(ns, "title", None)
+      self.issue_tag = getattr(ns, "issue_tag", None)
 
   def _fail(
       self, scar_id: str, code: str, trigger: str, rejected: str, reflex: str
@@ -429,6 +432,21 @@ class WorkflowGatesScript(BaseScript):
       mutex.release_workspace(self.repo_root)
     except (ImportError, OSError):
       pass
+
+    try:
+      from terminal_title import (
+          detect_project_name,
+          is_temporary_directory_name,
+          set_terminal_title,
+      )
+      proj = self.project or detect_project_name(repo_root=self.repo_root)
+      if proj and not is_temporary_directory_name(proj):
+        stream_to_use = getattr(self, "stderr", None)
+        set_terminal_title(
+            title=proj, repo_root=self.repo_root, stream=stream_to_use
+        )
+    except (ImportError, OSError):
+      pass
     return 0
 
   def _check_approved_tree(self) -> int:
@@ -586,6 +604,8 @@ class WorkflowGatesScript(BaseScript):
         sub_args.extend(["--project", self.project])
       if self.title:
         sub_args.extend(["--title", self.title])
+      if self.issue_tag:
+        sub_args.extend(["--issue-tag", self.issue_tag])
       if self.as_json:
         sub_args.append("--json")
       return TerminalTitleScript().execute(
