@@ -1453,5 +1453,24 @@
     "closes_issue": true,
     "tests_added": 12,
     "scars_earned": []
+  },
+  {
+    "id": "GH-129",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/129",
+    "title": "[FEAT] Add intake blocker detection checks and operator interview before launching archaeology worker",
+    "request": "Enhance Target 10 intake (scripts/workflow_gates.py check-intake and Target 10 orchestration) to inspect issue dependency relationships (issue_dependencies_summary / blocked_by) before launching the archaeology worker.",
+    "branch": "feat/129-intake-blocker-detection",
+    "subprojects": [
+      "scripts",
+      "skills"
+    ],
+    "started_at": "2026-11-07T15:58:36-08:00",
+    "completed_at": "2026-11-07T16:37:48-08:00",
+    "commit_sha": "161e46a",
+    "pr_number": 135,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/135",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
