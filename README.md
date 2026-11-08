@@ -218,12 +218,13 @@ You can assign specific AI models to each worker role without editing plugin fil
 
 ### Worker Subagent Roles
 
-In Google Antigravity, four specialized subagents isolate heavy operations from the main supervisor context:
+In Google Antigravity, five specialized subagents isolate heavy operations from the main supervisor context:
 
 - `archaeology-worker` (Target 15): Scans the repository for polyglot subprojects across 27 languages. Discovers existing test runners, sibling API patterns, and database configurations.
 - `tdd-worker` (Target 30): Executes Red-Green-Refactor test-driven development. Writes failing tests first, writes minimal feature code, and runs fast targeted test loops in subproject folders.
 - `adversarial-critic` (Target 40): Audits the staged Git Merkle tree diff against the Six Pillars in an isolated read-only context without authoring bias.
 - `triage-worker` (Target 70): Polls remote CI workflows, enforces 180 seconds of bot quiescence, and classifies automated review comments into the 4-part Triage Table (`Accept`, `Defend`, `Defer`, `Acknowledge`).
+- `synthetic-scar-importer` (Registry Sync): Transforms one pending upstream synthetic scar at a time into Simple English with a Socratic Probe while preserving LaTeX formulas and code blocks.
 
 ### 1. Workspace or Global Configuration File
 
@@ -235,7 +236,8 @@ Copy [`.workflow/config.json.example`](./.workflow/config.json.example) to `<wor
     "adversarial-critic": "inherit",
     "archaeology-worker": "inherit",
     "tdd-worker": "inherit",
-    "triage-worker": "inherit"
+    "triage-worker": "inherit",
+    "synthetic-scar-importer": "inherit"
   },
   "review": {
     "maxReviewRounds": 3,
@@ -268,6 +270,7 @@ export MAKEFILE_WORKFLOW_CRITIC_MODEL="gemini-4-argon-high"
 export MAKEFILE_WORKFLOW_WORKER_MODEL="gemini-3.8-flash-low"
 export MAKEFILE_WORKFLOW_TDD_MODEL="inherit"
 export MAKEFILE_WORKFLOW_TRIAGE_MODEL="gemini-3.8-flash-low"
+export MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL="inherit"
 export MAKEFILE_WORKFLOW_PROD_DBS="billing_live,core_main"
 export MAKEFILE_WORKFLOW_TEST_DBS="billing_sandbox,myapp_test"
 export MAKEFILE_WORKFLOW_PROD_HOSTS="db.company.internal"

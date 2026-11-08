@@ -1580,6 +1580,25 @@ def validate_subagent_tool_mounting_permissions():
               "read_resource",
           ],
       },
+      "agents/synthetic-scar-importer.md": {
+          "name": "synthetic-scar-importer",
+          "tools": [
+              "send_message",
+              "read_file",
+              "search_web",
+              "schedule",
+              "generate_image",
+              "write_file",
+              "edit_file",
+              "run_command",
+              "manage_task",
+          ],
+          "prohibited_tools": [
+              "call_mcp_tool",
+              "list_resources",
+              "read_resource",
+          ],
+      },
   }
 
   for rel_path, spec in expected_perms.items():
@@ -1677,6 +1696,7 @@ def validate_subagent_tool_mounting_permissions():
         "adversarial-critic",
         "triage-worker",
         "archaeology-worker",
+        "synthetic-scar-importer",
     ):
       if role_term not in ref_08_text:
         errors.append(
@@ -3514,6 +3534,7 @@ def validate():
           "archaeology-worker",
           "tdd-worker",
           "triage-worker",
+          "synthetic-scar-importer",
       ):
         assert (
             cfg_data["models"].get(role) == "inherit"
@@ -3561,6 +3582,7 @@ def validate():
         "archaeology-worker",
         "tdd-worker",
         "triage-worker",
+        "synthetic-scar-importer",
     ):
       if f"`{role}`: `inherit`" not in r13_text and f'"{role}": "inherit"' not in r13_text:
         errors.append(f"{ref_13_rel} must document 'inherit' default for {role}")
@@ -4066,6 +4088,7 @@ def validate():
         "archaeology-worker",
         "tdd-worker",
         "triage-worker",
+        "synthetic-scar-importer",
     ):
       if f'"{role}": "inherit"' not in rm_text:
         errors.append(f"{readme_rel} config snippet must show '{role}': 'inherit'")

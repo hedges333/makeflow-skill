@@ -137,14 +137,36 @@ def query_scars(
     has_orig_id = "original_id" in cols
     has_raw_hash = "raw_hash" in cols
 
+    wound_expr = (
+        "COALESCE(s.wound, s.raw_wound)" if "raw_wound" in cols else "s.wound"
+    )
+    trap_expr = (
+        "COALESCE(s.trap, s.raw_trap)" if "raw_trap" in cols else "s.trap"
+    )
+    cb_expr = (
+        "COALESCE(s.circuit_breaker, s.raw_circuit_breaker)"
+        if "raw_circuit_breaker" in cols
+        else "s.circuit_breaker"
+    )
+    reflex_expr = (
+        "COALESCE(s.reflex, s.raw_reflex)"
+        if "raw_reflex" in cols
+        else "s.reflex"
+    )
+    probe_expr = (
+        "COALESCE(s.socratic_probe, '')"
+        if "socratic_probe" in cols
+        else "''"
+    )
     source_col = "s.source" if has_source else "'upstream' AS source"
     orig_id_col = "s.original_id" if has_orig_id else "NULL AS original_id"
     raw_hash_col = "s.raw_hash" if has_raw_hash else "NULL AS raw_hash"
 
     select_fields = (
         "s.id, s.title, s.category, s.category_slug, s.visibility,"
-        " s.workflow_phases, s.applies_when, s.graduation_status, s.wound,"
-        f" s.trap, s.circuit_breaker, s.reflex, {source_col}, {orig_id_col}, {raw_hash_col} "
+        f" s.workflow_phases, s.applies_when, s.graduation_status, {wound_expr},"
+        f" {trap_expr}, {cb_expr}, {reflex_expr}, {probe_expr},"
+        f" {source_col}, {orig_id_col}, {raw_hash_col} "
     )
 
     has_fts = False
@@ -182,7 +204,7 @@ def query_scars(
           lang_pattern = f"%{language.strip().lower()}%"
           sql += (
               "AND (LOWER(s.applies_when) LIKE ? OR LOWER(s.title) LIKE ?"
-              " OR LOWER(s.reflex) LIKE ?) "
+              f" OR LOWER({reflex_expr}) LIKE ?) "
           )
           params.extend([lang_pattern, lang_pattern, lang_pattern])
 
@@ -214,10 +236,13 @@ def query_scars(
     for tok in query_tokens:
       pattern = f"%{tok}%"
       where_clauses.append(
-          "(LOWER(s.title) LIKE ? OR LOWER(s.wound) LIKE ? OR LOWER(s.trap) LIKE ?"
-          " OR LOWER(s.reflex) LIKE ? OR LOWER(s.applies_when) LIKE ? OR LOWER(s.id) LIKE ?)"
+          f"(LOWER(s.title) LIKE ? OR LOWER({wound_expr}) LIKE ? OR LOWER({trap_expr}) LIKE ?"
+          f" OR LOWER({reflex_expr}) LIKE ? OR LOWER({probe_expr}) LIKE ?"
+          " OR LOWER(s.applies_when) LIKE ? OR LOWER(s.id) LIKE ?)"
       )
-      params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
+      params.extend(
+          [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
+      )
 
     sql += " AND ".join(where_clauses) + ") "
 
@@ -236,7 +261,7 @@ def query_scars(
       lang_pattern = f"%{language.strip().lower()}%"
       sql += (
           "AND (LOWER(s.applies_when) LIKE ? OR LOWER(s.title) LIKE ?"
-          " OR LOWER(s.reflex) LIKE ?) "
+          f" OR LOWER({reflex_expr}) LIKE ?) "
       )
       params.extend([lang_pattern, lang_pattern, lang_pattern])
 
@@ -264,9 +289,10 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
   except (json.JSONDecodeError, TypeError, ValueError):
     phases = [p.strip() for p in raw_phases.split(",") if p.strip()]
 
-  source = row[12] if len(row) > 12 and row[12] is not None else "upstream"
-  orig_id = row[13] if len(row) > 13 and row[13] is not None else None
-  raw_hash = row[14] if len(row) > 14 and row[14] is not None else None
+  socratic_probe = row[12] if len(row) > 12 and row[12] is not None else ""
+  source = row[13] if len(row) > 13 and row[13] is not None else "upstream"
+  orig_id = row[14] if len(row) > 14 and row[14] is not None else None
+  raw_hash = row[15] if len(row) > 15 and row[15] is not None else None
 
   return {
       "id": row[0],
@@ -281,12 +307,155 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
       "trap": row[9],
       "circuitBreaker": row[10],
       "reflex": row[11],
+      "socraticProbe": socratic_probe,
+      "socratic_probe": socratic_probe,
       "source": source,
       "originalId": orig_id,
       "original_id": orig_id,
       "rawHash": raw_hash,
       "raw_hash": raw_hash,
   }
+
+
+def extract_protected_spans(text: str) -> Dict[str, List[str]]:
+  """Extracts fenced code blocks, display LaTeX, and inline LaTeX from text.
+
+  Ignores dollar signs inside fenced code blocks and inline backtick code spans.
+  """
+  content = text or ""
+  fenced_code: List[str] = []
+  display_math: List[str] = []
+  inline_math: List[str] = []
+
+  def _mask_fenced(match: re.Match[str]) -> str:
+    fenced_code.append(match.group(0))
+    return f"\x00FENCED_{len(fenced_code) - 1}\x00"
+
+  masked = re.sub(r"```[\s\S]*?```", _mask_fenced, content)
+  masked = re.sub(r"`[^`\n]+`", "\x00INLINE_CODE\x00", masked)
+
+  def _mask_display(match: re.Match[str]) -> str:
+    display_math.append(match.group(0))
+    return f"\x00DISPLAY_{len(display_math) - 1}\x00"
+
+  masked = re.sub(r"\$\$[\s\S]+?\$\$", _mask_display, masked)
+
+  def _mask_inline(match: re.Match[str]) -> str:
+    inline_math.append(match.group(0))
+    return f"\x00INLINE_{len(inline_math) - 1}\x00"
+
+  re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", _mask_inline, masked)
+
+  return {
+      "fenced_code": fenced_code,
+      "display_math": display_math,
+      "inline_math": inline_math,
+  }
+
+
+def _strip_protected_and_inline_code(text: str) -> str:
+  """Masks fenced code, inline code, display math, and inline math for prose checks."""
+  masked = re.sub(r"```[\s\S]*?```", " ", text or "")
+  masked = re.sub(r"`[^`\n]+`", " ", masked)
+  masked = re.sub(r"\$\$[\s\S]+?\$\$", " ", masked)
+  masked = re.sub(r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)", " ", masked)
+  return masked
+
+
+def verify_scar_transformation(
+    raw_row: Dict[str, Any], transformed_row: Dict[str, Any]
+) -> List[str]:
+  """Verifies that a Simple English scar transformation preserves protected spans and rules."""
+  errors: List[str] = []
+
+  for req_field in ("wound", "trap", "reflex", "socratic_probe"):
+    val = transformed_row.get(req_field)
+    if not isinstance(val, str) or not val.strip():
+      errors.append(f"Field '{req_field}' must be a non-empty string.")
+
+  raw_cb = str(raw_row.get("raw_circuit_breaker") or "")
+  trans_cb = transformed_row.get("circuit_breaker")
+  if raw_cb.strip():
+    if not isinstance(trans_cb, str) or not trans_cb.strip():
+      errors.append(
+          "Field 'circuit_breaker' must be non-empty when 'raw_circuit_breaker' is non-empty."
+      )
+  elif trans_cb is None:
+    errors.append(
+        "Field 'circuit_breaker' must be '' (not None) when 'raw_circuit_breaker' is empty."
+    )
+
+  field_pairs = (
+      ("raw_wound", "wound"),
+      ("raw_trap", "trap"),
+      ("raw_circuit_breaker", "circuit_breaker"),
+      ("raw_reflex", "reflex"),
+  )
+  for raw_key, trans_key in field_pairs:
+    raw_text = str(raw_row.get(raw_key) or "")
+    trans_text = str(transformed_row.get(trans_key) or "")
+    raw_spans = extract_protected_spans(raw_text)
+    trans_spans = extract_protected_spans(trans_text)
+    for span_kind in ("fenced_code", "display_math", "inline_math"):
+      if raw_spans[span_kind] != trans_spans[span_kind]:
+        errors.append(
+            f"Field '{trans_key}' {span_kind} mismatch: expected {raw_spans[span_kind]}, got {trans_spans[span_kind]}."
+        )
+
+  for prose_field in (
+      "wound",
+      "trap",
+      "circuit_breaker",
+      "reflex",
+      "socratic_probe",
+  ):
+    val_str = str(transformed_row.get(prose_field) or "")
+    prose_only = _strip_protected_and_inline_code(val_str)
+    if ";" in prose_only:
+      errors.append(
+          f"Field '{prose_field}' contains forbidden semicolon ';' in prose."
+      )
+    if "\u2014" in prose_only:
+      errors.append(
+          f"Field '{prose_field}' contains forbidden em-dash '—' in prose."
+      )
+
+  probe_str = str(transformed_row.get("socratic_probe") or "").strip()
+  if probe_str and not probe_str.endswith("?"):
+    errors.append("Field 'socratic_probe' must end with '?'.")
+
+  return errors
+
+
+def _resolve_scar_importer_model() -> str:
+  """Resolves the configured model for synthetic-scar-importer from env or .workflow/config.json."""
+  env_model = os.environ.get("MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL", "").strip()
+  if env_model:
+    return env_model
+
+  ws_candidates = []
+  env_ws = os.environ.get("MAKEFILE_WORKFLOW_WORKSPACE", "").strip()
+  if env_ws:
+    ws_candidates.append(env_ws)
+  ws_candidates.append(os.getcwd())
+  ws_candidates.append(_REPO_ROOT)
+
+  for ws in ws_candidates:
+    cfg_path = os.path.join(ws, ".workflow", "config.json")
+    if os.path.isfile(cfg_path):
+      try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+          data = json.load(f)
+        if isinstance(data, dict):
+          models = data.get("models")
+          if isinstance(models, dict):
+            val = models.get("synthetic-scar-importer")
+            if isinstance(val, str) and val.strip():
+              return val.strip()
+      except (OSError, ValueError, TypeError):
+        continue
+
+  return "inherit"
 
 
 class ScriptArgumentError(Exception):
@@ -331,6 +500,9 @@ class SyncSyntheticScarsScript(BaseScript):
     self.language: Optional[str] = None
     self.source: Optional[str] = None
     self.limit: int = 3
+    self.export_pending: Optional[int] = None
+    self.apply_transformed: Optional[str] = None
+    self.verify_transformed: bool = False
     self.has_fts5: bool = False
     self.conn: Optional[sqlite3.Connection] = None
 
@@ -400,6 +572,24 @@ class SyncSyntheticScarsScript(BaseScript):
         default=3,
         help="Maximum results returned by query (default 3).",
     )
+    parser.add_argument(
+        "--export-pending",
+        nargs="?",
+        const=1,
+        type=int,
+        default=None,
+        help="Export pending untransformed scars as JSON (default 1 scar at a time).",
+    )
+    parser.add_argument(
+        "--apply-transformed",
+        default=None,
+        help="Path to JSON file containing transformed Simple English scar fields.",
+    )
+    parser.add_argument(
+        "--verify-transformed",
+        action="store_true",
+        help="Verify all transformed Simple English scars in the database.",
+    )
 
     parsed = parser.parse_args(self.raw_args)
     if parsed.help:
@@ -416,6 +606,9 @@ class SyncSyntheticScarsScript(BaseScript):
     self.language = parsed.language
     self.source = parsed.source
     self.limit = parsed.limit
+    self.export_pending = parsed.export_pending
+    self.apply_transformed = parsed.apply_transformed
+    self.verify_transformed = parsed.verify_transformed
     self.db_path = resolve_scars_db_path(
         db_path=parsed.db_path,
         agent=self.agent,
@@ -427,6 +620,32 @@ class SyncSyntheticScarsScript(BaseScript):
       return
     if self.db_path:
       os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+
+  def _populate_fts(self, cur: sqlite3.Cursor) -> None:
+    """Populates scars_fts using COALESCE over in-use and raw columns."""
+    cur.execute("DELETE FROM scars_fts")
+    cur.execute(
+        """
+        INSERT INTO scars_fts (
+            id, title, category, applies_when,
+            wound, trap, reflex, socratic_probe,
+            source, original_id
+        )
+        SELECT
+            id,
+            title,
+            category,
+            applies_when,
+            COALESCE(wound, raw_wound, ''),
+            COALESCE(trap, raw_trap, ''),
+            COALESCE(reflex, raw_reflex, ''),
+            COALESCE(socratic_probe, ''),
+            source,
+            original_id
+        FROM scars
+        """
+    )
+    cur.execute("INSERT INTO scars_fts(scars_fts) VALUES('optimize')")
 
   def _init_db_schema(self) -> None:
     """Initializes tables and probes FTS5 virtual table support."""
@@ -450,25 +669,51 @@ class SyncSyntheticScarsScript(BaseScript):
             workflow_phases TEXT,
             applies_when TEXT,
             graduation_status TEXT,
+            raw_wound TEXT,
+            raw_trap TEXT,
+            raw_circuit_breaker TEXT,
+            raw_reflex TEXT,
+            raw_hash TEXT,
             wound TEXT,
             trap TEXT,
             circuit_breaker TEXT,
             reflex TEXT,
+            socratic_probe TEXT,
             source TEXT DEFAULT 'upstream',
-            original_id TEXT,
-            raw_hash TEXT
+            original_id TEXT
         )
     """)
 
     # Migrate columns if scars table already existed without new columns
     cur.execute("PRAGMA table_info(scars)")
     existing_cols = {r[1] for r in cur.fetchall()}
-    if "source" not in existing_cols:
-      cur.execute("ALTER TABLE scars ADD COLUMN source TEXT DEFAULT 'upstream'")
-    if "original_id" not in existing_cols:
-      cur.execute("ALTER TABLE scars ADD COLUMN original_id TEXT")
-    if "raw_hash" not in existing_cols:
-      cur.execute("ALTER TABLE scars ADD COLUMN raw_hash TEXT")
+    for col_name, col_def in (
+        ("raw_wound", "TEXT"),
+        ("raw_trap", "TEXT"),
+        ("raw_circuit_breaker", "TEXT"),
+        ("raw_reflex", "TEXT"),
+        ("raw_hash", "TEXT"),
+        ("wound", "TEXT"),
+        ("trap", "TEXT"),
+        ("circuit_breaker", "TEXT"),
+        ("reflex", "TEXT"),
+        ("socratic_probe", "TEXT"),
+        ("source", "TEXT DEFAULT 'upstream'"),
+        ("original_id", "TEXT"),
+    ):
+      if col_name not in existing_cols:
+        cur.execute(f"ALTER TABLE scars ADD COLUMN {col_name} {col_def}")
+
+    cur.execute(
+        """
+        UPDATE scars
+        SET raw_wound = COALESCE(raw_wound, wound),
+            raw_trap = COALESCE(raw_trap, trap),
+            raw_circuit_breaker = COALESCE(raw_circuit_breaker, circuit_breaker),
+            raw_reflex = COALESCE(raw_reflex, reflex)
+        WHERE raw_wound IS NULL
+        """
+    )
 
     self.has_fts5 = False
     try:
@@ -476,7 +721,11 @@ class SyncSyntheticScarsScript(BaseScript):
       if cur.fetchone():
         cur.execute("PRAGMA table_info(scars_fts)")
         fts_cols = {r[1] for r in cur.fetchall()}
-        if "source" not in fts_cols or "original_id" not in fts_cols:
+        if (
+            "source" not in fts_cols
+            or "original_id" not in fts_cols
+            or "socratic_probe" not in fts_cols
+        ):
           cur.execute("DROP TABLE scars_fts")
 
       cur.execute("""
@@ -488,6 +737,7 @@ class SyncSyntheticScarsScript(BaseScript):
               wound,
               trap,
               reflex,
+              socratic_probe,
               source UNINDEXED,
               original_id UNINDEXED
           )
@@ -497,18 +747,43 @@ class SyncSyntheticScarsScript(BaseScript):
       cur.execute("SELECT COUNT(*) FROM scars")
       total_count = cur.fetchone()[0]
       if fts_count == 0 and total_count > 0:
-        cur.execute("""
-            INSERT INTO scars_fts (
-                id, title, category, applies_when, wound, trap, reflex, source, original_id
-            )
-            SELECT id, title, category, applies_when, wound, trap, reflex, source, original_id
-            FROM scars
-        """)
+        self._populate_fts(cur)
       self.has_fts5 = True
     except sqlite3.OperationalError:
       self.has_fts5 = False
 
     self.conn.commit()
+
+  def _count_pending_scars(self, cur: sqlite3.Cursor) -> int:
+    """Returns count of scars with any NULL in-use field."""
+    cur.execute("PRAGMA table_info(scars)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "socratic_probe" not in cols:
+      return 0
+    cur.execute(
+        """
+        SELECT COUNT(*) FROM scars
+        WHERE wound IS NULL
+           OR trap IS NULL
+           OR circuit_breaker IS NULL
+           OR reflex IS NULL
+           OR socratic_probe IS NULL
+        """
+    )
+    row = cur.fetchone()
+    return int(row[0]) if row else 0
+
+  def _emit_pending_notice(self, cur: sqlite3.Cursor) -> None:
+    """Writes pending Simple English transformation notice when NULL fields exist."""
+    pending = self._count_pending_scars(cur)
+    if pending <= 0:
+      return
+    importer_model = _resolve_scar_importer_model()
+    self.stdout.write(
+        f"Pending Simple English & Socratic Probe transformations: {pending} scar(s). "
+        f"Launch the 'synthetic-scar-importer' subagent one scar at a time "
+        f"(configured model: {importer_model}).\n"
+    )
 
   def _report_status(self) -> int:
     """Reports status of the SQLite database."""
@@ -541,10 +816,225 @@ class SyncSyntheticScarsScript(BaseScript):
           f"ETag: {etag}\n"
           f"Last synced: {last_synced}\n"
       )
+      self._emit_pending_notice(cur)
       return 0
     finally:
       if conn:
         conn.close()
+
+  def _run_export_pending(self) -> int:
+    """Exports pending scars with NULL in-use fields as JSON."""
+    self._init_db_schema()
+    cur = self.conn.cursor()
+    limit_val = max(1, int(self.export_pending or 1))
+    cur.execute(
+        """
+        SELECT id, title, category, applies_when,
+               raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+               wound, trap, circuit_breaker, reflex, socratic_probe
+        FROM scars
+        WHERE wound IS NULL
+           OR trap IS NULL
+           OR circuit_breaker IS NULL
+           OR reflex IS NULL
+           OR socratic_probe IS NULL
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (limit_val,),
+    )
+    rows = cur.fetchall()
+    exported: List[Dict[str, Any]] = []
+    for r in rows:
+      row_dict = {
+          "id": r[0],
+          "title": r[1],
+          "category": r[2],
+          "applies_when": r[3],
+          "raw_wound": r[4] or "",
+          "raw_trap": r[5] or "",
+          "raw_circuit_breaker": r[6] or "",
+          "raw_reflex": r[7] or "",
+          "raw_hash": r[8] or "",
+          "wound": r[9],
+          "trap": r[10],
+          "circuit_breaker": r[11],
+          "reflex": r[12],
+          "socratic_probe": r[13],
+      }
+      row_dict["null_fields"] = [
+          col
+          for col in (
+              "wound",
+              "trap",
+              "circuit_breaker",
+              "reflex",
+              "socratic_probe",
+          )
+          if row_dict[col] is None
+      ]
+      exported.append(row_dict)
+
+    self.stdout.write(json.dumps(exported, indent=2) + "\n")
+    return 0
+
+  def _run_apply_transformed(self) -> int:
+    """Applies transformed Simple English values into NULL fields and verifies invariants."""
+    if not self.apply_transformed or not os.path.isfile(self.apply_transformed):
+      self.stderr.write(
+          f"Error: Transformed JSON file not found: '{self.apply_transformed}'.\n"
+      )
+      return 1
+
+    try:
+      with open(self.apply_transformed, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    except (OSError, ValueError) as exc:
+      self.stderr.write(f"Error: Failed to read transformed JSON: {exc}\n")
+      return 1
+
+    items = payload if isinstance(payload, list) else [payload]
+    self._init_db_schema()
+    cur = self.conn.cursor()
+
+    try:
+      cur.execute("BEGIN TRANSACTION")
+      for item in items:
+        if not isinstance(item, dict) or not item.get("id"):
+          self.conn.rollback()
+          self.stderr.write("Error: Transformed item is missing 'id'.\n")
+          return 1
+
+        scar_id = str(item["id"])
+        cur.execute(
+            """
+            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+                   wound, trap, circuit_breaker, reflex, socratic_probe
+            FROM scars
+            WHERE id = ?
+            """,
+            (scar_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+          self.conn.rollback()
+          self.stderr.write(f"Error: Scar '{scar_id}' not found in database.\n")
+          return 1
+
+        raw_row = {
+            "raw_wound": row[0] if row[0] is not None else (row[4] or ""),
+            "raw_trap": row[1] if row[1] is not None else (row[5] or ""),
+            "raw_circuit_breaker": (
+                row[2] if row[2] is not None else (row[6] or "")
+            ),
+            "raw_reflex": row[3] if row[3] is not None else (row[7] or ""),
+        }
+        existing_in_use = {
+            "wound": row[4],
+            "trap": row[5],
+            "circuit_breaker": row[6],
+            "reflex": row[7],
+            "socratic_probe": row[8],
+        }
+        merged: Dict[str, Any] = {}
+        for col in (
+            "wound",
+            "trap",
+            "circuit_breaker",
+            "reflex",
+            "socratic_probe",
+        ):
+          if existing_in_use[col] is not None:
+            merged[col] = existing_in_use[col]
+          else:
+            merged[col] = item.get(col)
+
+        errors = verify_scar_transformation(raw_row, merged)
+        if errors:
+          self.conn.rollback()
+          for err in errors:
+            self.stderr.write(f"Error [{scar_id}]: {err}\n")
+          return 1
+
+        cur.execute(
+            """
+            UPDATE scars
+            SET wound = ?, trap = ?, circuit_breaker = ?, reflex = ?, socratic_probe = ?
+            WHERE id = ?
+            """,
+            (
+                merged["wound"],
+                merged["trap"],
+                merged["circuit_breaker"],
+                merged["reflex"],
+                merged["socratic_probe"],
+                scar_id,
+            ),
+        )
+
+      if self.has_fts5:
+        self._populate_fts(cur)
+
+      self.conn.commit()
+      file_size = (
+          os.path.getsize(self.db_path) if os.path.isfile(self.db_path) else 0
+      )
+      cur.execute(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES ('db_size_bytes', ?)",
+          (str(file_size),),
+      )
+      self.conn.commit()
+    except sqlite3.Error as exc:
+      self.conn.rollback()
+      self.stderr.write(f"Error: Database failure during apply: {exc}\n")
+      return 1
+
+    self.stdout.write(f"Applied {len(items)} transformed scar(s).\n")
+    return 0
+
+  def _run_verify_transformed(self) -> int:
+    """Verifies all rows that have populated transformed fields."""
+    self._init_db_schema()
+    cur = self.conn.cursor()
+    cur.execute(
+        """
+        SELECT id, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+               wound, trap, circuit_breaker, reflex, socratic_probe
+        FROM scars
+        WHERE wound IS NOT NULL
+           OR trap IS NOT NULL
+           OR reflex IS NOT NULL
+           OR socratic_probe IS NOT NULL
+        """
+    )
+    rows = cur.fetchall()
+    all_errors: List[str] = []
+    for r in rows:
+      scar_id = r[0]
+      raw_row = {
+          "raw_wound": r[1] if r[1] is not None else "",
+          "raw_trap": r[2] if r[2] is not None else "",
+          "raw_circuit_breaker": r[3] if r[3] is not None else "",
+          "raw_reflex": r[4] if r[4] is not None else "",
+      }
+      trans_row = {
+          "wound": r[5],
+          "trap": r[6],
+          "circuit_breaker": r[7],
+          "reflex": r[8],
+          "socratic_probe": r[9],
+      }
+      errs = verify_scar_transformation(raw_row, trans_row)
+      for err in errs:
+        all_errors.append(f"[{scar_id}] {err}")
+
+    if all_errors:
+      for err in all_errors:
+        self.stderr.write(f"Verification Error {err}\n")
+      return 1
+
+    self.stdout.write(f"Verified {len(rows)} transformed scar(s) with 0 errors.\n")
+    return 0
 
   def run(self) -> int:
     """Executes synchronization or query workflow."""
@@ -553,6 +1043,15 @@ class SyncSyntheticScarsScript(BaseScript):
 
     if self.status_only:
       return self._report_status()
+
+    if self.export_pending is not None:
+      return self._run_export_pending()
+
+    if self.apply_transformed is not None:
+      return self._run_apply_transformed()
+
+    if self.verify_transformed:
+      return self._run_verify_transformed()
 
     if self.query is not None:
       matches = query_scars(
@@ -597,6 +1096,7 @@ class SyncSyntheticScarsScript(BaseScript):
           self.stdout.write(
               f"Scars database is up to date (HTTP 304 Not Modified, ETag: {current_etag}).\n"
           )
+          self._emit_pending_notice(self.conn.cursor())
           return 0
 
         new_etag = resp.headers.get("ETag") if hasattr(resp, "headers") else None
@@ -612,6 +1112,7 @@ class SyncSyntheticScarsScript(BaseScript):
         self.stdout.write(
             f"Scars database is up to date (HTTP 304 Not Modified, ETag: {current_etag}).\n"
         )
+        self._emit_pending_notice(self.conn.cursor())
         return 0
       self.stderr.write(f"Error: HTTP error during sync: {exc}\n")
       return 1
@@ -630,7 +1131,14 @@ class SyncSyntheticScarsScript(BaseScript):
     try:
       # Query existing scars
       cur.execute(
-          "SELECT id, title, wound, trap, reflex, raw_hash, source, original_id FROM scars"
+          """
+          SELECT id, title,
+                 COALESCE(wound, raw_wound),
+                 COALESCE(trap, raw_trap),
+                 COALESCE(reflex, raw_reflex),
+                 raw_hash, source, original_id
+          FROM scars
+          """
       )
       existing_rows = {
           r[0]: {
@@ -738,7 +1246,7 @@ class SyncSyntheticScarsScript(BaseScript):
             and existing_row.get("source") == "upstream"
             and existing_row.get("raw_hash") == raw_hash
         ):
-          # Skip table rewrite for unchanged row
+          # Skip table rewrite for unchanged row (preserves Simple English in-use fields)
           continue
 
         title = item.get("title", "")
@@ -754,18 +1262,23 @@ class SyncSyntheticScarsScript(BaseScript):
 
         applies_when = item.get("appliesWhen") or item.get("applies_when", "")
         grad_status = item.get("graduationStatus") or item.get("graduation_status", "")
-        wound = item.get("wound", "")
-        trap = item.get("trap", "")
-        breaker = item.get("circuitBreaker") or item.get("circuit_breaker", "")
-        reflex = item.get("reflex", "")
+        raw_wound = str(item.get("wound", "") or "")
+        raw_trap = str(item.get("trap", "") or "")
+        raw_breaker = str(
+            item.get("circuitBreaker") or item.get("circuit_breaker", "") or ""
+        )
+        raw_reflex = str(item.get("reflex", "") or "")
+        in_use_breaker: Optional[str] = None if raw_breaker.strip() else ""
 
         cur.execute(
             """
             INSERT OR REPLACE INTO scars (
                 id, title, category, category_slug, visibility,
                 workflow_phases, applies_when, graduation_status,
-                wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upstream', NULL, ?)
+                raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+                wound, trap, circuit_breaker, reflex, socratic_probe,
+                source, original_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 'upstream', NULL)
         """,
             (
                 scar_id,
@@ -776,19 +1289,20 @@ class SyncSyntheticScarsScript(BaseScript):
                 phases_json,
                 applies_when,
                 grad_status,
-                wound,
-                trap,
-                breaker,
-                reflex,
+                raw_wound,
+                raw_trap,
+                raw_breaker,
+                raw_reflex,
                 raw_hash,
+                in_use_breaker,
             ),
         )
         existing_rows[scar_id] = {
             "id": scar_id,
             "title": title,
-            "wound": wound,
-            "trap": trap,
-            "reflex": reflex,
+            "wound": raw_wound,
+            "trap": raw_trap,
+            "reflex": raw_reflex,
             "raw_hash": raw_hash,
             "source": "upstream",
             "original_id": None,
@@ -803,15 +1317,7 @@ class SyncSyntheticScarsScript(BaseScript):
         cur.execute("SELECT COUNT(*) FROM scars")
         total_count = cur.fetchone()[0]
         if modified or (fts_count == 0 and total_count > 0):
-          cur.execute("DELETE FROM scars_fts")
-          cur.execute("""
-              INSERT INTO scars_fts (
-                  id, title, category, applies_when, wound, trap, reflex, source, original_id
-              )
-              SELECT id, title, category, applies_when, wound, trap, reflex, source, original_id
-              FROM scars
-          """)
-          cur.execute("INSERT INTO scars_fts(scars_fts) VALUES('optimize')")
+          self._populate_fts(cur)
       else:
         cur.execute("SELECT COUNT(*) FROM scars")
         total_count = cur.fetchone()[0]
@@ -847,6 +1353,7 @@ class SyncSyntheticScarsScript(BaseScript):
     self.stdout.write(
         f"Successfully synchronized {len(scars_list)} synthetic scars ({inserted_or_updated} updated) to '{self.db_path}'.\n"
     )
+    self._emit_pending_notice(cur)
     return 0
 
   def cleanup(self, exit_code: int) -> None:

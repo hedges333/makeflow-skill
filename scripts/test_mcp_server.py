@@ -1206,5 +1206,233 @@ class TestMcpServer(unittest.TestCase):
     run_test()
 
 
+class TestMcpServerScarImporterAndSimpleEnglish(unittest.TestCase):
+  """Tests synthetic-scar-importer config and Simple English workflow_query_scars (GH-142)."""
+
+  def test_scar_importer_config_and_simple_english_query(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      p = subprocess.Popen(
+          [sys.executable, SERVER_SCRIPT],
+          stdin=subprocess.PIPE,
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE,
+          cwd=tmp_dir,
+          text=True,
+      )
+      try:
+        send_rpc(
+            p, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        # 1. Default config includes synthetic-scar-importer == "inherit"
+        empty_ws = os.path.join(tmp_dir, "empty_ws")
+        os.makedirs(empty_ws, exist_ok=True)
+        cfg_resp = send_rpc(
+            p,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_get_config",
+                    "arguments": {"workspaceDir": empty_ws},
+                },
+            },
+        )
+        cfg_data = json.loads(cfg_resp["result"]["content"][0]["text"])
+        self.assertEqual(
+            cfg_data["models"].get("synthetic-scar-importer"), "inherit"
+        )
+        self.assertEqual(
+            cfg_data["agyModelTiers"].get("synthetic-scar-importer"), "inherit"
+        )
+
+        # 2. Workspace .workflow/config.json overrides synthetic-scar-importer
+        custom_ws = os.path.join(tmp_dir, "custom_ws")
+        os.makedirs(os.path.join(custom_ws, ".workflow"), exist_ok=True)
+        with open(
+            os.path.join(custom_ws, ".workflow", "config.json"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+          json.dump({"models": {"synthetic-scar-importer": "flash"}}, f)
+        ws_resp = send_rpc(
+            p,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_get_config",
+                    "arguments": {"workspaceDir": custom_ws},
+                },
+            },
+        )
+        ws_data = json.loads(ws_resp["result"]["content"][0]["text"])
+        self.assertEqual(
+            ws_data["models"].get("synthetic-scar-importer"), "flash"
+        )
+        self.assertEqual(
+            ws_data["agyModelTiers"].get("synthetic-scar-importer"), "flash"
+        )
+
+        # 3. workflow_query_scars returns Simple English transformed fields and socraticProbe
+        se_db = os.path.join(tmp_dir, "se_scars.db")
+        conn = sqlite3.connect(se_db)
+        conn.execute(
+            """
+            CREATE TABLE scars (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                category TEXT,
+                category_slug TEXT,
+                visibility TEXT,
+                workflow_phases TEXT,
+                applies_when TEXT,
+                graduation_status TEXT,
+                raw_wound TEXT,
+                raw_trap TEXT,
+                raw_circuit_breaker TEXT,
+                raw_reflex TEXT,
+                raw_hash TEXT,
+                wound TEXT,
+                trap TEXT,
+                circuit_breaker TEXT,
+                reflex TEXT,
+                socratic_probe TEXT,
+                source TEXT DEFAULT 'upstream',
+                original_id TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE scars_fts USING fts5(
+                id UNINDEXED,
+                title,
+                category,
+                applies_when,
+                wound,
+                trap,
+                reflex,
+                socratic_probe,
+                source UNINDEXED,
+                original_id UNINDEXED
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "SCAR-SE-01",
+                "Simple English Query Test",
+                "Architecture",
+                "architecture",
+                "public",
+                json.dumps(["T20"]),
+                "Testing Simple English MCP query",
+                "graduated",
+                "Verbose raw wound.",
+                "Verbose raw trap.",
+                "Verbose raw circuit breaker.",
+                "Verbose raw reflex.",
+                "hash-se-01",
+                "Clear Simple English wound.",
+                "Clear Simple English trap.",
+                "If check fails, stop.",
+                "Run the test first.",
+                "Did you run the test before editing code?",
+                "upstream",
+                None,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "SCAR-SE-01",
+                "Simple English Query Test",
+                "Architecture",
+                "Testing Simple English MCP query",
+                "Clear Simple English wound.",
+                "Clear Simple English trap.",
+                "Run the test first.",
+                "Did you run the test before editing code?",
+                "upstream",
+                None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        q_resp = send_rpc(
+            p,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_query_scars",
+                    "arguments": {"query": "Simple English", "dbPath": se_db},
+                },
+            },
+        )
+        q_data = json.loads(q_resp["result"]["content"][0]["text"])
+        self.assertEqual(q_data["status"], "OK")
+        self.assertEqual(len(q_data["scars"]), 1)
+        scar = q_data["scars"][0]
+        self.assertEqual(scar["wound"], "Clear Simple English wound.")
+        self.assertEqual(scar["trap"], "Clear Simple English trap.")
+        self.assertEqual(scar["circuitBreaker"], "If check fails, stop.")
+        self.assertEqual(scar["reflex"], "Run the test first.")
+        self.assertEqual(
+            scar["socraticProbe"],
+            "Did you run the test before editing code?",
+        )
+      finally:
+        p.kill()
+        p.wait()
+
+      # 4. Environment variable MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL override
+      custom_env = dict(os.environ)
+      custom_env["MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL"] = "flash_lite"
+      p_env = subprocess.Popen(
+          [sys.executable, SERVER_SCRIPT],
+          stdin=subprocess.PIPE,
+          stdout=subprocess.PIPE,
+          stderr=subprocess.PIPE,
+          cwd=tmp_dir,
+          env=custom_env,
+          text=True,
+      )
+      try:
+        send_rpc(
+            p_env,
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+        env_resp = send_rpc(
+            p_env,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_get_config",
+                    "arguments": {"workspaceDir": empty_ws},
+                },
+            },
+        )
+        env_data = json.loads(env_resp["result"]["content"][0]["text"])
+        self.assertEqual(
+            env_data["models"].get("synthetic-scar-importer"), "flash_lite"
+        )
+        self.assertEqual(
+            env_data["agyModelTiers"].get("synthetic-scar-importer"),
+            "flash_lite",
+        )
+      finally:
+        p_env.kill()
+        p_env.wait()
+
+
 if __name__ == "__main__":
   run_test()
+  TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()

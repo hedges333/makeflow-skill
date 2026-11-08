@@ -12,12 +12,13 @@ The main orchestrator agent runs at Depth 0 as a `make` supervisor:
 
 ## 2. Subagent Roles
 
-Four subagent roles handle isolated phases of the workflow:
+Five subagent roles handle isolated phases of the workflow:
 
 - `archaeology-worker` (Target 15): Scans languages, subprojects, sibling APIs, and existing tests with read-only tools. Default tier: `inherit`.
 - `tdd-worker` (Target 30): Writes failing tests first, writes minimal feature code, and runs subproject test loops. Default tier: `inherit`.
 - `adversarial-critic` (Target 40): Audits the Git tree diff in an isolated read-only context without authoring bias. Default tier: `inherit`.
 - `triage-worker` (Target 70): Polls remote CI checks and review bot comments through 180 seconds of quiet time. Default tier: `inherit`.
+- `synthetic-scar-importer` (Registry Sync): Transforms one pending synthetic scar at a time into Simple English with a Socratic Probe. Default tier: `inherit`.
 
 Read [13. Configuration and User Preferences](13_configuration_and_user_preferences.md) to override model tiers per role.
 
@@ -36,6 +37,7 @@ Each `agents/*.md` file declares `name`, `description`, and a `tools:` list of b
 | `tdd-worker` | `write_file`, `edit_file`, `run_command` | Writes tests and production code and runs targeted test loops. |
 | `adversarial-critic` | `run_command` | Runs git diff checks while file edits remain unmounted. |
 | `triage-worker` | `run_command` | Runs git checks and uses automatically mounted MCP tools for CI polling. |
+| `synthetic-scar-importer` | `write_file`, `edit_file`, `run_command` | Exports one pending scar, writes transformed JSON, and applies it to SQLite. |
 
 The runtime attaches `call_mcp_tool`, `list_resources`, and `read_resource` to subagents automatically outside the component registry.
 Never list `call_mcp_tool`, `list_resources`, or `read_resource` under `tools:` in `agents/*.md`.
@@ -60,6 +62,8 @@ Do not prompt subagents with flat imperative commands alone. Frame dispatch prom
    > *"Does this staged Merkle tree diff conform to the Six Pillars in skills/makeflow/references/04_six_pillars_adversarial_review.md and both Tier 1 (`skills/makeflow/references/scars/`) and Tier 2 (`.workflow/scars/`) scars? If this diff causes a production outage, what is the most likely failure point? Did changing an existing test mask a real regression?"* (`SCAR-PROC-105`)
 4. **`triage-worker` (Target 70)**:
    > *"Did continuous integration checks pass, and did bots or contributors file comments that need to be triaged? If comments exist, does each finding require an Accept, Defend, Defer, or Acknowledge action without expanding ticket scope?"*
+5. **`synthetic-scar-importer` (Registry Sync)**:
+   > *"Did you export one pending scar and preserve every LaTeX formula and fenced code block byte-for-byte? Does each transformed field follow Simple English rules, and does `socratic_probe` end with a question mark?"*
 
 ### 5.3 Critic Observation Triage and Relationship-Based Rollup Guidance
 

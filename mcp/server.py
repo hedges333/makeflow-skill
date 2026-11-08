@@ -251,6 +251,7 @@ def load_default_config():
           "archaeology-worker": "inherit",
           "tdd-worker": "inherit",
           "triage-worker": "inherit",
+          "synthetic-scar-importer": "inherit",
       },
       "review": {
           "maxReviewRounds": 3,
@@ -306,6 +307,7 @@ def resolve_workflow_config(workspace_dir=None):
       "MAKEFILE_WORKFLOW_ARCHAEOLOGY_MODEL": "archaeology-worker",
       "MAKEFILE_WORKFLOW_TDD_MODEL": "tdd-worker",
       "MAKEFILE_WORKFLOW_TRIAGE_MODEL": "triage-worker",
+      "MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL": "synthetic-scar-importer",
   }
   for env_var, agent_key in env_mappings.items():
     val = os.getenv(env_var)
