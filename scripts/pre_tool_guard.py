@@ -100,7 +100,7 @@ def is_plugin_dir(path):
           data = json.load(f)
         if isinstance(data, dict) and data.get("name") == "makeflow":
           return True
-      except Exception:
+      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
     curr = os.path.dirname(curr)
   return False
@@ -134,7 +134,7 @@ def load_database_config(payload):
               if key in raw_db:
                 db_cfg[key] = _normalize_str_list(raw_db[key])
           break
-      except Exception:
+      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
 
   env_mappings = {
@@ -938,7 +938,7 @@ def _detect_target_90(cmd, state_dir=None):
             )
         ):
           is_t90_state = True
-      except Exception:
+      except (OSError, UnicodeDecodeError):
         pass
   return is_history_msg, is_t90_state
 

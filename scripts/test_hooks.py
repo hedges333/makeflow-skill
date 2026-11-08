@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRE_TOOL = os.path.join(REPO_ROOT, "scripts", "pre_tool_guard.py")
@@ -1207,6 +1208,128 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
       )
 
 
+class TestPreToolGuardSpecificExceptions(unittest.TestCase):
+  """Unit tests verifying pre_tool_guard catches only expected exceptions (GH-121)."""
+
+  @classmethod
+  def setUpClass(cls):
+    cls.guard = _load_module("pre_tool_guard", PRE_TOOL)
+
+  def test_is_plugin_dir_handles_expected_exceptions(self):
+    # 1. json.JSONDecodeError: invalid JSON in plugin.json
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        f.write("{invalid json")
+      self.assertFalse(self.guard.is_plugin_dir(td))
+
+    # 2. UnicodeDecodeError: invalid UTF-8 bytes in plugin.json
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01")
+      self.assertFalse(self.guard.is_plugin_dir(td))
+
+    # 3. OSError: file read I/O error
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        f.write("{}")
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        self.assertFalse(self.guard.is_plugin_dir(td))
+
+  def test_is_plugin_dir_does_not_suppress_unrelated_exceptions(self):
+    with tempfile.TemporaryDirectory() as td:
+      manifest = os.path.join(td, "plugin.json")
+      with open(manifest, "w", encoding="utf-8") as f:
+        f.write('{"name": "makeflow"}')
+      with mock.patch.object(self.guard.json, "load", side_effect=TypeError("Synthetic TypeError")):
+        with self.assertRaises(TypeError):
+          self.guard.is_plugin_dir(td)
+      with mock.patch.object(self.guard.json, "load", side_effect=RuntimeError("Synthetic RuntimeError")):
+        with self.assertRaises(RuntimeError):
+          self.guard.is_plugin_dir(td)
+
+  def test_load_database_config_handles_expected_exceptions(self):
+    # 1. json.JSONDecodeError: invalid JSON in config.json
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "w", encoding="utf-8") as f:
+        f.write("{invalid json")
+      res = self.guard.load_database_config({"workspacePaths": [td]})
+      self.assertEqual(res["prodDatabases"], [])
+      self.assertEqual(res["testDatabases"], [])
+
+    # 2. UnicodeDecodeError: invalid UTF-8 bytes in config.json
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01")
+      res = self.guard.load_database_config({"workspacePaths": [td]})
+      self.assertEqual(res["prodDatabases"], [])
+      self.assertEqual(res["testDatabases"], [])
+
+    # 3. OSError: file read I/O error
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "w", encoding="utf-8") as f:
+        f.write("{}")
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        res = self.guard.load_database_config({"workspacePaths": [td]})
+        self.assertEqual(res["prodDatabases"], [])
+        self.assertEqual(res["testDatabases"], [])
+
+  def test_load_database_config_does_not_suppress_unrelated_exceptions(self):
+    with tempfile.TemporaryDirectory() as td:
+      wf_dir = os.path.join(td, ".workflow")
+      os.makedirs(wf_dir)
+      cfg = os.path.join(wf_dir, "config.json")
+      with open(cfg, "w", encoding="utf-8") as f:
+        f.write('{"database": {}}')
+      with mock.patch.object(self.guard.json, "load", side_effect=TypeError("Synthetic TypeError")):
+        with self.assertRaises(TypeError):
+          self.guard.load_database_config({"workspacePaths": [td]})
+      with mock.patch.object(self.guard.json, "load", side_effect=RuntimeError("Synthetic RuntimeError")):
+        with self.assertRaises(RuntimeError):
+          self.guard.load_database_config({"workspacePaths": [td]})
+
+  def test_detect_target_90_handles_expected_exceptions(self):
+    # 1. UnicodeDecodeError: invalid UTF-8 bytes in 99_next_action.md
+    with tempfile.TemporaryDirectory() as td:
+      card = os.path.join(td, "99_next_action.md")
+      with open(card, "wb") as f:
+        f.write(b"\xff\xfe\x00\x01")
+      is_hist, is_t90 = self.guard._detect_target_90("git commit -m 'feat: test'", state_dir=td)
+      self.assertFalse(is_t90)
+
+    # 2. OSError: file read I/O error
+    with tempfile.TemporaryDirectory() as td:
+      card = os.path.join(td, "99_next_action.md")
+      with open(card, "w", encoding="utf-8") as f:
+        f.write("# 99_next_action\n- Active Target: Target 90\n")
+      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+        is_hist, is_t90 = self.guard._detect_target_90("git commit -m 'feat: test'", state_dir=td)
+        self.assertFalse(is_t90)
+
+  def test_detect_target_90_does_not_suppress_unrelated_exceptions(self):
+    with tempfile.TemporaryDirectory() as td:
+      card = os.path.join(td, "99_next_action.md")
+      with open(card, "w", encoding="utf-8") as f:
+        f.write("# 99_next_action\n- Active Target: Target 90\n")
+      with mock.patch.object(self.guard.re, "search", side_effect=TypeError("Synthetic TypeError")):
+        with self.assertRaises(TypeError):
+          self.guard._detect_target_90("git commit -m 'feat: test'", state_dir=td)
+      with mock.patch.object(self.guard.re, "search", side_effect=RuntimeError("Synthetic RuntimeError")):
+        with self.assertRaises(RuntimeError):
+          self.guard._detect_target_90("git commit -m 'feat: test'", state_dir=td)
+
+
 if __name__ == "__main__":
   test_pre_tool_guard()
   test_session_start()
@@ -1215,6 +1338,7 @@ if __name__ == "__main__":
   suite = unittest.TestSuite()
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestTarget90ScarsHook))
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSelfModification))
+  suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSpecificExceptions))
   runner = unittest.TextTestRunner(verbosity=2, failfast=True)
   if not runner.run(suite).wasSuccessful():
     sys.exit(1)
