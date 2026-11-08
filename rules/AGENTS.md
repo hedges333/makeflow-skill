@@ -107,6 +107,17 @@ When entering Target 40 adversarial review:
 2. When model selection is unconfigured in interactive IDEs, prompt the user to switch the model picker to a deep-reasoning model.
 3. Stop tool calls (`tool_calls: []`) to pause before dispatching `adversarial-critic`. Never dispatch the critic subagent in the same turn as the model picker prompt.
 
+### 1.10 Target 60 Pre-Push Rebase and Critic Re-Audit Invariant (GH-126)
+
+When resolving pre-push rebase conflicts at Target 60:
+
+1. Never rebase autonomously without explicit operator direction (`SCAR-GIT-20`, `SCAR-GIT-25`).
+2. Rebase conflict resolution invalidates the staged Merkle tree lock (`SCAR-GIT-23`).
+3. Re-stage all resolved changes and update the approved tree lock: `git add -A && git write-tree > .workflow/state/approved_tree.txt`.
+4. Run pre-flight static checks (`make test-static`).
+5. Re-dispatch `adversarial-critic` with explicit manual path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) before advancing to push.
+6. Advance target from `T60` to `T40` in the Makefile DAG to complete the adversarial re-audit.
+
 ## 2. Production Data Protection Rules
 
 Never connect tests or agent commands to live systems.

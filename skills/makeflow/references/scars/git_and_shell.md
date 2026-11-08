@@ -44,8 +44,8 @@ This reference manual documents Git operations and shell execution scars (`SCAR-
 
 - **Wound**: An agent pushes a branch that conflicts with `main`, breaks CI, and requires history rewrites.
 - **Trap**: Assuming that passing local unit tests means a clean merge with `origin/main`, or attempting an autonomous `git rebase` without human approval when conflicts appear.
-- **Permanent Reflex**: Run `git fetch origin main` and `git merge-tree $(git merge-base HEAD origin/main) HEAD origin/main` before every push as an in-memory conflict detection check. Never rebase autonomously. If conflicts exist, stop immediately without altering Git state. Require explicit human operator approval under `SCAR-GIT-25` before any rebase or merge action.
-- **Socratic Probe**: Even if local tests pass, has the remote target branch moved ahead since you branched? Will running `git merge-tree` detect upstream conflicts in memory without altering Git state, and do you require operator approval under `SCAR-GIT-25` before rebasing?
+- **Permanent Reflex**: Run `git fetch origin main` and `git merge-tree $(git merge-base HEAD origin/main) HEAD origin/main` before every push as an in-memory conflict detection check. Never rebase autonomously. If conflicts exist, stop immediately without altering Git state. Require explicit human operator approval under `SCAR-GIT-25` before any rebase or merge action. If a human-approved rebase occurs, conflict resolution invalidates the staged Merkle tree lock and requires a fresh critic re-audit before push.
+- **Socratic Probe**: Even if local tests pass, has the remote target branch moved ahead since you branched? Will running `git merge-tree` detect upstream conflicts in memory without altering Git state, and do you require operator approval under `SCAR-GIT-25` before rebasing? If rebased, does conflict resolution invalidate the Merkle tree lock and require a fresh critic re-audit?
 
 ### SCAR-GIT-22: Pre-Commit Working Tree Cleanliness Deadlock
 
@@ -60,8 +60,8 @@ This reference manual documents Git operations and shell execution scars (`SCAR-
 - **Wound**: An agent reviews code changes as text. A background formatter edits files before commit, so the committed code differs from the reviewed code.
 - **Trap**: Relying on serialized text diffs instead of Git native object hashes.
 - **Circuit Breaker**: If the index Merkle tree hash changes after review approval, halt immediately.
-- **Permanent Reflex**: A TOCTOU race condition occurs between check and use. Capture the Git tree hash with `git write-tree` at Target 40. Make sure that the committed tree hash at Target 50 matches the approved tree hash exactly.
-- **Socratic Probe**: Does the tree hash of this commit match the tree hash that the critic approved?
+- **Permanent Reflex**: A TOCTOU race condition occurs between check and use. Capture the Git tree hash with `git write-tree` at Target 40. Make sure that the committed tree hash at Target 50 matches the approved tree hash exactly. Resolving pre-push rebase conflicts at Target 60 invalidates the staged Merkle tree. Re-lock `approved_tree.txt` with `git write-tree` and run a fresh critic re-audit before push.
+- **Socratic Probe**: Does the tree hash of this commit match the tree hash that the critic approved? If a pre-push rebase occurred, did you re-lock the Merkle tree and obtain a fresh critic re-audit?
 
 ### SCAR-GIT-24: Conventional Commits Type-Scope Decoupling
 

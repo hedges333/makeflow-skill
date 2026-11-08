@@ -42,6 +42,7 @@ flowchart LR
     T40 --> T45["T45: Review Gate"]
     T45 --> T50["T50: Commit Gate"]
     T50 --> T60["T60: Push Gate"]
+    T60 -. "Rebase Conflict" .-> T40
     T60 --> T70["T70: CI and Bots"]
     T70 --> T75["T75: Landing Gate"]
     T75 --> T80["T80: Merge and Cleanup"]

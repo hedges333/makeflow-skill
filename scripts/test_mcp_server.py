@@ -218,6 +218,47 @@ def run_test():
         assert not adv_with_card["result"].get("isError")
         print("✔ MCP workflow_advance_target verified on-disk state cards.")
 
+      # 5c. Advance target: T60 -> T40 (pre-push rebase critic re-audit) and T60 invalid jumps
+      adv_t60_t40 = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 82,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_advance_target",
+                  "arguments": {
+                      "currentTarget": "T60",
+                      "nextTarget": "T40",
+                  },
+              },
+          },
+      )
+      assert not adv_t60_t40["result"].get("isError"), (
+          f"Expected T60 -> T40 transition to succeed, got {adv_t60_t40}"
+      )
+
+      for bad_target in ("T10", "T20", "T50", "T80"):
+        adv_t60_bad = send_rpc(
+            p,
+            {
+                "jsonrpc": "2.0",
+                "id": 83,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_advance_target",
+                    "arguments": {
+                        "currentTarget": "T60",
+                        "nextTarget": bad_target,
+                    },
+                },
+            },
+        )
+        assert adv_t60_bad["result"].get("isError") is True, (
+            f"Expected T60 -> {bad_target} transition to be blocked"
+        )
+      print("✔ MCP workflow_advance_target T60 -> T40 transition and T60 invalid jumps verified.")
+
       # 6. Verify tree with workspaceDir when server cwd is not a git repo
       with tempfile.TemporaryDirectory() as tmp_git_ws:
         subprocess.run(
