@@ -77,7 +77,7 @@ def load_default_config():
           data = json.load(f)
         if isinstance(data, dict):
           return data
-      except Exception:
+      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
   return {
       "models": {
@@ -130,7 +130,7 @@ def is_plugin_dir(path):
           data = json.load(f)
         if isinstance(data, dict) and data.get("name") == "makeflow":
           return True
-      except Exception:
+      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
     curr = os.path.dirname(curr)
   return False
@@ -160,7 +160,7 @@ def get_workflow_config(workspace_paths):
           raw_cfg = loaded
           source = label or cfg_path
           break
-      except Exception:
+      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
 
   merged_cfg = deep_merge(default_cfg, raw_cfg)
@@ -268,7 +268,7 @@ def is_ticket_active(state_dir):
           or "make finish satisfied" in content
       ):
         return False
-    except Exception:
+    except (OSError, UnicodeDecodeError):
       pass
 
   return True
@@ -312,6 +312,15 @@ def find_state_dir(workspace_paths, artifact_dir):
   return ""
 
 
+def set_dynamic_terminal_title(repo_root):
+  """Attempts to set terminal title for active ticket; ignores missing module or tty errors."""
+  try:
+    from terminal_title import set_terminal_title
+    set_terminal_title(repo_root=repo_root)
+  except (ImportError, OSError):
+    pass
+
+
 def main():
   try:
     input_text = sys.stdin.read()
@@ -342,11 +351,7 @@ def main():
           "Read all state cards at Target 00 (read-init-d) before taking new action."
       )
       ws_root = workspace_paths[0] if workspace_paths else os.getcwd()
-      try:
-        from terminal_title import set_terminal_title
-        set_terminal_title(repo_root=ws_root)
-      except Exception:
-        pass
+      set_dynamic_terminal_title(ws_root)
     else:
       notes.append(
           "Makefile Workflow: Workspace is clean and ready for Target 10 intake."
