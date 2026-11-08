@@ -106,6 +106,7 @@ Agents must use Socratic Probes during:
 | `SCAR-TOOL-13` | Single State Writer Isolation | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-TOOL-14` | Programmatic Tool Polling vs Subagent Scrape Loops | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-TOOL-15` | Anchored State Marker Detection vs Substring Matching | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
+| `SCAR-TOOL-16` | Prohibit Arbitrary Output Limits and Require Volume Triage Interview | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-HCI-08` | Multi-Choice Prompt Rule | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-DOC-16` | Concentric Documentation Rings | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-ARCH-05` | Testable Object-Oriented Script Template (BaseScript Pattern) | Architecture | [`scars/architecture.md`](./scars/architecture.md) |

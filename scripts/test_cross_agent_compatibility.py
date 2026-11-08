@@ -2991,6 +2991,278 @@ def validate_target_60_rebase_critic_reaudit_invariants():
   return errors
 
 
+def check_scar_tool_16_spoke(spoke_text):
+  """Checks that scars/tooling_and_hci.md documents SCAR-TOOL-16 with 5 required anatomy elements and permanent reflex invariants."""
+  errors = []
+  if "### SCAR-TOOL-16" not in spoke_text:
+    errors.append("skills/makeflow/references/scars/tooling_and_hci.md missing '### SCAR-TOOL-16'")
+    return errors
+
+  sec_match = re.search(
+      r"(?m)^###\s+SCAR-TOOL-16\b.*?(?=^###\s+SCAR-|\Z)", spoke_text, re.DOTALL
+  )
+  if not sec_match:
+    errors.append(
+        "skills/makeflow/references/scars/tooling_and_hci.md could not isolate"
+        " SCAR-TOOL-16 section"
+    )
+    return errors
+  sec = sec_match.group(0)
+
+  required_fields = (
+      "Wound",
+      "Trap",
+      "Circuit Breaker",
+      "Permanent Reflex",
+      "Socratic Probe",
+  )
+  for field in required_fields:
+    field_match = re.search(rf"\*\*{re.escape(field)}\*\*:\s*([^\n]+)", sec)
+    if not field_match or not field_match.group(1).strip():
+      errors.append(
+          "skills/makeflow/references/scars/tooling_and_hci.md SCAR-TOOL-16"
+          f" missing non-empty '**{field}:**'"
+      )
+
+  reflex_match = re.search(
+      r"\*\*Permanent Reflex\*\*:\s*(.*?)(?=\n\s*-\s*\*\*|\Z)", sec, re.DOTALL
+  )
+  reflex_text = reflex_match.group(1) if reflex_match else ""
+  reflex_lower = reflex_text.lower()
+
+  if "--limit" not in reflex_text:
+    errors.append("SCAR-TOOL-16 Permanent Reflex must document '--limit'")
+  if "context" not in reflex_lower:
+    errors.append("SCAR-TOOL-16 Permanent Reflex must document context crowding or limits")
+  if "volume" not in reflex_lower:
+    errors.append("SCAR-TOOL-16 Permanent Reflex must document volume risk")
+  if "interview" not in reflex_lower:
+    errors.append("SCAR-TOOL-16 Permanent Reflex must require user interview")
+
+  # 4 canonical paths
+  if "revise" not in reflex_lower:
+    errors.append(
+        "SCAR-TOOL-16 Permanent Reflex must document path: revise directive or"
+        " filter criteria"
+    )
+  if "user-approved" not in reflex_lower and "user approved" not in reflex_lower:
+    errors.append(
+        "SCAR-TOOL-16 Permanent Reflex must document path: explicit user-approved"
+        " limits"
+    )
+  if "count" not in reflex_lower or "row" not in reflex_lower:
+    errors.append(
+        "SCAR-TOOL-16 Permanent Reflex must document path: count total rows first"
+    )
+  if "proceed without limits" not in reflex_lower:
+    errors.append(
+        "SCAR-TOOL-16 Permanent Reflex must document path: proceed without limits"
+    )
+
+  return errors
+
+
+def check_scar_tool_16_catalog(catalog_text):
+  """Checks that 09_synthetic_scars_catalog.md routes SCAR-TOOL-16 strictly to scars/tooling_and_hci.md."""
+  errors = []
+  if "SCAR-TOOL-16" not in catalog_text:
+    errors.append(
+        "skills/makeflow/references/09_synthetic_scars_catalog.md missing"
+        " SCAR-TOOL-16"
+    )
+    return errors
+  if not check_scar_catalog_routing(
+      catalog_text, "SCAR-TOOL-16", "tooling_and_hci.md"
+  ):
+    errors.append(
+        "skills/makeflow/references/09_synthetic_scars_catalog.md Master"
+        " Routing Table must strictly route SCAR-TOOL-16 to"
+        " scars/tooling_and_hci.md"
+    )
+  if (
+      "Prohibit Arbitrary Output Limits and Require Volume Triage Interview"
+      not in catalog_text
+  ):
+    errors.append(
+        "skills/makeflow/references/09_synthetic_scars_catalog.md missing title"
+        " for SCAR-TOOL-16"
+    )
+  return errors
+
+
+def check_agents_rule_1_11_volume_triage(agents_text):
+  """Checks that rules/AGENTS.md defines Rule 1.11 for SCAR-TOOL-16 volume triage interview."""
+  errors = []
+  sec_match = re.search(
+      r"(?m)^###\s+1\.11\b.*?(?=^##\s+2\b|\Z)", agents_text, re.DOTALL
+  )
+  if not sec_match:
+    errors.append("rules/AGENTS.md missing Section 1.11")
+    return errors
+  sec = sec_match.group(0)
+  sec_lower = sec.lower()
+
+  if "scar-tool-16" not in sec_lower:
+    errors.append("rules/AGENTS.md Section 1.11 must reference SCAR-TOOL-16")
+  if "--limit" not in sec:
+    errors.append("rules/AGENTS.md Section 1.11 must prohibit '--limit'")
+  if "head -n" not in sec and "truncation" not in sec_lower:
+    errors.append(
+        "rules/AGENTS.md Section 1.11 must prohibit truncation / 'head -n'"
+    )
+  if "halt" not in sec_lower or "context" not in sec_lower:
+    errors.append(
+        "rules/AGENTS.md Section 1.11 must mandate immediate halt when volume"
+        " threatens context"
+    )
+  if "interview" not in sec_lower:
+    errors.append(
+        "rules/AGENTS.md Section 1.11 must require interviewing the user"
+    )
+  for path_token in ("revise", "user-approved", "count", "proceed without limits"):
+    if path_token not in sec_lower:
+      errors.append(
+          f"rules/AGENTS.md Section 1.11 must document triage path containing"
+          f" '{path_token}'"
+      )
+  return errors
+
+
+def check_adapter_scar_tool_16(fpath, content):
+  """Checks that adapter file documents SCAR-TOOL-16 prohibiting arbitrary limits and requiring volume triage interview."""
+  errors = []
+  if "SCAR-TOOL-16" not in content:
+    errors.append(f"{fpath} must reference SCAR-TOOL-16")
+  if "--limit" not in content:
+    errors.append(f"{fpath} must document prohibition of '--limit'")
+  content_lower = content.lower()
+  if "interview" not in content_lower:
+    errors.append(f"{fpath} must require volume triage interview")
+  if fpath == "adapters/chatgpt/instructions.md":
+    blast_match = re.search(
+        r"3\.\s+BLAST RADIUS CONTROL.*?(?=4\.\s+SIMPLE ENGLISH|\Z)",
+        content,
+        re.DOTALL,
+    )
+    if not blast_match or "SCAR-TOOL-16" not in blast_match.group(0):
+      errors.append(
+          f"{fpath} must document SCAR-TOOL-16 under Section 3 BLAST RADIUS"
+          " CONTROL"
+      )
+  return errors
+
+
+def validate_volume_triage_interview_scar_tool_16():
+  """Validates SCAR-TOOL-16 prohibition of arbitrary output limits and volume triage interview (GH-128).
+
+  Verifies:
+  1. skills/makeflow/references/scars/tooling_and_hci.md documents SCAR-TOOL-16
+     with 5-part anatomy (Wound, Trap, Circuit Breaker, Permanent Reflex, Socratic Probe)
+     and 4 canonical triage paths in Permanent Reflex.
+  2. skills/makeflow/references/09_synthetic_scars_catalog.md Master Routing Table
+     strictly routes SCAR-TOOL-16 to scars/tooling_and_hci.md.
+  3. rules/AGENTS.md defines Rule 1.11 codifying SCAR-TOOL-16.
+  4. All 5 adapters (CLAUDE.md, .cursorrules, .cursor/rules/makeflow.mdc,
+     .github/copilot-instructions.md, adapters/chatgpt/instructions.md)
+     document SCAR-TOOL-16.
+  5. Negative mutation falsification tests rejecting incomplete definitions or omissions.
+  """
+  errors = []
+
+  # 1. Spoke file
+  spoke_rel = "skills/makeflow/references/scars/tooling_and_hci.md"
+  spoke_path = repo_path(spoke_rel)
+  if not os.path.exists(spoke_path):
+    errors.append(f"Missing {spoke_rel}")
+  else:
+    with open(spoke_path, "r", encoding="utf-8") as f:
+      spoke_text = f.read()
+    errors.extend(check_scar_tool_16_spoke(spoke_text))
+
+  # 2. Master Catalog Routing
+  catalog_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  catalog_path = repo_path(catalog_rel)
+  if not os.path.exists(catalog_path):
+    errors.append(f"Missing {catalog_rel}")
+  else:
+    with open(catalog_path, "r", encoding="utf-8") as f:
+      catalog_text = f.read()
+    errors.extend(check_scar_tool_16_catalog(catalog_text))
+
+  # 3. rules/AGENTS.md
+  agents_rel = "rules/AGENTS.md"
+  agents_path = repo_path(agents_rel)
+  if not os.path.exists(agents_path):
+    errors.append(f"Missing {agents_rel}")
+  else:
+    with open(agents_path, "r", encoding="utf-8") as f:
+      agents_text = f.read()
+    errors.extend(check_agents_rule_1_11_volume_triage(agents_text))
+
+  # 4. 5 Adapter files
+  adapters = [
+      "CLAUDE.md",
+      ".cursorrules",
+      ".cursor/rules/makeflow.mdc",
+      ".github/copilot-instructions.md",
+      "adapters/chatgpt/instructions.md",
+  ]
+  for ad in adapters:
+    ad_path = repo_path(ad)
+    if not os.path.exists(ad_path):
+      errors.append(f"Missing {ad}")
+    else:
+      with open(ad_path, "r", encoding="utf-8") as f:
+        ad_content = f.read()
+      errors.extend(check_adapter_scar_tool_16(ad, ad_content))
+
+  # 5. Negative Mutation Falsification Tests
+  sample_spoke = """
+### SCAR-TOOL-16: Prohibit Arbitrary Output Limits and Require Volume Triage Interview
+
+- **Wound**: An agent investigates or triages an information source and unilaterally restricts output with an arbitrary limit argument.
+- **Trap**: The agent assumes high output volume will exhaust context.
+- **Circuit Breaker**: If you investigate or triage an information source, never append arbitrary limit arguments.
+- **Permanent Reflex**: Never arbitrarily impose --limit or truncation flags before assessing the full dataset. If you suspect output volume will crowd context or make the directive unfeasible, report the volume risk first. Interview the user to select one of four paths:
+  1. Revise the directive or filter criteria.
+  2. Impose explicit user-approved limits.
+  3. Count total rows first before reading detailed content.
+  4. Proceed without limits.
+- **Socratic Probe**: Did you arbitrarily impose a --limit flag on an information source during triage?
+"""
+  if check_scar_tool_16_spoke(sample_spoke):
+    errors.append("Negative falsification baseline failed for valid spoke sample")
+
+  bad_spoke_no_cb = sample_spoke.replace("- **Circuit Breaker**:", "- **Other Field**:")
+  if not check_scar_tool_16_spoke(bad_spoke_no_cb):
+    errors.append("Negative falsification failed: spoke missing Circuit Breaker was not rejected")
+
+  bad_spoke_no_path = sample_spoke.replace("Proceed without limits.", "Ignore limits.")
+  if not check_scar_tool_16_spoke(bad_spoke_no_path):
+    errors.append("Negative falsification failed: spoke missing 4th path was not rejected")
+
+  bad_spoke_no_limit = sample_spoke.replace("--limit", "--unbounded")
+  if not check_scar_tool_16_spoke(bad_spoke_no_limit):
+    errors.append("Negative falsification failed: spoke missing '--limit' was not rejected")
+
+  bad_catalog = "| `SCAR-TOOL-16` | Prohibit Arbitrary Output Limits and Require Volume Triage Interview | Tooling & HCI | [`scars/other.md`](./scars/other.md) |"
+  if not check_scar_tool_16_catalog(bad_catalog):
+    errors.append("Negative falsification failed: catalog with wrong routing was not rejected")
+
+  bad_agents = (
+      "### 1.11 Prohibit Limits (SCAR-TOOL-16)\n"
+      "Never use --limit or head -n. Interview user across paths: revise, user-approved, count, proceed without limits.\n"
+  )
+  if not check_agents_rule_1_11_volume_triage(bad_agents):
+    errors.append("Negative falsification failed: AGENTS.md missing halt on context threat was not rejected")
+
+  bad_adapter = "Never use --limit under SCAR-TOOL-16."
+  if not check_adapter_scar_tool_16("CLAUDE.md", bad_adapter):
+    errors.append("Negative falsification failed: adapter missing interview was not rejected")
+
+  return errors
+
+
 def validate():
   errors = []
 
@@ -3357,8 +3629,8 @@ def validate():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 56:
-    errors.append(f"Expected 56 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 57:
+    errors.append(f"Expected 57 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -4047,6 +4319,15 @@ def validate():
   if not rebase_reaudit_errors:
     print(
         "✔ Target 60 pre-push rebase and critic re-audit invariants (GH-126)"
+        " verified."
+    )
+
+  # Volume Triage Interview Invariants (GH-128, SCAR-TOOL-16)
+  volume_triage_errors = validate_volume_triage_interview_scar_tool_16()
+  errors.extend(volume_triage_errors)
+  if not volume_triage_errors:
+    print(
+        "✔ Volume triage interview invariants (GH-128, SCAR-TOOL-16)"
         " verified."
     )
 
