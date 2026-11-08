@@ -8,6 +8,7 @@ fast on-demand JIT scar queries for MCP tools and CLI runners.
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import io
 import json
 import os
@@ -22,6 +23,9 @@ import urllib.request
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
   sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
 
 from base_script import BaseScript
 
@@ -32,6 +36,7 @@ def resolve_scars_db_path(
     db_path: Optional[str] = None,
     agent: Optional[str] = None,
     workspace_dir: Optional[str] = None,
+    package_root: Optional[str] = None,
 ) -> str:
   """Resolves the SQLite scars database path according to priority cascade."""
   if db_path:
@@ -40,6 +45,13 @@ def resolve_scars_db_path(
   env_path = os.getenv("MAKEFLOW_SCARS_DB")
   if env_path:
     return os.path.abspath(os.path.expanduser(env_path))
+
+  pkg_root = package_root or _REPO_ROOT
+  bundled_path = os.path.join(
+      pkg_root, "skills", "makeflow", "data", "scars_registry.db"
+  )
+  if os.path.exists(bundled_path):
+    return os.path.abspath(bundled_path)
 
   if workspace_dir:
     ws_db = os.path.join(workspace_dir, ".workflow", "cache", "scars_registry.db")
@@ -72,9 +84,15 @@ def resolve_scars_db_path(
 
   xdg_cache = os.getenv("XDG_CACHE_HOME")
   if xdg_cache:
-    return os.path.abspath(os.path.join(xdg_cache, "makeflow", "scars_registry.db"))
+    xdg_db = os.path.join(xdg_cache, "makeflow", "scars_registry.db")
+    if os.path.exists(xdg_db):
+      return os.path.abspath(xdg_db)
 
-  return os.path.join(home, ".cache", "makeflow", "scars_registry.db")
+  user_default = os.path.join(home, ".cache", "makeflow", "scars_registry.db")
+  if os.path.exists(user_default):
+    return user_default
+
+  return os.path.abspath(bundled_path)
 
 
 def _sanitize_fts_query(query: str) -> str:
@@ -96,6 +114,7 @@ def query_scars(
     category: Optional[str] = None,
     language: Optional[str] = None,
     limit: int = 3,
+    source: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
   """Queries SQLite scars database using FTS5 or fallback keyword search."""
   if not db_path or not os.path.isfile(db_path):
@@ -112,6 +131,22 @@ def query_scars(
     if not cur.fetchone():
       return []
 
+    cur.execute("PRAGMA table_info(scars)")
+    cols = {r[1] for r in cur.fetchall()}
+    has_source = "source" in cols
+    has_orig_id = "original_id" in cols
+    has_raw_hash = "raw_hash" in cols
+
+    source_col = "s.source" if has_source else "'upstream' AS source"
+    orig_id_col = "s.original_id" if has_orig_id else "NULL AS original_id"
+    raw_hash_col = "s.raw_hash" if has_raw_hash else "NULL AS raw_hash"
+
+    select_fields = (
+        "s.id, s.title, s.category, s.category_slug, s.visibility,"
+        " s.workflow_phases, s.applies_when, s.graduation_status, s.wound,"
+        f" s.trap, s.circuit_breaker, s.reflex, {source_col}, {orig_id_col}, {raw_hash_col} "
+    )
+
     has_fts = False
     cur.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='scars_fts'"
@@ -125,14 +160,19 @@ def query_scars(
       sanitized = _sanitize_fts_query(query)
       if sanitized:
         sql = (
-            "SELECT s.id, s.title, s.category, s.category_slug, s.visibility,"
-            " s.workflow_phases, s.applies_when, s.graduation_status, s.wound,"
-            " s.trap, s.circuit_breaker, s.reflex "
+            f"SELECT {select_fields}"
             "FROM scars s "
             "JOIN scars_fts fts ON s.id = fts.id "
             "WHERE scars_fts MATCH ? "
         )
         params: List[Any] = [sanitized]
+
+        if source:
+          if has_source:
+            sql += "AND LOWER(s.source) = LOWER(?) "
+            params.append(source.strip())
+          elif source.strip().lower() != "upstream":
+            return []
 
         if category:
           sql += "AND (LOWER(s.category) = LOWER(?) OR LOWER(s.category_slug) = LOWER(?)) "
@@ -166,9 +206,7 @@ def query_scars(
       return []
 
     sql = (
-        "SELECT s.id, s.title, s.category, s.category_slug, s.visibility,"
-        " s.workflow_phases, s.applies_when, s.graduation_status, s.wound,"
-        " s.trap, s.circuit_breaker, s.reflex "
+        f"SELECT {select_fields}"
         "FROM scars s WHERE ("
     )
     where_clauses = []
@@ -182,6 +220,13 @@ def query_scars(
       params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
 
     sql += " AND ".join(where_clauses) + ") "
+
+    if source:
+      if has_source:
+        sql += "AND LOWER(s.source) = LOWER(?) "
+        params.append(source.strip())
+      elif source.strip().lower() != "upstream":
+        return []
 
     if category:
       sql += "AND (LOWER(s.category) = LOWER(?) OR LOWER(s.category_slug) = LOWER(?)) "
@@ -219,6 +264,10 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
   except (json.JSONDecodeError, TypeError, ValueError):
     phases = [p.strip() for p in raw_phases.split(",") if p.strip()]
 
+  source = row[12] if len(row) > 12 and row[12] is not None else "upstream"
+  orig_id = row[13] if len(row) > 13 and row[13] is not None else None
+  raw_hash = row[14] if len(row) > 14 and row[14] is not None else None
+
   return {
       "id": row[0],
       "title": row[1],
@@ -232,6 +281,11 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
       "trap": row[9],
       "circuitBreaker": row[10],
       "reflex": row[11],
+      "source": source,
+      "originalId": orig_id,
+      "original_id": orig_id,
+      "rawHash": raw_hash,
+      "raw_hash": raw_hash,
   }
 
 
@@ -275,6 +329,7 @@ class SyncSyntheticScarsScript(BaseScript):
     self.query: Optional[str] = None
     self.category: Optional[str] = None
     self.language: Optional[str] = None
+    self.source: Optional[str] = None
     self.limit: int = 3
     self.has_fts5: bool = False
     self.conn: Optional[sqlite3.Connection] = None
@@ -335,6 +390,11 @@ class SyncSyntheticScarsScript(BaseScript):
         help="Language filter for query.",
     )
     parser.add_argument(
+        "--source",
+        default=None,
+        help="Source filter for query (makeflow, upstream).",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=3,
@@ -354,6 +414,7 @@ class SyncSyntheticScarsScript(BaseScript):
     self.query = parsed.query
     self.category = parsed.category
     self.language = parsed.language
+    self.source = parsed.source
     self.limit = parsed.limit
     self.db_path = resolve_scars_db_path(
         db_path=parsed.db_path,
@@ -392,12 +453,32 @@ class SyncSyntheticScarsScript(BaseScript):
             wound TEXT,
             trap TEXT,
             circuit_breaker TEXT,
-            reflex TEXT
+            reflex TEXT,
+            source TEXT DEFAULT 'upstream',
+            original_id TEXT,
+            raw_hash TEXT
         )
     """)
 
+    # Migrate columns if scars table already existed without new columns
+    cur.execute("PRAGMA table_info(scars)")
+    existing_cols = {r[1] for r in cur.fetchall()}
+    if "source" not in existing_cols:
+      cur.execute("ALTER TABLE scars ADD COLUMN source TEXT DEFAULT 'upstream'")
+    if "original_id" not in existing_cols:
+      cur.execute("ALTER TABLE scars ADD COLUMN original_id TEXT")
+    if "raw_hash" not in existing_cols:
+      cur.execute("ALTER TABLE scars ADD COLUMN raw_hash TEXT")
+
     self.has_fts5 = False
     try:
+      cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scars_fts'")
+      if cur.fetchone():
+        cur.execute("PRAGMA table_info(scars_fts)")
+        fts_cols = {r[1] for r in cur.fetchall()}
+        if "source" not in fts_cols or "original_id" not in fts_cols:
+          cur.execute("DROP TABLE scars_fts")
+
       cur.execute("""
           CREATE VIRTUAL TABLE IF NOT EXISTS scars_fts USING fts5(
               id UNINDEXED,
@@ -406,9 +487,23 @@ class SyncSyntheticScarsScript(BaseScript):
               applies_when,
               wound,
               trap,
-              reflex
+              reflex,
+              source UNINDEXED,
+              original_id UNINDEXED
           )
       """)
+      cur.execute("SELECT COUNT(*) FROM scars_fts")
+      fts_count = cur.fetchone()[0]
+      cur.execute("SELECT COUNT(*) FROM scars")
+      total_count = cur.fetchone()[0]
+      if fts_count == 0 and total_count > 0:
+        cur.execute("""
+            INSERT INTO scars_fts (
+                id, title, category, applies_when, wound, trap, reflex, source, original_id
+            )
+            SELECT id, title, category, applies_when, wound, trap, reflex, source, original_id
+            FROM scars
+        """)
       self.has_fts5 = True
     except sqlite3.OperationalError:
       self.has_fts5 = False
@@ -423,6 +518,7 @@ class SyncSyntheticScarsScript(BaseScript):
 
     conn = None
     try:
+      file_size = os.path.getsize(self.db_path)
       conn = sqlite3.connect(self.db_path)
       cur = conn.cursor()
       cur.execute(
@@ -440,6 +536,7 @@ class SyncSyntheticScarsScript(BaseScript):
 
       self.stdout.write(
           f"Database: {self.db_path}\n"
+          f"Size: {file_size} bytes\n"
           f"Total scars: {total} scars indexed\n"
           f"ETag: {etag}\n"
           f"Last synced: {last_synced}\n"
@@ -464,6 +561,7 @@ class SyncSyntheticScarsScript(BaseScript):
           category=self.category,
           language=self.language,
           limit=self.limit,
+          source=self.source,
       )
       self.stdout.write(json.dumps(matches, indent=2) + "\n")
       return 0
@@ -530,14 +628,117 @@ class SyncSyntheticScarsScript(BaseScript):
     cur = self.conn.cursor()
     cur.execute("BEGIN TRANSACTION")
     try:
-      cur.execute("DELETE FROM scars")
-      if self.has_fts5:
-        cur.execute("DELETE FROM scars_fts")
+      # Query existing scars
+      cur.execute(
+          "SELECT id, title, wound, trap, reflex, raw_hash, source, original_id FROM scars"
+      )
+      existing_rows = {
+          r[0]: {
+              "id": r[0],
+              "title": r[1],
+              "wound": r[2],
+              "trap": r[3],
+              "reflex": r[4],
+              "raw_hash": r[5],
+              "source": r[6] or "upstream",
+              "original_id": r[7],
+          }
+          for r in cur.fetchall()
+      }
 
-      inserted_count = 0
+      incoming_upstream_ids = set()
+      modified = False
+
+      # First pass: collision reconciliation with Makeflow scars
       for item in scars_list:
         scar_id = item.get("id")
         if not scar_id:
+          continue
+        incoming_upstream_ids.add(scar_id)
+
+        raw_hash = hashlib.md5(
+            json.dumps(item, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        if scar_id in existing_rows and existing_rows[scar_id]["source"] == "makeflow":
+          mf_row = existing_rows[scar_id]
+          content_matches = False
+          if mf_row.get("raw_hash") and mf_row["raw_hash"] == raw_hash:
+            content_matches = True
+          elif (
+              mf_row.get("title") == item.get("title")
+              and mf_row.get("wound") == item.get("wound")
+              and mf_row.get("trap") == item.get("trap")
+              and mf_row.get("reflex") == item.get("reflex")
+          ):
+            content_matches = True
+
+          if content_matches:
+            # Keep upstream scar, remove Makeflow duplicate
+            cur.execute(
+                "DELETE FROM scars WHERE id = ? AND source = 'makeflow'",
+                (scar_id,),
+            )
+            del existing_rows[scar_id]
+            modified = True
+          else:
+            # Rename Makeflow scar safely without primary key collision
+            suffix = scar_id[5:] if scar_id.startswith("SCAR-") else scar_id
+            base_mf_id = f"SCAR-MF-{suffix}"
+            new_mf_id = base_mf_id
+            if new_mf_id in existing_rows:
+              existing_mf = existing_rows[new_mf_id]
+              if (
+                  existing_mf.get("title") == mf_row.get("title")
+                  and existing_mf.get("wound") == mf_row.get("wound")
+              ):
+                cur.execute(
+                    "DELETE FROM scars WHERE id = ? AND source = 'makeflow'",
+                    (scar_id,),
+                )
+                del existing_rows[scar_id]
+                modified = True
+                continue
+              counter = 2
+              while f"{base_mf_id}-{counter}" in existing_rows:
+                counter += 1
+              new_mf_id = f"{base_mf_id}-{counter}"
+
+            cur.execute(
+                "UPDATE scars SET id = ?, original_id = ? WHERE id = ? AND source = 'makeflow'",
+                (new_mf_id, scar_id, scar_id),
+            )
+            mf_row["id"] = new_mf_id
+            mf_row["original_id"] = scar_id
+            existing_rows[new_mf_id] = mf_row
+            del existing_rows[scar_id]
+            modified = True
+
+      # Second pass: delete upstream rows that are no longer in upstream list
+      for eid, erow in list(existing_rows.items()):
+        if erow.get("source") == "upstream" and eid not in incoming_upstream_ids:
+          cur.execute("DELETE FROM scars WHERE id = ? AND source = 'upstream'", (eid,))
+          del existing_rows[eid]
+          modified = True
+
+      # Third pass: delta sync incoming upstream scars
+      inserted_or_updated = 0
+      for item in scars_list:
+        scar_id = item.get("id")
+        if not scar_id:
+          continue
+
+        raw_hash = hashlib.md5(
+            json.dumps(item, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        existing_row = existing_rows.get(scar_id)
+        if (
+            existing_row
+            and existing_row.get("source") == "upstream"
+            and existing_row.get("raw_hash") == raw_hash
+        ):
+          # Skip table rewrite for unchanged row
           continue
 
         title = item.get("title", "")
@@ -563,8 +764,8 @@ class SyncSyntheticScarsScript(BaseScript):
             INSERT OR REPLACE INTO scars (
                 id, title, category, category_slug, visibility,
                 workflow_phases, applies_when, graduation_status,
-                wound, trap, circuit_breaker, reflex
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upstream', NULL, ?)
         """,
             (
                 scar_id,
@@ -579,20 +780,41 @@ class SyncSyntheticScarsScript(BaseScript):
                 trap,
                 breaker,
                 reflex,
+                raw_hash,
             ),
         )
+        existing_rows[scar_id] = {
+            "id": scar_id,
+            "title": title,
+            "wound": wound,
+            "trap": trap,
+            "reflex": reflex,
+            "raw_hash": raw_hash,
+            "source": "upstream",
+            "original_id": None,
+        }
+        modified = True
+        inserted_or_updated += 1
 
-        if self.has_fts5:
-          cur.execute(
-              """
+      # Check if scars_fts needs refresh (if modified or scars_fts empty while scars not empty)
+      if self.has_fts5:
+        cur.execute("SELECT COUNT(*) FROM scars_fts")
+        fts_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM scars")
+        total_count = cur.fetchone()[0]
+        if modified or (fts_count == 0 and total_count > 0):
+          cur.execute("DELETE FROM scars_fts")
+          cur.execute("""
               INSERT INTO scars_fts (
-                  id, title, category, applies_when, wound, trap, reflex
-              ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          """,
-              (scar_id, title, category, applies_when, wound, trap, reflex),
-          )
-
-        inserted_count += 1
+                  id, title, category, applies_when, wound, trap, reflex, source, original_id
+              )
+              SELECT id, title, category, applies_when, wound, trap, reflex, source, original_id
+              FROM scars
+          """)
+          cur.execute("INSERT INTO scars_fts(scars_fts) VALUES('optimize')")
+      else:
+        cur.execute("SELECT COUNT(*) FROM scars")
+        total_count = cur.fetchone()[0]
 
       now_iso = datetime.now(timezone.utc).isoformat()
       cur.execute(
@@ -605,9 +827,17 @@ class SyncSyntheticScarsScript(BaseScript):
       )
       cur.execute(
           "INSERT OR REPLACE INTO meta (key, value) VALUES ('total_scars', ?)",
-          (str(inserted_count),),
+          (str(total_count),),
       )
 
+      self.conn.commit()
+      if modified:
+        self.conn.execute("VACUUM")
+      file_size = os.path.getsize(self.db_path) if os.path.isfile(self.db_path) else 0
+      cur.execute(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES ('db_size_bytes', ?)",
+          (str(file_size),),
+      )
       self.conn.commit()
     except Exception as exc:
       self.conn.rollback()
@@ -615,7 +845,7 @@ class SyncSyntheticScarsScript(BaseScript):
       return 1
 
     self.stdout.write(
-        f"Successfully synchronized {inserted_count} synthetic scars to '{self.db_path}'.\n"
+        f"Successfully synchronized {len(scars_list)} synthetic scars ({inserted_or_updated} updated) to '{self.db_path}'.\n"
     )
     return 0
 

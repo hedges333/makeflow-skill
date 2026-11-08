@@ -12,6 +12,7 @@ Tests:
 8. Error handling for network and JSON serialization failures.
 """
 
+import hashlib
 import io
 import json
 import os
@@ -146,7 +147,7 @@ class TestCrossAgentPathResolution(unittest.TestCase):
         f.write("")
 
       with patch.dict(os.environ, {}, clear=True):
-        resolved = resolve_scars_db_path(workspace_dir=tmp_ws)
+        resolved = resolve_scars_db_path(workspace_dir=tmp_ws, package_root=tmp_ws)
         self.assertEqual(resolved, ws_db_file)
 
   def test_agent_path_resolution(self):
@@ -158,16 +159,74 @@ class TestCrossAgentPathResolution(unittest.TestCase):
         "copilot": os.path.join(home, ".copilot", "plugin_data", "makeflow", "scars_registry.db"),
         "chatgpt": os.path.join(home, ".chatgpt", "plugin_data", "makeflow", "scars_registry.db"),
     }
-    for agent_name, expected_path in expected_agents.items():
-      resolved = resolve_scars_db_path(agent=agent_name)
-      self.assertEqual(resolved, expected_path)
+    with tempfile.TemporaryDirectory() as tmp_pkg:
+      for agent_name, expected_path in expected_agents.items():
+        resolved = resolve_scars_db_path(agent=agent_name, package_root=tmp_pkg)
+        self.assertEqual(resolved, expected_path)
 
   def test_default_xdg_cache_fallback(self):
     home = os.path.expanduser("~")
     expected_default = os.path.join(home, ".cache", "makeflow", "scars_registry.db")
-    with patch.dict(os.environ, {}, clear=True):
-      resolved = resolve_scars_db_path()
-      self.assertEqual(resolved, expected_default)
+    with tempfile.TemporaryDirectory() as tmp_pkg:
+      with patch.dict(os.environ, {}, clear=True), patch("os.path.exists") as mock_exists:
+        mock_exists.side_effect = lambda p: p == expected_default
+        resolved = resolve_scars_db_path(package_root=tmp_pkg)
+        self.assertEqual(resolved, expected_default)
+
+  def test_bundled_database_precedence_when_present(self):
+    with tempfile.TemporaryDirectory() as tmp_pkg, tempfile.TemporaryDirectory() as tmp_ws:
+      bundled_dir = os.path.join(tmp_pkg, "skills", "makeflow", "data")
+      os.makedirs(bundled_dir, exist_ok=True)
+      bundled_db = os.path.join(bundled_dir, "scars_registry.db")
+      with open(bundled_db, "w") as f:
+        f.write("")
+
+      ws_db_dir = os.path.join(tmp_ws, ".workflow", "cache")
+      os.makedirs(ws_db_dir, exist_ok=True)
+      ws_db = os.path.join(ws_db_dir, "scars_registry.db")
+      with open(ws_db, "w") as f:
+        f.write("")
+
+      with patch.dict(os.environ, {}, clear=True):
+        resolved = resolve_scars_db_path(
+            agent="gemini",
+            workspace_dir=tmp_ws,
+            package_root=tmp_pkg,
+        )
+        self.assertEqual(resolved, os.path.abspath(bundled_db))
+
+  def test_fallback_when_bundled_database_missing(self):
+    with tempfile.TemporaryDirectory() as tmp_pkg, tempfile.TemporaryDirectory() as tmp_ws:
+      ws_db_dir = os.path.join(tmp_ws, ".workflow", "cache")
+      os.makedirs(ws_db_dir, exist_ok=True)
+      ws_db = os.path.join(ws_db_dir, "scars_registry.db")
+      with open(ws_db, "w") as f:
+        f.write("")
+
+      with patch.dict(os.environ, {}, clear=True):
+        resolved_ws = resolve_scars_db_path(
+            workspace_dir=tmp_ws,
+            package_root=tmp_pkg,
+        )
+        self.assertEqual(resolved_ws, ws_db)
+
+      home = os.path.expanduser("~")
+      expected_agent = os.path.join(
+          home, ".gemini", "antigravity-cli", "plugin_data", "makeflow", "scars_registry.db"
+      )
+      with patch.dict(os.environ, {}, clear=True):
+        resolved_agent = resolve_scars_db_path(
+            agent="gemini",
+            package_root=tmp_pkg,
+        )
+        self.assertEqual(resolved_agent, expected_agent)
+
+      expected_canonical = os.path.join(
+          tmp_pkg, "skills", "makeflow", "data", "scars_registry.db"
+      )
+      with patch.dict(os.environ, {}, clear=True):
+        resolved_default = resolve_scars_db_path(package_root=tmp_pkg)
+        self.assertEqual(resolved_default, os.path.abspath(expected_canonical))
 
 
 class TestSyncLifecycle(unittest.TestCase):
@@ -438,6 +497,350 @@ class TestErrorHandling(unittest.TestCase):
       code = script.execute(args=["--db-path", self.db_path], stderr=err)
     self.assertNotEqual(code, 0)
     self.assertIn("Error", err.getvalue())
+
+
+class TestMultiSourceDeltaSync(unittest.TestCase):
+  """Tests verifying multi-source schema, delta sync, and collision reconciliation (GH-136)."""
+
+  def setUp(self):
+    self.tmp_dir = tempfile.TemporaryDirectory()
+    self.db_path = os.path.join(self.tmp_dir.name, "multi_source.db")
+
+  def tearDown(self):
+    self.tmp_dir.cleanup()
+
+  def test_multi_source_schema_columns(self):
+    payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-s1"')):
+      code = script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(scars)")
+    col_names = [r[1] for r in cur.fetchall()]
+    self.assertIn("source", col_names)
+    self.assertIn("original_id", col_names)
+    self.assertIn("raw_hash", col_names)
+
+    cur.execute("PRAGMA table_info(scars_fts)")
+    fts_cols = [r[1] for r in cur.fetchall()]
+    self.assertIn("source", fts_cols)
+    self.assertIn("original_id", fts_cols)
+    conn.close()
+
+  def test_delta_sync_skips_unchanged_rows(self):
+    payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-s1"')):
+      code = script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    # Verify raw_hash was computed
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT id, raw_hash FROM scars")
+    rows = cur.fetchall()
+    for scar_id, raw_hash in rows:
+      self.assertIsNotNone(raw_hash)
+      self.assertEqual(len(raw_hash), 32)
+
+    # Inject canary into SCAR-ARCH-05 while leaving raw_hash unchanged
+    cur.execute("UPDATE scars SET wound = 'Canary wound' WHERE id = 'SCAR-ARCH-05'")
+    conn.commit()
+    conn.close()
+
+    # Second sync with --force: SCAR-ARCH-05 payload matches raw_hash, so rewrite is skipped
+    script2 = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-s2"')):
+      code2 = script2.execute(args=["--db-path", self.db_path, "--force"], stdout=io.StringIO())
+    self.assertEqual(code2, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT wound FROM scars WHERE id = 'SCAR-ARCH-05'")
+    wound = cur.fetchone()[0]
+    conn.close()
+    self.assertEqual(wound, "Canary wound")
+
+  def test_collision_reconciliation_renames_makeflow_scar(self):
+    # Initial sync to set up tables
+    payload = json.dumps(SAMPLE_SCARS[:1]).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-init"')):
+      code = script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    # Insert a Makeflow scar with ID SCAR-LANG-PERL-001
+    conn = sqlite3.connect(self.db_path)
+    conn.execute("""
+        INSERT INTO scars (
+            id, title, category, category_slug, visibility,
+            workflow_phases, applies_when, graduation_status,
+            wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
+        ) VALUES (
+            'SCAR-LANG-PERL-001', 'Makeflow Perl Guidelines', 'Languages', 'languages', 'public',
+            '["T30"]', 'Writing Perl scripts', 'graduated',
+            'Makeflow Perl wound', 'Makeflow Perl trap', 'Makeflow breaker', 'Makeflow reflex',
+            'makeflow', NULL, 'mf_hash'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Upstream provides SCAR-LANG-PERL-001 with different content
+    upstream_payload = [
+        SAMPLE_SCARS[0],
+        {
+            "id": "SCAR-LANG-PERL-001",
+            "title": "Upstream Perl Scars",
+            "category": "Languages",
+            "categorySlug": "languages",
+            "visibility": "public",
+            "workflowPhases": ["T30"],
+            "appliesWhen": "Writing CPAN modules",
+            "graduationStatus": "graduated",
+            "wound": "Upstream Perl wound",
+            "trap": "Upstream Perl trap",
+            "circuitBreaker": "Upstream breaker",
+            "reflex": "Upstream reflex",
+        },
+    ]
+    payload_bytes = json.dumps(upstream_payload).encode("utf-8")
+    script2 = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload_bytes, etag='"etag-coll"')):
+      code2 = script2.execute(args=["--db-path", self.db_path, "--force"], stdout=io.StringIO())
+    self.assertEqual(code2, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+
+    # Verify upstream scar is inserted with source='upstream' and original id
+    cur.execute("SELECT id, source, original_id, title FROM scars WHERE id = 'SCAR-LANG-PERL-001'")
+    up_row = cur.fetchone()
+    self.assertIsNotNone(up_row)
+    self.assertEqual(up_row[1], "upstream")
+    self.assertIsNone(up_row[2])
+    self.assertEqual(up_row[3], "Upstream Perl Scars")
+
+    # Verify makeflow scar is renamed with source='makeflow' and original_id='SCAR-LANG-PERL-001'
+    cur.execute("SELECT id, source, original_id, title FROM scars WHERE id = 'SCAR-MF-LANG-PERL-001'")
+    mf_row = cur.fetchone()
+    self.assertIsNotNone(mf_row)
+    self.assertEqual(mf_row[1], "makeflow")
+    self.assertEqual(mf_row[2], "SCAR-LANG-PERL-001")
+    self.assertEqual(mf_row[3], "Makeflow Perl Guidelines")
+
+    # Verify both are searchable in FTS5
+    up_search = query_scars(self.db_path, query="Upstream")
+    self.assertTrue(any(r["id"] == "SCAR-LANG-PERL-001" for r in up_search))
+
+    mf_search = query_scars(self.db_path, query="Guidelines")
+    self.assertTrue(any(r["id"] == "SCAR-MF-LANG-PERL-001" for r in mf_search))
+    conn.close()
+
+  def test_query_scars_source_filter_and_fields(self):
+    # Setup DB with an upstream scar and a makeflow scar
+    self.test_collision_reconciliation_renames_makeflow_scar()
+
+    # Query all perl scars
+    results = query_scars(self.db_path, query="Perl", limit=10)
+    self.assertGreaterEqual(len(results), 2)
+    for r in results:
+      self.assertIn("source", r)
+      self.assertIn("originalId", r)
+
+    # Filter by source='makeflow'
+    mf_only = query_scars(self.db_path, query="Perl", source="makeflow")
+    self.assertTrue(len(mf_only) >= 1)
+    self.assertTrue(all(r["source"] == "makeflow" for r in mf_only))
+    self.assertEqual(mf_only[0]["id"], "SCAR-MF-LANG-PERL-001")
+    self.assertEqual(mf_only[0]["originalId"], "SCAR-LANG-PERL-001")
+
+    # Filter by source='upstream'
+    up_only = query_scars(self.db_path, query="Perl", source="upstream")
+    self.assertTrue(len(up_only) >= 1)
+    self.assertTrue(all(r["source"] == "upstream" for r in up_only))
+    self.assertEqual(up_only[0]["id"], "SCAR-LANG-PERL-001")
+
+  def test_sync_never_deletes_makeflow_scars(self):
+    payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-init"')):
+      script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+
+    # Insert custom Makeflow scar
+    conn = sqlite3.connect(self.db_path)
+    conn.execute("""
+        INSERT INTO scars (
+            id, title, category, category_slug, visibility,
+            workflow_phases, applies_when, graduation_status,
+            wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
+        ) VALUES (
+            'SCAR-MF-CUSTOM-99', 'Makeflow Custom Scar', 'Testing', 'testing', 'public',
+            '["T30"]', 'Testing custom scars', 'graduated',
+            'wound', 'trap', 'breaker', 'reflex',
+            'makeflow', NULL, 'custom_hash'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Sync with upstream payload that has only SCAR-ARCH-05
+    reduced_payload = json.dumps([SAMPLE_SCARS[0]]).encode("utf-8")
+    script2 = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(reduced_payload, etag='"etag-red"')):
+      code = script2.execute(args=["--db-path", self.db_path, "--force"], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    # Makeflow scar MUST NOT be deleted
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT id, source FROM scars WHERE id = 'SCAR-MF-CUSTOM-99'")
+    row = cur.fetchone()
+    self.assertIsNotNone(row)
+    self.assertEqual(row[1], "makeflow")
+    conn.close()
+
+  def test_collision_reconciliation_handles_existing_mf_prefix(self):
+    payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-1"')):
+      script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+
+    conn = sqlite3.connect(self.db_path)
+    # Insert both SCAR-MF-LANG-PERL-001 and a distinct SCAR-LANG-PERL-001 with source='makeflow'
+    conn.execute("""
+        INSERT INTO scars (
+            id, title, category, category_slug, visibility,
+            workflow_phases, applies_when, graduation_status,
+            wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
+        ) VALUES (
+            'SCAR-MF-LANG-PERL-001', 'First Makeflow Perl Rule', 'Polyglot', 'polyglot', 'public',
+            '["T30"]', 'Perl', 'graduated', 'First wound', 'First trap', 'NOOO', 'First reflex',
+            'makeflow', 'SCAR-LANG-PERL-001', 'hash_mf_1'
+        )
+    """)
+    conn.execute("""
+        INSERT INTO scars (
+            id, title, category, category_slug, visibility,
+            workflow_phases, applies_when, graduation_status,
+            wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
+        ) VALUES (
+            'SCAR-LANG-PERL-001', 'Second Makeflow Perl Rule', 'Polyglot', 'polyglot', 'public',
+            '["T30"]', 'Perl', 'graduated', 'Second wound', 'Second trap', 'NOOO', 'Second reflex',
+            'makeflow', NULL, 'hash_mf_2'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    upstream_perl = {
+        "id": "SCAR-LANG-PERL-001",
+        "title": "Upstream Perl Rule",
+        "category": "Polyglot",
+        "categorySlug": "polyglot",
+        "visibility": "public",
+        "workflowPhases": ["T30"],
+        "appliesWhen": "Perl",
+        "graduationStatus": "graduated",
+        "wound": "Upstream wound",
+        "trap": "Upstream trap",
+        "circuitBreaker": "NOOO",
+        "reflex": "Upstream reflex",
+    }
+    new_payload = json.dumps(SAMPLE_SCARS + [upstream_perl]).encode("utf-8")
+    script2 = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(new_payload, etag='"etag-2"')):
+      code = script2.execute(args=["--db-path", self.db_path, "--force"], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT id, title, source FROM scars WHERE id LIKE '%PERL-001%' ORDER BY id")
+    rows = cur.fetchall()
+    ids = {r[0]: (r[1], r[2]) for r in rows}
+    self.assertIn("SCAR-LANG-PERL-001", ids)
+    self.assertEqual(ids["SCAR-LANG-PERL-001"], ("Upstream Perl Rule", "upstream"))
+    self.assertIn("SCAR-MF-LANG-PERL-001", ids)
+    self.assertEqual(ids["SCAR-MF-LANG-PERL-001"], ("First Makeflow Perl Rule", "makeflow"))
+    self.assertIn("SCAR-MF-LANG-PERL-001-2", ids)
+    self.assertEqual(ids["SCAR-MF-LANG-PERL-001-2"], ("Second Makeflow Perl Rule", "makeflow"))
+    conn.close()
+
+  def test_schema_upgrade_rebuilds_fts5_before_304(self):
+    # Create legacy database where scars_fts lacks source and original_id
+    legacy_db = os.path.join(self.tmp_dir.name, "legacy_upgrade.db")
+    conn = sqlite3.connect(legacy_db)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT INTO meta VALUES ('etag', '\"etag-v1\"')")
+    conn.execute("""
+        CREATE TABLE scars (
+            id TEXT PRIMARY KEY, title TEXT, category TEXT, category_slug TEXT,
+            visibility TEXT, workflow_phases TEXT, applies_when TEXT,
+            graduation_status TEXT, wound TEXT, trap TEXT, circuit_breaker TEXT, reflex TEXT
+        )
+    """)
+    s = SAMPLE_SCARS[0]
+    conn.execute(
+        "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            s["id"], s["title"], s["category"], s["categorySlug"], s["visibility"],
+            json.dumps(s["workflowPhases"]), s["appliesWhen"], s["graduationStatus"],
+            s["wound"], s["trap"], s["circuitBreaker"], s["reflex"],
+        ),
+    )
+    conn.execute("""
+        CREATE VIRTUAL TABLE scars_fts USING fts5(
+            id UNINDEXED, title, category, applies_when, wound, trap, reflex
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    # Simulate HTTP 304 Not Modified immediately after schema upgrade
+    http_304 = urllib.error.HTTPError(
+        url="https://syntheticscars.org/registry.json",
+        code=304,
+        msg="Not Modified",
+        hdrs={},
+        fp=None,
+    )
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", side_effect=http_304):
+      code = script.execute(args=["--db-path", legacy_db], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    # Verify scars_fts was rebuilt and populated during _init_db_schema before 304 exit
+    results = query_scars(legacy_db, query="BaseScript")
+    self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["id"], "SCAR-ARCH-05")
+
+  def test_database_size_tracking_and_compaction(self):
+    payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-sz"')):
+      code = script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+    self.assertEqual(code, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+    row = cur.fetchone()
+    self.assertIsNotNone(row)
+    self.assertGreater(int(row[0]), 0)
+    conn.close()
+
+    out = io.StringIO()
+    script_status = SyncSyntheticScarsScript()
+    code_status = script_status.execute(args=["--db-path", self.db_path, "--status"], stdout=out)
+    self.assertEqual(code_status, 0)
+    self.assertIn("Size:", out.getvalue())
+
+    bundled_db = resolve_scars_db_path()
+    if os.path.isfile(bundled_db):
+      self.assertLess(os.path.getsize(bundled_db), 25 * 1024 * 1024)
 
 
 if __name__ == "__main__":
