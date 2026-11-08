@@ -1472,5 +1472,83 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-128",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/128",
+    "title": "[FEAT] Codify SCAR-TOOL-16: Prohibit arbitrary output limits and require volume triage interview",
+    "request": "Codify SCAR-TOOL-16 to prohibit arbitrary output limits during investigation and triage tasks. Add wound, trap, circuit breaker, permanent reflex, and probe to tooling_and_hci.md, update master routing catalog, add Rule 1.11 to AGENTS.md, synchronize adapters, and add compatibility assertions.",
+    "branch": "feat/128-codify-scar-tool-16-volume-triage",
+    "subprojects": [
+      "skills",
+      "rules",
+      "scripts",
+      "adapters"
+    ],
+    "started_at": "2026-11-07T16:40:42-08:00",
+    "completed_at": "2026-11-07T17:07:08-08:00",
+    "commit_sha": "79ec491",
+    "pr_number": 137,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/137",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": [
+      "SCAR-TOOL-16"
+    ]
+  },
+  {
+    "id": "GH-120",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/120",
+    "title": "[FEAT] integrate \"circuit breaker\" into our scar format",
+    "request": "Integrate Circuit Breaker as an optional fifth vector in the Makeflow synthetic scar anatomy, backport Simple English circuit breakers to SCAR-PROC-108 and SCAR-HCI-08, and add non-tautological test verification in test_cross_agent_compatibility.py.",
+    "branch": "feat/120-circuit-breaker-scar-format",
+    "subprojects": [
+      "skills",
+      "scripts"
+    ],
+    "started_at": "2026-11-07T16:53:00-08:00",
+    "completed_at": "2026-11-07T17:16:00-08:00",
+    "commit_sha": "e1cd5bf",
+    "pr_number": 138,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/138",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
+  },
+  {
+    "id": "GH-130",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/130",
+    "title": "[TECH-DEBT] Refactor session_start.py and terminal_title.py broad exception handlers to specific error types",
+    "request": "Refactor broad exception handlers in session_start.py and terminal_title.py to catch specific error types instead of bare Exception, remove 30-character tag truncation to preserve full GitHub issue titles, and add unit tests.",
+    "branch": "fix/130-refactor-broad-exceptions",
+    "subprojects": [
+      "scripts"
+    ],
+    "started_at": "2026-11-07T16:42:33-08:00",
+    "completed_at": "2026-11-07T17:20:00-08:00",
+    "commit_sha": "4056bd8",
+    "pr_number": 139,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/139",
+    "closes_issue": true,
+    "tests_added": 17,
+    "scars_earned": []
+  },
+  {
+    "id": "GH-112",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/112",
+    "title": "[FEAT] Add Conventional Commits helper script and standardize issue trailer format",
+    "request": "Create Conventional Commits helper script, standardize header and trailer formats, validate CC 1.0.0 and 2-line changed files structure, and add hermetic unit tests.",
+    "branch": "feat/112-conventional-commits-helper",
+    "subprojects": [
+      "scripts"
+    ],
+    "started_at": "2026-11-07T16:42:26-08:00",
+    "completed_at": "2026-11-07T17:33:00-08:00",
+    "commit_sha": "19df98a",
+    "pr_number": 140,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/140",
+    "closes_issue": true,
+    "tests_added": 34,
+    "scars_earned": []
   }
 ]

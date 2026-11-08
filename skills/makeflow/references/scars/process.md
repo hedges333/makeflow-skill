@@ -111,6 +111,7 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 
 - **Wound**: Agents reflexively propose opening new GitHub issues for every non-blocking review observation, causing ticket inflation, duplicate backlog items, and fragmented changes.
 - **Trap**: Assuming all review observations warrant new standalone tickets instead of deduplicating against open issues, evaluating scope rollup, or consciously dismissing low-risk items.
+- **Circuit Breaker**: If you encounter an unrelated defect or outsized observation, halt immediately. Do not create autonomous tickets or monolithic plans.
 - **Permanent Reflex**: Apply the 4-step observation triage protocol: (1) search open issues with `gh issue list` for deduplication; (2) evaluate scope relationship: very related becomes a blocker for `tdd-worker`, somewhat related offers a choice to roll up into current changes, and totally unrelated proposes a ticket; (3) consciously dismiss negligible-risk or high-complexity observations with documented rationale; (4) enforce the human escalation gate prohibiting autonomous ticket creation without explicit human declaration.
 - **Socratic Probe**: Did you search `gh issue list` for duplicates and evaluate whether this observation is very related (blocker), somewhat related (rollup candidate), or consciously dismissible before proposing a new ticket? Did you obtain explicit human declaration before opening an issue?
 

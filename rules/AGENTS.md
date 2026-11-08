@@ -118,6 +118,18 @@ When resolving pre-push rebase conflicts at Target 60:
 5. Re-dispatch `adversarial-critic` with explicit manual path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) before advancing to push.
 6. Advance target from `T60` to `T40` in the Makefile DAG to complete the adversarial re-audit.
 
+### 1.11 Prohibit Arbitrary Output Limits and Require Volume Triage Interview (SCAR-TOOL-16)
+
+When inspecting or triaging information sources:
+
+1. Never unilaterally append arbitrary `--limit`, `-n`, or truncation flags (`head -n`, `--limit 10`).
+2. If high output volume threatens context limits, halt tool execution immediately.
+3. Report the volume risk and interview the user to select one of four paths:
+   - Revise the directive or filter criteria.
+   - Impose explicit user-approved limits.
+   - Count total rows first before reading detailed content.
+   - Proceed without limits.
+
 ## 2. Production Data Protection Rules
 
 Never connect tests or agent commands to live systems.

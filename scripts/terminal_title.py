@@ -268,7 +268,7 @@ def detect_project_name(
               name_val = data[key].strip()
               if name_val and not is_temporary_directory_name(name_val):
                 return name_val
-      except (json.JSONDecodeError, OSError):
+      except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         pass
 
   base = os.path.basename(root)
@@ -295,7 +295,7 @@ def detect_ticket_id(
         m = regex.search(content)
         if m:
           return m.group(1).strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
       pass
 
   # 2. Git branch
@@ -333,7 +333,7 @@ def detect_ticket_id(
       m = _NEXT_ACTION_RE.search(content)
       if m:
         return m.group(1).strip()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
       pass
 
   return ""
@@ -354,7 +354,7 @@ def detect_issue_tag(
     without_type = re.sub(r"^\s*\[[A-Za-z0-9_-]+\]\s*", "", tag).strip()
     if without_type:
       tag = without_type
-    return tag[:30].strip(" -_")
+    return tag.strip(" -_")
 
   # 1. State card .workflow/state/10_ticket.md
   card_10 = os.path.join(root, ".workflow", "state", "10_ticket.md")
@@ -377,7 +377,7 @@ def detect_issue_tag(
         candidate = _clean_tag(m_desc.group(1))
         if candidate:
           return candidate
-    except OSError:
+    except (OSError, UnicodeDecodeError):
       pass
 
   # 2. Readerboard .workflow/state/99_next_action.md
@@ -391,7 +391,7 @@ def detect_issue_tag(
         candidate = _clean_tag(m_bullet.group(1))
         if candidate:
           return candidate
-    except OSError:
+    except (OSError, UnicodeDecodeError):
       pass
 
   # 3. Git branch slug
@@ -434,7 +434,7 @@ def format_terminal_title(
   p = sanitize_terminal_title(project_name)
   tag = ""
   if issue_tag:
-    tag = sanitize_terminal_title(issue_tag)[:30].strip()
+    tag = sanitize_terminal_title(issue_tag).strip()
 
   if tag:
     if t and p:
@@ -516,7 +516,7 @@ def set_terminal_title(
     if hasattr(target_stream, "flush"):
       target_stream.flush()
     return True, final_title
-  except Exception:
+  except (OSError, UnicodeEncodeError):
     return False, ""
   finally:
     if opened_file is not None:

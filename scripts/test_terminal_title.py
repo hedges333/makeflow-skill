@@ -300,13 +300,58 @@ class TestProjectAndTicketDetection(unittest.TestCase):
         "GH-113 makeflow-skill",
     )
 
-  def test_issue_tag_length_ceiling_30_chars(self):
-    long_tag = "Fix authentication timeout on redirect and retry"  # 48 chars
+  def test_issue_tag_preserves_full_title(self):
+    long_tag = (
+        "Fix authentication timeout on redirect and retry when session expires after idle period"  # 87 chars
+    )
     result = format_terminal_title("GH-42", "backend", long_tag)
     tag_part = result.split(": ", 1)[1]
-    self.assertLessEqual(len(tag_part), 30)
-    self.assertEqual(tag_part, long_tag[:30].strip())
-    self.assertEqual(result, f"GH-42 backend: {long_tag[:30].strip()}")
+    self.assertEqual(tag_part, long_tag)
+    self.assertEqual(result, f"GH-42 backend: {long_tag}")
+
+  def test_detect_issue_tag_preserves_full_title_from_state_cards(self):
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    long_desc = "refactor broad exception handlers and preserve full terminal title in session start"
+    card_10 = os.path.join(state_dir, "10_ticket.md")
+    with open(card_10, "w", encoding="utf-8") as f:
+      f.write(
+          f"# Ticket Intake: GH-130\n\n"
+          f"- Ticket: [GH-130: [FEAT] {long_desc}](https://github.com/...)\n"
+      )
+    tag = detect_issue_tag(repo_root=self.temp_dir)
+    self.assertEqual(tag, long_desc)
+
+  def test_detect_project_name_handles_unicode_decode_error(self):
+    plugin_path = os.path.join(self.temp_dir, "plugin.json")
+    with open(plugin_path, "wb") as f:
+      f.write(b"\xff\xfe\x00\x01")
+    name = detect_project_name(repo_root=self.temp_dir, git_remote_url="")
+    self.assertEqual(name, os.path.basename(self.temp_dir))
+
+  def test_detect_ticket_id_handles_unicode_decode_error(self):
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    card_10 = os.path.join(state_dir, "10_ticket.md")
+    with open(card_10, "wb") as f:
+      f.write(b"\xff\xfe\x00\x01")
+    card_99 = os.path.join(state_dir, "99_next_action.md")
+    with open(card_99, "wb") as f:
+      f.write(b"\xff\xfe\x00\x01")
+    ticket = detect_ticket_id(repo_root=self.temp_dir, branch="")
+    self.assertEqual(ticket, "")
+
+  def test_detect_issue_tag_handles_unicode_decode_error(self):
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    card_10 = os.path.join(state_dir, "10_ticket.md")
+    with open(card_10, "wb") as f:
+      f.write(b"\xff\xfe\x00\x01")
+    card_99 = os.path.join(state_dir, "99_next_action.md")
+    with open(card_99, "wb") as f:
+      f.write(b"\xff\xfe\x00\x01")
+    tag = detect_issue_tag(repo_root=self.temp_dir, branch="")
+    self.assertEqual(tag, "")
 
   def test_detect_issue_tag_from_state_cards_and_branch(self):
     self.assertIsNotNone(
@@ -474,6 +519,54 @@ class TestSetTerminalTitle(unittest.TestCase):
         stream.getvalue(),
         "\033]0;GH-113 makeflow-skill: enhance terminal title\007",
     )
+
+  def test_set_terminal_title_catches_oserror_and_unicode_encode_error(self):
+    stream = MockTtyStream()
+    with patch.object(stream, "write", side_effect=OSError("Disk/TTY write error")):
+      ok, applied = set_terminal_title(
+          ticket_id="GH-130",
+          project_name="makeflow-skill",
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+      )
+      self.assertFalse(ok)
+      self.assertEqual(applied, "")
+
+    with patch.object(
+        stream,
+        "write",
+        side_effect=UnicodeEncodeError("ascii", "test", 0, 1, "ordinal not in range"),
+    ):
+      ok, applied = set_terminal_title(
+          ticket_id="GH-130",
+          project_name="makeflow-skill",
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+      )
+      self.assertFalse(ok)
+      self.assertEqual(applied, "")
+
+  def test_set_terminal_title_propagates_unrelated_exceptions(self):
+    stream = MockTtyStream()
+    with patch.object(stream, "write", side_effect=TypeError("Synthetic TypeError")):
+      with self.assertRaises(TypeError):
+        set_terminal_title(
+            ticket_id="GH-130",
+            project_name="makeflow-skill",
+            stream=stream,
+            env={"TERM": "xterm-256color"},
+        )
+
+    with patch.object(
+        stream, "write", side_effect=RuntimeError("Synthetic RuntimeError")
+    ):
+      with self.assertRaises(RuntimeError):
+        set_terminal_title(
+            ticket_id="GH-130",
+            project_name="makeflow-skill",
+            stream=stream,
+            env={"TERM": "xterm-256color"},
+        )
 
 
 class TestTerminalTitleScriptLifecycle(unittest.TestCase):

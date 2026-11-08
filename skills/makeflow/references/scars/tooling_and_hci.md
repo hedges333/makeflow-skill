@@ -10,6 +10,7 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 | `SCAR-TOOL-13` | Single State Writer Isolation | Subagent State File Concurrency |
 | `SCAR-TOOL-14` | Programmatic Tool Polling vs Subagent Scrape Loops | Remote Polling & Subagent Latency |
 | `SCAR-TOOL-15` | Anchored State Marker Detection vs Substring Matching | Workflow State Parsing |
+| `SCAR-TOOL-16` | Prohibit Arbitrary Output Limits and Require Volume Triage Interview | Information Triage & Output Limits |
 | `SCAR-HCI-08` | Multi-Choice Prompt Rule | User Interaction & Choice Gates |
 | `SCAR-DOC-16` | Concentric Documentation Rings | Layered Architecture & Readability |
 
@@ -33,6 +34,7 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 
 - **Wound**: Calling `ask_question` on single-option gates or opening modal prompts without printing the full proposal in chat degrades user experience.
 - **Trap**: Using choice widgets for simple single-action approvals.
+- **Circuit Breaker**: If a decision has fewer than two concrete alternatives, never call `ask_question`. Print the full proposal in chat with clickable links and stop tool calls.
 - **Permanent Reflex**: Call `ask_question` only when two or more choices exist ($N \ge 2$). For single approvals ($N = 1$), print the proposal in chat and stop tool calls.
 - **Socratic Probe**: If there is only one approval action, does opening a multiple-choice widget add unnecessary friction? Should you present the full proposal in chat with file links and reserve `ask_question` for multiple alternatives?
 
@@ -56,5 +58,17 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 - **Trap**: Assuming substring matching is sufficient to identify active workflow targets without recognizing that milestone templates contain all target names.
 - **Permanent Reflex**: When parsing workflow state files, never use unanchored substring matching. Always use anchored regular expressions that match the active target line or active milestone marker (such as `re.search(r"(?im)^-\s*Active Target:\s*...", txt)`).
 - **Socratic Probe**: If you test for target names with loose substring matching, will milestone checklists trigger false positive transitions? Are you using anchored regular expressions to match only the active target header?
+
+### SCAR-TOOL-16: Prohibit Arbitrary Output Limits and Require Volume Triage Interview
+
+- **Wound**: An agent investigates or triages an information source and unilaterally restricts output with an arbitrary limit argument. The capped output omits vital records, leading to an incomplete assessment and flawed conclusions.
+- **Trap**: The agent assumes high output volume will exhaust context. It adds arbitrary limits instead of inspecting total volume or consulting the user.
+- **Circuit Breaker**: If you investigate or triage an information source, never append arbitrary limit arguments. If high volume threatens context limits, halt tool execution immediately and interview the user.
+- **Permanent Reflex**: Never arbitrarily impose `--limit` or truncation flags before assessing the full dataset. If you suspect output volume will crowd context or make the directive unfeasible, report the volume risk first. Interview the user to select one of four paths:
+  1. Revise the directive or filter criteria.
+  2. Impose explicit user-approved limits.
+  3. Count total rows first before reading detailed content.
+  4. Proceed without limits.
+- **Socratic Probe**: Did you arbitrarily impose a `--limit` flag on an information source during triage? If output volume might crowd context, did you stop to count rows and interview the user before restricting data?
 
 

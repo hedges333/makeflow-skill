@@ -37,6 +37,7 @@ Move through these targets in dependency order:
 - If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the path to the runtime interpreter under SCAR-SH-01.
 - Encapsulate script and entry-point logic in testable classes using the BaseScript Template Method pattern under SCAR-ARCH-05.
 - Use atomic directory creation (mkdir) for mutual exclusion locks under SCAR-SYS-08.
+- Never arbitrarily impose --limit or truncation flags before assessing the full dataset. If output volume threatens context limits, halt tool execution immediately and interview the user under SCAR-TOOL-16.
 
 4. SIMPLE ENGLISH
 - Write documentation, plans, and commit messages in Simple English: short sentences, active voice, terms defined at first use, and no filler words.

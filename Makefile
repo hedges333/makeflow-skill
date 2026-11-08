@@ -8,7 +8,7 @@ PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -30,6 +30,7 @@ help:
 	@echo "  make test-reflex        - Test Vector 4 Reflex emitter and workflow gates (SCAR-ARCH-06)"
 	@echo "  make test-tdd-guard     - Test cryptographically anchored TDD receipts (SCAR-TEST-12)"
 	@echo "  make test-workspace-mutex - Test multi-workspace mutual exclusion (SCAR-SYS-08)"
+	@echo "  make test-commit-msg    - Test Conventional Commits formatter and validator (GH-112)"
 	@echo "  make check-plugin-files - Check required plugin manifests and core skill files"
 	@echo "  make check-skill-budget - Check SKILL.md context size ceiling (SCAR-PROC-99)"
 	@echo "  make install            - Install plugin into ~/.gemini/config/plugins/$(PLUGIN_NAME)"
@@ -212,7 +213,16 @@ test-workspace-mutex:
 		--rejected "Allowing parallel sessions on the same ticket across workspaces." \
 		--reflex "Run $(PYTHON) -m unittest -v scripts/test_workspace_mutex.py, fix failing tests, and re-run make test-workspace-mutex."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex
+test-commit-msg:
+	@echo "Testing Conventional Commits formatter and validator..."
+	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_commit_msg.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id GIT-20 \
+		--code COMMIT_MSG_SUITE_FAILED \
+		--trigger "scripts/test_commit_msg.py failed." \
+		--rejected "Failing Conventional Commits parsing, formatting, or trailer validation." \
+		--reflex "Run $(PYTHON) -m unittest -v scripts/test_commit_msg.py, fix failing tests, and re-run make test-commit-msg."
+
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget
