@@ -34,6 +34,7 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 
 - **Wound**: Calling `ask_question` on single-option gates or opening modal prompts without printing the full proposal in chat degrades user experience.
 - **Trap**: Using choice widgets for simple single-action approvals.
+- **Circuit Breaker**: If a decision has fewer than two concrete alternatives, never call `ask_question`. Print the full proposal in chat with clickable links and stop tool calls.
 - **Permanent Reflex**: Call `ask_question` only when two or more choices exist ($N \ge 2$). For single approvals ($N = 1$), print the proposal in chat and stop tool calls.
 - **Socratic Probe**: If there is only one approval action, does opening a multiple-choice widget add unnecessary friction? Should you present the full proposal in chat with file links and reserve `ask_question` for multiple alternatives?
 
