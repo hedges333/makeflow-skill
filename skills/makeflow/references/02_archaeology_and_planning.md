@@ -23,6 +23,16 @@ Do not plan code edits from guesswork. Inspect the repository first to gather fa
 11. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`.
 12. Write `.workflow/state/15_archaeology_receipt.md` and advance to Target 20.
 
+### 1.1 Post-Archaeology Dependency Coupling Evaluation
+
+If intake proceeded under `ALLOW_BLOCKED=1`, evaluate dependency coupling in Target 15.
+Coupling means one module depends directly on another module.
+Determine whether active code paths intersect the upstream blocker:
+
+1. If archaeology proves an active technical blocker exists, recommend halting work or switching tickets.
+2. If archaeology proves the code paths are decoupled, document the proof in `15_archaeology_receipt.md`.
+3. Proceed to Target 20 planning only if the implementation can complete safely without the upstream fix.
+
 ## 2. Target 20: Plan File Creation (`20_plan.md`)
 
 Write the implementation plan to `.workflow/state/20_plan.md`.

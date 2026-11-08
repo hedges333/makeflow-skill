@@ -360,6 +360,36 @@ class TestWorkspaceMutex(unittest.TestCase):
     rel_data = json.loads(out_rel.getvalue())
     self.assertTrue(rel_data["released"])
 
+    # CLI check-dependencies
+    out_dep = io.StringIO()
+    payload = {
+        "data": {
+            "repository": {
+                "issue": {
+                    "issueDependenciesSummary": {"totalBlockedBy": 0},
+                    "blockedBy": {"totalCount": 0, "nodes": []},
+                }
+            }
+        }
+    }
+    mock_proc = MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
+    with patch("subprocess.run", return_value=mock_proc):
+      code_dep = script.execute(
+          args=[
+              "check-dependencies",
+              "--ticket",
+              "GH-100",
+              "--repo-root",
+              self.repo_root,
+              "--json",
+          ],
+          stdout=out_dep,
+          stderr=io.StringIO(),
+      )
+    self.assertEqual(code_dep, 0)
+    dep_data = json.loads(out_dep.getvalue())
+    self.assertFalse(dep_data["blocked"])
+
   def test_is_pid_alive_contract(self):
     """TestCase 11: is_pid_alive properly identifies alive and dead PIDs."""
     mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
@@ -572,8 +602,10 @@ class TestWorkspaceMutex(unittest.TestCase):
     with open(mk_path, "r", encoding="utf-8") as f:
       content = f.read()
     self.assertIn("TICKET ?=", content)
+    self.assertIn("ALLOW_BLOCKED ?=", content)
     self.assertIn("export TICKET", content)
     self.assertIn("--ticket $(TICKET)", content)
+    self.assertIn("$(if $(ALLOW_BLOCKED),--allow-blocked,)", content)
 
   def test_acquire_toctou_delayed_session_json(self):
     """TestCase 20: acquire retries reading session.json before declaring lock stale."""
@@ -611,6 +643,198 @@ class TestWorkspaceMutex(unittest.TestCase):
     self.assertFalse(res["acquired"])
     self.assertEqual(res["reason"], "COLLISION")
     self.assertGreaterEqual(calls[0], 2)
+
+  def test_check_dependencies_no_blockers(self):
+    """TestCase 21: check_dependencies reports unblocked when issue has zero blockers."""
+    mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    payload = {
+        "data": {
+            "repository": {
+                "issue": {
+                    "issueDependenciesSummary": {"totalBlockedBy": 0},
+                    "blockedBy": {"totalCount": 0, "nodes": []},
+                }
+            }
+        }
+    }
+    mock_proc = MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
+    with patch("subprocess.run", return_value=mock_proc) as mock_run:
+      res = mutex.check_dependencies("GH-100")
+      self.assertFalse(res["blocked"])
+      self.assertEqual(res["blocking_count"], 0)
+      self.assertEqual(res["open_blockers"], [])
+      self.assertEqual(res["hosting_mode"], "GITHUB")
+      mock_run.assert_called_once()
+      args = mock_run.call_args[0][0]
+      self.assertEqual(args[:3], ["gh", "api", "graphql"])
+      self.assertIn("-F", args)
+      self.assertIn("issue=100", args)
+
+  def test_check_dependencies_open_blockers(self):
+    """TestCase 22: check_dependencies detects open blockers and returns blocker nodes."""
+    mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    payload = {
+        "data": {
+            "repository": {
+                "issue": {
+                    "issueDependenciesSummary": {"totalBlockedBy": 1},
+                    "blockedBy": {
+                        "totalCount": 1,
+                        "nodes": [
+                            {"number": 42, "title": "Upstream feature", "state": "OPEN"}
+                        ],
+                    },
+                }
+            }
+        }
+    }
+    mock_proc = MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
+    with patch("subprocess.run", return_value=mock_proc):
+      res = mutex.check_dependencies("GH-100")
+      self.assertTrue(res["blocked"])
+      self.assertEqual(res["blocking_count"], 1)
+      self.assertEqual(len(res["open_blockers"]), 1)
+      self.assertEqual(res["open_blockers"][0]["number"], 42)
+      self.assertEqual(res["open_blockers"][0]["title"], "Upstream feature")
+
+  def test_check_dependencies_closed_blockers(self):
+    """TestCase 23: check_dependencies ignores closed blockers and reports unblocked."""
+    mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    payload = {
+        "data": {
+            "repository": {
+                "issue": {
+                    "issueDependenciesSummary": {"totalBlockedBy": 1},
+                    "blockedBy": {
+                        "totalCount": 1,
+                        "nodes": [
+                            {
+                                "number": 42,
+                                "title": "Completed upstream feature",
+                                "state": "CLOSED",
+                            }
+                        ],
+                    },
+                }
+            }
+        }
+    }
+    mock_proc = MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
+    with patch("subprocess.run", return_value=mock_proc):
+      res = mutex.check_dependencies("GH-100")
+      self.assertFalse(res["blocked"])
+      self.assertEqual(res["blocking_count"], 0)
+      self.assertEqual(res["open_blockers"], [])
+
+  def test_check_dependencies_pure_git(self):
+    """TestCase 24: check_dependencies in PURE_GIT mode bypasses remote API calls."""
+    mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    with patch("subprocess.run") as mock_run:
+      res = mutex.check_dependencies("GH-100", hosting_mode="PURE_GIT")
+      self.assertFalse(res["blocked"])
+      self.assertEqual(res["blocking_count"], 0)
+      self.assertEqual(res["open_blockers"], [])
+      self.assertEqual(res["hosting_mode"], "PURE_GIT")
+      mock_run.assert_not_called()
+
+  def test_check_dependencies_graphql_error(self):
+    """TestCase 25: check_dependencies handles subprocess failure and exceptions gracefully."""
+    mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    mock_proc = MagicMock(
+        returncode=1, stdout="", stderr="GraphQL error: Could not resolve to an Issue"
+    )
+    with patch("subprocess.run", return_value=mock_proc):
+      res = mutex.check_dependencies("GH-100")
+      self.assertFalse(res["blocked"])
+      self.assertIn("error", res)
+
+    with patch("subprocess.run", side_effect=subprocess.SubprocessError("network timeout")):
+      res = mutex.check_dependencies("GH-100")
+      self.assertFalse(res["blocked"])
+      self.assertIn("error", res)
+
+  def test_intake_gate_fails_when_blocked_without_allow_flag(self):
+    """TestCase 26: workflow_gates intake fails when issue has open blockers without --allow-blocked."""
+    exclude_file = os.path.join(self.repo_root, ".git", "info", "exclude")
+    with open(exclude_file, "a", encoding="utf-8") as f:
+      f.write(".workflow/state/\n.workflow/archive/\n")
+
+    err_stream = io.StringIO()
+    mock_remote = {
+        "conflict": False,
+        "hosting_mode": "GITHUB",
+        "assignees": [],
+        "labels": [],
+    }
+    mock_dep = {
+        "blocked": True,
+        "blocking_count": 1,
+        "open_blockers": [
+            {"number": 42, "title": "Upstream feature", "state": "OPEN"}
+        ],
+        "hosting_mode": "GITHUB",
+    }
+    with patch.object(WorkspaceMutex, "check_remote", return_value=mock_remote):
+      with patch.object(WorkspaceMutex, "check_dependencies", return_value=mock_dep):
+        exit_code = WorkflowGatesScript().execute(
+            args=[
+                "--repo-root",
+                self.repo_root,
+                "--lock-dir",
+                self.lock_dir,
+                "intake",
+                "--ticket",
+                "GH-100",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_stream,
+        )
+
+    self.assertEqual(exit_code, 2)
+    err_output = err_stream.getvalue()
+    self.assertIn("INTAKE_DEPENDENCY_BLOCKED", err_output)
+    self.assertIn("42", err_output)
+
+  def test_intake_gate_passes_when_blocked_with_allow_flag(self):
+    """TestCase 27: workflow_gates intake passes when issue has open blockers with --allow-blocked."""
+    exclude_file = os.path.join(self.repo_root, ".git", "info", "exclude")
+    with open(exclude_file, "a", encoding="utf-8") as f:
+      f.write(".workflow/state/\n.workflow/archive/\n")
+
+    err_stream = io.StringIO()
+    mock_remote = {
+        "conflict": False,
+        "hosting_mode": "GITHUB",
+        "assignees": [],
+        "labels": [],
+    }
+    mock_dep = {
+        "blocked": True,
+        "blocking_count": 1,
+        "open_blockers": [
+            {"number": 42, "title": "Upstream feature", "state": "OPEN"}
+        ],
+        "hosting_mode": "GITHUB",
+    }
+    with patch.object(WorkspaceMutex, "check_remote", return_value=mock_remote):
+      with patch.object(WorkspaceMutex, "check_dependencies", return_value=mock_dep):
+        with patch.object(WorkspaceMutex, "claim_issue", return_value={"claimed": True}):
+          exit_code = WorkflowGatesScript().execute(
+              args=[
+                  "--repo-root",
+                  self.repo_root,
+                  "--lock-dir",
+                  self.lock_dir,
+                  "intake",
+                  "--ticket",
+                  "GH-100",
+                  "--allow-blocked",
+              ],
+              stdout=io.StringIO(),
+              stderr=err_stream,
+          )
+
+    self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

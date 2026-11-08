@@ -389,6 +389,101 @@ class WorkspaceMutex:
 
     return {"conflict": False, "hosting_mode": mode}
 
+  def check_dependencies(
+      self, ticket_id: str, hosting_mode: str = "GITHUB"
+  ) -> Dict[str, Any]:
+    """Check if a ticket is blocked by open upstream issues."""
+    mode = hosting_mode.upper()
+    if mode != "GITHUB":
+      return {
+          "blocked": False,
+          "blocking_count": 0,
+          "open_blockers": [],
+          "hosting_mode": hosting_mode,
+      }
+
+    m = re.search(r"\d+", ticket_id)
+    if not m:
+      return {
+          "blocked": False,
+          "blocking_count": 0,
+          "open_blockers": [],
+          "hosting_mode": hosting_mode,
+      }
+
+    issue_num = int(m.group(0))
+    query = """
+query($owner: String!, $repo: String!, $issue: Int!) {
+  repository(owner: $owner, name: $repo) {
+    issue(number: $issue) {
+      issueDependenciesSummary {
+        totalBlockedBy
+      }
+      blockedBy(first: 20) {
+        totalCount
+        nodes {
+          number
+          title
+          state
+        }
+      }
+    }
+  }
+}
+"""
+    try:
+      proc = subprocess.run(
+          [
+              "gh",
+              "api",
+              "graphql",
+              "-F",
+              "owner=:owner",
+              "-F",
+              "repo=:repo",
+              "-F",
+              f"issue={issue_num}",
+              "-f",
+              f"query={query}",
+          ],
+          cwd=self.repo_root,
+          capture_output=True,
+          text=True,
+          check=False,
+          timeout=10,
+      )
+      if proc.returncode == 0:
+        data = json.loads(proc.stdout)
+        issue_data = (
+            data.get("data", {}).get("repository", {}).get("issue") or {}
+        )
+        blocked_by = issue_data.get("blockedBy", {})
+        nodes = blocked_by.get("nodes", []) if isinstance(blocked_by, dict) else []
+        open_blockers = [
+            n for n in nodes if isinstance(n, dict) and n.get("state") == "OPEN"
+        ]
+        return {
+            "blocked": len(open_blockers) > 0,
+            "blocking_count": len(open_blockers),
+            "open_blockers": open_blockers,
+            "hosting_mode": "GITHUB",
+        }
+      return {
+          "blocked": False,
+          "blocking_count": 0,
+          "open_blockers": [],
+          "hosting_mode": "GITHUB",
+          "error": (proc.stderr or "").strip(),
+      }
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as exc:
+      return {
+          "blocked": False,
+          "blocking_count": 0,
+          "open_blockers": [],
+          "hosting_mode": "GITHUB",
+          "error": str(exc),
+      }
+
   def claim_issue(self, ticket_id: str) -> Dict[str, Any]:
     """Claim a GitHub issue by assigning @me and adding in-progress label."""
     m = re.search(r"\d+", ticket_id)
@@ -479,6 +574,12 @@ class WorkspaceMutexScript(BaseScript):
     p_rem.add_argument("--repo-root", default=None)
     p_rem.add_argument("--json", action="store_true", dest="sub_json")
 
+    p_dep = subparsers.add_parser("check-dependencies", add_help=False)
+    p_dep.add_argument("--ticket", required=True)
+    p_dep.add_argument("--mode", default="GITHUB")
+    p_dep.add_argument("--repo-root", default=None)
+    p_dep.add_argument("--json", action="store_true", dest="sub_json")
+
     p_claim = subparsers.add_parser("claim-issue", add_help=False)
     p_claim.add_argument("--ticket", required=True)
     p_claim.add_argument("--repo-root", default=None)
@@ -486,7 +587,9 @@ class WorkspaceMutexScript(BaseScript):
 
     ns = parser.parse_args(self.raw_args)
     if not ns.subcommand:
-      parser.error("Specify a subcommand: acquire, release, status, check-remote, or claim-issue.")
+      parser.error(
+          "Specify a subcommand: acquire, release, status, check-remote, check-dependencies, or claim-issue."
+      )
 
     self.subcommand = ns.subcommand
     self.repo_root = os.path.abspath(ns.repo_root or _DEFAULT_REPO_ROOT)
@@ -553,6 +656,14 @@ class WorkspaceMutexScript(BaseScript):
       else:
         self.stdout.write(f"Remote check conflict: {res.get('conflict')}\n")
       return 2 if res.get("conflict") else 0
+
+    if self.subcommand == "check-dependencies":
+      res = mutex.check_dependencies(self.ticket, hosting_mode=self.mode)
+      if self.as_json:
+        self.stdout.write(json.dumps(res, indent=2) + "\n")
+      else:
+        self.stdout.write(f"Dependencies check blocked: {res.get('blocked')}\n")
+      return 2 if res.get("blocked") else 0
 
     if self.subcommand == "claim-issue":
       res = mutex.claim_issue(self.ticket)

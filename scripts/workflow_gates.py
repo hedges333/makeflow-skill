@@ -59,15 +59,16 @@ def generate_state_makefile(repo_root: str) -> str:
       "# Synthesized by workflow_gates.py init-makefile (SCAR-ARCH-06, SCAR-TEST-12)\n"
       "PYTHON ?= python3\n"
       "TICKET ?=\n"
+      "ALLOW_BLOCKED ?=\n"
       "TEST_DIR =\n"
       "TEST_CMD =\n"
       "ALLOW_HEAD_MOVE =\n"
       "CITE =\n"
-      "export TICKET\n"
+      "export TICKET ALLOW_BLOCKED\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
       ".PHONY: check-intake release-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
       "check-intake:\n"
-      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),) $(if $(ALLOW_BLOCKED),--allow-blocked,)\n\n"
       "release-intake:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
       "check-approved-tree:\n"
@@ -100,6 +101,7 @@ class WorkflowGatesScript(BaseScript):
     self.project: Optional[str] = None
     self.title: Optional[str] = None
     self.issue_tag: Optional[str] = None
+    self.allow_blocked: bool = False
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -127,6 +129,7 @@ class WorkflowGatesScript(BaseScript):
     p_intake = subparsers.add_parser("intake", add_help=False)
     p_intake.add_argument("--ticket", default=None)
     p_intake.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
+    p_intake.add_argument("--allow-blocked", action="store_true", dest="allow_blocked")
     p_intake.add_argument("--json", action="store_true", dest="sub_json")
 
     p_rel = subparsers.add_parser("release-intake", add_help=False)
@@ -175,6 +178,7 @@ class WorkflowGatesScript(BaseScript):
       self.project = getattr(ns, "project", None)
       self.title = getattr(ns, "title", None)
       self.issue_tag = getattr(ns, "issue_tag", None)
+      self.allow_blocked = bool(getattr(ns, "allow_blocked", False))
 
   def _fail(
       self, scar_id: str, code: str, trigger: str, rejected: str, reflex: str
@@ -403,6 +407,28 @@ class WorkflowGatesScript(BaseScript):
               trigger=trigger_msg,
               rejected=f"Concurrent intake on ticket {ticket_id} with remote assignment or branch.",
               reflex="Coordinate with the ticket assignee or remove remote conflict before intake.",
+          )
+
+        dep = mutex.check_dependencies(ticket_id=ticket_id, hosting_mode=hosting_mode)
+        if dep.get("blocked") and not self.allow_blocked:
+          mutex.release(ticket_id)
+          blockers = dep.get("open_blockers", [])
+          if blockers:
+            details = ", ".join(
+                f"#{b.get('number')} ({b.get('title')})" for b in blockers
+            )
+          else:
+            details = f"{dep.get('blocking_count', 0)} open issue(s)"
+          return self._fail(
+              scar_id="SYS-08",
+              code="INTAKE_DEPENDENCY_BLOCKED",
+              trigger=f"Ticket {ticket_id} is blocked by open upstream issue(s): {details}.",
+              rejected=f"Starting intake on ticket {ticket_id} with open blocking dependencies.",
+              reflex=(
+                  "Resolve upstream blocking issues before intake, or pass "
+                  "--allow-blocked (or ALLOW_BLOCKED=1 in Makefile) after conducting "
+                  "an operator interview to investigate dependency coupling."
+              ),
           )
 
         if hosting_mode == "GITHUB" and not ticket_id.startswith("LOCAL-"):
