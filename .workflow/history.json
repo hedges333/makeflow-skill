@@ -1532,5 +1532,23 @@
     "closes_issue": true,
     "tests_added": 17,
     "scars_earned": []
+  },
+  {
+    "id": "GH-112",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/112",
+    "title": "[FEAT] Add Conventional Commits helper script and standardize issue trailer format",
+    "request": "Create Conventional Commits helper script, standardize header and trailer formats, validate CC 1.0.0 and 2-line changed files structure, and add hermetic unit tests.",
+    "branch": "feat/112-conventional-commits-helper",
+    "subprojects": [
+      "scripts"
+    ],
+    "started_at": "2026-11-07T16:42:26-08:00",
+    "completed_at": "2026-11-07T17:33:00-08:00",
+    "commit_sha": "19df98a",
+    "pr_number": 140,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/140",
+    "closes_issue": true,
+    "tests_added": 34,
+    "scars_earned": []
   }
 ]
