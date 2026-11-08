@@ -1570,5 +1570,26 @@
     "closes_issue": true,
     "tests_added": 10,
     "scars_earned": []
+  },
+  {
+    "id": "GH-142",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/142",
+    "title": "Implement managed agentic SimpleEnglish and Socratic Probe transformation workflow with MD5 state tracking and verification gates for synthetic scars",
+    "request": "Replace ad-hoc upstream scar ingestion with a two-stage managed workflow: 10-field SQLite schema, MD5 delta sync state tracking, subagent transformation into Simple English with Socratic probes, and deterministic verification gates.",
+    "branch": "feat/142-simple-english-scars-pipeline",
+    "subprojects": [
+      "scripts",
+      "agents",
+      "mcp",
+      "skills"
+    ],
+    "started_at": "2026-11-08T03:13:53Z",
+    "completed_at": "2026-11-08T04:45:10Z",
+    "commit_sha": "25b5da735ace88601c354269de019fd425bd4b83",
+    "pr_number": 144,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/144",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
