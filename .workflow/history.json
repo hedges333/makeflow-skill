@@ -1550,5 +1550,25 @@
     "closes_issue": true,
     "tests_added": 34,
     "scars_earned": []
+  },
+  {
+    "id": "GH-136",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/136",
+    "title": "[BUG] Fix scars SQLite path discovery and bundle pre-built registry database in package",
+    "request": "Fix scars SQLite path discovery, bundle pre-built registry database in package, add maintainer build targets, and implement multi-source delta sync with collision reconciliation.",
+    "branch": "fix/136-bundle-scars-sqlite-db",
+    "subprojects": [
+      "scripts",
+      "mcp",
+      "skills"
+    ],
+    "started_at": "2026-11-07T17:15:00-08:00",
+    "completed_at": "2026-11-07T18:27:00-08:00",
+    "commit_sha": "5478b8a",
+    "pr_number": 141,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/141",
+    "closes_issue": true,
+    "tests_added": 10,
+    "scars_earned": []
   }
 ]
