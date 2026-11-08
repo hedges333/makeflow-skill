@@ -76,6 +76,24 @@ Use these commands to inspect or clear ticket locks:
    make -f .workflow/state/Makefile release-intake TICKET=<ticket-id>
    ```
 
+### Intake Blocker Detection and Operator Interview
+
+During Target 10 intake, Makeflow checks for blocking GitHub issues.
+A blocker is an unresolved upstream issue.
+Makeflow inspects `issueDependenciesSummary` and `blockedBy` nodes through the GitHub GraphQL API.
+
+If open blockers exist, intake halts with exit code 2 and emits reflex `INTAKE_DEPENDENCY_BLOCKED`.
+Before you launch the archaeology worker, interview the human operator with two choices:
+
+1. **Option 1: Stop Work (Default)**
+   If you select Option 1, halt intake until engineers resolve the blocking issue.
+   Release the ticket lock and wait.
+
+2. **Option 2: Proceed with Archaeology Investigation**
+   If you select Option 2, run intake with `ALLOW_BLOCKED=1` in the Makefile.
+   Alternatively, pass `--allow-blocked` to `workflow_gates.py intake`.
+   Launch the archaeology worker to evaluate dependency coupling against the blocker.
+
 ### Mode B: Open Backlog Discovery
 
 When the user asks what to work on next, run these steps:
