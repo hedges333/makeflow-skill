@@ -3263,6 +3263,101 @@ def validate_volume_triage_interview_scar_tool_16():
   return errors
 
 
+def check_optional_circuit_breaker_catalog(catalog_text):
+  errs = []
+  if "Circuit Breaker" not in catalog_text:
+    errs.append("Catalog must mention Circuit Breaker")
+  if "optional" not in catalog_text.lower():
+    errs.append("Catalog must state Circuit Breaker is optional")
+  if "halt" not in catalog_text.lower() and "stop" not in catalog_text.lower():
+    errs.append("Catalog must describe Circuit Breaker as a halt or stop mechanism")
+  return errs
+
+
+def check_scar_has_circuit_breaker(spoke_text, scar_id):
+  errs = []
+  blocks = re.split(r"(?m)(?=^###\s+SCAR-)", spoke_text)
+  found = False
+  for b in blocks:
+    if not b.startswith("### SCAR-"):
+      continue
+    sid = b.split("\n")[0].split(":")[0].replace("###", "").strip()
+    if sid == scar_id:
+      found = True
+      cb_match = re.search(r"\*\*Circuit Breaker\*\*:[ \t]*([^\n\r]+)", b)
+      if not cb_match or not cb_match.group(1).strip():
+        errs.append(f"{scar_id} missing non-empty '**Circuit Breaker**:'")
+      break
+  if not found:
+    errs.append(f"{scar_id} not found in spoke text")
+  return errs
+
+
+def validate_optional_circuit_breaker_invariants():
+  """Validates optional Circuit Breaker format in catalog and backported scars (GH-120)."""
+  errors = []
+
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_path = repo_path(cat_rel)
+  if not os.path.exists(cat_path):
+    errors.append(f"Missing {cat_rel}")
+  else:
+    with open(cat_path, "r", encoding="utf-8") as f:
+      cat_text = f.read()
+    errors.extend(check_optional_circuit_breaker_catalog(cat_text))
+
+  proc_rel = "skills/makeflow/references/scars/process.md"
+  proc_path = repo_path(proc_rel)
+  if not os.path.exists(proc_path):
+    errors.append(f"Missing {proc_rel}")
+  else:
+    with open(proc_path, "r", encoding="utf-8") as f:
+      proc_text = f.read()
+    errors.extend(check_scar_has_circuit_breaker(proc_text, "SCAR-PROC-108"))
+
+  hci_rel = "skills/makeflow/references/scars/tooling_and_hci.md"
+  hci_path = repo_path(hci_rel)
+  if not os.path.exists(hci_path):
+    errors.append(f"Missing {hci_rel}")
+  else:
+    with open(hci_path, "r", encoding="utf-8") as f:
+      hci_text = f.read()
+    errors.extend(check_scar_has_circuit_breaker(hci_text, "SCAR-HCI-08"))
+
+  # General schema invariant: across ALL spoke files, whenever Circuit Breaker is present,
+  # it must be non-empty and well-formed.
+  scars_dir = repo_path("skills/makeflow/references/scars")
+  for fname in os.listdir(scars_dir):
+    if not fname.endswith(".md"):
+      continue
+    spoke_path = os.path.join(scars_dir, fname)
+    with open(spoke_path, "r", encoding="utf-8") as f:
+      content = f.read()
+    blocks = re.split(r"(?m)(?=^###\s+SCAR-)", content)
+    for b in blocks:
+      if not b.startswith("### SCAR-") or "**Circuit Breaker**:" not in b:
+        continue
+      sid = b.split("\n")[0].split(":")[0].replace("###", "").strip()
+      cb_match = re.search(r"\*\*Circuit Breaker\*\*:[ \t]*([^\n\r]+)", b)
+      if not cb_match or not cb_match.group(1).strip():
+        errors.append(f"{fname} {sid} has empty or malformed '**Circuit Breaker**:'")
+
+  # Negative falsification tests
+  bad_catalog = "# 09. Synthetic Scars\n4. Four-Part Anatomy: Wound, Trap, Reflex, Probe."
+  if not check_optional_circuit_breaker_catalog(bad_catalog):
+    errors.append("Negative falsification failed: catalog missing Circuit Breaker was not rejected")
+
+  bad_spoke = "### SCAR-PROC-108: Test\n- **Wound**: W\n- **Trap**: T\n- **Permanent Reflex**: R\n- **Socratic Probe**: P\n"
+  if not check_scar_has_circuit_breaker(bad_spoke, "SCAR-PROC-108"):
+    errors.append("Negative falsification failed: scar missing Circuit Breaker was not rejected")
+
+  bad_empty_cb = "### SCAR-TEST-99: Test\n- **Circuit Breaker**:\n- **Wound**: W\n"
+  if not check_scar_has_circuit_breaker(bad_empty_cb, "SCAR-TEST-99"):
+    errors.append("Negative falsification failed: empty Circuit Breaker was not rejected")
+
+  return errors
+
+
 def validate():
   errors = []
 
@@ -4330,6 +4425,12 @@ def validate():
         "✔ Volume triage interview invariants (GH-128, SCAR-TOOL-16)"
         " verified."
     )
+
+  # Optional Circuit Breaker Format Invariants (GH-120)
+  cb_errors = validate_optional_circuit_breaker_invariants()
+  errors.extend(cb_errors)
+  if not cb_errors:
+    print("✔ Optional Circuit Breaker format invariants (GH-120) verified.")
 
   if errors:
     print(f"\n❌ Validation failed with {len(errors)} error(s):")

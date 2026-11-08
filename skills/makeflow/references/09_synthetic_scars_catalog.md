@@ -34,11 +34,14 @@ references/
 1. **Category-Scoped Sequencing**: Scars are ordered monotonically within each category spoke file.
 2. **End-of-Sequence Appending**: When adding a new scar, assign the next sequential integer and append it to the end of the appropriate category file.
 3. **Full Language Names**: Language-specific failure vaccines use full uppercase language names: `SCAR-LANG-<FULL_LANGUAGE>-<NN>`.
-4. **Four-Part Anatomy**: Every scar in a spoke file must record:
+4. **Four-Part Anatomy & Optional Circuit Breaker**: Every scar in a spoke file must record:
    - **Wound**: The exact bug, data loss, or broken build that happened.
    - **Trap**: The false assumption or shortcut that caused the failure.
    - **Permanent Reflex**: The mandatory rule that prevents recurrence.
    - **Socratic Probe**: A concise heuristic inquiry that tests attention against the specific failure mode during execution.
+
+   A scar may optionally include an explicit **Circuit Breaker** between the Trap and the Permanent Reflex:
+   - **Circuit Breaker**: An explicit halt trigger giving the agent immediate permission to stop before executing the permanent reflex ("If X, stop immediately or never Y").
 
 ### Socratic Reflex Protocol
 
