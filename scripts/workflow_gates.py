@@ -18,6 +18,7 @@ if _SCRIPTS_DIR not in sys.path:
   sys.path.insert(0, _SCRIPTS_DIR)
 
 from base_script import BaseScript
+from commit_msg import validate_commit_message
 from emit_reflex import SilentArgumentParser, emit_reflex
 
 _DEFAULT_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
@@ -596,26 +597,48 @@ class WorkflowGatesScript(BaseScript):
         if "HOSTING_MODE: PURE_GIT" in f.read():
           is_local = True
 
-    if is_local:
-      if _GH_CLOSE_RE.search(msg_text) or _BARE_ISSUE_RE.search(msg_text):
-        return self._fail(
-            scar_id="GIT-20",
-            code="INVALID_COMMIT_MESSAGE_CONTRACT",
-            trigger="Local session commit message contains 'closes #<N>' or bare '#<N>' GitHub issue syntax.",
-            rejected="Closing or linking unrelated remote GitHub issues from a LOCAL-<N> task.",
-            reflex="Remove all 'closes #<N>' and '#<N>' references from 50_commit_msg.txt and use 'Ticket: LOCAL-<N>'.",
-        )
+    ticket_id = f"LOCAL-{local_num}" if local_num else None
+    validation = validate_commit_message(
+        msg_text, is_local=is_local, ticket_id=ticket_id
+    )
 
-      expected_id = f"LOCAL-{local_num}" if local_num else r"LOCAL-[1-9][0-9]*"
-      trailer_re = re.compile(rf"(?m)^Ticket:\s*{expected_id}\s*$")
-      if not trailer_re.search(msg_text):
-        shown_id = f"LOCAL-{local_num}" if local_num else "LOCAL-<N>"
+    if not validation.valid:
+      if is_local:
+        if _GH_CLOSE_RE.search(msg_text) or _BARE_ISSUE_RE.search(msg_text):
+          return self._fail(
+              scar_id="GIT-20",
+              code="INVALID_COMMIT_MESSAGE_CONTRACT",
+              trigger="Local session commit message contains 'closes #<N>' or bare '#<N>' GitHub issue syntax.",
+              rejected="Closing or linking unrelated remote GitHub issues from a LOCAL-<N> task.",
+              reflex="Remove all 'closes #<N>' and '#<N>' references from 50_commit_msg.txt and use 'Ticket: LOCAL-<N>'.",
+          )
+
+        expected_id = f"LOCAL-{local_num}" if local_num else r"LOCAL-[1-9][0-9]*"
+        trailer_re = re.compile(rf"(?m)^Ticket:\s*{expected_id}\s*$")
+        if not trailer_re.search(msg_text):
+          shown_id = f"LOCAL-{local_num}" if local_num else "LOCAL-<N>"
+          return self._fail(
+              scar_id="GIT-20",
+              code="INVALID_COMMIT_MESSAGE_CONTRACT",
+              trigger=f"Local session commit message is missing required 'Ticket: {shown_id}' line.",
+              rejected="Committing a local task without explicit LOCAL-<N> disambiguation.",
+              reflex=f"Add 'Ticket: {shown_id}' on its own line in .workflow/state/50_commit_msg.txt and re-run make -f .workflow/state/Makefile check-commit-msg.",
+          )
+
         return self._fail(
             scar_id="GIT-20",
             code="INVALID_COMMIT_MESSAGE_CONTRACT",
-            trigger=f"Local session commit message is missing required 'Ticket: {shown_id}' line.",
-            rejected="Committing a local task without explicit LOCAL-<N> disambiguation.",
-            reflex=f"Add 'Ticket: {shown_id}' on its own line in .workflow/state/50_commit_msg.txt and re-run make -f .workflow/state/Makefile check-commit-msg.",
+            trigger=validation.errors[0],
+            rejected="Committing a local task with invalid Conventional Commits or changed file format.",
+            reflex="Correct commit message formatting in .workflow/state/50_commit_msg.txt and re-run make -f .workflow/state/Makefile check-commit-msg.",
+        )
+      else:
+        return self._fail(
+            scar_id="GIT-20",
+            code="INVALID_COMMIT_MESSAGE_CONTRACT",
+            trigger=validation.errors[0],
+            rejected="Committing a message that violates Conventional Commits 1.0.0 or trailer conventions.",
+            reflex="Format .workflow/state/50_commit_msg.txt using Conventional Commits and ensure issue reference trailer exists per 05_pre_commit_hygiene.md.",
         )
 
     return 0
