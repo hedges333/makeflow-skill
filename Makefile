@@ -8,7 +8,7 @@ PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -22,6 +22,7 @@ help:
 	@echo "  make test-signal-trap   - Test POSIX signal trapping and worker cleanup (SCAR-SYS-07)"
 	@echo "  make test-mcp           - Test Model Context Protocol (MCP) server over stdio"
 	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync and query"
+	@echo "  make sync-scars         - Sync public synthetic scars registry into bundled package database"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
 	@echo "  make test-base-script   - Test BaseScript execution lifecycle (SCAR-ARCH-05)"
@@ -123,6 +124,13 @@ test-sync-scars:
 		--trigger "scripts/test_sync_synthetic_scars.py failed." \
 		--rejected "Failing synthetic scars synchronization, FTS5 indexing, or query tests." \
 		--reflex "Run $(PYTHON) -m unittest -v scripts/test_sync_synthetic_scars.py, fix failing tests, and re-run make test-sync-scars."
+
+sync-scars:
+	@echo "Syncing public synthetic scars registry into bundled package database..."
+	@mkdir -p "$(REPO_ROOT)/skills/makeflow/data"
+	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"
+
+sync-scars-registry: sync-scars
 
 test-compat:
 	@echo "Testing cross-agent compatibility..."

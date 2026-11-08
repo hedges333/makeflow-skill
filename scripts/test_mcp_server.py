@@ -566,7 +566,7 @@ def run_test():
       )
       uninit_data = json.loads(uninit_resp["result"]["content"][0]["text"])
       assert uninit_data["status"] == "UNINITIALIZED"
-      assert "Run 'python3 scripts/sync_synthetic_scars.py'" in uninit_data["message"]
+      assert "Bundled registry database is missing from skill package" in uninit_data["message"]
       assert uninit_data["scars"] == []
 
       # Case c: Query when database exists with sample scars
@@ -585,7 +585,10 @@ def run_test():
               wound TEXT,
               trap TEXT,
               circuit_breaker TEXT,
-              reflex TEXT
+              reflex TEXT,
+              source TEXT DEFAULT 'upstream',
+              original_id TEXT,
+              raw_hash TEXT
           )
       """)
       conn.execute("""
@@ -596,7 +599,9 @@ def run_test():
               applies_when,
               wound,
               trap,
-              reflex
+              reflex,
+              source UNINDEXED,
+              original_id UNINDEXED
           )
       """)
       test_scars = [
@@ -613,6 +618,9 @@ def run_test():
               "Running CLI scripts that terminate test suites",
               "Wrap all CLI scripts in BaseScript execute template",
               "Inherit from BaseScript and override run and cleanup",
+              "upstream",
+              None,
+              "hash-arch-05",
           ),
           (
               "SCAR-TEST-08",
@@ -627,11 +635,14 @@ def run_test():
               "Using unmocked socket connections or live databases in unit tests",
               "Use tempfile.TemporaryDirectory and mock urllib.request",
               "Point tests to temporary directories or in-memory SQLite fixtures",
+              "upstream",
+              None,
+              "hash-test-08",
           ),
       ]
       for s in test_scars:
-        conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
-        conn.execute("INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?)", (s[0], s[1], s[2], s[6], s[8], s[9], s[11]))
+        conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
+        conn.execute("INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (s[0], s[1], s[2], s[6], s[8], s[9], s[11], s[12], s[13]))
       conn.commit()
       conn.close()
 
@@ -655,6 +666,30 @@ def run_test():
       assert query_data["status"] == "OK"
       assert query_data["totalResults"] >= 1
       assert query_data["scars"][0]["id"] == "SCAR-ARCH-05"
+      assert "source" in query_data["scars"][0]
+      assert query_data["scars"][0]["source"] == "upstream"
+
+      # Query with source filter
+      src_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 256,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "BaseScript",
+                      "source": "upstream",
+                      "dbPath": test_scars_db,
+                  },
+              },
+          },
+      )
+      src_data = json.loads(src_resp["result"]["content"][0]["text"])
+      assert src_data["status"] == "OK"
+      assert src_data["totalResults"] >= 1
+      assert src_data["scars"][0]["source"] == "upstream"
 
       # Query with category filter
       cat_resp = send_rpc(
@@ -698,6 +733,27 @@ def run_test():
       lim_data = json.loads(lim_resp["result"]["content"][0]["text"])
       assert lim_data["status"] == "OK"
       assert len(lim_data["scars"]) == 1
+
+      # Case d: Query when dbPath is omitted -> resolves to bundled package database
+      default_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 255,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "SCAR",
+                      "workspaceDir": non_git_cwd,
+                  },
+              },
+          },
+      )
+      default_data = json.loads(default_resp["result"]["content"][0]["text"])
+      assert default_data["status"] == "OK"
+      assert len(default_data["scars"]) > 0
+
       print("✔ MCP workflow_query_scars JSON-RPC checks passed.")
     finally:
       p.kill()

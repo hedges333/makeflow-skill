@@ -1817,6 +1817,10 @@ def handle_tools_list(request_id):
                       "type": "integer",
                       "description": "Maximum number of scars to return (default 3)",
                   },
+                  "source": {
+                      "type": "string",
+                      "description": "Optional source filter (e.g. 'makeflow', 'upstream')",
+                  },
                   "workspaceDir": {
                       "type": "string",
                       "description": "Optional project root directory",
@@ -2145,6 +2149,7 @@ def handle_tools_call(request_id, tool_name, arguments):
     ws = resolve_workspace_dir(arguments)
     category = arguments.get("category")
     language = arguments.get("language")
+    source = arguments.get("source")
     try:
       limit = int(arguments.get("limit", 3))
     except (ValueError, TypeError):
@@ -2160,6 +2165,7 @@ def handle_tools_call(request_id, tool_name, arguments):
     db_path = resolve_scars_db_path(
         db_path=explicit_db,
         workspace_dir=ws,
+        package_root=_REPO_ROOT,
     )
 
     if not os.path.isfile(db_path):
@@ -2173,8 +2179,8 @@ def handle_tools_call(request_id, tool_name, arguments):
                       "status": "UNINITIALIZED",
                       "message": (
                           f"Scars database not found at '{db_path}'. "
-                          "Run 'python3 scripts/sync_synthetic_scars.py' to download "
-                          "and index public synthetic scars."
+                          "Bundled registry database is missing from skill package. "
+                          "Reinstall makeflow plugin or run 'make sync-scars' (maintainer) to generate."
                       ),
                       "scars": [],
                   }, indent=2),
@@ -2188,19 +2194,24 @@ def handle_tools_call(request_id, tool_name, arguments):
         category=category,
         language=language,
         limit=limit,
+        source=source,
     )
 
     if not results:
       is_empty = False
+      conn = None
       try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM scars")
-        if cur.fetchone()[0] == 0:
+        row = cur.fetchone()
+        if row and row[0] == 0:
           is_empty = True
-        conn.close()
       except Exception:
         is_empty = True
+      finally:
+        if conn:
+          conn.close()
 
       if is_empty:
         return {
@@ -2213,7 +2224,8 @@ def handle_tools_call(request_id, tool_name, arguments):
                         "status": "EMPTY",
                         "message": (
                             f"Scars database at '{db_path}' contains 0 scars. "
-                            "Run 'python3 scripts/sync_synthetic_scars.py' to sync."
+                            "Bundled registry database is unpopulated. "
+                            "Run 'make sync-scars' (maintainer) to rebuild."
                         ),
                         "scars": [],
                     }, indent=2),
