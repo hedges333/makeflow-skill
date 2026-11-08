@@ -1514,5 +1514,23 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-130",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/130",
+    "title": "[TECH-DEBT] Refactor session_start.py and terminal_title.py broad exception handlers to specific error types",
+    "request": "Refactor broad exception handlers in session_start.py and terminal_title.py to catch specific error types instead of bare Exception, remove 30-character tag truncation to preserve full GitHub issue titles, and add unit tests.",
+    "branch": "fix/130-refactor-broad-exceptions",
+    "subprojects": [
+      "scripts"
+    ],
+    "started_at": "2026-11-07T16:42:33-08:00",
+    "completed_at": "2026-11-07T17:20:00-08:00",
+    "commit_sha": "4056bd8",
+    "pr_number": 139,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/139",
+    "closes_issue": true,
+    "tests_added": 17,
+    "scars_earned": []
   }
 ]
