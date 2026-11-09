@@ -1,0 +1,36 @@
+Updating socratic prompt questions: Instructions for supervisor agent:  
+
+```
+/goal Complete Socratic prompt generation for all scars in skills/makeflow/data/scars_registry.db.
+
+Loop:
+1. Find the next pending scar ID:
+   sqlite3 skills/makeflow/data/scars_registry.db "SELECT id FROM scars WHERE (socratic_probe IS NULL OR TRIM(socratic_probe) = '') AND (wound IS NOT NULL AND TRIM(wound) != '') AND (reflex IS NOT NULL AND TRIM(reflex) != '') ORDER BY id LIMIT 1;"
+
+2. If an ID is returned:
+   - Invoke the socratic-prompt-writer subagent with that scar ID to create the Socratic prompt and update the database row.
+   - Wait for the subagent to report completion.
+   - Return to step 1. Keep iterating until no rows match the query.
+
+3. When step 1 returns no ID:
+   - Run: sqlite3 skills/makeflow/data/scars_registry.db "DELETE FROM scars_fts;"
+   - Run: python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --status
+   - Report the final database status and confirm that all eligible scars have Socratic prompts.
+
+
+
+
+
+
+
+
+-------------
+
+To select a single scar id to process, use the command `sqlite3 skills/makeflow/data/scars_registry.db "SELECT id FROM scars WHERE (socratic_probe IS NULL OR TRIM(socratic_probe) = '') AND (wound IS NOT NULL AND TRIM(wound) != '') AND (reflex IS NOT NULL AND TRIM(reflex) != '') ORDER BY id LIMIT 1;"`
+
+When finished, do:
+
+    sqlite3 skills/makeflow/data/scars_registry.db "DELETE FROM scars_fts;"
+    python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --status
+
+-------------
