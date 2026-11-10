@@ -37,11 +37,35 @@ Loop:
 
 
 
+```
+
+
+
+--------------------------
+
+
+Updating the synthetic scar database simplified fields:
+
+
+/goal
+
+Use `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --export-pending 1 | jq -r '.[0].id // empty'` to get the next pending scar ID that needs its `wound`, `trap`, and `reflex` fields populated.
+
+Launch the `synthetic-scar-importer` subagent with the scar ID to process the scar `raw_*` fields into simple technical English and write the corresponding `wound`, `trap`, `circuit_breaker`, and `reflex` fields.  Direct the subagent to follow the process and rules in `./agents/synthetic_scar_importer.md`.  The `synthetic-scar-importer` subagent will process one pending scar and end its work.  After it finishes and reports back, make sure it has been terminated to end its context.
+
+Repeat the query for the next pending scar ID and dispatch another `synthetic-scar-importer` subagent, one at a time, until no more pending synthetic scars are available to process.
+
+Check progress with `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --status`.
+
+When all scars are transformed, run `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --verify-transformed` to verify that all 595 scars pass with zero errors.
+
+Do not stop until the database status reports zero pending transformations and the verification gate exits with code 0.
 
 
 
 
 
+<<<<<<< Updated upstream
 -------------
 
 To select a single scar id to process, use the command `sqlite3 skills/makeflow/data/scars_registry.db "SELECT id FROM scars WHERE (socratic_probe IS NULL OR TRIM(socratic_probe) = '') AND (wound IS NOT NULL AND TRIM(wound) != '') AND (reflex IS NOT NULL AND TRIM(reflex) != '') ORDER BY id LIMIT 1;"`
@@ -62,3 +86,5 @@ Please open a ticket to fix up scripts/sync_synthetic_scars.py so that agents/sy
   circuit_breaker (optional) and reflex fields.  It will set wound, trap, circuit_breaker (default '') and reflex for that id, but will not set any other fields.  Also improve agents/synthetic-scar-importer.md
   so it understands that it should not write the socratic_prompt field.
 
+=======
+>>>>>>> Stashed changes
