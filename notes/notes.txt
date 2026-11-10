@@ -34,3 +34,13 @@ When finished, do:
     python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --status
 
 -------------
+
+
+
+
+Please open a ticket to fix up scripts/sync_synthetic_scars.py so that agents/synthetic-scar-importer.md works correctly.  The synthetic-scar-importer subagent as it is now will try to write the
+  socratic_probe field because it appears in the null fields list at the start in `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --export-pending 1 ` even though the
+  agent definition explicitly tells it not to populate that field.  Let's add an argument to scripts/sync_synthetic_scars.py to use it as an importer where it reads a json file containing the id, wound, trap,
+  circuit_breaker (optional) and reflex fields.  It will set wound, trap, circuit_breaker (default '') and reflex for that id, but will not set any other fields.  Also improve agents/synthetic-scar-importer.md
+  so it understands that it should not write the socratic_prompt field.
+
