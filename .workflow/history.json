@@ -1610,5 +1610,23 @@
     "closes_issue": true,
     "tests_added": 16,
     "scars_earned": []
+  },
+  {
+    "id": "GH-148",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/148",
+    "title": "[BUG] Fix failing pending notice assertions in test_sync_synthetic_scars.py",
+    "request": "Align SyncSyntheticScarsScript._emit_pending_notice and TestSimpleEnglishTransformationWorkflow.test_raw_hash_populates_raw_and_nulls_in_use_then_preserves_and_resets across 2, 1, and 0 pending scars, and remove unreferenced _resolve_scar_importer_model helper.",
+    "branch": "fix/148-fix-pending-notice-assertions",
+    "subprojects": [
+      "scripts"
+    ],
+    "started_at": "2026-11-10T20:56:00Z",
+    "completed_at": "2026-11-10T21:20:22Z",
+    "commit_sha": "af5d427",
+    "pr_number": 150,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/150",
+    "closes_issue": true,
+    "tests_added": 1,
+    "scars_earned": []
   }
 ]
