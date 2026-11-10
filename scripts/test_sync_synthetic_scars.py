@@ -1134,6 +1134,10 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     bad_empty = dict(valid_transformed, reflex="")
     self.assertTrue(verify_scar_transformation(raw_row, bad_empty))
 
+    # Null or omitted socratic_probe -> allowed (populated separately by socratic-prompt-writer)
+    no_probe = dict(valid_transformed, socratic_probe=None)
+    self.assertEqual(verify_scar_transformation(raw_row, no_probe), [])
+
   def test_export_pending_apply_transformed_verify_and_query_scars(self):
     scars_input = [
         {

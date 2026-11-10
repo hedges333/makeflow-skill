@@ -368,7 +368,7 @@ def verify_scar_transformation(
   """Verifies that a Simple English scar transformation preserves protected spans and rules."""
   errors: List[str] = []
 
-  for req_field in ("wound", "trap", "reflex", "socratic_probe"):
+  for req_field in ("wound", "trap", "reflex"):
     val = transformed_row.get(req_field)
     if not isinstance(val, str) or not val.strip():
       errors.append(f"Field '{req_field}' must be a non-empty string.")
@@ -767,7 +767,6 @@ class SyncSyntheticScarsScript(BaseScript):
            OR trap IS NULL
            OR circuit_breaker IS NULL
            OR reflex IS NULL
-           OR socratic_probe IS NULL
         """
     )
     row = cur.fetchone()
@@ -778,11 +777,8 @@ class SyncSyntheticScarsScript(BaseScript):
     pending = self._count_pending_scars(cur)
     if pending <= 0:
       return
-    importer_model = _resolve_scar_importer_model()
     self.stdout.write(
-        f"Pending Simple English & Socratic Probe transformations: {pending} scar(s). "
-        f"Launch the 'synthetic-scar-importer' subagent one scar at a time "
-        f"(configured model: {importer_model}).\n"
+        f"Pending Simple English transformations: {pending} scar(s).\n"
     )
 
   def _report_status(self) -> int:
@@ -837,7 +833,6 @@ class SyncSyntheticScarsScript(BaseScript):
            OR trap IS NULL
            OR circuit_breaker IS NULL
            OR reflex IS NULL
-           OR socratic_probe IS NULL
         ORDER BY id ASC
         LIMIT ?
         """,
@@ -947,7 +942,11 @@ class SyncSyntheticScarsScript(BaseScript):
           if existing_in_use[col] is not None:
             merged[col] = existing_in_use[col]
           else:
-            merged[col] = item.get(col)
+            val = item.get(col)
+            if col == "socratic_probe" and (val is None or not str(val).strip()):
+              merged[col] = None
+            else:
+              merged[col] = val
 
         errors = verify_scar_transformation(raw_row, merged)
         if errors:

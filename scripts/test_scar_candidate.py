@@ -104,7 +104,7 @@ class ScarCandidateValidator:
       scar_id = "<unknown>"
 
     # 1. Schema & Required non-empty string fields
-    for req_field in ("wound", "trap", "reflex", "socratic_probe"):
+    for req_field in ("wound", "trap", "reflex"):
       val = candidate.get(req_field)
       if not isinstance(val, str) or not val.strip():
         errors.append(

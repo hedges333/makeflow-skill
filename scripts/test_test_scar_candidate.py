@@ -50,7 +50,7 @@ class TestScarCandidateValidator(unittest.TestCase):
     self.validator = ScarCandidateValidator()
 
   def test_schema_required_fields(self):
-    """Test that id, wound, trap, reflex, socratic_probe must be non-empty strings."""
+    """Test that id, wound, trap, reflex must be non-empty strings while socratic_probe is optional."""
     valid = _make_valid_candidate()
     errors = self.validator.validate(valid)
     self.assertEqual(errors, [])
@@ -66,7 +66,7 @@ class TestScarCandidateValidator(unittest.TestCase):
     self.assertTrue(any("id" in e for e in errs), f"Expected 'id' error in {errs}")
 
     # Missing or empty required fields
-    for field in ("wound", "trap", "reflex", "socratic_probe"):
+    for field in ("wound", "trap", "reflex"):
       bad_field = dict(valid, **{field: ""})
       errs = self.validator.validate(bad_field)
       self.assertTrue(
@@ -81,6 +81,13 @@ class TestScarCandidateValidator(unittest.TestCase):
           any(field in e for e in errs),
           f"Expected '{field}' error for missing field in {errs}",
       )
+
+    # socratic_probe is optional (None, empty, or omitted passes validation)
+    self.assertEqual(self.validator.validate(dict(valid, socratic_probe=None)), [])
+    self.assertEqual(self.validator.validate(dict(valid, socratic_probe="")), [])
+    no_probe = dict(valid)
+    del no_probe["socratic_probe"]
+    self.assertEqual(self.validator.validate(no_probe), [])
 
   def test_circuit_breaker_empty_and_non_empty(self):
     """Test circuit breaker validation against raw circuit breaker."""
