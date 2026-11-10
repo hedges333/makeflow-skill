@@ -32,6 +32,7 @@ if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
 from base_script import BaseScript
+import sync_synthetic_scars
 from sync_synthetic_scars import (
     SyncSyntheticScarsScript,
     query_scars,
@@ -929,30 +930,18 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     ]
     payload_v1 = json.dumps(scars_v1).encode("utf-8")
 
-    # Create a workspace .workflow/config.json with synthetic-scar-importer model
-    ws_dir = os.path.join(self.temp_dir.name, "ws")
-    os.makedirs(os.path.join(ws_dir, ".workflow"), exist_ok=True)
-    with open(
-        os.path.join(ws_dir, ".workflow", "config.json"), "w", encoding="utf-8"
-    ) as f:
-      json.dump({"models": {"synthetic-scar-importer": "flash"}}, f)
-
     out_sync = io.StringIO()
     script = SyncSyntheticScarsScript()
     with patch(
         "urllib.request.urlopen",
         return_value=MockHTTPResponse(payload_v1, etag='"etag-v1"'),
     ):
-      with patch.dict(os.environ, {"MAKEFILE_WORKFLOW_WORKSPACE": ws_dir}):
-        code = script.execute(
-            args=["--db-path", self.db_path], stdout=out_sync
-        )
+      code = script.execute(
+          args=["--db-path", self.db_path], stdout=out_sync
+      )
     self.assertEqual(code, 0)
     sync_stdout = out_sync.getvalue()
-    self.assertIn("2", sync_stdout)
-    self.assertIn("synthetic-scar-importer", sync_stdout)
-    self.assertIn("one scar at a time", sync_stdout.lower())
-    self.assertIn("flash", sync_stdout)
+    self.assertIn("Pending Simple English transformations: 2 scar(s).", sync_stdout)
 
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
@@ -989,15 +978,17 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     self.assertIsNone(row_nocb[4])
     self.assertIsNone(row_nocb[5])
 
-    # Status command also reports pending count and synthetic-scar-importer instruction
+    # Status command also reports pending count
     out_status = io.StringIO()
     script_status = SyncSyntheticScarsScript()
-    with patch.dict(os.environ, {"MAKEFILE_WORKFLOW_WORKSPACE": ws_dir}):
-      code_st = script_status.execute(
-          args=["--db-path", self.db_path, "--status"], stdout=out_status
-      )
+    code_st = script_status.execute(
+        args=["--db-path", self.db_path, "--status"], stdout=out_status
+    )
     self.assertEqual(code_st, 0)
-    self.assertIn("synthetic-scar-importer", out_status.getvalue())
+    self.assertIn(
+        "Pending Simple English transformations: 2 scar(s).",
+        out_status.getvalue(),
+    )
 
     # Populate Simple English fields for SCAR-MATH-01
     cur.execute(
@@ -1014,15 +1005,20 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     conn.commit()
 
     # Re-download unchanged upstream payload -> transformed values preserved
+    out_same = io.StringIO()
     script_same = SyncSyntheticScarsScript()
     with patch(
         "urllib.request.urlopen",
         return_value=MockHTTPResponse(payload_v1, etag='"etag-v1b"'),
     ):
       code_same = script_same.execute(
-          args=["--db-path", self.db_path, "--force"], stdout=io.StringIO()
+          args=["--db-path", self.db_path, "--force"], stdout=out_same
       )
     self.assertEqual(code_same, 0)
+    self.assertIn(
+        "Pending Simple English transformations: 1 scar(s).",
+        out_same.getvalue(),
+    )
 
     cur.execute(
         "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
@@ -1067,7 +1063,26 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     self.assertIsNone(reset_row[3])
     self.assertIsNone(reset_row[4])
     self.assertIsNone(reset_row[5])
+
+    # Populate all four Simple English fields for both rows -> 0 pending -> notice omitted
+    cur.execute(
+        "UPDATE scars SET wound = 'Simple wound.', trap = 'Simple trap.',"
+        " circuit_breaker = 'Simple breaker.', reflex = 'Simple reflex.'"
+    )
+    conn.commit()
     conn.close()
+    out_zero = io.StringIO()
+    script_zero = SyncSyntheticScarsScript()
+    code_zero = script_zero.execute(
+        args=["--db-path", self.db_path, "--status"], stdout=out_zero
+    )
+    self.assertEqual(code_zero, 0)
+    self.assertNotIn(
+        "Pending Simple English transformations", out_zero.getvalue()
+    )
+    self.assertFalse(
+        hasattr(sync_synthetic_scars, "_resolve_scar_importer_model")
+    )
 
   def test_extract_protected_spans_and_verify_scar_transformation(self):
     from sync_synthetic_scars import (

@@ -427,37 +427,6 @@ def verify_scar_transformation(
   return errors
 
 
-def _resolve_scar_importer_model() -> str:
-  """Resolves the configured model for synthetic-scar-importer from env or .workflow/config.json."""
-  env_model = os.environ.get("MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL", "").strip()
-  if env_model:
-    return env_model
-
-  ws_candidates = []
-  env_ws = os.environ.get("MAKEFILE_WORKFLOW_WORKSPACE", "").strip()
-  if env_ws:
-    ws_candidates.append(env_ws)
-  ws_candidates.append(os.getcwd())
-  ws_candidates.append(_REPO_ROOT)
-
-  for ws in ws_candidates:
-    cfg_path = os.path.join(ws, ".workflow", "config.json")
-    if os.path.isfile(cfg_path):
-      try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-          data = json.load(f)
-        if isinstance(data, dict):
-          models = data.get("models")
-          if isinstance(models, dict):
-            val = models.get("synthetic-scar-importer")
-            if isinstance(val, str) and val.strip():
-              return val.strip()
-      except (OSError, ValueError, TypeError):
-        continue
-
-  return "inherit"
-
-
 class ScriptArgumentError(Exception):
   """Raised when CLI argument parsing encounters an error."""
 
