@@ -1648,5 +1648,25 @@
     "closes_issue": true,
     "tests_added": 3,
     "scars_earned": []
+  },
+  {
+    "id": "GH-152",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/152",
+    "title": "[FEAT] Synthesize open technical English standards into skills/makeflow/references/resources/language/english/*.md and remove simple-english plugin dependency",
+    "request": "Synthesize five public-domain and open-source technical English standards into modular reference files under skills/makeflow/references/resources/language/english/ with MIT-compatible attribution, remove proprietary asd_ste100_spec.md, and remove all dependencies on the external simple-english plugin across the repository.",
+    "branch": "feat/152-open-technical-english-specs",
+    "subprojects": [
+      "skills/makeflow",
+      "agents",
+      "scripts"
+    ],
+    "started_at": "2026-11-11T02:49:52Z",
+    "completed_at": "2026-11-11T20:49:31Z",
+    "commit_sha": "958a87c",
+    "pr_number": 155,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/155",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": []
   }
 ]
