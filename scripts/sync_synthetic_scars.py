@@ -471,6 +471,7 @@ class SyncSyntheticScarsScript(BaseScript):
     self.limit: int = 3
     self.export_pending: Optional[int] = None
     self.apply_transformed: Optional[str] = None
+    self.import_simple_english: Optional[str] = None
     self.verify_transformed: bool = False
     self.has_fts5: bool = False
     self.conn: Optional[sqlite3.Connection] = None
@@ -555,6 +556,16 @@ class SyncSyntheticScarsScript(BaseScript):
         help="Path to JSON file containing transformed Simple English scar fields.",
     )
     parser.add_argument(
+        "--import-simple-english",
+        "--import",
+        dest="import_simple_english",
+        default=None,
+        help=(
+            "Path to JSON file containing id, wound, trap, circuit_breaker"
+            " (optional), and reflex fields to import."
+        ),
+    )
+    parser.add_argument(
         "--verify-transformed",
         action="store_true",
         help="Verify all transformed Simple English scars in the database.",
@@ -577,6 +588,7 @@ class SyncSyntheticScarsScript(BaseScript):
     self.limit = parsed.limit
     self.export_pending = parsed.export_pending
     self.apply_transformed = parsed.apply_transformed
+    self.import_simple_english = parsed.import_simple_english
     self.verify_transformed = parsed.verify_transformed
     self.db_path = resolve_scars_db_path(
         db_path=parsed.db_path,
@@ -960,6 +972,120 @@ class SyncSyntheticScarsScript(BaseScript):
     self.stdout.write(f"Applied {len(items)} transformed scar(s).\n")
     return 0
 
+  def _run_import_simple_english(self) -> int:
+    """Imports Simple English wound, trap, circuit_breaker, and reflex without modifying socratic_probe."""
+    if not self.import_simple_english or not os.path.isfile(
+        self.import_simple_english
+    ):
+      self.stderr.write(
+          "Error: Simple English JSON file not found:"
+          f" '{self.import_simple_english}'.\n"
+      )
+      return 1
+
+    try:
+      with open(self.import_simple_english, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    except (OSError, ValueError) as exc:
+      self.stderr.write(f"Error: Failed to read Simple English JSON: {exc}\n")
+      return 1
+
+    items = payload if isinstance(payload, list) else [payload]
+    if not items or not all(isinstance(x, dict) for x in items):
+      self.stderr.write(
+          "Error: Simple English JSON must be an object or non-empty list of"
+          " objects.\n"
+      )
+      return 1
+
+    self._init_db_schema()
+    cur = self.conn.cursor()
+
+    try:
+      cur.execute("BEGIN TRANSACTION")
+      for item in items:
+        scar_id = str(item.get("id") or "").strip()
+        if not scar_id:
+          self.conn.rollback()
+          self.stderr.write("Error: Simple English item is missing 'id'.\n")
+          return 1
+
+        cur.execute(
+            """
+            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+                   wound, trap, circuit_breaker, reflex
+            FROM scars
+            WHERE id = ?
+            """,
+            (scar_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+          self.conn.rollback()
+          self.stderr.write(f"Error: Scar '{scar_id}' not found in database.\n")
+          return 1
+
+        raw_row = {
+            "raw_wound": row[0] if row[0] is not None else (row[4] or ""),
+            "raw_trap": row[1] if row[1] is not None else (row[5] or ""),
+            "raw_circuit_breaker": (
+                row[2] if row[2] is not None else (row[6] or "")
+            ),
+            "raw_reflex": row[3] if row[3] is not None else (row[7] or ""),
+        }
+        cb_val = item.get("circuit_breaker")
+        if cb_val is None:
+          cb_val = ""
+
+        candidate = {
+            "wound": item.get("wound"),
+            "trap": item.get("trap"),
+            "circuit_breaker": cb_val,
+            "reflex": item.get("reflex"),
+        }
+
+        errors = verify_scar_transformation(raw_row, candidate)
+        if errors:
+          self.conn.rollback()
+          for err in errors:
+            self.stderr.write(f"Error [{scar_id}]: {err}\n")
+          return 1
+
+        cur.execute(
+            """
+            UPDATE scars
+            SET wound = ?, trap = ?, circuit_breaker = ?, reflex = ?
+            WHERE id = ?
+            """,
+            (
+                candidate["wound"],
+                candidate["trap"],
+                candidate["circuit_breaker"],
+                candidate["reflex"],
+                scar_id,
+            ),
+        )
+
+      if self.has_fts5:
+        self._populate_fts(cur)
+
+      self.conn.commit()
+      file_size = (
+          os.path.getsize(self.db_path) if os.path.isfile(self.db_path) else 0
+      )
+      cur.execute(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES ('db_size_bytes', ?)",
+          (str(file_size),),
+      )
+      self.conn.commit()
+    except sqlite3.Error as exc:
+      self.conn.rollback()
+      self.stderr.write(f"Error: Database failure during import: {exc}\n")
+      return 1
+
+    self.stdout.write(f"Imported {len(items)} Simple English scar(s).\n")
+    return 0
+
   def _run_verify_transformed(self) -> int:
     """Verifies all rows that have populated transformed fields."""
     self._init_db_schema()
@@ -1017,6 +1143,9 @@ class SyncSyntheticScarsScript(BaseScript):
 
     if self.apply_transformed is not None:
       return self._run_apply_transformed()
+
+    if self.import_simple_english is not None:
+      return self._run_import_simple_english()
 
     if self.verify_transformed:
       return self._run_verify_transformed()
