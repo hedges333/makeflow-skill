@@ -131,6 +131,15 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected circuit_breaker error in {errs}",
     )
 
+  def test_omitted_circuit_breaker_defaults_to_empty_when_raw_empty(self):
+    """Test that omitting circuit_breaker key is accepted when raw_circuit_breaker is empty."""
+    no_cb_candidate = _make_valid_candidate("SCAR-NOCB-02")
+    no_cb_candidate["raw_circuit_breaker"] = ""
+    del no_cb_candidate["circuit_breaker"]
+    del no_cb_candidate["socratic_probe"]
+    errs = self.validator.validate(no_cb_candidate)
+    self.assertEqual(errs, [])
+
   def test_span_preservation(self):
     """Test byte-for-byte span preservation across math and code blocks."""
     base = _make_valid_candidate()

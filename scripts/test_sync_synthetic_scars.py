@@ -1282,6 +1282,334 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
         1,
     )
 
+  def test_import_simple_english_updates_four_fields_and_preserves_socratic_probe(self):
+    scars_input = [
+        {
+            "id": "SCAR-MATH-01",
+            "title": "Math & Code Invariant",
+            "category": "Architecture",
+            "category_slug": "architecture",
+            "visibility": "public",
+            "workflow_phases": ["T30"],
+            "applies_when": "Transforming scars with formulas",
+            "graduation_status": "graduated",
+            "wound": "Lost inline $x_i + y_i = z_i$ formula.",
+            "trap": "Stripping LaTeX $$\\sum_{i=1}^n x_i$$ during rewrite.",
+            "circuit_breaker": "Verify spans before commit.",
+            "reflex": "Preserve `$VAR` and ```python\nprint(1)\n``` blocks.",
+        },
+        {
+            "id": "SCAR-NOCB-01",
+            "title": "Empty Circuit Breaker Scar",
+            "category": "Testing",
+            "category_slug": "testing",
+            "visibility": "public",
+            "workflow_phases": ["T30"],
+            "applies_when": "Testing empty optional circuit_breaker",
+            "graduation_status": "graduated",
+            "wound": "Raw wound text.",
+            "trap": "Raw trap text.",
+            "circuit_breaker": "",
+            "reflex": "Raw reflex text.",
+        },
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-imp1"'),
+    ):
+      self.assertEqual(
+          script.execute(args=["--db-path", self.db_path], stdout=io.StringIO()),
+          0,
+      )
+
+    # Set an existing socratic_probe on SCAR-MATH-01 in SQLite
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        "UPDATE scars SET socratic_probe = ? WHERE id = 'SCAR-MATH-01'",
+        ("Existing Socratic question?",),
+    )
+    conn.commit()
+    conn.close()
+
+    # 1. Single-object JSON with --import-simple-english (including an ignored socratic_probe key)
+    single_json_path = os.path.join(self.temp_dir.name, "import_single.json")
+    with open(single_json_path, "w", encoding="utf-8") as f:
+      json.dump(
+          {
+              "id": "SCAR-MATH-01",
+              "wound": "Simple wound with $x_i + y_i = z_i$ formula.",
+              "trap": "Simple trap with $$\\sum_{i=1}^n x_i$$ formula.",
+              "circuit_breaker": "If spans change, stop the commit.",
+              "reflex": "Keep `$VAR` and ```python\nprint(1)\n``` blocks.",
+              "socratic_probe": "Should be ignored?",
+          },
+          f,
+      )
+
+    out1 = io.StringIO()
+    err1 = io.StringIO()
+    script_imp1 = SyncSyntheticScarsScript()
+    code1 = script_imp1.execute(
+        args=[
+            "--db-path",
+            self.db_path,
+            "--import-simple-english",
+            single_json_path,
+        ],
+        stdout=out1,
+        stderr=err1,
+    )
+    self.assertEqual(code1, 0, f"Expected 0, got {code1}: {err1.getvalue()}")
+    self.assertIn("Imported 1 Simple English scar(s).", out1.getvalue())
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-MATH-01'"
+    )
+    row = cur.fetchone()
+    conn.close()
+    self.assertEqual(row[0], "Simple wound with $x_i + y_i = z_i$ formula.")
+    self.assertEqual(row[1], "Simple trap with $$\\sum_{i=1}^n x_i$$ formula.")
+    self.assertEqual(row[2], "If spans change, stop the commit.")
+    self.assertEqual(row[3], "Keep `$VAR` and ```python\nprint(1)\n``` blocks.")
+    self.assertEqual(row[4], "Existing Socratic question?")
+
+    # 2. Array JSON with --import alias: overwrites SCAR-MATH-01 4 fields and imports SCAR-NOCB-01 without circuit_breaker key
+    batch_json_path = os.path.join(self.temp_dir.name, "import_batch.json")
+    with open(batch_json_path, "w", encoding="utf-8") as f:
+      json.dump(
+          [
+              {
+                  "id": "SCAR-MATH-01",
+                  "wound": "Revised wound with $x_i + y_i = z_i$ intact.",
+                  "trap": "Revised trap with $$\\sum_{i=1}^n x_i$$ intact.",
+                  "circuit_breaker": "Check spans before every commit.",
+                  "reflex": "Verify `$VAR` and ```python\nprint(1)\n``` blocks.",
+              },
+              {
+                  "id": "SCAR-NOCB-01",
+                  "wound": "Simple wound without breaker.",
+                  "trap": "Simple trap without breaker.",
+                  "reflex": "Run the test suite.",
+              },
+          ],
+          f,
+      )
+
+    out2 = io.StringIO()
+    err2 = io.StringIO()
+    script_imp2 = SyncSyntheticScarsScript()
+    code2 = script_imp2.execute(
+        args=["--db-path", self.db_path, "--import", batch_json_path],
+        stdout=out2,
+        stderr=err2,
+    )
+    self.assertEqual(code2, 0, f"Expected 0, got {code2}: {err2.getvalue()}")
+    self.assertIn("Imported 2 Simple English scar(s).", out2.getvalue())
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-MATH-01'"
+    )
+    row_math = cur.fetchone()
+    self.assertEqual(row_math[0], "Revised wound with $x_i + y_i = z_i$ intact.")
+    self.assertEqual(row_math[4], "Existing Socratic question?")
+
+    cur.execute(
+        "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-NOCB-01'"
+    )
+    row_nocb = cur.fetchone()
+    conn.close()
+    self.assertEqual(row_nocb[0], "Simple wound without breaker.")
+    self.assertEqual(row_nocb[1], "Simple trap without breaker.")
+    self.assertEqual(row_nocb[2], "")
+    self.assertEqual(row_nocb[3], "Run the test suite.")
+    self.assertIsNone(row_nocb[4])
+
+    # Searchable via FTS5 query_scars
+    results = query_scars(self.db_path, query="Revised wound")
+    self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["id"], "SCAR-MATH-01")
+    self.assertEqual(results[0]["socraticProbe"], "Existing Socratic question?")
+
+  def test_import_simple_english_rejects_invalid_and_rolls_back(self):
+    scars_input = [
+        {
+            "id": "SCAR-MATH-01",
+            "title": "Math & Code Invariant",
+            "category": "Architecture",
+            "category_slug": "architecture",
+            "visibility": "public",
+            "workflow_phases": ["T30"],
+            "applies_when": "Transforming scars with formulas",
+            "graduation_status": "graduated",
+            "wound": "Lost inline $x_i + y_i = z_i$ formula.",
+            "trap": "Stripping LaTeX $$\\sum_{i=1}^n x_i$$ during rewrite.",
+            "circuit_breaker": "Verify spans before commit.",
+            "reflex": "Preserve `$VAR` and ```python\nprint(1)\n``` blocks.",
+        }
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-imp-err"'),
+    ):
+      self.assertEqual(
+          script.execute(args=["--db-path", self.db_path], stdout=io.StringIO()),
+          0,
+      )
+
+    # 1. Missing file -> exit 1
+    err_missing = io.StringIO()
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--import-simple-english",
+                os.path.join(self.temp_dir.name, "nonexistent.json"),
+            ],
+            stdout=io.StringIO(),
+            stderr=err_missing,
+        ),
+        1,
+    )
+
+    # 2. Malformed JSON -> exit 1
+    bad_json_path = os.path.join(self.temp_dir.name, "bad.json")
+    with open(bad_json_path, "w", encoding="utf-8") as f:
+      f.write("{not valid json")
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--import-simple-english",
+                bad_json_path,
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ),
+        1,
+    )
+
+    # 3. Missing id -> exit 1
+    no_id_path = os.path.join(self.temp_dir.name, "no_id.json")
+    with open(no_id_path, "w", encoding="utf-8") as f:
+      json.dump({"wound": "W.", "trap": "T.", "reflex": "R."}, f)
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--import-simple-english",
+                no_id_path,
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ),
+        1,
+    )
+
+    # 4. Unknown scar id -> exit 1
+    unknown_id_path = os.path.join(self.temp_dir.name, "unknown_id.json")
+    with open(unknown_id_path, "w", encoding="utf-8") as f:
+      json.dump(
+          {
+              "id": "SCAR-UNKNOWN-99",
+              "wound": "W.",
+              "trap": "T.",
+              "circuit_breaker": "C.",
+              "reflex": "R.",
+          },
+          f,
+      )
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--import-simple-english",
+                unknown_id_path,
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ),
+        1,
+    )
+
+    # 5. Invalid transformation (dropped math span) -> exit 1 and rollback
+    bad_span_path = os.path.join(self.temp_dir.name, "bad_span.json")
+    with open(bad_span_path, "w", encoding="utf-8") as f:
+      json.dump(
+          {
+              "id": "SCAR-MATH-01",
+              "wound": "Dropped formula in wound.",
+              "trap": "Simple trap with $$\\sum_{i=1}^n x_i$$ formula.",
+              "circuit_breaker": "Verify spans before commit.",
+              "reflex": "Preserve `$VAR` and ```python\nprint(1)\n``` blocks.",
+          },
+          f,
+      )
+    err_span = io.StringIO()
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--import-simple-english",
+                bad_span_path,
+            ],
+            stdout=io.StringIO(),
+            stderr=err_span,
+        ),
+        1,
+    )
+    self.assertIn("SCAR-MATH-01", err_span.getvalue())
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT wound FROM scars WHERE id = 'SCAR-MATH-01'")
+    self.assertIsNone(cur.fetchone()[0])
+    conn.close()
+
+    # 6. Invalid transformation (forbidden semicolon in prose) -> exit 1 and rollback
+    bad_semi_path = os.path.join(self.temp_dir.name, "bad_semi.json")
+    with open(bad_semi_path, "w", encoding="utf-8") as f:
+      json.dump(
+          {
+              "id": "SCAR-MATH-01",
+              "wound": "Simple wound with $x_i + y_i = z_i$; forbidden semicolon.",
+              "trap": "Simple trap with $$\\sum_{i=1}^n x_i$$ formula.",
+              "circuit_breaker": "Verify spans before commit.",
+              "reflex": "Preserve `$VAR` and ```python\nprint(1)\n``` blocks.",
+          },
+          f,
+      )
+    err_semi = io.StringIO()
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=[
+                "--db-path",
+                self.db_path,
+                "--import-simple-english",
+                bad_semi_path,
+            ],
+            stdout=io.StringIO(),
+            stderr=err_semi,
+        ),
+        1,
+    )
+    self.assertIn("semicolon", err_semi.getvalue())
+
 
 if __name__ == "__main__":
   unittest.main()

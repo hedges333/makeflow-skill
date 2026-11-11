@@ -118,6 +118,8 @@ class ScarCandidateValidator:
     trans_cb = candidate.get("circuit_breaker")
 
     if not raw_cb_str:
+      if "circuit_breaker" not in candidate:
+        trans_cb = ""
       # Raw circuit breaker is empty: transformed must be "" (not None or non-empty string)
       if trans_cb is None or trans_cb != "":
         errors.append(
