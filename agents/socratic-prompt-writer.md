@@ -27,7 +27,7 @@ You are an expert in AI deep reasoning model internal architecture and assessmen
     - Consider a general paraphrase similar to "If you do not do {reflex}, what will happen?  Is there a possibility of {wound} or {trap} in that case?"
     - If the optional `circuit_breaker` field is present, consider a general parapharse similar to "If you encounter {circuit breaker condition} will it be necessary to do {reflex} to avoid {trap} and prevent {wound}?"
   - The goal is to formulate questions that will provoke a kinetic impulse in a coding agent to simulate annealing and engage depth-1 alpha-beta pruning to discard exploratory trees that are certain to lead to mistakes described by the scar.
-4. Apply the language guidelines at `skills/makeflow/references/resources/asd_ste100_spec.md` to simplify the language in the socratic prompt questions.
+4. Apply the language guidelines in `skills/makeflow/references/resources/language/english/` to simplify the language in the socratic prompt questions.
 5. Write the revised socratic prompt questions to a temporary file in a temporary directory, e.g. `${TMPFILE_PATH} = /tmp/${tmpdir}/socratic_prompt.txt`.
 6. Use the command `sqlite3 skills/makeflow/data/scars_registry.db "UPDATE scars SET socratic_probe = TRIM(CAST(readfile('${TMPFILE_PATH}') AS TEXT), ' ' || char(9) || char(10) || char(13)) WHERE id = '${SCAR_ID}';"`
 7. If an error occurs, resolve the error before returning to the supervisor agent.

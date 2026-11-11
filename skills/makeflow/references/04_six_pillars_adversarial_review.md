@@ -179,7 +179,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 - **Anticipation of Questions**: What questions will external human maintainers or automated bots raise? Are proactive explanations included?
 - **Documentation Code Snippet Parity (`SCAR-DOC-07`)**: Are documentation and README code snippets updated to match new API signatures and lifecycle invariants?
 - **Essential vs Counterfeit Invariants (`SCAR-INV-03`)**: Does the code defend essential business invariants rather than brittle implementation details?
-- **Simple English Compliance**: Do comments, plans, and commit messages adhere to Simple English?
+- **Simple English Compliance**: Do comments, plans, and commit messages adhere to Simple English (`skills/makeflow/references/resources/language/english/`)?
   - Keep procedural sentences at 20 words or fewer.
   - Keep descriptive sentences at 25 words or fewer.
   - Put the condition before the command with a comma.

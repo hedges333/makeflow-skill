@@ -276,21 +276,7 @@ def is_ticket_active(state_dir):
   return True
 
 
-def check_simple_english(workspace_paths):
-  candidates = [
-      os.path.expanduser("~/.gemini/config/plugins/simple-english"),
-      os.path.expanduser("~/.gemini/plugins/simple-english"),
-  ]
-  for ws in workspace_paths:
-    candidates.append(os.path.join(ws, "plugins", "simple-english"))
-    candidates.append(os.path.join(ws, ".agents", "plugins", "simple-english"))
-  for p in candidates:
-    if os.path.isdir(p) and (
-        os.path.exists(os.path.join(p, "plugin.json"))
-        or os.path.exists(os.path.join(p, "skills", "simple-english", "SKILL.md"))
-    ):
-      return True
-  return False
+# Built-in technical English specifications live in skills/makeflow/references/resources/language/english/
 
 
 def find_state_dir(workspace_paths, artifact_dir):
@@ -376,14 +362,6 @@ def main():
       notes.append(
           f"Makefile Workflow loaded configuration from {cfg_source} "
           f"(critic={critic_model}, tdd={tdd_model}{ci_summary}{db_summary})."
-      )
-
-    has_se = check_simple_english(workspace_paths)
-    if not has_se:
-      notes.append(
-          "Makefile Workflow note: simple-english plugin is recommended for "
-          "ASD-STE100 Simplified Technical English compliance but was not found in "
-          "~/.gemini/config/plugins/simple-english."
       )
 
     if notes:

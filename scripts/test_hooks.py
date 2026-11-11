@@ -783,31 +783,19 @@ def test_session_start():
       assert len(steps_bad) == 1, f"Dropped state card prompt on {bad_cfg_raw}"
       assert "1 state card(s)" in steps_bad[0]["systemMessage"]["systemMessage"]
 
-    # 4. SimpleEnglish plugin discovery advisory
-    fake_home = tempfile.mkdtemp(prefix="fake_home_")
-    env_no_se = dict(os.environ)
-    env_no_se["HOME"] = fake_home
-    res_no_se = run_hook(
-        SESSION_START,
-        {"workspacePaths": [ws_dir]},
-        cwd=hook_cwd,
-        env=env_no_se,
-    )
-    msg_no_se = res_no_se["injectSteps"][0]["systemMessage"]["systemMessage"]
-    assert "simple-english plugin is recommended" in msg_no_se
-
-    se_plugin_dir = os.path.join(fake_home, ".gemini", "config", "plugins", "simple-english")
-    os.makedirs(se_plugin_dir, exist_ok=True)
-    with open(os.path.join(se_plugin_dir, "plugin.json"), "w") as f:
-      f.write('{"name": "simple-english"}')
-    res_with_se = run_hook(
-        SESSION_START,
-        {"workspacePaths": [ws_dir]},
-        cwd=hook_cwd,
-        env=env_no_se,
-    )
-    msg_with_se = res_with_se["injectSteps"][0]["systemMessage"]["systemMessage"]
-    assert "simple-english plugin is recommended" not in msg_with_se
+    # 4. GH-152: SessionStart must not emit external simple-english plugin or ASD-STE100 advisories
+    with tempfile.TemporaryDirectory(prefix="fake_home_") as fake_home:
+      env_no_se = dict(os.environ)
+      env_no_se["HOME"] = fake_home
+      res_no_se = run_hook(
+          SESSION_START,
+          {"workspacePaths": [ws_dir]},
+          cwd=hook_cwd,
+          env=env_no_se,
+      )
+      msg_no_se = res_no_se["injectSteps"][0]["systemMessage"]["systemMessage"]
+      assert "simple-english" not in msg_no_se.lower()
+      assert "asd-ste100" not in msg_no_se.lower()
 
     # 5. GH-74: Ticket lifecycle and clean intake check in SessionStart
     # 5a. Empty state directory reports clean and ready for Target 10 intake

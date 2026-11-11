@@ -167,7 +167,7 @@ Apply these rules for scratch scripts and automation utilities:
 
 ## 4. Simple English Documentation Rules
 
-Apply the rules of the `simple-english` plugin to documentation, plans, changelogs, and pull request descriptions:
+Apply the open technical English rules in `skills/makeflow/references/resources/language/english/` to documentation, plans, changelogs, and pull request descriptions:
 
 1. Keep procedural sentences at 20 words or fewer, with one instruction per sentence.
 2. Keep descriptive sentences at 25 words or fewer, in simple tenses and active voice.
