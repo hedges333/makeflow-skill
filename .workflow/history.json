@@ -1628,5 +1628,25 @@
     "closes_issue": true,
     "tests_added": 1,
     "scars_earned": []
+  },
+  {
+    "id": "GH-149",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/149",
+    "title": "[FEAT] Add Simple English import flag and /goal batch directive to sync_synthetic_scars.py",
+    "request": "Add --import-simple-english (--import) flag to scripts/sync_synthetic_scars.py to import only wound, trap, circuit_breaker, and reflex while preserving socratic_probe, update agents/synthetic-scar-importer.md and scripts/test_scar_candidate.py, and place the operator /goal directive in notes/simple_english_scar_import_goal.md.",
+    "branch": "feat/149-simple-english-import-flag",
+    "subprojects": [
+      "scripts",
+      "agents",
+      "notes"
+    ],
+    "started_at": "2026-11-10T21:23:00Z",
+    "completed_at": "2026-11-11T19:58:31Z",
+    "commit_sha": "24b2ec6",
+    "pr_number": 153,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/153",
+    "closes_issue": true,
+    "tests_added": 3,
+    "scars_earned": []
   }
 ]
