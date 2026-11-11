@@ -3378,6 +3378,376 @@ def validate_optional_circuit_breaker_invariants():
   return errors
 
 
+OPEN_ENGLISH_SPEC_REQUIREMENTS = {
+    "00_index_and_agentic_rationale.md": [
+        "20 words",
+        "25 words",
+        "6 sentences",
+        "3 words",
+        "10 words",
+        "Plain Mode",
+        "Strict Mode",
+        "self-attention",
+        "plainlanguage.gov",
+        "MIL-STD-38784B",
+        "NASA SP-7084",
+        "CC-BY-4.0",
+        "Attempto",
+    ],
+    "01_us_federal_plain_language.md": [
+        "plainlanguage.gov",
+        "17 U.S.C. § 105",
+        "active voice",
+        "nominalization",
+        "utilize",
+        "commence",
+        "terminate",
+        "prior to",
+        "subsequent to",
+        "in order to",
+        "sufficient",
+        "demonstrate",
+    ],
+    "02_mil_std_38784b_technical_manuals.md": [
+        "MIL-STD-38784B",
+        "17 U.S.C. § 105",
+        "WARNING",
+        "CAUTION",
+        "NOTE",
+        "imperative",
+    ],
+    "03_nasa_sp_7084_technical_grammar.md": [
+        "NASA SP-7084",
+        "17 U.S.C. § 105",
+        "noun",
+        "unit modifier",
+        "participle",
+        "gerund",
+        "that",
+        "semicolon",
+        "em-dash",
+    ],
+    "04_google_developer_style_guide.md": [
+        "Google Developer Documentation Style Guide",
+        "CC-BY-4.0",
+        "Google LLC",
+        "condition",
+        "code",
+        "flag",
+        "e.g.",
+        "i.e.",
+        "etc.",
+        "via",
+    ],
+    "05_attempto_controlled_english_cnl.md": [
+        "Attempto Controlled English",
+        "University of Zurich",
+        "anaphora",
+        "pronoun",
+        "quantifier",
+        "prepositional",
+        "if",
+        "then",
+    ],
+}
+
+OPEN_ENGLISH_REPO_TARGETS = (
+    "README.md",
+    "install.sh",
+    "rules/AGENTS.md",
+    "scripts/session_start.py",
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "agents/socratic-prompt-writer.md",
+    "agents/synthetic-scar-importer.md",
+)
+
+FORBIDDEN_LEGACY_ENGLISH_TOKENS = (
+    "SimpleEnglish",
+    "simple-english",
+    "AminBlg/SimpleEnglish",
+    "asd_ste100_spec.md",
+    "ASD-STE100",
+)
+
+
+def _check_prose_punctuation(fname: str, text: str) -> list[str]:
+  """Verifies prose lines outside code blocks, inline code, tables, and headings have zero ';' or '—'."""
+  errs = []
+  in_fence = False
+  for idx, raw_line in enumerate(text.splitlines(), start=1):
+    stripped = raw_line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+      continue
+    if in_fence or not stripped:
+      continue
+    if stripped.startswith("#") or stripped.startswith("|"):
+      continue
+    scrubbed = re.sub(r"`[^`]*`", "", stripped)
+    if ";" in scrubbed:
+      errs.append(f"{fname}:{idx} contains forbidden semicolon (';') in prose")
+    if "\u2014" in scrubbed:
+      errs.append(f"{fname}:{idx} contains forbidden em-dash ('—') in prose")
+  return errs
+
+
+def _count_markdown_table_data_rows(text: str) -> int:
+  """Counts Markdown table data rows (excluding header and separator lines)."""
+  in_table = False
+  header_seen = False
+  sep_seen = False
+  data_rows = 0
+  for raw_line in text.splitlines():
+    stripped = raw_line.strip()
+    if stripped.startswith("|") and stripped.endswith("|"):
+      if not in_table:
+        in_table = True
+        header_seen = True
+        sep_seen = False
+      elif header_seen and not sep_seen and re.match(r"^\|[\s:\-\|]+\|$", stripped):
+        sep_seen = True
+      elif sep_seen:
+        data_rows += 1
+    else:
+      in_table = False
+      header_seen = False
+      sep_seen = False
+  return data_rows
+
+
+def _check_open_english_bundle(
+    english_files: dict[str, str],
+    repo_files: dict[str, str],
+    legacy_spec_exists: bool = False,
+) -> list[str]:
+  """Validates the 6 open technical English spec files, legacy spec removal, and 8 repo references."""
+  errs = []
+  base_rel = "skills/makeflow/references/resources/language/english"
+
+  if legacy_spec_exists:
+    errs.append(
+        "Legacy proprietary spec skills/makeflow/references/resources/asd_ste100_spec.md must not exist"
+    )
+
+  for fname, req_tokens in OPEN_ENGLISH_SPEC_REQUIREMENTS.items():
+    rel_path = f"{base_rel}/{fname}"
+    if fname not in english_files:
+      errs.append(f"Missing {rel_path}")
+      continue
+    content = english_files[fname]
+    content_lower = content.lower()
+    for tok in req_tokens:
+      if tok not in content and tok.lower() not in content_lower:
+        errs.append(f"{rel_path} missing required token '{tok}'")
+    if fname == "01_us_federal_plain_language.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 35:
+        errs.append(
+            f"{rel_path} Simple-Word Replacement Dictionary must have at least 35 rows (found {row_count})"
+        )
+    errs.extend(_check_prose_punctuation(rel_path, content))
+
+  expected_ref = "skills/makeflow/references/resources/language/english/"
+  for rel_path in OPEN_ENGLISH_REPO_TARGETS:
+    if rel_path not in repo_files:
+      errs.append(f"Missing {rel_path}")
+      continue
+    rtext = repo_files[rel_path]
+    sanitized_text = rtext.replace("--import-simple-english", "")
+    sanitized_lower = sanitized_text.lower()
+    for bad_tok in FORBIDDEN_LEGACY_ENGLISH_TOKENS:
+      if bad_tok in sanitized_text or bad_tok.lower() in sanitized_lower:
+        errs.append(f"{rel_path} must not reference legacy token '{bad_tok}'")
+    if expected_ref not in rtext:
+      errs.append(f"{rel_path} must reference '{expected_ref}'")
+
+  return errs
+
+
+def validate_open_technical_english_specs():
+  """Validates open technical English specifications and removal of simple-english / ASD-STE100 (GH-152)."""
+  errors = []
+  base_rel = "skills/makeflow/references/resources/language/english"
+  english_files = {}
+  for fname in OPEN_ENGLISH_SPEC_REQUIREMENTS:
+    fpath = repo_path(f"{base_rel}/{fname}")
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        english_files[fname] = f.read()
+
+  repo_files = {}
+  for rel_path in OPEN_ENGLISH_REPO_TARGETS:
+    fpath = repo_path(rel_path)
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        repo_files[rel_path] = f.read()
+
+  legacy_exists = os.path.exists(
+      repo_path("skills/makeflow/references/resources/asd_ste100_spec.md")
+  )
+  errors.extend(
+      _check_open_english_bundle(
+          english_files, repo_files, legacy_spec_exists=legacy_exists
+      )
+  )
+
+  # In-memory negative falsification checks (SCAR-TEST-11)
+  dict_rows = "\n".join(
+      f"| word_{i} | simple_{i} |" for i in range(40)
+  )
+  sample_english = {
+      "00_index_and_agentic_rationale.md": (
+          "# Index\n"
+          "Procedural limit is 20 words and descriptive limit is 25 words.\n"
+          "Paragraphs have 6 sentences, noun clusters have 3 words, and terms use 10 words.\n"
+          "Operate in Plain Mode or Strict Mode for self-attention clarity.\n"
+          "Sources include plainlanguage.gov, MIL-STD-38784B, NASA SP-7084, CC-BY-4.0, and Attempto.\n"
+      ),
+      "01_us_federal_plain_language.md": (
+          "# US Federal Plain Language\n"
+          "Source is plainlanguage.gov in the Public Domain under 17 U.S.C. § 105.\n"
+          "Use active voice and avoid nominalization.\n"
+          "| Complex | Simple |\n"
+          "| :--- | :--- |\n"
+          "| utilize | use |\n"
+          "| commence | start |\n"
+          "| terminate | stop |\n"
+          "| prior to | before |\n"
+          "| subsequent to | after |\n"
+          "| in order to | to |\n"
+          "| sufficient | enough |\n"
+          "| demonstrate | show |\n"
+          f"{dict_rows}\n"
+      ),
+      "02_mil_std_38784b_technical_manuals.md": (
+          "# MIL-STD-38784B\n"
+          "Source is MIL-STD-38784B under 17 U.S.C. § 105.\n"
+          "Use WARNING, CAUTION, and NOTE alerts with imperative steps.\n"
+      ),
+      "03_nasa_sp_7084_technical_grammar.md": (
+          "# NASA SP-7084\n"
+          "Source is NASA SP-7084 under 17 U.S.C. § 105.\n"
+          "Avoid long noun clusters, hyphenate each unit modifier, and avoid ambiguous participle or gerund forms.\n"
+          "Keep the conjunction that and omit any semicolon or em-dash in prose.\n"
+      ),
+      "04_google_developer_style_guide.md": (
+          "# Google Style\n"
+          "Source is Google Developer Documentation Style Guide under CC-BY-4.0 by Google LLC.\n"
+          "Place the condition before the instruction and format code spans and CLI flag names.\n"
+          "Avoid `e.g.`, `i.e.`, `etc.`, and `via` in documentation.\n"
+      ),
+      "05_attempto_controlled_english_cnl.md": (
+          "# Attempto Controlled English\n"
+          "Source is Attempto Controlled English from the University of Zurich.\n"
+          "Resolve anaphora and pronoun targets, state quantifier scope, fix prepositional attachment, and write if and then rules.\n"
+      ),
+  }
+  sample_repo = {
+      rel: "Follow skills/makeflow/references/resources/language/english/ rules.\n"
+      for rel in OPEN_ENGLISH_REPO_TARGETS
+  }
+
+  baseline_errs = _check_open_english_bundle(
+      sample_english, sample_repo, legacy_spec_exists=False
+  )
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for open English bundle: {baseline_errs}"
+    )
+
+  # 1. Missing spec file
+  missing_eng = dict(sample_english)
+  missing_eng.pop("03_nasa_sp_7084_technical_grammar.md")
+  if not any(
+      "Missing skills/makeflow/references/resources/language/english/03_nasa_sp_7084_technical_grammar.md"
+      in e
+      for e in _check_open_english_bundle(missing_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: missing 03_nasa_sp_7084_technical_grammar.md was not rejected"
+    )
+
+  # 2. Missing attribution token
+  no_attr_eng = dict(sample_english)
+  no_attr_eng["04_google_developer_style_guide.md"] = no_attr_eng[
+      "04_google_developer_style_guide.md"
+  ].replace("CC-BY-4.0", "OpenLicense")
+  if not any(
+      "CC-BY-4.0" in e
+      for e in _check_open_english_bundle(no_attr_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: missing CC-BY-4.0 attribution was not rejected"
+    )
+
+  # 3. Prose semicolon
+  semi_eng = dict(sample_english)
+  semi_eng["00_index_and_agentic_rationale.md"] += "Bad prose line; with semicolon.\n"
+  if not any(
+      "semicolon" in e
+      for e in _check_open_english_bundle(semi_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: prose semicolon was not rejected"
+    )
+
+  # 4. Prose em-dash
+  emdash_eng = dict(sample_english)
+  emdash_eng["02_mil_std_38784b_technical_manuals.md"] += (
+      "Bad prose line — with em-dash.\n"
+  )
+  if not any(
+      "em-dash" in e
+      for e in _check_open_english_bundle(emdash_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: prose em-dash was not rejected"
+    )
+
+  # 5. Legacy asd_ste100_spec.md exists
+  if not any(
+      "asd_ste100_spec.md" in e
+      for e in _check_open_english_bundle(
+          sample_english, sample_repo, legacy_spec_exists=True
+      )
+  ):
+    errors.append(
+        "Negative falsification failed: existing asd_ste100_spec.md was not rejected"
+    )
+
+  # 6. Leftover SimpleEnglish / asd_ste100_spec.md in repo file
+  bad_repo = dict(sample_repo)
+  bad_repo["README.md"] += "Install SimpleEnglish plugin for ASD-STE100.\n"
+  if not any(
+      "README.md must not reference" in e
+      for e in _check_open_english_bundle(sample_english, bad_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: leftover SimpleEnglish in README.md was not rejected"
+    )
+
+  # 7. Insufficient replacement dictionary rows (< 35)
+  short_dict_eng = dict(sample_english)
+  short_dict_eng["01_us_federal_plain_language.md"] = (
+      "# US Federal Plain Language\n"
+      "Source is plainlanguage.gov under 17 U.S.C. § 105 with active voice and no nominalization.\n"
+      "Terms: utilize commence terminate prior to subsequent to in order to sufficient demonstrate.\n"
+      "| Complex | Simple |\n"
+      "| :--- | :--- |\n"
+      "| utilize | use |\n"
+  )
+  if not any(
+      "at least 35 rows" in e
+      for e in _check_open_english_bundle(short_dict_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 35 replacement dictionary rows was not rejected"
+    )
+
+  return errors
+
+
 def validate():
   errors = []
 
@@ -4067,7 +4437,7 @@ def validate():
     if not any("rules/AGENTS.md" in e for e in errors):
       print(f"✔ Antigravity development rules ({agents_rel}) valid.")
 
-  # 14. SimpleEnglish Companion Plugin Recommendation & Subagent Roles in README.md
+  # 14. Built-in Technical English Guidelines & Subagent Roles in README.md (GH-152)
   readme_rel = "README.md"
   readme_path = repo_path(readme_rel)
   if not os.path.exists(readme_path):
@@ -4075,10 +4445,14 @@ def validate():
   else:
     with open(readme_path) as f:
       rm_text = f.read()
-    if "Recommended Companion: SimpleEnglish Plugin" not in rm_text or "https://github.com/AminBlg/SimpleEnglish" not in rm_text:
-      errors.append(f"{readme_rel} must recommend SimpleEnglish companion plugin under Installation with repository URL")
+    if "skills/makeflow/references/resources/language/english/" not in rm_text:
+      errors.append(
+          f"{readme_rel} must reference skills/makeflow/references/resources/language/english/"
+      )
+    elif "SimpleEnglish" in rm_text or "AminBlg/SimpleEnglish" in rm_text:
+      errors.append(f"{readme_rel} must not recommend external SimpleEnglish plugin")
     else:
-      print("✔ SimpleEnglish companion plugin recommended in README.md.")
+      print("✔ Built-in Technical English guidelines documented in README.md.")
 
     if "socratic" not in rm_text.lower() or "invariant" not in rm_text.lower():
       errors.append(f"{readme_rel} must provide Socratic ticket intake guidance")
@@ -4454,6 +4828,15 @@ def validate():
   errors.extend(cb_errors)
   if not cb_errors:
     print("✔ Optional Circuit Breaker format invariants (GH-120) verified.")
+
+  # Open Technical English Standards & SimpleEnglish Removal Invariants (GH-152)
+  open_eng_errors = validate_open_technical_english_specs()
+  errors.extend(open_eng_errors)
+  if not open_eng_errors:
+    print(
+        "✔ Open technical English specifications and SimpleEnglish removal (GH-152)"
+        " verified."
+    )
 
   if errors:
     print(f"\n❌ Validation failed with {len(errors)} error(s):")

@@ -90,13 +90,9 @@ Run `make install` from a local clone to validate, test, and install the plugin:
 make install
 ```
 
-### Recommended Companion: SimpleEnglish Plugin
+### Built-in Technical English Guidelines
 
-This workflow enforces clear, jargon-free technical communication under ASD-STE100 principles. We recommend installing the [`SimpleEnglish`](https://github.com/AminBlg/SimpleEnglish) companion plugin alongside Makefile Workflow:
-
-```bash
-agy plugin install https://github.com/AminBlg/SimpleEnglish
-```
+This workflow enforces clear, jargon-free technical communication using built-in open technical English standards in [`skills/makeflow/references/resources/language/english/`](./skills/makeflow/references/resources/language/english/).
 
 ---
 
@@ -374,7 +370,7 @@ Unofficially, this is Jobware or Coffeeware.  If you like it, please [donate to 
 
 - Methodology: Created by [Randal L. Schwartz](https://github.com/RandalSchwartz) in the [*Synthetic Scars* series on DEV.to](https://dev.to/randalschwartz/series/44156) and GitHub Gist `598a1f2b5760a23c1d70b57e9e85393f`.
 - Plugin Packaging and Polyglot Guides: Maintained by [Mark Hedges](https://github.com/hedges333).
-- Documentation Style: Written in plain English following ASD-STE100 principles from the [SimpleEnglish plugin](https://github.com/AminBlg/SimpleEnglish).
+- Documentation Style: Written in Simple English following the public-domain and open-source technical writing standards synthesized in [`skills/makeflow/references/resources/language/english/`](./skills/makeflow/references/resources/language/english/) (`plainlanguage.gov`, `MIL-STD-38784B`, `NASA SP-7084`, the *Google Developer Documentation Style Guide* under `CC-BY-4.0`, and *Attempto Controlled English*).
 - Summary of [Game Programming Patterns](https://gameprogrammingpatterns.com) analyzed by Robert Nystrom provides an invaluable resource to apply to game programming.
 - **E. Gamma, R. Helm, R. Johnson, and J. Vlissides**, *Design Patterns: Elements of Reusable Object-Oriented Software*. Reading, MA: Addison-Wesley, 1994.
 - Vector 4 Reflexes: Inspired by Francisco Grandón (`@fgrandon`) in the [*Antigravity Field Notes*](https://dev.to/fgrandon/series/45720) series. Part 1 is *I Cut My Agent's Fixed Context by 42% and Moved Its Test Rules into a Hash-Checked CLI*. Part 3 is [*Goodhart's Law Has Root Access*](https://dev.to/fgrandon/goodharts-law-has-root-access-hardening-autonomous-agent-governance-from-agops-v21-to-v23-203o).

@@ -19,7 +19,7 @@ You transform one pending synthetic scar (a recorded engineering failure pattern
 
 1. Process one scar per invocation. You receive a scar ID string (`${SCAR_ID}`) from the supervisor agent.
 2. Run `sqlite3 -json skills/makeflow/data/scars_registry.db "SELECT id, title, category, applies_when, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex FROM scars WHERE id = '${SCAR_ID}';" | jq '.[0]'` to inspect the scar fields.
-3. Refer to `skills/makeflow/references/resources/asd_ste100_spec.md` to rewrite the fields in simple technical English:
+3. Refer to `skills/makeflow/references/resources/language/english/` to rewrite the fields in simple technical English:
    - Write the `wound` field based on the `raw_wound` field.
    - Write the `trap` field based on the `raw_trap` field.
    - If `raw_circuit_breaker` is present, write the `circuit_breaker` field based on `raw_circuit_breaker`. If `raw_circuit_breaker` is empty, set `circuit_breaker` to `""` or omit it.

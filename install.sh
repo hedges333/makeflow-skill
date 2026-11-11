@@ -72,12 +72,7 @@ else
   echo "Copied plugin files to ${TARGET_DIR}."
 fi
 
-if command -v agy >/dev/null 2>&1; then
-  if ! agy plugin list | grep -q "simple-english"; then
-    echo "SimpleEnglish plugin not found. Installing SimpleEnglish..."
-    agy plugin install "https://github.com/AminBlg/SimpleEnglish" || true
-  fi
-fi
+# Built-in technical English specifications are installed in skills/makeflow/references/resources/language/english/
 
 echo "=== Makefile Workflow Installation Complete ==="
 echo "Restart your agent session to load the plugin."
