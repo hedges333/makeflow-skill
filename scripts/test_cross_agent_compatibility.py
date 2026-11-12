@@ -3456,13 +3456,101 @@ OPEN_ENGLISH_SPEC_REQUIREMENTS = {
     "03_nasa_sp_7084_technical_grammar.md": [
         "NASA SP-7084",
         "17 U.S.C. § 105",
+        "Mary K. McCaskill",
+        "Chapter 1",
+        "Chapter 2",
+        "Chapter 3",
+        "Chapter 4",
         "noun",
+        "possessive",
+        "abstract noun",
+        "pronoun",
+        "antecedent",
+        "that",
+        ", which",
+        "active voice",
+        "passive voice",
+        "tense",
+        "mood",
+        "Subject-Verb Agreement",
+        "15 seconds is",
+        "data",
+        "none",
+        "each",
+        "every",
+        "number",
+        "total",
         "unit modifier",
+        "-ly",
+        "comparative",
+        "superlative",
+        "only",
+        "preposition",
+        "verify",
+        "confirm",
+        "assert",
+        "check",
+        "state",
+        "show",
+        "correlative",
+        "both",
+        "either",
+        "not only",
         "participle",
         "gerund",
-        "that",
+        "infinitive",
+        "dangling",
+        "parallelism",
+        "compare to",
+        "compare with",
+        "incomplete comparison",
+        "emphasis",
+        "conciseness",
+        "circumlocution",
+        "expletive",
+        "there is",
+        "it is",
+        "redundant",
+        "Apostrophe",
+        "Brackets",
+        "Colon",
+        "Comma",
+        "Hyphen",
+        "Italics",
+        "Parentheses",
+        "Period",
+        "Question Mark",
+        "Quotation Marks",
+        "Slash",
+        "non-",
+        "pre-",
+        "re-",
+        "self-",
+        "sub-",
+        "co-",
+        "multi-",
+        "post-",
+        "anti-",
+        "subproject",
+        "idempotent",
+        "precondition",
+        "untracked",
+        "32-bit and 64-bit",
+        "Agentic Override",
         "semicolon",
         "em-dash",
+        "00_index_and_agentic_rationale.md",
+        "Rule 9",
+        "Capitalization",
+        "proper noun",
+        "the database",
+        "the supervisor",
+        "Target 20",
+        "Headline Style",
+        "Sentence Style",
+        "acronym",
+        "numeral",
+        "SI",
     ],
     "04_google_developer_style_guide.md": [
         "Google Developer Documentation Style Guide",
@@ -3965,6 +4053,12 @@ def _check_open_english_bundle(
         errs.append(
             f"{rel_path} MIL-STD-38784B normative tables must have at least 20 rows (found {row_count})"
         )
+    if fname == "03_nasa_sp_7084_technical_grammar.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 30:
+        errs.append(
+            f"{rel_path} NASA SP-7084 lookup tables must have at least 30 rows (found {row_count})"
+        )
     if fname == "04_google_developer_style_guide.md":
       row_count = _count_markdown_table_data_rows(content)
       if row_count < 45:
@@ -4073,9 +4167,26 @@ def validate_open_technical_english_specs():
       ),
       "03_nasa_sp_7084_technical_grammar.md": (
           "# NASA SP-7084\n"
-          "Source is NASA SP-7084 under 17 U.S.C. § 105.\n"
-          "Avoid long noun clusters, hyphenate each unit modifier, and avoid ambiguous participle or gerund forms.\n"
-          "Keep the conjunction that and omit any semicolon or em-dash in prose.\n"
+          "Source is NASA SP-7084 by Mary K. McCaskill under 17 U.S.C. § 105.\n"
+          "## Chapter 1: Technical Grammar\n"
+          "Cover noun clusters, possessive forms, and abstract noun avoidance.\n"
+          "Check pronoun and antecedent rules with that and, which clauses.\n"
+          "Use active voice over passive voice, consistent tense, mood, and Subject-Verb Agreement.\n"
+          "Write 15 seconds is for singular units and handle data, none, each, every, number, and total.\n"
+          "Hyphenate each unit modifier, omit hyphens after -ly adverbs, and check comparative, superlative, and only.\n"
+          "Use preposition idioms, retain that after verify, confirm, assert, check, state, and show, and balance correlative pairs both, either, and not only.\n"
+          "Avoid dangling participle, gerund, or infinitive phrases and keep parallelism with compare to, compare with, and no incomplete comparison.\n"
+          "## Chapter 2: Technical Sentence Style\n"
+          "Build emphasis and conciseness by cutting circumlocution, expletive there is or it is, and redundant words.\n"
+          "## Chapter 3: Technical Punctuation\n"
+          "Cover Apostrophe, Brackets, Colon, Comma, Hyphen, Italics, Parentheses, Period, Question Mark, Quotation Marks, and Slash.\n"
+          "Include prefixes non-, pre-, re-, self-, sub-, co-, multi-, post-, anti- and solid words subproject, idempotent, precondition, untracked, plus 32-bit and 64-bit.\n"
+          "Apply the Agentic Override for semicolon and em-dash from 00_index_and_agentic_rationale.md Rule 9.\n"
+          "## Chapter 4: Capitalization\n"
+          "Distinguish proper noun forms like Target 20 from the database and the supervisor, and apply Headline Style, Sentence Style, acronym, numeral, and SI rules.\n"
+          "| Construct | Rule |\n"
+          "| :--- | :--- |\n"
+          f"{dict_rows}\n"
       ),
       "04_google_developer_style_guide.md": (
           "# Google Style\n"
@@ -4503,6 +4614,34 @@ def validate_open_technical_english_specs():
   ):
     errors.append(
         "Negative falsification failed: < 20 MIL-STD-38784B table rows was not rejected"
+    )
+
+  # 14. Missing NASA SP-7084 chapter or agentic override construct
+  missing_ch_eng = dict(sample_english)
+  missing_ch_eng["03_nasa_sp_7084_technical_grammar.md"] = (
+      missing_ch_eng["03_nasa_sp_7084_technical_grammar.md"]
+      .replace("Chapter 4", "Section X")
+      .replace("Agentic Override", "Standard Rule")
+  )
+  nasa_missing_errs = _check_open_english_bundle(missing_ch_eng, sample_repo)
+  if not any("Chapter 4" in e for e in nasa_missing_errs) or not any(
+      "Agentic Override" in e for e in nasa_missing_errs
+  ):
+    errors.append(
+        "Negative falsification failed: missing NASA SP-7084 chapter or Agentic Override was not rejected"
+    )
+
+  # 15. Insufficient NASA SP-7084 lookup table rows (< 30)
+  short_nasa_eng = dict(sample_english)
+  short_nasa_eng["03_nasa_sp_7084_technical_grammar.md"] = short_nasa_eng[
+      "03_nasa_sp_7084_technical_grammar.md"
+  ].replace(dict_rows, "| non- | non-blocking |")
+  if not any(
+      "at least 30 rows" in e
+      for e in _check_open_english_bundle(short_nasa_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 30 NASA SP-7084 lookup table rows was not rejected"
     )
 
   return errors
