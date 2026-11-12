@@ -3442,12 +3442,86 @@ OPEN_ENGLISH_SPEC_REQUIREMENTS = {
     "05_attempto_controlled_english_cnl.md": [
         "Attempto Controlled English",
         "University of Zurich",
-        "anaphora",
-        "pronoun",
-        "quantifier",
-        "prepositional",
+        "ace_constructionrules.html",
+        "ace_interpretationrules.html",
+        "ace_troubleshooting.html",
+        "Part I",
+        "Part II",
+        "Part III",
+        "Part IV",
+        "Part V",
+        "Part VI",
+        "Part VII",
+        "Part VIII",
+        "function word",
+        "content word",
+        "proper name",
+        "variable",
+        "arithmetic",
+        "properly",
+        "appropriately",
+        "correctly",
+        "adequately",
+        "usually",
+        "mostly",
+        "fast",
+        "safe",
+        "countable",
+        "mass noun",
+        "determiner",
+        "apposition",
+        "intransitive",
+        "transitive",
+        "ditransitive",
+        "copula",
+        "there is",
+        "nobody but",
+        "nothing but",
         "if",
         "then",
+        "relative clause",
+        "subordination",
+        "exclusive disjunction",
+        "does not",
+        "it is false that",
+        "not provably",
+        "it is not provable that",
+        "must",
+        "can",
+        "should",
+        "may",
+        "it is necessary that",
+        "it is possible that",
+        "quantifier",
+        "every",
+        "each of",
+        "at least",
+        "at most",
+        "exactly",
+        "for every",
+        "collective",
+        "distributive",
+        "anaphora",
+        "pronoun",
+        "definite noun phrase",
+        "accessibility",
+        "recency",
+        "specificity",
+        "reflexivity",
+        "his own",
+        "itself",
+        "interrogative",
+        "imperative",
+        "wh-quer",
+        "how much",
+        "how many",
+        "socratic-prompt-writer.md",
+        "20 words",
+        "prepositional",
+        "right association",
+        "binding order",
+        ",and",
+        ",or",
     ],
 }
 
@@ -3738,6 +3812,12 @@ def _check_open_english_bundle(
         errs.append(
             f"{rel_path} Simple-Word Replacement Dictionary must have at least 35 rows (found {row_count})"
         )
+    if fname == "05_attempto_controlled_english_cnl.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 20:
+        errs.append(
+            f"{rel_path} ACE tables must have at least 20 rows (found {row_count})"
+        )
     errs.extend(_check_prose_punctuation(rel_path, content))
 
   expected_ref = "skills/makeflow/references/resources/language/english/"
@@ -3838,7 +3918,27 @@ def validate_open_technical_english_specs():
       "05_attempto_controlled_english_cnl.md": (
           "# Attempto Controlled English\n"
           "Source is Attempto Controlled English from the University of Zurich.\n"
-          "Resolve anaphora and pronoun targets, state quantifier scope, fix prepositional attachment, and write if and then rules.\n"
+          "References: ace_constructionrules.html, ace_interpretationrules.html, and ace_troubleshooting.html.\n"
+          "## Part I\n"
+          "Vocabulary covers function word, content word, proper name, variable, and arithmetic rules.\n"
+          "Ban properly, appropriately, correctly, adequately, usually, mostly, fast, and safe.\n"
+          "## Part II\n"
+          "Phrases cover countable, mass noun, determiner, apposition, intransitive, transitive, ditransitive, copula, there is, nobody but, and nothing but.\n"
+          "## Part III\n"
+          "Composites cover if, then, relative clause, subordination, and exclusive disjunction.\n"
+          "## Part IV\n"
+          "Negation and modality cover does not, it is false that, not provably, it is not provable that, must, can, should, may, it is necessary that, and it is possible that.\n"
+          "## Part V\n"
+          "Scope covers quantifier, every, each of, at least, at most, exactly, for every, collective, and distributive.\n"
+          "## Part VI\n"
+          "Binding covers anaphora, pronoun, definite noun phrase, accessibility, recency, specificity, reflexivity, his own, and itself.\n"
+          "## Part VII\n"
+          "Queries cover interrogative, imperative, wh-queries, how much, how many, socratic-prompt-writer.md, and 20 words.\n"
+          "## Part VIII\n"
+          "Attachment covers prepositional, right association, binding order, `,and`, and `,or`.\n"
+          "| Avoid | Use |\n"
+          "| :--- | :--- |\n"
+          f"{dict_rows}\n"
       ),
   }
   sample_repo = {
@@ -4121,6 +4221,32 @@ def validate_open_technical_english_specs():
   ):
     errors.append(
         "Negative falsification failed: missing positional cross-reference ban token 'aforementioned' was not rejected"
+    )
+
+  # 8. Missing Part VIII in 05_attempto_controlled_english_cnl.md
+  missing_part_eng = dict(sample_english)
+  missing_part_eng["05_attempto_controlled_english_cnl.md"] = missing_part_eng[
+      "05_attempto_controlled_english_cnl.md"
+  ].replace("Part VIII", "Section 8")
+  if not any(
+      "missing required token 'Part VIII'" in e
+      for e in _check_open_english_bundle(missing_part_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: missing Part VIII in 05_attempto_controlled_english_cnl.md was not rejected"
+    )
+
+  # 9. Insufficient ACE table rows (< 20) in 05_attempto_controlled_english_cnl.md
+  short_ace_eng = dict(sample_english)
+  short_ace_eng["05_attempto_controlled_english_cnl.md"] = short_ace_eng[
+      "05_attempto_controlled_english_cnl.md"
+  ].replace(dict_rows, "| vague | specific |")
+  if not any(
+      "ACE tables must have at least 20 rows" in e
+      for e in _check_open_english_bundle(short_ace_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 20 ACE table rows in 05_attempto_controlled_english_cnl.md was not rejected"
     )
 
   return errors
