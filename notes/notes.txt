@@ -16,6 +16,18 @@ DO NOT MAKE ANY CHANGES TO THIS FILE
 
 IGNORE IGNORE IGNORE
 
+
+
+
+
+Do we need something to do a `git pull` and possibly rebase and resolve conflicts after target 40 adversarial-critic, before the commit message?
+hrmm
+
+
+
+
+
+
 Updating socratic prompt questions: Instructions for supervisor agent:  
 
 ```
