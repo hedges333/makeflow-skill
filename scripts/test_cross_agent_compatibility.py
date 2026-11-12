@@ -3516,6 +3516,198 @@ def _count_markdown_table_data_rows(text: str) -> int:
   return data_rows
 
 
+US_FEDERAL_PLAIN_LANGUAGE_SECTIONS = (
+    "## 1. Audience and Direct Address",
+    "## 2. Document Organization, Headings, and Paragraph Structure",
+    "## 3. Active Voice, Verb Tenses, Modal Ladder, and Hidden Verbs (Nominalizations)",
+    "## 4. Word Choice, Jargon, Noun Strings, Abbreviations, Definitions, and Compound Prepositions",
+    "## 5. Concise Sentences, SVO Proximity, and Positive Language",
+    "## 6. Aids to Clarity: Lists, Decision Tables, Examples, Cross-References, and Web Structure",
+    "## 7. Testing and Verifying Specification Clarity",
+    "## 8. Public-Domain Simple-Word Replacement Dictionary",
+)
+
+US_FEDERAL_SECTION_REQUIRED_TOKENS = {
+    "## 1. Audience and Direct Address": (
+        "audience",
+        "separate audiences",
+        "you",
+    ),
+    "## 2. Document Organization, Headings, and Paragraph Structure": (
+        "topic sentence",
+        "main idea",
+        "transition",
+        "headings",
+    ),
+    "## 3. Active Voice, Verb Tenses, Modal Ladder, and Hidden Verbs (Nominalizations)": (
+        "active voice",
+        "present tense",
+        "must",
+        "shall",
+        "00_index_and_agentic_rationale.md",
+        "contractions",
+        "make an adjustment",
+        "perform an allocation",
+        "conduct an audit",
+        "provide protection",
+        "reach a conclusion",
+        "have an effect on",
+        "make a determination",
+        "perform an initialization",
+        "conduct an investigation",
+        "provide a description of",
+        "perform validation on",
+        "achieve a reduction in",
+    ),
+    "## 4. Word Choice, Jargon, Noun Strings, Abbreviations, Definitions, and Compound Prepositions": (
+        "jargon",
+        "noun",
+        "abbreviations",
+        "definitions",
+        "only",
+        "consistently",
+        "by means of",
+        "in the absence of",
+        "until such time as",
+        "with the exception of",
+        "at the present time",
+        "on the basis of",
+        "in close proximity to",
+    ),
+    "## 5. Concise Sentences, SVO Proximity, and Positive Language": (
+        "subject",
+        "verb",
+        "object",
+        "not uncommon",
+        "not invalid",
+        "unless",
+        "cannot",
+        "without",
+        "Avoid",
+        "Use",
+    ),
+    "## 6. Aids to Clarity: Lists, Decision Tables, Examples, Cross-References, and Web Structure": (
+        "vertical list",
+        "and/or",
+        "decision table",
+        "above",
+        "below",
+        "herein",
+        "aforementioned",
+        "the preceding section",
+        "file://",
+        "click here",
+    ),
+    "## 7. Testing and Verifying Specification Clarity": (
+        "paraphrase",
+        "usability",
+        "comparative",
+    ),
+    "## 8. Public-Domain Simple-Word Replacement Dictionary": (
+        "accorded",
+        "adjacent to",
+        "afford an opportunity",
+        "ascertain",
+        "commence",
+        "consolidate",
+        "disseminate",
+        "expedite",
+        "facilitate",
+        "forfeit",
+        "heretofore",
+        "inasmuch as",
+        "incumbent upon",
+        "interpose no objection",
+        "notwithstanding",
+        "obligate",
+        "per",
+        "preclude",
+        "promulgate",
+        "pursuant to",
+        "remuneration",
+        "solicit",
+        "subsequent to",
+        "terminate",
+        "thereof",
+        "until such time as",
+        "utilize",
+    ),
+}
+
+
+def _extract_markdown_h2_section(text: str, heading_substring: str) -> str:
+  """Extracts the Markdown content belonging to the H2 section matching heading_substring."""
+  captured = []
+  in_section = False
+  in_fence = False
+  target_lower = heading_substring.lower()
+  for raw_line in text.splitlines():
+    stripped = raw_line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+    if (
+        not in_fence
+        and stripped.startswith("## ")
+        and not stripped.startswith("###")
+    ):
+      if in_section:
+        break
+      if target_lower in stripped.lower():
+        in_section = True
+        captured.append(raw_line)
+        continue
+    if in_section:
+      captured.append(raw_line)
+  return "\n".join(captured)
+
+
+def _check_us_federal_plain_language_expansion(text: str) -> list[str]:
+  """Validates full 8-part plainlanguage.gov encapsulation in 01_us_federal_plain_language.md (GH-157)."""
+  errs = []
+  rel_path = "skills/makeflow/references/resources/language/english/01_us_federal_plain_language.md"
+  section_map = {}
+
+  for heading in US_FEDERAL_PLAIN_LANGUAGE_SECTIONS:
+    sec_text = _extract_markdown_h2_section(text, heading)
+    if not sec_text:
+      errs.append(f"{rel_path} missing required H2 section '{heading}'")
+      continue
+    section_map[heading] = sec_text
+    sec_lower = sec_text.lower()
+    for tok in US_FEDERAL_SECTION_REQUIRED_TOKENS.get(heading, ()):
+      if tok not in sec_text and tok.lower() not in sec_lower:
+        errs.append(
+            f"{rel_path} section '{heading}' missing required token '{tok}'"
+        )
+
+  sec3_key = US_FEDERAL_PLAIN_LANGUAGE_SECTIONS[2]
+  if sec3_key in section_map:
+    nom_rows = _count_markdown_table_data_rows(section_map[sec3_key])
+    if nom_rows < 30:
+      errs.append(
+          f"{rel_path} Section 3 Nominalizations table must have at least 30 rows (found {nom_rows})"
+      )
+
+  sec4_key = US_FEDERAL_PLAIN_LANGUAGE_SECTIONS[3]
+  if sec4_key in section_map:
+    prep_rows = _count_markdown_table_data_rows(section_map[sec4_key])
+    if prep_rows < 20:
+      errs.append(
+          f"{rel_path} Section 4 Compound Prepositions table must have at least 20 rows (found {prep_rows})"
+      )
+
+  sec8_key = US_FEDERAL_PLAIN_LANGUAGE_SECTIONS[7]
+  if sec8_key in section_map:
+    dict_rows = _count_markdown_table_data_rows(section_map[sec8_key])
+    if dict_rows < 220:
+      errs.append(
+          f"{rel_path} Section 8 Simple-Word Replacement Dictionary must have at least 220 rows (found {dict_rows})"
+      )
+
+  errs.extend(_check_prose_punctuation(rel_path, text))
+  return errs
+
+
 def _check_open_english_bundle(
     english_files: dict[str, str],
     repo_files: dict[str, str],
@@ -3591,6 +3783,12 @@ def validate_open_technical_english_specs():
           english_files, repo_files, legacy_spec_exists=legacy_exists
       )
   )
+  if "01_us_federal_plain_language.md" in english_files:
+    errors.extend(
+        _check_us_federal_plain_language_expansion(
+            english_files["01_us_federal_plain_language.md"]
+        )
+    )
 
   # In-memory negative falsification checks (SCAR-TEST-11)
   dict_rows = "\n".join(
@@ -3743,6 +3941,186 @@ def validate_open_technical_english_specs():
   ):
     errors.append(
         "Negative falsification failed: < 35 replacement dictionary rows was not rejected"
+    )
+
+  # GH-157 in-memory baseline and 6 negative falsification checks (SCAR-TEST-11)
+  nom_required = (
+      "make an adjustment",
+      "perform an allocation",
+      "conduct an audit",
+      "provide protection",
+      "reach a conclusion",
+      "have an effect on",
+      "make a determination",
+      "perform an initialization",
+      "conduct an investigation",
+      "provide a description of",
+      "perform validation on",
+      "achieve a reduction in",
+  )
+  nom_rows_str = "\n".join(
+      [f"| `{phrase}` | `verb_{i}` |" for i, phrase in enumerate(nom_required)]
+      + [f"| `nominalization_{i}` | `action_{i}` |" for i in range(25)]
+  )
+  prep_required = (
+      "by means of",
+      "in the absence of",
+      "until such time as",
+      "with the exception of",
+      "at the present time",
+      "on the basis of",
+      "in close proximity to",
+  )
+  prep_rows_str = "\n".join(
+      [f"| `{phrase}` | `prep_{i}` |" for i, phrase in enumerate(prep_required)]
+      + [f"| `compound_prep_{i}` | `simple_prep_{i}` |" for i in range(18)]
+  )
+  dict_required = (
+      "accorded",
+      "adjacent to",
+      "afford an opportunity",
+      "ascertain",
+      "commence",
+      "consolidate",
+      "disseminate",
+      "expedite",
+      "facilitate",
+      "forfeit",
+      "heretofore",
+      "inasmuch as",
+      "incumbent upon",
+      "interpose no objection",
+      "notwithstanding",
+      "obligate",
+      "per",
+      "preclude",
+      "promulgate",
+      "pursuant to",
+      "remuneration",
+      "solicit",
+      "subsequent to",
+      "terminate",
+      "thereof",
+      "until such time as",
+      "utilize",
+  )
+  full_dict_rows_str = "\n".join(
+      [f"| `{term}` | `plain_{i}` |" for i, term in enumerate(dict_required)]
+      + [f"| `complex_word_{i}` | `simple_word_{i}` |" for i in range(205)]
+  )
+  sample_federal_expanded = (
+      "# U.S. Federal Plain Language Guidelines\n\n"
+      "## 1. Audience and Direct Address\n"
+      "Identify the audience, address separate audiences separately, and address the reader as you.\n\n"
+      "## 2. Document Organization, Headings, and Paragraph Structure\n"
+      "Write informative headings, start with a topic sentence, put the main idea first, and use transition words.\n\n"
+      "## 3. Active Voice, Verb Tenses, Modal Ladder, and Hidden Verbs (Nominalizations)\n"
+      "Use active voice, present tense, and must instead of shall. "
+      "Note the 00_index_and_agentic_rationale.md override banning contractions.\n"
+      "| Hidden Verb | Action Verb |\n"
+      "| :--- | :--- |\n"
+      f"{nom_rows_str}\n\n"
+      "## 4. Word Choice, Jargon, Noun Strings, Abbreviations, Definitions, and Compound Prepositions\n"
+      "Avoid jargon and long noun strings, minimize abbreviations and definitions, place only carefully, and use terms consistently.\n"
+      "| Compound Preposition | Simple Preposition |\n"
+      "| :--- | :--- |\n"
+      f"{prep_rows_str}\n\n"
+      "## 5. Concise Sentences, SVO Proximity, and Positive Language\n"
+      "Keep subject, verb, and object close together. "
+      "Avoid double negatives such as not uncommon, not invalid, unless, or cannot without. Use affirmative phrasing.\n\n"
+      "## 6. Aids to Clarity: Lists, Decision Tables, Examples, Cross-References, and Web Structure\n"
+      "Use a vertical list, ban and/or, and use a decision table for branching logic. "
+      "Ban above, below, herein, aforementioned, and the preceding section in favor of file:// links, and never write click here.\n\n"
+      "## 7. Testing and Verifying Specification Clarity\n"
+      "Use paraphrase testing, usability testing, and comparative studies.\n\n"
+      "## 8. Public-Domain Simple-Word Replacement Dictionary\n"
+      "| Complex | Simple |\n"
+      "| :--- | :--- |\n"
+      f"{full_dict_rows_str}\n"
+  )
+
+  fed_baseline_errs = _check_us_federal_plain_language_expansion(
+      sample_federal_expanded
+  )
+  if fed_baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for GH-157 expansion: {fed_baseline_errs}"
+    )
+
+  # GH-157 Falsification 1: Missing H2 section
+  missing_sec_fed = sample_federal_expanded.replace(
+      "## 7. Testing and Verifying Specification Clarity",
+      "### 7. Omitted Section",
+  )
+  if not any(
+      "missing required H2 section" in e
+      for e in _check_us_federal_plain_language_expansion(missing_sec_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: missing H2 section in 01_us_federal_plain_language.md was not rejected"
+    )
+
+  # GH-157 Falsification 2: Nominalization table < 30 rows
+  short_nom_fed = re.sub(
+      r"(\| `nominalization_\d+` \| `action_\d+` \|\n)+",
+      "",
+      sample_federal_expanded,
+  )
+  if not any(
+      "Section 3 Nominalizations table must have at least 30 rows" in e
+      for e in _check_us_federal_plain_language_expansion(short_nom_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: < 30 nominalization rows was not rejected"
+    )
+
+  # GH-157 Falsification 3: Compound-preposition table < 20 rows
+  short_prep_fed = re.sub(
+      r"(\| `compound_prep_\d+` \| `simple_prep_\d+` \|\n)+",
+      "",
+      sample_federal_expanded,
+  )
+  if not any(
+      "Section 4 Compound Prepositions table must have at least 20 rows" in e
+      for e in _check_us_federal_plain_language_expansion(short_prep_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: < 20 compound preposition rows was not rejected"
+    )
+
+  # GH-157 Falsification 4: Simple-Word Replacement Dictionary < 220 rows
+  short_full_dict_fed = re.sub(
+      r"(\| `complex_word_\d+` \| `simple_word_\d+` \|\n)+",
+      "",
+      sample_federal_expanded,
+  )
+  if not any(
+      "Section 8 Simple-Word Replacement Dictionary must have at least 220 rows"
+      in e
+      for e in _check_us_federal_plain_language_expansion(short_full_dict_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: < 220 replacement dictionary rows was not rejected"
+    )
+
+  # GH-157 Falsification 5: Missing double-negative tokens in Section 5
+  missing_dneg_fed = sample_federal_expanded.replace("not uncommon", "rare")
+  if not any(
+      "not uncommon" in e
+      for e in _check_us_federal_plain_language_expansion(missing_dneg_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: missing double-negative token 'not uncommon' was not rejected"
+    )
+
+  # GH-157 Falsification 6: Missing positional cross-reference ban in Section 6
+  missing_xref_fed = sample_federal_expanded.replace("aforementioned", "prior")
+  if not any(
+      "aforementioned" in e
+      for e in _check_us_federal_plain_language_expansion(missing_xref_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: missing positional cross-reference ban token 'aforementioned' was not rejected"
     )
 
   return errors
