@@ -1744,5 +1744,24 @@
     "closes_issue": true,
     "tests_added": 2,
     "scars_earned": []
+  },
+  {
+    "id": "GH-159",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/159",
+    "title": "[DOCS] Encapsulate full NASA SP-7084 technical grammar, style, punctuation, and capitalization handbook in 03_nasa_sp_7084_technical_grammar.md from upstream sources",
+    "request": "Download the upstream NASA SP-7084 HTML/text source into a scratch directory and convert 100% of its four chapters (Chapter 1: Grammar, Chapter 2: Sentence Style, Chapter 3: Punctuation, Chapter 4: Capitalization) into skills/makeflow/references/resources/language/english/03_nasa_sp_7084_technical_grammar.md, explicitly documenting the agentic punctuation overrides from 00_index_and_agentic_rationale.md (zero semicolons and zero em-dashes in prose).",
+    "branch": "feat/159-nasa-sp-7084-technical-grammar",
+    "subprojects": [
+      "skills/makeflow",
+      "scripts"
+    ],
+    "started_at": "2026-11-12T02:22:00Z",
+    "completed_at": "2026-11-12T08:44:34Z",
+    "commit_sha": "52aec7f",
+    "pr_number": 168,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/168",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
