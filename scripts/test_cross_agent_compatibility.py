@@ -3411,10 +3411,47 @@ OPEN_ENGLISH_SPEC_REQUIREMENTS = {
     "02_mil_std_38784b_technical_manuals.md": [
         "MIL-STD-38784B",
         "17 U.S.C. § 105",
+        "Section 3",
+        "procedural step",
+        "checkout",
+        "alignment",
+        "troubleshooting",
+        "maintenance level",
+        "shall",
+        "Section 4",
+        "nomenclature",
+        "synonym",
+        "first use",
+        "single-use",
+        "units of measure",
+        "cross-reference",
+        "Section 4.8",
         "WARNING",
         "CAUTION",
         "NOTE",
+        "prohibited action",
+        "consequence",
+        "multi-step",
+        "Section 5",
+        "nesting depth",
+        "lead-in",
+        "Section 5.3",
         "imperative",
+        "20 words",
+        "Verify that",
+        "proceed to step",
+        "Not applicable",
+        "None",
+        "parallel",
+        "theory of operation",
+        "Symptom/Malfunction",
+        "Probable Cause",
+        "Test/Inspection",
+        "Corrective Action",
+        "Wound",
+        "Trap",
+        "Circuit Breaker",
+        "Reflex",
     ],
     "03_nasa_sp_7084_technical_grammar.md": [
         "NASA SP-7084",
@@ -3922,6 +3959,12 @@ def _check_open_english_bundle(
         errs.append(
             f"{rel_path} Simple-Word Replacement Dictionary must have at least 35 rows (found {row_count})"
         )
+    if fname == "02_mil_std_38784b_technical_manuals.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 20:
+        errs.append(
+            f"{rel_path} MIL-STD-38784B normative tables must have at least 20 rows (found {row_count})"
+        )
     if fname == "04_google_developer_style_guide.md":
       row_count = _count_markdown_table_data_rows(content)
       if row_count < 45:
@@ -4017,7 +4060,16 @@ def validate_open_technical_english_specs():
       "02_mil_std_38784b_technical_manuals.md": (
           "# MIL-STD-38784B\n"
           "Source is MIL-STD-38784B under 17 U.S.C. § 105.\n"
-          "Use WARNING, CAUTION, and NOTE alerts with imperative steps.\n"
+          "Section 3 defines procedural step, checkout, alignment, troubleshooting, maintenance level, and shall.\n"
+          "Section 4 covers nomenclature, synonym drift, first use, single-use abbreviations, units of measure, and cross-reference rules.\n"
+          "Section 4.8 covers WARNING, CAUTION, and NOTE alerts with prohibited action, consequence, and multi-step scoping.\n"
+          "Section 5 covers nesting depth and lead-in text.\n"
+          "Section 5.3 covers imperative steps of 20 words, Verify that checks, and proceed to step branching.\n"
+          "Tables use Not applicable or None and lists stay parallel.\n"
+          "Theory of operation and Symptom/Malfunction, Probable Cause, Test/Inspection, Corrective Action map to Wound, Trap, Circuit Breaker, and Reflex.\n"
+          "| Term | Meaning |\n"
+          "| :--- | :--- |\n"
+          f"{dict_rows}\n"
       ),
       "03_nasa_sp_7084_technical_grammar.md": (
           "# NASA SP-7084\n"
@@ -4412,6 +4464,45 @@ def validate_open_technical_english_specs():
     errors.append(
         "Negative falsification failed: < 45 table rows in 04_google_developer_style_guide.md was not rejected"
 
+    )
+
+  # 12. Missing MIL-STD-38784B troubleshooting / procedural tokens
+  missing_mil_eng = dict(sample_english)
+  missing_mil_eng["02_mil_std_38784b_technical_manuals.md"] = missing_mil_eng[
+      "02_mil_std_38784b_technical_manuals.md"
+  ].replace("Symptom/Malfunction", "RemovedToken").replace(
+      "Circuit Breaker", "RemovedGate"
+  )
+  mil_token_errs = _check_open_english_bundle(missing_mil_eng, sample_repo)
+  if not any("Symptom/Malfunction" in e for e in mil_token_errs) or not any(
+      "Circuit Breaker" in e for e in mil_token_errs
+  ):
+    errors.append(
+        "Negative falsification failed: missing MIL-STD-38784B troubleshooting tokens were not rejected"
+    )
+
+  # 13. Insufficient MIL-STD-38784B normative table rows (< 20)
+  short_mil_eng = dict(sample_english)
+  short_mil_eng["02_mil_std_38784b_technical_manuals.md"] = (
+      "# MIL-STD-38784B\n"
+      "Source is MIL-STD-38784B under 17 U.S.C. § 105.\n"
+      "Section 3 defines procedural step, checkout, alignment, troubleshooting, maintenance level, and shall.\n"
+      "Section 4 covers nomenclature, synonym drift, first use, single-use abbreviations, units of measure, and cross-reference rules.\n"
+      "Section 4.8 covers WARNING, CAUTION, and NOTE alerts with prohibited action, consequence, and multi-step scoping.\n"
+      "Section 5 covers nesting depth and lead-in text.\n"
+      "Section 5.3 covers imperative steps of 20 words, Verify that checks, and proceed to step branching.\n"
+      "Tables use Not applicable or None and lists stay parallel.\n"
+      "Theory of operation and Symptom/Malfunction, Probable Cause, Test/Inspection, Corrective Action map to Wound, Trap, Circuit Breaker, and Reflex.\n"
+      "| Term | Meaning |\n"
+      "| :--- | :--- |\n"
+      "| WARNING | Hazard |\n"
+  )
+  if not any(
+      "at least 20 rows" in e
+      for e in _check_open_english_bundle(short_mil_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 20 MIL-STD-38784B table rows was not rejected"
     )
 
   return errors
