@@ -3431,13 +3431,123 @@ OPEN_ENGLISH_SPEC_REQUIREMENTS = {
         "Google Developer Documentation Style Guide",
         "CC-BY-4.0",
         "Google LLC",
+        "Part I",
+        "Part II",
+        "Part III",
+        "Part IV",
+        "Part V",
+        "Part VI",
+        "Part VII",
         "condition",
-        "code",
-        "flag",
+        "you",
+        "we",
+        "simple present",
+        "localization",
+        "acronym",
         "e.g.",
         "i.e.",
         "etc.",
+        "et al.",
         "via",
+        "cf.",
+        "viz.",
+        "Agentic Override",
+        "00_index_and_agentic_rationale.md",
+        "Rule 8",
+        "anthropomorphism",
+        "file(s)",
+        "task-oriented",
+        "numbered",
+        "bulleted",
+        "description list",
+        "colon",
+        "Note",
+        "Caution",
+        "Warning",
+        "click here",
+        "this file",
+        "read more",
+        "file://",
+        "code",
+        "<placeholder_name>",
+        "flag",
+        "exit code",
+        "status code",
+        "bold",
+        "docstring",
+        "Vector 4",
+        "please",
+        "sorry",
+        "allowlist",
+        "denylist",
+        "primary",
+        "replica",
+        "main",
+        "worker",
+        "placeholder variable",
+        "coherence check",
+        "smoke test",
+        "sanity check",
+        "stub",
+        "dummy",
+        "abort",
+        "cancel",
+        "above",
+        "below",
+        "argument",
+        "parameter",
+        "authenticate",
+        "authorize",
+        "automatically",
+        "check",
+        "select",
+        "verify",
+        "click",
+        "currently",
+        "deprecate",
+        "directory",
+        "folder",
+        "easy",
+        "easily",
+        "simple",
+        "simply",
+        "just",
+        "obviously",
+        "enable",
+        "turn on",
+        "ensure",
+        "execute",
+        "run",
+        "file name",
+        "filename",
+        "instantiate",
+        "kill",
+        "terminate",
+        "leverage",
+        "login",
+        "log in",
+        "sign in",
+        "may",
+        "can",
+        "might",
+        "once",
+        "after",
+        "only",
+        "parse",
+        "populate",
+        "recommend",
+        "seamless",
+        "robust",
+        "since",
+        "because",
+        "specify",
+        "sync",
+        "tarball",
+        "transparent",
+        "URL",
+        "value",
+        "when",
+        "whether",
     ],
     "05_attempto_controlled_english_cnl.md": [
         "Attempto Controlled English",
@@ -3546,6 +3656,12 @@ def _check_open_english_bundle(
         errs.append(
             f"{rel_path} Simple-Word Replacement Dictionary must have at least 35 rows (found {row_count})"
         )
+    if fname == "04_google_developer_style_guide.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 45:
+        errs.append(
+            f"{rel_path} tables (Latin, Inclusive, and Developer A-Z Word List) must have at least 45 rows (found {row_count})"
+        )
     errs.extend(_check_prose_punctuation(rel_path, content))
 
   expected_ref = "skills/makeflow/references/resources/language/english/"
@@ -3634,8 +3750,25 @@ def validate_open_technical_english_specs():
       "04_google_developer_style_guide.md": (
           "# Google Style\n"
           "Source is Google Developer Documentation Style Guide under CC-BY-4.0 by Google LLC.\n"
-          "Place the condition before the instruction and format code spans and CLI flag names.\n"
-          "Avoid `e.g.`, `i.e.`, `etc.`, and `via` in documentation.\n"
+          "Covers Part I, Part II, Part III, Part IV, Part V, Part VI, and Part VII.\n"
+          "Place the condition before the instruction, address `you` instead of `we`, use simple present tense, and support localization.\n"
+          "Define each acronym, follow the Agentic Override in `00_index_and_agentic_rationale.md` Rule 8, avoid anthropomorphism, and avoid `file(s)`.\n"
+          "Write task-oriented headings, numbered lists, bulleted lists, a description list after a colon, and Note, Caution, or Warning callouts.\n"
+          "Avoid `click here`, `this file`, and `read more`, and use `file://` links.\n"
+          "Format `code` spans, `<placeholder_name>`, CLI `flag` options, `exit code`, HTTP `status code`, **bold** UI labels, and docstring blocks.\n"
+          "Write Vector 4 error messages without `please` or `sorry`.\n"
+          "Use inclusive terms: `allowlist`, `denylist`, `primary`, `replica`, `main`, `worker`, `placeholder variable`, `coherence check`, `smoke test` instead of `sanity check`, and `stub` instead of `dummy`.\n"
+          "Word list covers `abort`, `cancel`, `above`, `below`, `argument`, `parameter`, `authenticate`, `authorize`, `automatically`, `check`, `select`, `verify`, `click`, `currently`, `deprecate`, `directory`, `folder`, `easy`, `easily`, `simple`, `simply`, `just`, `obviously`, `enable`, `turn on`, `ensure`, `execute`, `run`, `file name`, `filename`, `instantiate`, `kill`, `terminate`, `leverage`, `login`, `log in`, `sign in`, `may`, `can`, `might`, `once`, `after`, `only`, `parse`, `populate`, `recommend`, `seamless`, `robust`, `since`, `because`, `specify`, `sync`, `tarball`, `transparent`, `URL`, `value`, `when`, and `whether`.\n"
+          "| Avoid | Use |\n"
+          "| :--- | :--- |\n"
+          "| `e.g.` | `for example` |\n"
+          "| `i.e.` | `that is` |\n"
+          "| `etc.` | `and similar items` |\n"
+          "| `et al.` | `and others` |\n"
+          "| `via` | `through` |\n"
+          "| `cf.` | `compare` |\n"
+          "| `viz.` | `namely` |\n"
+          f"{dict_rows}\n"
       ),
       "05_attempto_controlled_english_cnl.md": (
           "# Attempto Controlled English\n"
@@ -3743,6 +3876,37 @@ def validate_open_technical_english_specs():
   ):
     errors.append(
         "Negative falsification failed: < 35 replacement dictionary rows was not rejected"
+    )
+
+  # 8. Missing Part heading, Agentic Override, or word-list token in 04_google_developer_style_guide.md (GH-160)
+  missing_google_toks = dict(sample_english)
+  missing_google_toks["04_google_developer_style_guide.md"] = (
+      missing_google_toks["04_google_developer_style_guide.md"]
+      .replace("Part VII", "Section 7")
+      .replace("Agentic Override", "Local Note")
+      .replace("tarball", "archive")
+  )
+  google_tok_errs = _check_open_english_bundle(missing_google_toks, sample_repo)
+  for expected_missing in ("Part VII", "Agentic Override", "tarball"):
+    if not any(
+        f"missing required token '{expected_missing}'" in e
+        for e in google_tok_errs
+    ):
+      errors.append(
+          f"Negative falsification failed: missing '{expected_missing}' in 04_google_developer_style_guide.md was not rejected"
+      )
+
+  # 9. Insufficient table rows (< 45) in 04_google_developer_style_guide.md (GH-160)
+  short_google_eng = dict(sample_english)
+  short_google_eng["04_google_developer_style_guide.md"] = short_google_eng[
+      "04_google_developer_style_guide.md"
+  ].replace(dict_rows, "| `abort` | `stop` |")
+  if not any(
+      "04_google_developer_style_guide.md" in e and "at least 45 rows" in e
+      for e in _check_open_english_bundle(short_google_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 45 table rows in 04_google_developer_style_guide.md was not rejected"
     )
 
   return errors
