@@ -1668,5 +1668,43 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-157",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/157",
+    "title": "[DOCS] Encapsulate full U.S. Federal Plain Language Guidelines (plainlanguage.gov) in 01_us_federal_plain_language.md from upstream sources",
+    "request": "Download upstream plainlanguage.gov Markdown guidelines into scratch and encapsulate all 39 pages across eight structured sections in 01_us_federal_plain_language.md, with 50 engineering nominalizations, 42 compound prepositions, 261 dictionary entries, and automated regression validation in scripts/test_cross_agent_compatibility.py",
+    "branch": "feat/157-expand-federal-plain-language",
+    "subprojects": [
+      "skills/makeflow",
+      "scripts"
+    ],
+    "started_at": "2026-11-11T21:09:53Z",
+    "completed_at": "2026-11-12T07:27:43Z",
+    "commit_sha": "d45cc0d",
+    "pr_number": 162,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/162",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
+  },
+  {
+    "id": "GH-161",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/161",
+    "title": "[DOCS] Encapsulate full Attempto Controlled English (ACE) Construction, Interpretation, and Troubleshooting specification in 05_attempto_controlled_english_cnl.md from upstream sources",
+    "request": "Download the upstream Attempto Controlled English (ACE) specification documents into a scratch directory and convert 100% of the ACE Construction Rules, Interpretation Rules, and Troubleshooting Guide into skills/makeflow/references/resources/language/english/05_attempto_controlled_english_cnl.md across Parts I through VIII with test regression verification.",
+    "branch": "feat/161-encapsulate-attempto-ace-spec",
+    "subprojects": [
+      "skills/makeflow",
+      "scripts"
+    ],
+    "started_at": "2026-11-12T02:22:37Z",
+    "completed_at": "2026-11-12T07:51:04Z",
+    "commit_sha": "35d6754",
+    "pr_number": 163,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/163",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
