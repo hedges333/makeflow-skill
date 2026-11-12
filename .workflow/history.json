@@ -1725,5 +1725,24 @@
     "closes_issue": true,
     "tests_added": 2,
     "scars_earned": []
+  },
+  {
+    "id": "GH-158",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/158",
+    "title": "[DOCS] Encapsulate full MIL-STD-38784B language-normative specification in 02_mil_std_38784b_technical_manuals.md from upstream sources",
+    "request": "Download the upstream MIL-STD-38784B specification into a scratch directory and convert 100% of its language-, style-, structure-, and procedure-normative sections into skills/makeflow/references/resources/language/english/02_mil_std_38784b_technical_manuals.md across Sections 3, 4, and 5 with regression validation.",
+    "branch": "feat/158-encapsulate-mil-std-38784b",
+    "subprojects": [
+      "skills/makeflow",
+      "scripts"
+    ],
+    "started_at": "2026-11-12T02:22:05Z",
+    "completed_at": "2026-11-12T08:32:18Z",
+    "commit_sha": "15c299f",
+    "pr_number": 166,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/166",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
