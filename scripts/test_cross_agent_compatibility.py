@@ -3468,23 +3468,207 @@ OPEN_ENGLISH_SPEC_REQUIREMENTS = {
         "Google Developer Documentation Style Guide",
         "CC-BY-4.0",
         "Google LLC",
+        "Part I",
+        "Part II",
+        "Part III",
+        "Part IV",
+        "Part V",
+        "Part VI",
+        "Part VII",
         "condition",
-        "code",
-        "flag",
+        "you",
+        "we",
+        "simple present",
+        "localization",
+        "acronym",
         "e.g.",
         "i.e.",
         "etc.",
+        "et al.",
         "via",
+        "cf.",
+        "viz.",
+        "Agentic Override",
+        "00_index_and_agentic_rationale.md",
+        "Rule 8",
+        "anthropomorphism",
+        "file(s)",
+        "task-oriented",
+        "numbered",
+        "bulleted",
+        "description list",
+        "colon",
+        "Note",
+        "Caution",
+        "Warning",
+        "click here",
+        "this file",
+        "read more",
+        "file://",
+        "code",
+        "<placeholder_name>",
+        "flag",
+        "exit code",
+        "status code",
+        "bold",
+        "docstring",
+        "Vector 4",
+        "please",
+        "sorry",
+        "allowlist",
+        "denylist",
+        "primary",
+        "replica",
+        "main",
+        "worker",
+        "placeholder variable",
+        "coherence check",
+        "smoke test",
+        "sanity check",
+        "stub",
+        "dummy",
+        "abort",
+        "cancel",
+        "above",
+        "below",
+        "argument",
+        "parameter",
+        "authenticate",
+        "authorize",
+        "automatically",
+        "check",
+        "select",
+        "verify",
+        "click",
+        "currently",
+        "deprecate",
+        "directory",
+        "folder",
+        "easy",
+        "easily",
+        "simple",
+        "simply",
+        "just",
+        "obviously",
+        "enable",
+        "turn on",
+        "ensure",
+        "execute",
+        "run",
+        "file name",
+        "filename",
+        "instantiate",
+        "kill",
+        "terminate",
+        "leverage",
+        "login",
+        "log in",
+        "sign in",
+        "may",
+        "can",
+        "might",
+        "once",
+        "after",
+        "only",
+        "parse",
+        "populate",
+        "recommend",
+        "seamless",
+        "robust",
+        "since",
+        "because",
+        "specify",
+        "sync",
+        "tarball",
+        "transparent",
+        "URL",
+        "value",
+        "when",
+        "whether",
     ],
     "05_attempto_controlled_english_cnl.md": [
         "Attempto Controlled English",
         "University of Zurich",
-        "anaphora",
-        "pronoun",
-        "quantifier",
-        "prepositional",
+        "ace_constructionrules.html",
+        "ace_interpretationrules.html",
+        "ace_troubleshooting.html",
+        "Part I",
+        "Part II",
+        "Part III",
+        "Part IV",
+        "Part V",
+        "Part VI",
+        "Part VII",
+        "Part VIII",
+        "function word",
+        "content word",
+        "proper name",
+        "variable",
+        "arithmetic",
+        "properly",
+        "appropriately",
+        "correctly",
+        "adequately",
+        "usually",
+        "mostly",
+        "fast",
+        "safe",
+        "countable",
+        "mass noun",
+        "determiner",
+        "apposition",
+        "intransitive",
+        "transitive",
+        "ditransitive",
+        "copula",
+        "there is",
+        "nobody but",
+        "nothing but",
         "if",
         "then",
+        "relative clause",
+        "subordination",
+        "exclusive disjunction",
+        "does not",
+        "it is false that",
+        "not provably",
+        "it is not provable that",
+        "must",
+        "can",
+        "should",
+        "may",
+        "it is necessary that",
+        "it is possible that",
+        "quantifier",
+        "every",
+        "each of",
+        "at least",
+        "at most",
+        "exactly",
+        "for every",
+        "collective",
+        "distributive",
+        "anaphora",
+        "pronoun",
+        "definite noun phrase",
+        "accessibility",
+        "recency",
+        "specificity",
+        "reflexivity",
+        "his own",
+        "itself",
+        "interrogative",
+        "imperative",
+        "wh-quer",
+        "how much",
+        "how many",
+        "socratic-prompt-writer.md",
+        "20 words",
+        "prepositional",
+        "right association",
+        "binding order",
+        ",and",
+        ",or",
     ],
 }
 
@@ -3553,6 +3737,198 @@ def _count_markdown_table_data_rows(text: str) -> int:
   return data_rows
 
 
+US_FEDERAL_PLAIN_LANGUAGE_SECTIONS = (
+    "## 1. Audience and Direct Address",
+    "## 2. Document Organization, Headings, and Paragraph Structure",
+    "## 3. Active Voice, Verb Tenses, Modal Ladder, and Hidden Verbs (Nominalizations)",
+    "## 4. Word Choice, Jargon, Noun Strings, Abbreviations, Definitions, and Compound Prepositions",
+    "## 5. Concise Sentences, SVO Proximity, and Positive Language",
+    "## 6. Aids to Clarity: Lists, Decision Tables, Examples, Cross-References, and Web Structure",
+    "## 7. Testing and Verifying Specification Clarity",
+    "## 8. Public-Domain Simple-Word Replacement Dictionary",
+)
+
+US_FEDERAL_SECTION_REQUIRED_TOKENS = {
+    "## 1. Audience and Direct Address": (
+        "audience",
+        "separate audiences",
+        "you",
+    ),
+    "## 2. Document Organization, Headings, and Paragraph Structure": (
+        "topic sentence",
+        "main idea",
+        "transition",
+        "headings",
+    ),
+    "## 3. Active Voice, Verb Tenses, Modal Ladder, and Hidden Verbs (Nominalizations)": (
+        "active voice",
+        "present tense",
+        "must",
+        "shall",
+        "00_index_and_agentic_rationale.md",
+        "contractions",
+        "make an adjustment",
+        "perform an allocation",
+        "conduct an audit",
+        "provide protection",
+        "reach a conclusion",
+        "have an effect on",
+        "make a determination",
+        "perform an initialization",
+        "conduct an investigation",
+        "provide a description of",
+        "perform validation on",
+        "achieve a reduction in",
+    ),
+    "## 4. Word Choice, Jargon, Noun Strings, Abbreviations, Definitions, and Compound Prepositions": (
+        "jargon",
+        "noun",
+        "abbreviations",
+        "definitions",
+        "only",
+        "consistently",
+        "by means of",
+        "in the absence of",
+        "until such time as",
+        "with the exception of",
+        "at the present time",
+        "on the basis of",
+        "in close proximity to",
+    ),
+    "## 5. Concise Sentences, SVO Proximity, and Positive Language": (
+        "subject",
+        "verb",
+        "object",
+        "not uncommon",
+        "not invalid",
+        "unless",
+        "cannot",
+        "without",
+        "Avoid",
+        "Use",
+    ),
+    "## 6. Aids to Clarity: Lists, Decision Tables, Examples, Cross-References, and Web Structure": (
+        "vertical list",
+        "and/or",
+        "decision table",
+        "above",
+        "below",
+        "herein",
+        "aforementioned",
+        "the preceding section",
+        "file://",
+        "click here",
+    ),
+    "## 7. Testing and Verifying Specification Clarity": (
+        "paraphrase",
+        "usability",
+        "comparative",
+    ),
+    "## 8. Public-Domain Simple-Word Replacement Dictionary": (
+        "accorded",
+        "adjacent to",
+        "afford an opportunity",
+        "ascertain",
+        "commence",
+        "consolidate",
+        "disseminate",
+        "expedite",
+        "facilitate",
+        "forfeit",
+        "heretofore",
+        "inasmuch as",
+        "incumbent upon",
+        "interpose no objection",
+        "notwithstanding",
+        "obligate",
+        "per",
+        "preclude",
+        "promulgate",
+        "pursuant to",
+        "remuneration",
+        "solicit",
+        "subsequent to",
+        "terminate",
+        "thereof",
+        "until such time as",
+        "utilize",
+    ),
+}
+
+
+def _extract_markdown_h2_section(text: str, heading_substring: str) -> str:
+  """Extracts the Markdown content belonging to the H2 section matching heading_substring."""
+  captured = []
+  in_section = False
+  in_fence = False
+  target_lower = heading_substring.lower()
+  for raw_line in text.splitlines():
+    stripped = raw_line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+    if (
+        not in_fence
+        and stripped.startswith("## ")
+        and not stripped.startswith("###")
+    ):
+      if in_section:
+        break
+      if target_lower in stripped.lower():
+        in_section = True
+        captured.append(raw_line)
+        continue
+    if in_section:
+      captured.append(raw_line)
+  return "\n".join(captured)
+
+
+def _check_us_federal_plain_language_expansion(text: str) -> list[str]:
+  """Validates full 8-part plainlanguage.gov encapsulation in 01_us_federal_plain_language.md (GH-157)."""
+  errs = []
+  rel_path = "skills/makeflow/references/resources/language/english/01_us_federal_plain_language.md"
+  section_map = {}
+
+  for heading in US_FEDERAL_PLAIN_LANGUAGE_SECTIONS:
+    sec_text = _extract_markdown_h2_section(text, heading)
+    if not sec_text:
+      errs.append(f"{rel_path} missing required H2 section '{heading}'")
+      continue
+    section_map[heading] = sec_text
+    sec_lower = sec_text.lower()
+    for tok in US_FEDERAL_SECTION_REQUIRED_TOKENS.get(heading, ()):
+      if tok not in sec_text and tok.lower() not in sec_lower:
+        errs.append(
+            f"{rel_path} section '{heading}' missing required token '{tok}'"
+        )
+
+  sec3_key = US_FEDERAL_PLAIN_LANGUAGE_SECTIONS[2]
+  if sec3_key in section_map:
+    nom_rows = _count_markdown_table_data_rows(section_map[sec3_key])
+    if nom_rows < 30:
+      errs.append(
+          f"{rel_path} Section 3 Nominalizations table must have at least 30 rows (found {nom_rows})"
+      )
+
+  sec4_key = US_FEDERAL_PLAIN_LANGUAGE_SECTIONS[3]
+  if sec4_key in section_map:
+    prep_rows = _count_markdown_table_data_rows(section_map[sec4_key])
+    if prep_rows < 20:
+      errs.append(
+          f"{rel_path} Section 4 Compound Prepositions table must have at least 20 rows (found {prep_rows})"
+      )
+
+  sec8_key = US_FEDERAL_PLAIN_LANGUAGE_SECTIONS[7]
+  if sec8_key in section_map:
+    dict_rows = _count_markdown_table_data_rows(section_map[sec8_key])
+    if dict_rows < 220:
+      errs.append(
+          f"{rel_path} Section 8 Simple-Word Replacement Dictionary must have at least 220 rows (found {dict_rows})"
+      )
+
+  errs.extend(_check_prose_punctuation(rel_path, text))
+  return errs
+
+
 def _check_open_english_bundle(
     english_files: dict[str, str],
     repo_files: dict[str, str],
@@ -3588,6 +3964,18 @@ def _check_open_english_bundle(
       if row_count < 20:
         errs.append(
             f"{rel_path} MIL-STD-38784B normative tables must have at least 20 rows (found {row_count})"
+        )
+    if fname == "04_google_developer_style_guide.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 45:
+        errs.append(
+            f"{rel_path} tables (Latin, Inclusive, and Developer A-Z Word List) must have at least 45 rows (found {row_count})"
+        )
+    if fname == "05_attempto_controlled_english_cnl.md":
+      row_count = _count_markdown_table_data_rows(content)
+      if row_count < 20:
+        errs.append(
+            f"{rel_path} ACE tables must have at least 20 rows (found {row_count})"
         )
     errs.extend(_check_prose_punctuation(rel_path, content))
 
@@ -3634,6 +4022,12 @@ def validate_open_technical_english_specs():
           english_files, repo_files, legacy_spec_exists=legacy_exists
       )
   )
+  if "01_us_federal_plain_language.md" in english_files:
+    errors.extend(
+        _check_us_federal_plain_language_expansion(
+            english_files["01_us_federal_plain_language.md"]
+        )
+    )
 
   # In-memory negative falsification checks (SCAR-TEST-11)
   dict_rows = "\n".join(
@@ -3686,13 +4080,50 @@ def validate_open_technical_english_specs():
       "04_google_developer_style_guide.md": (
           "# Google Style\n"
           "Source is Google Developer Documentation Style Guide under CC-BY-4.0 by Google LLC.\n"
-          "Place the condition before the instruction and format code spans and CLI flag names.\n"
-          "Avoid `e.g.`, `i.e.`, `etc.`, and `via` in documentation.\n"
+          "Covers Part I, Part II, Part III, Part IV, Part V, Part VI, and Part VII.\n"
+          "Place the condition before the instruction, address `you` instead of `we`, use simple present tense, and support localization.\n"
+          "Define each acronym, follow the Agentic Override in `00_index_and_agentic_rationale.md` Rule 8, avoid anthropomorphism, and avoid `file(s)`.\n"
+          "Write task-oriented headings, numbered lists, bulleted lists, a description list after a colon, and Note, Caution, or Warning callouts.\n"
+          "Avoid `click here`, `this file`, and `read more`, and use `file://` links.\n"
+          "Format `code` spans, `<placeholder_name>`, CLI `flag` options, `exit code`, HTTP `status code`, **bold** UI labels, and docstring blocks.\n"
+          "Write Vector 4 error messages without `please` or `sorry`.\n"
+          "Use inclusive terms: `allowlist`, `denylist`, `primary`, `replica`, `main`, `worker`, `placeholder variable`, `coherence check`, `smoke test` instead of `sanity check`, and `stub` instead of `dummy`.\n"
+          "Word list covers `abort`, `cancel`, `above`, `below`, `argument`, `parameter`, `authenticate`, `authorize`, `automatically`, `check`, `select`, `verify`, `click`, `currently`, `deprecate`, `directory`, `folder`, `easy`, `easily`, `simple`, `simply`, `just`, `obviously`, `enable`, `turn on`, `ensure`, `execute`, `run`, `file name`, `filename`, `instantiate`, `kill`, `terminate`, `leverage`, `login`, `log in`, `sign in`, `may`, `can`, `might`, `once`, `after`, `only`, `parse`, `populate`, `recommend`, `seamless`, `robust`, `since`, `because`, `specify`, `sync`, `tarball`, `transparent`, `URL`, `value`, `when`, and `whether`.\n"
+          "| Avoid | Use |\n"
+          "| :--- | :--- |\n"
+          "| `e.g.` | `for example` |\n"
+          "| `i.e.` | `that is` |\n"
+          "| `etc.` | `and similar items` |\n"
+          "| `et al.` | `and others` |\n"
+          "| `via` | `through` |\n"
+          "| `cf.` | `compare` |\n"
+          "| `viz.` | `namely` |\n"
+          f"{dict_rows}\n"
       ),
       "05_attempto_controlled_english_cnl.md": (
           "# Attempto Controlled English\n"
           "Source is Attempto Controlled English from the University of Zurich.\n"
-          "Resolve anaphora and pronoun targets, state quantifier scope, fix prepositional attachment, and write if and then rules.\n"
+          "References: ace_constructionrules.html, ace_interpretationrules.html, and ace_troubleshooting.html.\n"
+          "## Part I\n"
+          "Vocabulary covers function word, content word, proper name, variable, and arithmetic rules.\n"
+          "Ban properly, appropriately, correctly, adequately, usually, mostly, fast, and safe.\n"
+          "## Part II\n"
+          "Phrases cover countable, mass noun, determiner, apposition, intransitive, transitive, ditransitive, copula, there is, nobody but, and nothing but.\n"
+          "## Part III\n"
+          "Composites cover if, then, relative clause, subordination, and exclusive disjunction.\n"
+          "## Part IV\n"
+          "Negation and modality cover does not, it is false that, not provably, it is not provable that, must, can, should, may, it is necessary that, and it is possible that.\n"
+          "## Part V\n"
+          "Scope covers quantifier, every, each of, at least, at most, exactly, for every, collective, and distributive.\n"
+          "## Part VI\n"
+          "Binding covers anaphora, pronoun, definite noun phrase, accessibility, recency, specificity, reflexivity, his own, and itself.\n"
+          "## Part VII\n"
+          "Queries cover interrogative, imperative, wh-queries, how much, how many, socratic-prompt-writer.md, and 20 words.\n"
+          "## Part VIII\n"
+          "Attachment covers prepositional, right association, binding order, `,and`, and `,or`.\n"
+          "| Avoid | Use |\n"
+          "| :--- | :--- |\n"
+          f"{dict_rows}\n"
       ),
   }
   sample_repo = {
@@ -3797,7 +4228,245 @@ def validate_open_technical_english_specs():
         "Negative falsification failed: < 35 replacement dictionary rows was not rejected"
     )
 
-  # 8. Missing MIL-STD-38784B troubleshooting / procedural tokens
+  # GH-157 in-memory baseline and 6 negative falsification checks (SCAR-TEST-11)
+  nom_required = (
+      "make an adjustment",
+      "perform an allocation",
+      "conduct an audit",
+      "provide protection",
+      "reach a conclusion",
+      "have an effect on",
+      "make a determination",
+      "perform an initialization",
+      "conduct an investigation",
+      "provide a description of",
+      "perform validation on",
+      "achieve a reduction in",
+  )
+  nom_rows_str = "\n".join(
+      [f"| `{phrase}` | `verb_{i}` |" for i, phrase in enumerate(nom_required)]
+      + [f"| `nominalization_{i}` | `action_{i}` |" for i in range(25)]
+  )
+  prep_required = (
+      "by means of",
+      "in the absence of",
+      "until such time as",
+      "with the exception of",
+      "at the present time",
+      "on the basis of",
+      "in close proximity to",
+  )
+  prep_rows_str = "\n".join(
+      [f"| `{phrase}` | `prep_{i}` |" for i, phrase in enumerate(prep_required)]
+      + [f"| `compound_prep_{i}` | `simple_prep_{i}` |" for i in range(18)]
+  )
+  dict_required = (
+      "accorded",
+      "adjacent to",
+      "afford an opportunity",
+      "ascertain",
+      "commence",
+      "consolidate",
+      "disseminate",
+      "expedite",
+      "facilitate",
+      "forfeit",
+      "heretofore",
+      "inasmuch as",
+      "incumbent upon",
+      "interpose no objection",
+      "notwithstanding",
+      "obligate",
+      "per",
+      "preclude",
+      "promulgate",
+      "pursuant to",
+      "remuneration",
+      "solicit",
+      "subsequent to",
+      "terminate",
+      "thereof",
+      "until such time as",
+      "utilize",
+  )
+  full_dict_rows_str = "\n".join(
+      [f"| `{term}` | `plain_{i}` |" for i, term in enumerate(dict_required)]
+      + [f"| `complex_word_{i}` | `simple_word_{i}` |" for i in range(205)]
+  )
+  sample_federal_expanded = (
+      "# U.S. Federal Plain Language Guidelines\n\n"
+      "## 1. Audience and Direct Address\n"
+      "Identify the audience, address separate audiences separately, and address the reader as you.\n\n"
+      "## 2. Document Organization, Headings, and Paragraph Structure\n"
+      "Write informative headings, start with a topic sentence, put the main idea first, and use transition words.\n\n"
+      "## 3. Active Voice, Verb Tenses, Modal Ladder, and Hidden Verbs (Nominalizations)\n"
+      "Use active voice, present tense, and must instead of shall. "
+      "Note the 00_index_and_agentic_rationale.md override banning contractions.\n"
+      "| Hidden Verb | Action Verb |\n"
+      "| :--- | :--- |\n"
+      f"{nom_rows_str}\n\n"
+      "## 4. Word Choice, Jargon, Noun Strings, Abbreviations, Definitions, and Compound Prepositions\n"
+      "Avoid jargon and long noun strings, minimize abbreviations and definitions, place only carefully, and use terms consistently.\n"
+      "| Compound Preposition | Simple Preposition |\n"
+      "| :--- | :--- |\n"
+      f"{prep_rows_str}\n\n"
+      "## 5. Concise Sentences, SVO Proximity, and Positive Language\n"
+      "Keep subject, verb, and object close together. "
+      "Avoid double negatives such as not uncommon, not invalid, unless, or cannot without. Use affirmative phrasing.\n\n"
+      "## 6. Aids to Clarity: Lists, Decision Tables, Examples, Cross-References, and Web Structure\n"
+      "Use a vertical list, ban and/or, and use a decision table for branching logic. "
+      "Ban above, below, herein, aforementioned, and the preceding section in favor of file:// links, and never write click here.\n\n"
+      "## 7. Testing and Verifying Specification Clarity\n"
+      "Use paraphrase testing, usability testing, and comparative studies.\n\n"
+      "## 8. Public-Domain Simple-Word Replacement Dictionary\n"
+      "| Complex | Simple |\n"
+      "| :--- | :--- |\n"
+      f"{full_dict_rows_str}\n"
+  )
+
+  fed_baseline_errs = _check_us_federal_plain_language_expansion(
+      sample_federal_expanded
+  )
+  if fed_baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for GH-157 expansion: {fed_baseline_errs}"
+    )
+
+  # GH-157 Falsification 1: Missing H2 section
+  missing_sec_fed = sample_federal_expanded.replace(
+      "## 7. Testing and Verifying Specification Clarity",
+      "### 7. Omitted Section",
+  )
+  if not any(
+      "missing required H2 section" in e
+      for e in _check_us_federal_plain_language_expansion(missing_sec_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: missing H2 section in 01_us_federal_plain_language.md was not rejected"
+    )
+
+  # GH-157 Falsification 2: Nominalization table < 30 rows
+  short_nom_fed = re.sub(
+      r"(\| `nominalization_\d+` \| `action_\d+` \|\n)+",
+      "",
+      sample_federal_expanded,
+  )
+  if not any(
+      "Section 3 Nominalizations table must have at least 30 rows" in e
+      for e in _check_us_federal_plain_language_expansion(short_nom_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: < 30 nominalization rows was not rejected"
+    )
+
+  # GH-157 Falsification 3: Compound-preposition table < 20 rows
+  short_prep_fed = re.sub(
+      r"(\| `compound_prep_\d+` \| `simple_prep_\d+` \|\n)+",
+      "",
+      sample_federal_expanded,
+  )
+  if not any(
+      "Section 4 Compound Prepositions table must have at least 20 rows" in e
+      for e in _check_us_federal_plain_language_expansion(short_prep_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: < 20 compound preposition rows was not rejected"
+    )
+
+  # GH-157 Falsification 4: Simple-Word Replacement Dictionary < 220 rows
+  short_full_dict_fed = re.sub(
+      r"(\| `complex_word_\d+` \| `simple_word_\d+` \|\n)+",
+      "",
+      sample_federal_expanded,
+  )
+  if not any(
+      "Section 8 Simple-Word Replacement Dictionary must have at least 220 rows"
+      in e
+      for e in _check_us_federal_plain_language_expansion(short_full_dict_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: < 220 replacement dictionary rows was not rejected"
+    )
+
+  # GH-157 Falsification 5: Missing double-negative tokens in Section 5
+  missing_dneg_fed = sample_federal_expanded.replace("not uncommon", "rare")
+  if not any(
+      "not uncommon" in e
+      for e in _check_us_federal_plain_language_expansion(missing_dneg_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: missing double-negative token 'not uncommon' was not rejected"
+    )
+
+  # GH-157 Falsification 6: Missing positional cross-reference ban in Section 6
+  missing_xref_fed = sample_federal_expanded.replace("aforementioned", "prior")
+  if not any(
+      "aforementioned" in e
+      for e in _check_us_federal_plain_language_expansion(missing_xref_fed)
+  ):
+    errors.append(
+        "Negative falsification failed: missing positional cross-reference ban token 'aforementioned' was not rejected"
+    )
+
+  # 8. Missing Part VIII in 05_attempto_controlled_english_cnl.md
+  missing_part_eng = dict(sample_english)
+  missing_part_eng["05_attempto_controlled_english_cnl.md"] = missing_part_eng[
+      "05_attempto_controlled_english_cnl.md"
+  ].replace("Part VIII", "Section 8")
+  if not any(
+      "missing required token 'Part VIII'" in e
+      for e in _check_open_english_bundle(missing_part_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: missing Part VIII in 05_attempto_controlled_english_cnl.md was not rejected"
+    )
+
+  # 9. Insufficient ACE table rows (< 20) in 05_attempto_controlled_english_cnl.md
+  short_ace_eng = dict(sample_english)
+  short_ace_eng["05_attempto_controlled_english_cnl.md"] = short_ace_eng[
+      "05_attempto_controlled_english_cnl.md"
+  ].replace(dict_rows, "| vague | specific |")
+  if not any(
+      "ACE tables must have at least 20 rows" in e
+      for e in _check_open_english_bundle(short_ace_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 20 ACE table rows in 05_attempto_controlled_english_cnl.md was not rejected"
+    )
+
+  # 10. Missing Part heading, Agentic Override, or word-list token in 04_google_developer_style_guide.md (GH-160)
+  missing_google_toks = dict(sample_english)
+  missing_google_toks["04_google_developer_style_guide.md"] = (
+      missing_google_toks["04_google_developer_style_guide.md"]
+      .replace("Part VII", "Section 7")
+      .replace("Agentic Override", "Local Note")
+      .replace("tarball", "archive")
+  )
+  google_tok_errs = _check_open_english_bundle(missing_google_toks, sample_repo)
+  for expected_missing in ("Part VII", "Agentic Override", "tarball"):
+    if not any(
+        f"missing required token '{expected_missing}'" in e
+        for e in google_tok_errs
+    ):
+      errors.append(
+          f"Negative falsification failed: missing '{expected_missing}' in 04_google_developer_style_guide.md was not rejected"
+      )
+
+  # 11. Insufficient table rows (< 45) in 04_google_developer_style_guide.md (GH-160)
+  short_google_eng = dict(sample_english)
+  short_google_eng["04_google_developer_style_guide.md"] = short_google_eng[
+      "04_google_developer_style_guide.md"
+  ].replace(dict_rows, "| `abort` | `stop` |")
+  if not any(
+      "04_google_developer_style_guide.md" in e and "at least 45 rows" in e
+      for e in _check_open_english_bundle(short_google_eng, sample_repo)
+  ):
+    errors.append(
+        "Negative falsification failed: < 45 table rows in 04_google_developer_style_guide.md was not rejected"
+
+    )
+
+  # 12. Missing MIL-STD-38784B troubleshooting / procedural tokens
   missing_mil_eng = dict(sample_english)
   missing_mil_eng["02_mil_std_38784b_technical_manuals.md"] = missing_mil_eng[
       "02_mil_std_38784b_technical_manuals.md"
@@ -3812,7 +4481,7 @@ def validate_open_technical_english_specs():
         "Negative falsification failed: missing MIL-STD-38784B troubleshooting tokens were not rejected"
     )
 
-  # 9. Insufficient MIL-STD-38784B normative table rows (< 20)
+  # 13. Insufficient MIL-STD-38784B normative table rows (< 20)
   short_mil_eng = dict(sample_english)
   short_mil_eng["02_mil_std_38784b_technical_manuals.md"] = (
       "# MIL-STD-38784B\n"
