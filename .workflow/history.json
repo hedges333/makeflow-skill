@@ -1706,5 +1706,24 @@
     "closes_issue": true,
     "tests_added": 2,
     "scars_earned": []
+  },
+  {
+    "id": "GH-160",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/160",
+    "title": "[DOCS] Encapsulate full Google Developer Documentation Style Guide in 04_google_developer_style_guide.md from upstream sources",
+    "request": "Download the upstream Google Developer Documentation Style Guide into a scratch directory and convert 100% of its language, grammar, formatting, code-in-text, CLI/API, UI, error-message, link, inclusive-language, and A\u2013Z word-list rules into skills/makeflow/references/resources/language/english/04_google_developer_style_guide.md across Parts I through VII with test regression validation.",
+    "branch": "feat/160-encapsulate-google-style-guide",
+    "subprojects": [
+      "skills/makeflow",
+      "scripts"
+    ],
+    "started_at": "2026-11-12T02:22:00Z",
+    "completed_at": "2026-11-12T08:03:39Z",
+    "commit_sha": "084a039",
+    "pr_number": 165,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/165",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
