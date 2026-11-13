@@ -4137,6 +4137,148 @@ def _check_us_federal_plain_language_expansion(text: str) -> list[str]:
   return errs
 
 
+INDEX_AGENTIC_RATIONALE_SECTIONS = (
+    "## 1. AI transformer self-attention mechanics and agentic rationale",
+    "## 2. Core quantitative structural rules",
+    "## 3. Operational modes, token preservation, and validator word-counting rules",
+    "## 4. Algorithmic sentence-splitting and compression recipes",
+    "## 5. Zero-token phrase deletion table",
+    "## 6. Worked scar and Socratic probe compression patterns",
+    "## 7. Cross-standard precedence hierarchy and conflict-resolution matrix",
+)
+
+INDEX_SECTION_REQUIRED_TOKENS = {
+    "## 1. AI transformer self-attention mechanics and agentic rationale": (
+        "self-attention",
+        "clause distance",
+        "parenthetical",
+        "polysemy",
+        "attention",
+        "token",
+    ),
+    "## 2. Core quantitative structural rules": (
+        "20 words",
+        "25 words",
+        "6 sentences",
+        "3 words",
+        "10 words",
+        "Rule 8",
+        "Rule 9",
+        "contractions",
+        "semicolons",
+        "em-dashes",
+    ),
+    "## 3. Operational modes, token preservation, and validator word-counting rules": (
+        "Plain Mode",
+        "Strict Mode",
+        "validate_scar_candidate.py",
+        "mask_code_and_math_spans",
+        "split_into_sentences",
+        "count_words_in_sentence",
+        "__FENCED_CODE__",
+        "__INLINE_CODE__",
+        "__DISPLAY_MATH__",
+        "__INLINE_MATH__",
+        "ScarCandidateValidator",
+    ),
+    "## 4. Algorithmic sentence-splitting and compression recipes": (
+        "because",
+        ", which",
+        "participial",
+        "Before",
+        "After",
+        "Verify that",
+    ),
+    "## 5. Zero-token phrase deletion table": (
+        "it is important to note that",
+        "in order to ensure that",
+        "make sure that you always",
+        "has the ability to",
+        "it should be noted that",
+        "in the process of",
+        "is capable of",
+        "take action to",
+    ),
+    "## 6. Worked scar and Socratic probe compression patterns": (
+        "wound",
+        "trap",
+        "circuit_breaker",
+        "reflex",
+        "socratic_probe",
+        "Before",
+        "After",
+        "words)",
+    ),
+    "## 7. Cross-standard precedence hierarchy and conflict-resolution matrix": (
+        "05_attempto_controlled_english_cnl.md",
+        "last",
+        "DANGER",
+        "WARNING",
+        "CAUTION",
+        "NOTE",
+        "sentence case",
+        "1,000",
+        "15 ms",
+        "we",
+        "you",
+        "because",
+        "since",
+        "verify that",
+        "delete",
+        "component",
+        "implement",
+        "interface",
+        "option",
+        "parameter",
+        "argument",
+        "plainlanguage.gov",
+        "MIL-STD-38784B",
+        "NASA SP-7084",
+        "CC-BY-4.0",
+        "Attempto",
+    ),
+}
+
+
+def _check_index_and_agentic_rationale_expansion(text: str) -> list[str]:
+  """Validates full 7-part operational manual expansion in 00_index_and_agentic_rationale.md (GH-156)."""
+  errs = []
+  rel_path = "skills/makeflow/references/resources/language/english/00_index_and_agentic_rationale.md"
+  section_map = {}
+
+  for heading in INDEX_AGENTIC_RATIONALE_SECTIONS:
+    sec_text = _extract_markdown_h2_section(text, heading)
+    if not sec_text:
+      errs.append(f"{rel_path} missing required H2 section '{heading}'")
+      continue
+    section_map[heading] = sec_text
+    sec_lower = sec_text.lower()
+    for tok in INDEX_SECTION_REQUIRED_TOKENS.get(heading, ()):
+      if tok not in sec_text and tok.lower() not in sec_lower:
+        errs.append(
+            f"{rel_path} section '{heading}' missing required token '{tok}'"
+        )
+
+  sec5_key = INDEX_AGENTIC_RATIONALE_SECTIONS[4]
+  if sec5_key in section_map:
+    del_rows = _count_markdown_table_data_rows(section_map[sec5_key])
+    if del_rows < 25:
+      errs.append(
+          f"{rel_path} Section 5 Zero-Token Phrase Deletion table must have at least 25 rows (found {del_rows})"
+      )
+
+  sec7_key = INDEX_AGENTIC_RATIONALE_SECTIONS[6]
+  if sec7_key in section_map:
+    matrix_rows = _count_markdown_table_data_rows(section_map[sec7_key])
+    if matrix_rows < 15:
+      errs.append(
+          f"{rel_path} Section 7 Cross-Standard Conflict-Resolution Matrix tables must have at least 15 rows (found {matrix_rows})"
+      )
+
+  errs.extend(_check_prose_punctuation(rel_path, text))
+  return errs
+
+
 def _check_open_english_bundle(
     english_files: dict[str, str],
     repo_files: dict[str, str],
@@ -4236,6 +4378,12 @@ def validate_open_technical_english_specs():
           english_files, repo_files, legacy_spec_exists=legacy_exists
       )
   )
+  if "00_index_and_agentic_rationale.md" in english_files:
+    errors.extend(
+        _check_index_and_agentic_rationale_expansion(
+            english_files["00_index_and_agentic_rationale.md"]
+        )
+    )
   if "01_us_federal_plain_language.md" in english_files:
     errors.extend(
         _check_us_federal_plain_language_expansion(
@@ -4762,6 +4910,152 @@ def validate_open_technical_english_specs():
   ):
     errors.append(
         "Negative falsification failed: < 30 NASA SP-7084 lookup table rows was not rejected"
+    )
+
+  # GH-156 in-memory baseline and 7 negative falsification checks (SCAR-TEST-11)
+  del_required = (
+      "it is important to note that",
+      "in order to ensure that",
+      "make sure that you always",
+      "has the ability to",
+      "it should be noted that",
+      "in the process of",
+      "is capable of",
+      "take action to",
+  )
+  del_rows_str = "\n".join(
+      [f"| `{phrase}` | `DELETE (0 tokens)` |" for phrase in del_required]
+      + [f"| `filler_phrase_{i}` | `DELETE (0 tokens)` |" for i in range(20)]
+  )
+  matrix_rows_str = "\n".join(
+      f"| `rule_{i}` | `precedence_{i}` |" for i in range(16)
+  )
+  sample_index_expanded = (
+      "# Technical English language guidelines: index and agentic rationale\n\n"
+      "## 1. AI transformer self-attention mechanics and agentic rationale\n"
+      "Explain self-attention, clause distance, parenthetical nesting, polysemy, attention weights, and token overhead.\n\n"
+      "## 2. Core quantitative structural rules\n"
+      "Enforce 20 words, 25 words, 6 sentences, 3 words, and 10 words limits.\n"
+      "Rule 8 bans contractions and Rule 9 bans semicolons and em-dashes.\n\n"
+      "## 3. Operational modes, token preservation, and validator word-counting rules\n"
+      "Cover Plain Mode, Strict Mode, and validate_scar_candidate.py mechanics.\n"
+      "Functions mask_code_and_math_spans, split_into_sentences, and count_words_in_sentence use "
+      "__FENCED_CODE__, __INLINE_CODE__, __DISPLAY_MATH__, and __INLINE_MATH__ inside ScarCandidateValidator.\n\n"
+      "## 4. Algorithmic sentence-splitting and compression recipes\n"
+      "Split because, , which, and participial clauses with Before and After examples and Verify that checks.\n\n"
+      "## 5. Zero-token phrase deletion table\n"
+      "| Phrase | Action |\n"
+      "| :--- | :--- |\n"
+      f"{del_rows_str}\n\n"
+      "## 6. Worked scar and Socratic probe compression patterns\n"
+      "Compress wound, trap, circuit_breaker, reflex, and socratic_probe with Before (30 words) and After (15 words).\n\n"
+      "## 7. Cross-standard precedence hierarchy and conflict-resolution matrix\n"
+      "Rank 05_attempto_controlled_english_cnl.md last across plainlanguage.gov, MIL-STD-38784B, NASA SP-7084, CC-BY-4.0, and Attempto.\n"
+      "Define DANGER, WARNING, CAUTION, and NOTE, sentence case, 1,000, 15 ms, we, you, because, since, verify that, "
+      "delete, component, implement, interface, option, parameter, and argument.\n"
+      "| Conflict | Resolution |\n"
+      "| :--- | :--- |\n"
+      f"{matrix_rows_str}\n"
+  )
+
+  idx_baseline_errs = _check_index_and_agentic_rationale_expansion(
+      sample_index_expanded
+  )
+  if idx_baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for GH-156 expansion: {idx_baseline_errs}"
+    )
+
+  # GH-156 Falsification 1: Missing H2 section in 00_index_and_agentic_rationale.md
+  missing_sec_idx = sample_index_expanded.replace(
+      "## 4. Algorithmic sentence-splitting and compression recipes",
+      "### 4. Omitted Section",
+  )
+  if not any(
+      "missing required H2 section" in e
+      for e in _check_index_and_agentic_rationale_expansion(missing_sec_idx)
+  ):
+    errors.append(
+        "Negative falsification failed: missing H2 section in 00_index_and_agentic_rationale.md was not rejected"
+    )
+
+  # GH-156 Falsification 2: Section 5 Zero-Token Phrase Deletion table < 25 rows
+  short_del_idx = re.sub(
+      r"(\| `filler_phrase_\d+` \| `DELETE \(0 tokens\)` \|\n)+",
+      "",
+      sample_index_expanded,
+  )
+  if not any(
+      "Section 5 Zero-Token Phrase Deletion table must have at least 25 rows" in e
+      for e in _check_index_and_agentic_rationale_expansion(short_del_idx)
+  ):
+    errors.append(
+        "Negative falsification failed: < 25 phrase deletion rows in 00_index_and_agentic_rationale.md was not rejected"
+    )
+
+  # GH-156 Falsification 3: Missing canonical phrase deletion token (it is important to note that)
+  missing_phrase_idx = sample_index_expanded.replace(
+      "it is important to note that", "removed_phrase_token"
+  )
+  if not any(
+      "it is important to note that" in e
+      for e in _check_index_and_agentic_rationale_expansion(missing_phrase_idx)
+  ):
+    errors.append(
+        "Negative falsification failed: missing phrase deletion token 'it is important to note that' was not rejected"
+    )
+
+  # GH-156 Falsification 4: Missing validate_scar_candidate.py tokenization function token (mask_code_and_math_spans)
+  missing_tok_fn_idx = sample_index_expanded.replace(
+      "mask_code_and_math_spans", "removed_tokenizer_fn"
+  )
+  if not any(
+      "mask_code_and_math_spans" in e
+      for e in _check_index_and_agentic_rationale_expansion(missing_tok_fn_idx)
+  ):
+    errors.append(
+        "Negative falsification failed: missing tokenization function token 'mask_code_and_math_spans' was not rejected"
+    )
+
+  # GH-156 Falsification 5: Missing worked scar/probe compression token (socratic_probe)
+  missing_probe_idx = sample_index_expanded.replace(
+      "socratic_probe", "removed_probe_field"
+  )
+  if not any(
+      "socratic_probe" in e
+      for e in _check_index_and_agentic_rationale_expansion(missing_probe_idx)
+  ):
+    errors.append(
+        "Negative falsification failed: missing worked scar/probe token 'socratic_probe' was not rejected"
+    )
+
+  # GH-156 Falsification 6: Section 7 tables < 15 rows
+  short_matrix_idx = re.sub(
+      r"(\| `rule_\d+` \| `precedence_\d+` \|\n)+",
+      "| `rule_0` | `precedence_0` |\n",
+      sample_index_expanded,
+  )
+  if not any(
+      "Section 7 Cross-Standard Conflict-Resolution Matrix tables must have at least 15 rows"
+      in e
+      for e in _check_index_and_agentic_rationale_expansion(short_matrix_idx)
+  ):
+    errors.append(
+        "Negative falsification failed: < 15 Section 7 table rows in 00_index_and_agentic_rationale.md was not rejected"
+    )
+
+  # GH-156 Falsification 7: Missing conflict-resolution rule token (DANGER or sentence case)
+  missing_conflict_idx = sample_index_expanded.replace(
+      "DANGER", "REMOVED_TIER"
+  ).replace("sentence case", "removed_casing")
+  conflict_errs = _check_index_and_agentic_rationale_expansion(
+      missing_conflict_idx
+  )
+  if not any("DANGER" in e for e in conflict_errs) or not any(
+      "sentence case" in e for e in conflict_errs
+  ):
+    errors.append(
+        "Negative falsification failed: missing conflict-resolution tokens 'DANGER' / 'sentence case' were not rejected"
     )
 
   return errors
