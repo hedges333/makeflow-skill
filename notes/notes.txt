@@ -20,8 +20,8 @@ IGNORE IGNORE IGNORE
 
 
 
-Do we need something to do a `git pull` and possibly rebase and resolve conflicts after target 40 adversarial-critic, before the commit message?
-hrmm
+If we work on five tickets in five separate clone project directories at the same time, and we get to the ends of those at about the same time, do we waste a lot of time cleaning up merge conflicts in target 70 when we try the pull request?  I end up having to process them sequentially, which is time-consuming.  Would it help to do a `git pull` and possibly rebase and resolve conflicts earlier in the process?  Can we check for updates to main at every target and offer to rebase the branch to the current main head and resolve conflicts before proceeding or re-iterating?
+
 
 
 
