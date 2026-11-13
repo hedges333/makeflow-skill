@@ -8,10 +8,12 @@ import sys
 import tempfile
 import unittest
 
-# Ensure scripts directory is on sys.path for direct execution
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
 
-from env_preflight import (
+from lib.env_preflight import (
     STANDARD_ENV_VARS,
     main,
     preflight_env_vars,
@@ -158,9 +160,7 @@ class TestEnvPreflight(unittest.TestCase):
 
   def test_cli_interface_and_exit_codes(self):
     """TestCase 7: CLI Interface & Exit Codes."""
-    script_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "env_preflight.py")
-    )
+    script_path = os.path.join(_SCRIPTS_DIR, "env_preflight.py")
 
     # Test clean environment
     clean_env = dict(os.environ)

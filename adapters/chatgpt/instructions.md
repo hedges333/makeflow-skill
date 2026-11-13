@@ -35,7 +35,7 @@ Move through these targets in dependency order:
 - Do not fix unrelated issues during a ticket. Note them for a separate task.
 - Intercept POSIX signals (SIGTERM / SIGINT) in long-running workers and clean up lockfiles under SCAR-SYS-07.
 - If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the path to the runtime interpreter under SCAR-SH-01.
-- Encapsulate script and entry-point logic in testable classes using the BaseScript Template Method pattern under SCAR-ARCH-05.
+- Encapsulate script logic in testable classes using the BaseScript Template Method pattern under SCAR-ARCH-05. Separate library modules in `lib/` without shebangs, thin CLI wrappers in `scripts/`, and unit tests in `tests/`.
 - Use atomic directory creation (mkdir) for mutual exclusion locks under SCAR-SYS-08.
 - Never arbitrarily impose --limit or truncation flags before assessing the full dataset. If output volume threatens context limits, halt tool execution immediately and interview the user under SCAR-TOOL-16.
 

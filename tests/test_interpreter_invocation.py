@@ -145,6 +145,56 @@ class TestInterpreterInvocation(unittest.TestCase):
     )
     self.assertNotIn("interpreter", flawed_text_missing_interpreter.lower())
 
+  def test_scar_arch_05_documents_three_layer_separation(self):
+    """SCAR-ARCH-05 across manuals, rules, tdd-worker, and adapters must specify lib/, scripts/, and tests/."""
+    targets = [
+        "skills/makeflow/references/scars/architecture.md",
+        "skills/makeflow/references/14_design_patterns_and_architecture.md",
+        "rules/AGENTS.md",
+        "agents/tdd-worker.md",
+        "CLAUDE.md",
+        ".cursorrules",
+        ".cursor/rules/makeflow.mdc",
+        ".github/copilot-instructions.md",
+        "adapters/chatgpt/instructions.md",
+    ]
+    for rel in targets:
+      path = repo_path(rel)
+      self.assertTrue(os.path.exists(path), f"Missing {rel}")
+      with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+      self.assertIn("SCAR-ARCH-05", text, f"{rel} must reference SCAR-ARCH-05")
+      for layer in ("lib/", "scripts/", "tests/"):
+        self.assertIn(layer, text, f"{rel} must document '{layer}' layer separation")
+
+    # Verify rules/AGENTS.md Section 3.1 Item 5 procedural sentence length (<= 20 words)
+    from lib.scar_candidate import count_words_in_sentence, mask_code_and_math_spans, split_into_sentences
+
+    agents_path = repo_path("rules/AGENTS.md")
+    with open(agents_path, "r", encoding="utf-8") as f:
+      agents_text = f.read()
+    sec_3_1 = agents_text.split("### 3.1 Temporary Script and Automation Rules")[1].split("## 4.")[0]
+    item_5_lines = [line for line in sec_3_1.splitlines() if line.strip().startswith("5.")]
+    self.assertEqual(len(item_5_lines), 1, "Expected Item 5 in rules/AGENTS.md Section 3.1")
+    item_5_body = re.sub(r"^\s*5\.\s*", "", item_5_lines[0])
+    masked_item_5 = mask_code_and_math_spans(item_5_body)
+    for sentence in split_into_sentences(masked_item_5):
+      wcount = count_words_in_sentence(sentence)
+      self.assertLessEqual(
+          wcount,
+          20,
+          f"rules/AGENTS.md Section 3.1 Item 5 sentence exceeds 20 words ({wcount} words): '{sentence}'",
+      )
+
+    # Verify notes/simple_english_scar_import_goal.md references scripts/validate_scar_candidate.py
+    goal_rel = "notes/simple_english_scar_import_goal.md"
+    goal_path = repo_path(goal_rel)
+    self.assertTrue(os.path.isfile(goal_path), f"Missing {goal_rel}")
+    with open(goal_path, "r", encoding="utf-8") as f:
+      goal_text = f.read()
+    self.assertIn("scripts/validate_scar_candidate.py", goal_text)
+    self.assertNotIn("scripts/test_scar_candidate.py", goal_text)
+
 
 if __name__ == "__main__":
   if "-x" in sys.argv:

@@ -17,11 +17,12 @@ import sys
 import tempfile
 import unittest
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
 
-from commit_msg import (
+from lib.commit_msg import (
     CANONICAL_TYPES,
     CommitMsgScript,
     FileChange,
@@ -31,7 +32,7 @@ from commit_msg import (
     parse_commit_header,
     validate_commit_message,
 )
-from workflow_gates import WorkflowGatesScript
+from lib.workflow_gates import WorkflowGatesScript
 
 
 class TestConventionalCommitsHeaderParsing(unittest.TestCase):

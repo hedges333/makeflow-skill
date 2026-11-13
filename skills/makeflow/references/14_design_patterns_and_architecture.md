@@ -100,7 +100,11 @@ Game engines include Godot, Haxe Flixel or Heaps, Unity, Unreal, SDL, and Raylib
 
 Procedural CLI scripts and standalone automation utilities often resist clean unit testing. When scripts execute procedural code at the top level or within a monolithic procedural block, test suites are forced to invoke slow OS subprocesses or mutate global variables. Moreover, calling process termination functions (`sys.exit()`, `process.exit()`, `os.Exit()`) inside business logic aborts the test runner itself.
 
-Under `SCAR-ARCH-05`, encapsulate script execution in class objects or runner structures using the classic GoF **Template Method** pattern (`BaseScript`).
+Under `SCAR-ARCH-05`, encapsulate script execution in class objects or runner structures using the classic GoF **Template Method** pattern (`BaseScript`). Separate Python modules into three layers:
+
+1. Put reusable classes, validators, and `BaseScript` subclasses in `lib/` (such as `lib/base_script.py`) without executable shebang headers.
+2. Keep `scripts/` strictly for thin executable CLI wrappers (`sys.exit(ScriptClass().execute())`) that import from `lib/` and never from peer scripts.
+3. Place all `test_*.py` unit test suites in a top-level `tests/` directory.
 
 ### Execution Lifecycle Stages
 

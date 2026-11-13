@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Hermetic unit tests for BaseScript lifecycle (SCAR-ARCH-05)."""
 
+import ast
 import io
 import os
 import sys
 import unittest
 
-# Ensure scripts directory and repo root are on sys.path for direct execution
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+# Ensure repo root is on sys.path for direct execution
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_TESTS_DIR)
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+_LIB_DIR = os.path.join(_REPO_ROOT, "lib")
 if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
-from base_script import BaseScript
+from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
 
 
 class ConcreteSuccessScript(BaseScript):
@@ -256,6 +257,108 @@ class TestBaseScript(unittest.TestCase):
       self.assertEqual(script.raw_args, ["foo", "bar"])
     finally:
       sys.argv = orig_argv
+
+
+class TestThreeLayerArchitectureInvariants(unittest.TestCase):
+  """Verifies GH-169 / SCAR-ARCH-05 three-layer separation of lib/, scripts/, and tests/."""
+
+  def test_lib_package_exists_and_has_no_shebangs(self):
+    """Verifies lib/__init__.py exists and no file in lib/*.py starts with a shebang (#!)."""
+    self.assertTrue(os.path.isdir(_LIB_DIR), "lib/ directory must exist")
+    self.assertTrue(
+        os.path.isfile(os.path.join(_LIB_DIR, "__init__.py")),
+        "lib/__init__.py must exist",
+    )
+    py_files = sorted(
+        f for f in os.listdir(_LIB_DIR) if f.endswith(".py")
+    )
+    self.assertGreaterEqual(len(py_files), 17, "Expected all shared library modules in lib/")
+    for fname in py_files:
+      fpath = os.path.join(_LIB_DIR, fname)
+      with open(fpath, "r", encoding="utf-8") as fh:
+        first_line = fh.readline()
+      self.assertFalse(
+          first_line.startswith("#!"),
+          f"Library module lib/{fname} must not have an executable shebang header",
+      )
+
+  def test_lib_base_script_exports_argument_parser_primitives(self):
+    """Verifies lib.base_script exports BaseScript, ReflexArgumentError, and SilentArgumentParser."""
+    self.assertTrue(issubclass(ReflexArgumentError, Exception))
+    parser = SilentArgumentParser(prog="test_prog")
+    with self.assertRaises(ReflexArgumentError) as ctx:
+      parser.error("bad flag")
+    self.assertIn("bad flag", str(ctx.exception))
+
+  def test_scripts_dir_contains_only_thin_cli_entrypoints(self):
+    """Verifies scripts/ has zero test_*.py files, zero pure libraries, and validate_scar_candidate.py."""
+    script_files = sorted(
+        f for f in os.listdir(_SCRIPTS_DIR) if f.endswith(".py")
+    )
+    for fname in script_files:
+      self.assertFalse(
+          fname.startswith("test_"),
+          f"scripts/{fname} has a 'test_' prefix; tests belong in tests/ and CLI validators must not start with test_",
+      )
+    self.assertNotIn("base_script.py", script_files)
+    self.assertNotIn("safe_copy.py", script_files)
+    self.assertNotIn("test_scar_candidate.py", script_files)
+    self.assertIn("validate_scar_candidate.py", script_files)
+
+  def test_scripts_have_shebang_main_guard_and_zero_cross_script_imports(self):
+    """Verifies every scripts/*.py file has a shebang, __main__ guard, and zero imports from other scripts."""
+    script_files = sorted(
+        f for f in os.listdir(_SCRIPTS_DIR) if f.endswith(".py")
+    )
+    script_module_names = {os.path.splitext(f)[0] for f in script_files}
+    # Also forbid importing removed legacy script names directly as top-level modules
+    forbidden_script_modules = script_module_names | {
+        "base_script",
+        "safe_copy",
+        "test_scar_candidate",
+    }
+
+    for fname in script_files:
+      fpath = os.path.join(_SCRIPTS_DIR, fname)
+      with open(fpath, "r", encoding="utf-8") as fh:
+        source = fh.read()
+      self.assertTrue(
+          source.startswith("#!/usr/bin/env python3"),
+          f"scripts/{fname} must start with #!/usr/bin/env python3",
+      )
+      self.assertIn(
+          'if __name__ == "__main__":',
+          source,
+          f"scripts/{fname} must have an if __name__ == '__main__': entrypoint",
+      )
+      tree = ast.parse(source, filename=fpath)
+      for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+          for alias in node.names:
+            top_mod = alias.name.split(".")[0]
+            self.assertNotIn(
+                top_mod,
+                forbidden_script_modules,
+                f"scripts/{fname} must not import peer script module '{alias.name}'; import from lib.* instead",
+            )
+            self.assertNotEqual(
+                top_mod,
+                "scripts",
+                f"scripts/{fname} must not import from 'scripts.*'; import from lib.* instead",
+            )
+        elif isinstance(node, ast.ImportFrom):
+          if node.module:
+            top_mod = node.module.split(".")[0]
+            self.assertNotIn(
+                top_mod,
+                forbidden_script_modules,
+                f"scripts/{fname} must not import from peer script module '{node.module}'; import from lib.* instead",
+            )
+            self.assertNotEqual(
+                top_mod,
+                "scripts",
+                f"scripts/{fname} must not import from 'scripts.*'; import from lib.* instead",
+            )
 
 
 if __name__ == "__main__":

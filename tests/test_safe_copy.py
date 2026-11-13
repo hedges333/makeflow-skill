@@ -4,11 +4,16 @@
 import errno
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from safe_copy import safe_copy_file, safe_copy_tree
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
+
+from lib.safe_copy import safe_copy_file, safe_copy_tree
 
 
 class TestSafeCopy(unittest.TestCase):

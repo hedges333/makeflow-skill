@@ -10,15 +10,14 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
-if _REPO_ROOT not in sys.path:
-  sys.path.insert(0, _REPO_ROOT)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
-from base_script import BaseScript
-from terminal_title import (
+from lib.base_script import BaseScript
+from lib.terminal_title import (
     TerminalTitleScript,
     detect_issue_tag,
     detect_project_name,
@@ -738,7 +737,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
   """Tests for workflow_gates.py terminal-title delegation and option forwarding."""
 
   def test_workflow_gates_forwards_options_to_terminal_title(self):
-    from workflow_gates import WorkflowGatesScript
+    from lib.workflow_gates import WorkflowGatesScript
 
     script = WorkflowGatesScript()
     out = io.StringIO()
@@ -762,7 +761,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
     self.assertTrue(data["success"])
 
   def test_workflow_gates_forwards_issue_tag(self):
-    from workflow_gates import WorkflowGatesScript
+    from lib.workflow_gates import WorkflowGatesScript
 
     script = WorkflowGatesScript()
     out = io.StringIO()
@@ -790,7 +789,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
     self.assertTrue(data["success"])
 
   def test_workflow_gates_release_intake_restores_title(self):
-    from workflow_gates import WorkflowGatesScript
+    from lib.workflow_gates import WorkflowGatesScript
 
     script = WorkflowGatesScript()
     out = io.StringIO()

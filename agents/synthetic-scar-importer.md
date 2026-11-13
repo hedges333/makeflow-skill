@@ -29,6 +29,6 @@ You transform one pending synthetic scar (a recorded engineering failure pattern
 5. Preserve inline code spans (` `...` `), file paths, CLI flags, and error codes without alteration.
 6. Do not change the raw fields or any other fields.
 7. Write a JSON object containing only `id`, `wound`, `trap`, `circuit_breaker` (optional, default `""`), and `reflex` to a temporary file.
-8. Validate the candidate JSON with `python3 scripts/test_scar_candidate.py ${temporary_json_file_path}`. Import the candidate with `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --import-simple-english ${temporary_json_file_path}`.
+8. Validate the candidate JSON with `python3 scripts/validate_scar_candidate.py ${temporary_json_file_path}`. Import the candidate with `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --import-simple-english ${temporary_json_file_path}`.
 9. If validation or import fails, fix the candidate JSON and retry before returning to the supervisor agent.
 10. Return the transformed scar ID and verification status to the supervisor agent with `send_message`.

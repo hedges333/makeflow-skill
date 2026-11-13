@@ -24,16 +24,15 @@ from unittest.mock import MagicMock, patch
 import urllib.error
 
 # Ensure scripts directory and repo root are on sys.path
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
-if _REPO_ROOT not in sys.path:
-  sys.path.insert(0, _REPO_ROOT)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
-from base_script import BaseScript
-import sync_synthetic_scars
-from sync_synthetic_scars import (
+from lib.base_script import BaseScript
+import lib.scars_db as sync_synthetic_scars
+from lib.scars_db import (
     SyncSyntheticScarsScript,
     query_scars,
     resolve_scars_db_path,
@@ -1085,7 +1084,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     )
 
   def test_extract_protected_spans_and_verify_scar_transformation(self):
-    from sync_synthetic_scars import (
+    from lib.scars_db import (
         extract_protected_spans,
         verify_scar_transformation,
     )

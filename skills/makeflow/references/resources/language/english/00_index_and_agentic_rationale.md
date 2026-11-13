@@ -56,7 +56,7 @@ When you edit, compress, or paraphrase technical text, preserve all executable a
 
 ### 3.3 Validator tokenization and word-counting rules
 
-The validator in `scripts/test_scar_candidate.py` enforces deterministic sentence splitting and word counting through `ScarCandidateValidator` and three helper functions:
+The validator in `scripts/validate_scar_candidate.py` and `lib/scar_candidate.py` enforces deterministic sentence splitting and word counting through `ScarCandidateValidator` and three helper functions:
 
 | Validator component | Exact tokenization behavior | Word-count impact |
 | :--- | :--- | :--- |

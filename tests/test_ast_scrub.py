@@ -22,14 +22,16 @@ import tempfile
 import time
 import unittest
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+_LIB_DIR = os.path.join(_REPO_ROOT, "lib")
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
 
 # Note: In the Red phase, ast_scrub does not exist yet.
 try:
-  import ast_scrub
-  from ast_scrub import (
+  import lib.ast_scrub as ast_scrub
+  from lib.ast_scrub import (
       AstScrubScript,
       AstScrubberVisitor,
       Violation,
@@ -493,6 +495,40 @@ class TestAstScrubScriptLifecycle(unittest.TestCase):
       if os.path.exists(bad_path):
         os.unlink(bad_path)
 
+  def test_default_scan_dirs_when_src_dir_and_files_omitted(self):
+    self.assertEqual(
+        getattr(ast_scrub, "DEFAULT_SCAN_DIRS", None),
+        ("lib", "scripts", "mcp", "tests"),
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+      for subdir in ("lib", "scripts", "mcp", "tests"):
+        dpath = os.path.join(tmpdir, subdir)
+        os.makedirs(dpath, exist_ok=True)
+        with open(os.path.join(dpath, f"mod_{subdir}.py"), "w", encoding="utf-8") as f:
+          f.write("def ok() -> int:\n    return 1\n")
+      out = io.StringIO()
+      err = io.StringIO()
+      code = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 0, err.getvalue())
+      self.assertIn("scanned 4 files", out.getvalue())
+
+      # Inject a violation into lib/mod_lib.py and verify default scan catches it
+      with open(os.path.join(tmpdir, "lib", "mod_lib.py"), "w", encoding="utf-8") as f:
+        f.write("def bad():\n    try:\n        run()\n    except Exception:\n        pass\n")
+      out2 = io.StringIO()
+      err2 = io.StringIO()
+      code2 = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out2,
+          stderr=err2,
+      )
+      self.assertEqual(code2, 2)
+      self.assertIn("SILENT_EXCEPTION_HANDLER", err2.getvalue())
+
 
 class TestAstScrubSubprocessCli(unittest.TestCase):
   """Tests CLI execution via subprocess."""
@@ -531,7 +567,7 @@ class TestAstScrubPerformanceBenchmark(unittest.TestCase):
 
   def test_ast_scrub_execution_speed_under_twenty_milliseconds(self):
     targets = [
-        os.path.join(_SCRIPTS_DIR, "safe_copy.py"),
+        os.path.join(_LIB_DIR, "safe_copy.py"),
         os.path.join(_SCRIPTS_DIR, "emit_reflex.py"),
         os.path.join(_SCRIPTS_DIR, "env_preflight.py"),
     ]

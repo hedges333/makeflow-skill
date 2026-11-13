@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hermetic unit tests for scripts/test_scar_candidate.py.
+"""Hermetic unit tests for scripts/validate_scar_candidate.py.
 
 Validates synthetic scar candidate JSON files against Simple English rules,
 sentence word count limits, span preservation, schema, and BaseScript execution.
@@ -15,14 +15,17 @@ import tempfile
 import time
 import unittest
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
-from base_script import BaseScript
-from test_scar_candidate import (
+from lib.base_script import BaseScript
+from lib.scar_candidate import (
     ScarCandidateTestScript,
     ScarCandidateValidator,
+    ValidateScarCandidateScript,
     count_words_in_sentence,
     split_into_sentences,
 )

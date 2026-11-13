@@ -1,10 +1,8 @@
-#!/usr/bin/env python3
 """Reusable BaseScript template implementing the Template Method pattern (SCAR-ARCH-05).
 
-Provides a testable object-oriented execution lifecycle for CLI scripts and tools.
-Supports hermetic in-memory unit testing, custom stream injection, fatal exception
-trapping, and guaranteed cleanup without invoking process-terminating sys.exit()
-inside business logic.
+Provides a testable object-oriented execution lifecycle for CLI scripts and tools,
+along with non-exiting argument parser classes (SilentArgumentParser and
+ReflexArgumentError) so CLI entrypoints never call sys.exit() inside business logic.
 
 Usage:
     class MyScript(BaseScript):
@@ -22,8 +20,32 @@ Usage:
         sys.exit(MyScript().execute())
 """
 
+import argparse
 import sys
-from typing import List, Optional, TextIO
+from typing import List, NoReturn, Optional, TextIO
+
+
+class ReflexArgumentError(Exception):
+  """Raised on invalid CLI arguments without terminating the Python process."""
+
+  exit_code = 1
+
+
+class SilentArgumentParser(argparse.ArgumentParser):
+  """ArgumentParser subclass that raises ReflexArgumentError instead of SystemExit."""
+
+  def _print_message(
+      self, message: str, file: Optional[TextIO] = None
+  ) -> None:
+    pass
+
+  def error(self, message: str) -> NoReturn:
+    raise ReflexArgumentError(message)
+
+  def exit(self, status: int = 0, message: Optional[str] = None) -> NoReturn:
+    raise ReflexArgumentError(
+        message or f"Argument parser exited with status {status}"
+    )
 
 
 class BaseScript:

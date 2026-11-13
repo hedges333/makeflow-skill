@@ -10,16 +10,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
 if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
-from base_script import BaseScript
-from emit_reflex import EmitReflexScript
-from workflow_gates import WorkflowGatesScript
+from lib.base_script import BaseScript
+from lib.reflex import EmitReflexScript
+from lib.workflow_gates import WorkflowGatesScript
 
 # we factored it down, and it's okay if it grows a little, but that should be the hard limit.
 # if it fails, it's time to reassess and refactor.
@@ -729,7 +727,7 @@ class TestWorkflowGatesScript(unittest.TestCase):
     # 2. Subprocess TimeoutExpired in _git() returns exit code 2 with Vector 4 Reflex
     with tempfile.TemporaryDirectory() as tmpdir:
       with mock.patch(
-          "workflow_gates.subprocess.run",
+          "lib.workflow_gates.subprocess.run",
           side_effect=subprocess.TimeoutExpired(
               cmd=["git", "status"], timeout=15
           ),
@@ -869,6 +867,10 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
       self.assertEqual(code_init, 0, err_init.getvalue())
       synth_mk = os.path.join(consumer_dir, ".workflow", "state", "Makefile")
       self.assertTrue(os.path.isfile(synth_mk))
+      with open(synth_mk, "r", encoding="utf-8") as f:
+        synth_mk_text = f.read()
+      for scan_dir in ("lib", "scripts", "mcp", "tests"):
+        self.assertIn(f"--src-dir {scan_dir} --strict", synth_mk_text)
 
       # 1. check-intake fails (exit 2) before .workflow/state/ is git-excluded
       p_intake_fail = subprocess.run(
