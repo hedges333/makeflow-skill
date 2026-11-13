@@ -1782,5 +1782,30 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-169",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/169",
+    "title": "[FEAT] Reorganize Python modules into shared library, thin CLI scripts, and top-level tests directory",
+    "request": "Extract 17 shared Python library modules into lib/ without executable shebangs, refactor 14 scripts/ entrypoints into thin CLI wrappers with one-way imports, move all 18 unit test suites to top-level tests/, deduplicate config and shell/database safety helpers, and update governance guards, CI, Makefile, and SCAR-ARCH-05 documentation.",
+    "branch": "feat/169-reorganize-python-modules",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "tests",
+      "mcp",
+      "skills/makeflow",
+      "rules",
+      "agents",
+      "adapters"
+    ],
+    "started_at": "2026-11-13T21:23:00Z",
+    "completed_at": "2026-11-13T23:45:28Z",
+    "commit_sha": "56e8d74",
+    "pr_number": 173,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/173",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
