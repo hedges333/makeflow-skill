@@ -597,7 +597,7 @@ def validate_basescript_pattern_scar():
      .github/copilot-instructions.md, adapters/chatgpt/instructions.md) document
      SCAR-ARCH-05.
   6. Makefile defines test-base-script target and includes it in test prerequisites.
-  7. scripts/base_script.py and scripts/test_base_script.py exist.
+  7. lib/base_script.py and tests/test_base_script.py exist.
   8. Negative falsification:
      - Missing Four-Part Anatomy fields or corrupted text triggers errors.
      - Misrouted catalog table rows trigger errors.
@@ -708,7 +708,7 @@ def validate_basescript_pattern_scar():
           f"{mk_rel} 'test:' target must list 'test-base-script' prerequisite"
       )
 
-  for script_rel in ["scripts/base_script.py", "scripts/test_base_script.py"]:
+  for script_rel in ["lib/base_script.py", "tests/test_base_script.py"]:
     script_path = repo_path(script_rel)
     if not os.path.exists(script_path):
       errors.append(f"Missing {script_rel}")
@@ -723,6 +723,113 @@ def validate_basescript_pattern_scar():
   )
   if check_scar_catalog_routing(mock_misrouted, "SCAR-ARCH-05", "architecture.md"):
     errors.append("Falsification failed: misrouted catalog line was accepted")
+
+  return errors
+
+
+def validate_three_layer_python_architecture():
+  """Validates three-layer Python module architecture (GH-169, SCAR-ARCH-05)."""
+  import ast
+
+  errors = []
+  lib_dir = repo_path("lib")
+  scripts_dir = repo_path("scripts")
+  tests_dir = repo_path("tests")
+
+  if not os.path.isdir(lib_dir) or not os.path.isfile(os.path.join(lib_dir, "__init__.py")):
+    errors.append("Missing lib/__init__.py shared library package")
+  else:
+    for fname in sorted(os.listdir(lib_dir)):
+      if not fname.endswith(".py"):
+        continue
+      fpath = os.path.join(lib_dir, fname)
+      with open(fpath, "r", encoding="utf-8") as f:
+        first_line = f.readline()
+      if first_line.startswith("#!"):
+        errors.append(f"lib/{fname} must not have an executable shebang header")
+
+  if not os.path.isdir(scripts_dir):
+    errors.append("Missing scripts/ directory")
+  else:
+    script_py = sorted(f for f in os.listdir(scripts_dir) if f.endswith(".py"))
+    script_modules = {os.path.splitext(f)[0] for f in script_py}
+    for fname in script_py:
+      if fname.startswith("test_"):
+        errors.append(f"scripts/{fname} must not start with 'test_' in scripts/")
+      if fname in ("base_script.py", "safe_copy.py", "test_scar_candidate.py"):
+        errors.append(f"scripts/{fname} must not remain in scripts/")
+      fpath = os.path.join(scripts_dir, fname)
+      with open(fpath, "r", encoding="utf-8") as f:
+        source = f.read()
+      if not source.startswith("#!/usr/bin/env python3"):
+        errors.append(f"scripts/{fname} must start with #!/usr/bin/env python3")
+      if 'if __name__ == "__main__":' not in source:
+        errors.append(f"scripts/{fname} must have an if __name__ == '__main__': entrypoint")
+      tree = ast.parse(source, filename=fpath)
+      for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+          for alias in node.names:
+            top = alias.name.split(".")[0]
+            if top in script_modules or top == "scripts":
+              errors.append(f"scripts/{fname} must not import peer script '{alias.name}'")
+        elif isinstance(node, ast.ImportFrom):
+          mod = node.module or ""
+          top = mod.split(".")[0] if mod else ""
+          if top in script_modules or top == "scripts":
+            errors.append(f"scripts/{fname} must not import from peer script '{mod}'")
+
+  if not os.path.isfile(os.path.join(scripts_dir, "validate_scar_candidate.py")):
+    errors.append("Missing scripts/validate_scar_candidate.py")
+
+  if not os.path.isdir(tests_dir):
+    errors.append("Missing tests/ directory")
+  else:
+    test_py = [f for f in os.listdir(tests_dir) if f.startswith("test_") and f.endswith(".py")]
+    if len(test_py) < 18:
+      errors.append(f"Expected 18 test_*.py suites in tests/, found {len(test_py)}")
+
+  importer_rel = "agents/synthetic-scar-importer.md"
+  importer_path = repo_path(importer_rel)
+  if os.path.isfile(importer_path):
+    with open(importer_path, "r", encoding="utf-8") as f:
+      imp_text = f.read()
+    if "scripts/validate_scar_candidate.py" not in imp_text:
+      errors.append(f"{importer_rel} must reference scripts/validate_scar_candidate.py")
+    if "scripts/test_scar_candidate.py" in imp_text:
+      errors.append(f"{importer_rel} must not reference scripts/test_scar_candidate.py")
+
+  ci_rel = ".github/workflows/ci.yml"
+  ci_path = repo_path(ci_rel)
+  if not os.path.isfile(ci_path):
+    errors.append(f"Missing {ci_rel}")
+  else:
+    with open(ci_path, "r", encoding="utf-8") as f:
+      ci_text = f.read()
+    if "scripts/test_" in ci_text:
+      errors.append(f"{ci_rel} must not reference relocated scripts/test_*.py paths")
+    for expected_ci_test in (
+        "tests/test_cross_agent_compatibility.py",
+        "tests/test_compat_cwd.py",
+        "tests/test_mcp_server.py",
+        "tests/test_hooks.py",
+    ):
+      if expected_ci_test not in ci_text:
+        errors.append(f"{ci_rel} must reference {expected_ci_test}")
+
+  mk_rel = "Makefile"
+  mk_path = repo_path(mk_rel)
+  if os.path.isfile(mk_path):
+    with open(mk_path, "r", encoding="utf-8") as f:
+      mk_text = f.read()
+    if "test-interpreter-invocation:" not in mk_text:
+      errors.append(f"{mk_rel} must define 'test-interpreter-invocation:' target")
+    if (
+        "test:" not in mk_text
+        or "test-interpreter-invocation" not in mk_text.split("test:")[1].split("\n")[0]
+    ):
+      errors.append(
+          f"{mk_rel} 'test:' target must list 'test-interpreter-invocation' prerequisite"
+      )
 
   return errors
 
@@ -781,13 +888,13 @@ def validate_vector4_reflex_gates_scar():
   for script_rel in (
       "scripts/emit_reflex.py",
       "scripts/workflow_gates.py",
-      "scripts/test_emit_reflex.py",
+      "tests/test_emit_reflex.py",
   ):
     script_path = repo_path(script_rel)
     if not os.path.exists(script_path):
       errors.append(f"Missing {script_rel}")
 
-  reflex_test_rel = "scripts/test_emit_reflex.py"
+  reflex_test_rel = "tests/test_emit_reflex.py"
   reflex_test_path = repo_path(reflex_test_rel)
   if os.path.exists(reflex_test_path):
     with open(reflex_test_path, "r", encoding="utf-8") as f:
@@ -1101,12 +1208,12 @@ def validate_tdd_guard_scar():
           f"{mk_rel} 'test:' target must list 'test-tdd-guard' prerequisite"
       )
 
-  for script_rel in ("scripts/tdd_guard.py", "scripts/test_tdd_guard.py"):
+  for script_rel in ("scripts/tdd_guard.py", "lib/tdd_guard.py", "tests/test_tdd_guard.py"):
     script_path = repo_path(script_rel)
     if not os.path.exists(script_path):
       errors.append(f"Missing {script_rel}")
 
-  guard_test_rel = "scripts/test_tdd_guard.py"
+  guard_test_rel = "tests/test_tdd_guard.py"
   guard_test_path = repo_path(guard_test_rel)
   if os.path.exists(guard_test_path):
     with open(guard_test_path, "r", encoding="utf-8") as f:
@@ -1129,13 +1236,13 @@ def validate_tdd_guard_scar():
       if req_token not in tdd_doc_text:
         errors.append(f"{tdd_doc_rel} must document '{req_token}'")
 
-  tdd_guard_py = repo_path("scripts/tdd_guard.py")
+  tdd_guard_py = repo_path("lib/tdd_guard.py")
   if os.path.exists(tdd_guard_py):
     with open(tdd_guard_py, "r", encoding="utf-8") as f:
       guard_code = f.read()
     for req_token in ("verify-citation", "UNCOMMITTED_WITNESS_FILE", "TRIVIAL_WITNESS_LINE"):
       if req_token not in guard_code:
-        errors.append(f"scripts/tdd_guard.py must implement '{req_token}'")
+        errors.append(f"lib/tdd_guard.py must implement '{req_token}'")
 
   # Negative Falsification Checks
   mock_corrupted = "### SCAR-TEST-12: Receipts\n- **Wound**: Tampered\n"
@@ -1238,8 +1345,16 @@ def validate_ast_scrubber_scar_ast_01():
         or "test-ast-scrub" not in mk_text.split("test:")[1].split("\n")[0]
     ):
       errors.append(f"{mk_rel} 'test:' must list 'test-ast-scrub' prerequisite")
+    ast_lint_block = (
+        mk_text.split("ast-lint:")[1].split("\n\n")[0]
+        if "ast-lint:" in mk_text
+        else ""
+    )
+    for expected_dir_tok in ("LIB_DIR", "SCRIPTS_DIR", "MCP_DIR", "TESTS_DIR"):
+      if expected_dir_tok not in ast_lint_block:
+        errors.append(f"{mk_rel} 'ast-lint:' must scrub $({expected_dir_tok})")
 
-  gates_rel = "scripts/workflow_gates.py"
+  gates_rel = "lib/workflow_gates.py"
   gates_path = repo_path(gates_rel)
   if not os.path.exists(gates_path):
     errors.append(f"Missing {gates_rel}")
@@ -1248,8 +1363,13 @@ def validate_ast_scrubber_scar_ast_01():
       gates_text = f.read()
     if "ast-lint:" not in gates_text:
       errors.append(f"{gates_rel} _init_makefile must include 'ast-lint:'")
+    for scan_dir in ("lib", "scripts", "mcp", "tests"):
+      if f"--src-dir {scan_dir} --strict" not in gates_text:
+        errors.append(
+            f"{gates_rel} generate_state_makefile ast-lint must include '--src-dir {scan_dir} --strict'"
+        )
 
-  for script_rel in ("scripts/ast_scrub.py", "scripts/test_ast_scrub.py"):
+  for script_rel in ("scripts/ast_scrub.py", "lib/ast_scrub.py", "tests/test_ast_scrub.py"):
     script_path = repo_path(script_rel)
     if not os.path.exists(script_path):
       errors.append(f"Missing {script_rel}")
@@ -1651,17 +1771,17 @@ def validate_subagent_tool_mounting_permissions():
   ):
     errors.append("Negative falsification failed to catch omitted required tool 'send_message'")
 
-  # Verify scripts/workflow_gates.py does NOT contain subagent-def or _gate_subagent_def
-  gates_rel = "scripts/workflow_gates.py"
-  gates_script = repo_path(gates_rel)
-  if not os.path.exists(gates_script):
-    errors.append(f"Missing {gates_rel}")
-  else:
-    with open(gates_script, "r", encoding="utf-8") as f:
-      gates_text = f.read()
-    for removed_sym in ("subagent-def", "_gate_subagent_def"):
-      if removed_sym in gates_text:
-        errors.append(f"{gates_rel} must not contain removed '{removed_sym}'")
+  # Verify scripts/workflow_gates.py and lib/workflow_gates.py do NOT contain subagent-def or _gate_subagent_def
+  for gates_rel in ("scripts/workflow_gates.py", "lib/workflow_gates.py"):
+    gates_script = repo_path(gates_rel)
+    if not os.path.exists(gates_script):
+      errors.append(f"Missing {gates_rel}")
+    else:
+      with open(gates_script, "r", encoding="utf-8") as f:
+        gates_text = f.read()
+      for removed_sym in ("subagent-def", "_gate_subagent_def"):
+        if removed_sym in gates_text:
+          errors.append(f"{gates_rel} must not contain removed '{removed_sym}'")
 
   # Check reference manual 08_subagent_orchestration.md, rules/AGENTS.md, and scars/process.md
   doc_files = (
@@ -1836,7 +1956,7 @@ def validate_posix_signal_trapping():
           f"{mk_rel} 'test:' target must list 'test-signal-trap' prerequisite"
       )
 
-  for script_rel in ["scripts/signal_trap.py", "scripts/test_signal_trap.py"]:
+  for script_rel in ["scripts/signal_trap.py", "lib/signal_trap.py", "tests/test_signal_trap.py"]:
     script_path = repo_path(script_rel)
     if not os.path.exists(script_path):
       errors.append(f"Missing {script_rel}")
@@ -1859,7 +1979,7 @@ def validate_diagnostic_path_formatting():
   """Validates standardized diagnostic relative path formatting (GH-63).
 
   Verifies:
-  1. No diagnostic error string in scripts/test_cross_agent_compatibility.py formats
+  1. No diagnostic error string in tests/test_cross_agent_compatibility.py formats
      absolute repo_path variables into 'Missing ...' or 'Invalid ...' messages.
   2. All 13 canonical relative path variables are present and used in diagnostics:
      claude_rel, codex_rel, claude_md_rel, cursorrules_rel, cursor_mdc_rel,
@@ -1868,7 +1988,7 @@ def validate_diagnostic_path_formatting():
   3. Critic agent invariant errors format critic_agent_rel instead of absolute critic_agent.
   """
   errors = []
-  compat_script_rel = "scripts/test_cross_agent_compatibility.py"
+  compat_script_rel = "tests/test_cross_agent_compatibility.py"
   compat_script = repo_path(compat_script_rel)
   if not os.path.exists(compat_script):
     errors.append(f"Missing {compat_script_rel}")
@@ -5410,15 +5530,15 @@ def validate():
   static_check_script = repo_path(static_check_rel)
   if not os.path.exists(static_check_script):
     errors.append(f"Missing {static_check_rel}")
-  static_test_rel = "scripts/test_static_analysis.py"
+  static_test_rel = "tests/test_static_analysis.py"
   static_test_script = repo_path(static_test_rel)
   if not os.path.exists(static_test_script):
     errors.append(f"Missing {static_test_rel}")
-  safe_copy_rel = "scripts/safe_copy.py"
+  safe_copy_rel = "lib/safe_copy.py"
   safe_copy_script = repo_path(safe_copy_rel)
   if not os.path.exists(safe_copy_script):
     errors.append(f"Missing {safe_copy_rel}")
-  safe_copy_test_rel = "scripts/test_safe_copy.py"
+  safe_copy_test_rel = "tests/test_safe_copy.py"
   safe_copy_test_script = repo_path(safe_copy_test_rel)
   if not os.path.exists(safe_copy_test_script):
     errors.append(f"Missing {safe_copy_test_rel}")
@@ -5426,13 +5546,13 @@ def validate():
   env_preflight_script = repo_path(env_preflight_rel)
   if not os.path.exists(env_preflight_script):
     errors.append(f"Missing {env_preflight_rel}")
-  env_preflight_test_rel = "scripts/test_env_preflight.py"
+  env_preflight_test_rel = "tests/test_env_preflight.py"
   env_preflight_test_script = repo_path(env_preflight_test_rel)
   if not os.path.exists(env_preflight_test_script):
     errors.append(f"Missing {env_preflight_test_rel}")
 
   # 16. Python Interpreter Inheritance (sys.executable in test subprocesses)
-  hooks_test_rel = "scripts/test_hooks.py"
+  hooks_test_rel = "tests/test_hooks.py"
   hooks_test_script = repo_path(hooks_test_rel)
   if os.path.exists(hooks_test_script):
     with open(hooks_test_script) as f:
@@ -5442,7 +5562,7 @@ def validate():
     if '["python3"' in ht_text or "['python3'" in ht_text:
       errors.append(f"{hooks_test_rel} must not hardcode 'python3' in subprocess calls")
 
-  mcp_test_rel = "scripts/test_mcp_server.py"
+  mcp_test_rel = "tests/test_mcp_server.py"
   mcp_test_script = repo_path(mcp_test_rel)
   if os.path.exists(mcp_test_script):
     with open(mcp_test_script) as f:
@@ -5734,6 +5854,15 @@ def validate():
   if not open_eng_errors:
     print(
         "✔ Open technical English specifications and SimpleEnglish removal (GH-152)"
+        " verified."
+    )
+
+  # Three-Layer Python Module Architecture Invariants (GH-169, SCAR-ARCH-05)
+  three_layer_errors = validate_three_layer_python_architecture()
+  errors.extend(three_layer_errors)
+  if not three_layer_errors:
+    print(
+        "✔ Three-layer Python module architecture (GH-169, SCAR-ARCH-05)"
         " verified."
     )
 

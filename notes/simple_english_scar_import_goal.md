@@ -14,7 +14,7 @@ Follow these steps in a loop until zero pending scars remain:
 1. Query the next pending scar ID without displaying null fields:
    sqlite3 skills/makeflow/data/scars_registry.db "SELECT id FROM scars WHERE wound IS NULL OR trap IS NULL OR circuit_breaker IS NULL OR reflex IS NULL ORDER BY id LIMIT 1;"
 2. If the query returns a scar ID, invoke the synthetic-scar-importer subagent with only that scar ID string.
-3. Wait for synthetic-scar-importer to validate the candidate JSON with scripts/test_scar_candidate.py and import it with:
+3. Wait for synthetic-scar-importer to validate the candidate JSON with scripts/validate_scar_candidate.py and import it with:
    python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --import-simple-english <temporary_json_file_path>
 4. Repeat steps 1 through 3 until the query returns no rows.
 5. When zero pending scars remain, verify the database status and transformations:

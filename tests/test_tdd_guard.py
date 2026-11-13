@@ -14,16 +14,15 @@ import time
 import unittest
 from unittest import mock
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
-_REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
-if _REPO_ROOT not in sys.path:
-  sys.path.insert(0, _REPO_ROOT)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
-from base_script import BaseScript
-from tdd_guard import TddGuardScript, compute_test_tree_hash
-from workflow_gates import WorkflowGatesScript
+from lib.base_script import BaseScript
+from lib.tdd_guard import TddGuardScript, compute_test_tree_hash
+from lib.workflow_gates import WorkflowGatesScript
 
 
 def _init_fixture_repo(repo_dir: str) -> str:
@@ -747,7 +746,7 @@ class TestTddGuardScript(unittest.TestCase):
           raise OSError("/bin/sh launch failed")
         return real_popen(cmd_args, *args, **kwargs)
 
-      with mock.patch("tdd_guard.subprocess.Popen", side_effect=_fail_sh_popen):
+      with mock.patch("lib.tdd_guard.subprocess.Popen", side_effect=_fail_sh_popen):
         err_sh_os = io.StringIO()
         code_sh_os = TddGuardScript().execute(
             args=[
@@ -770,7 +769,7 @@ class TestTddGuardScript(unittest.TestCase):
 
       # Git OSError resilience
       with mock.patch(
-          "tdd_guard.subprocess.run", side_effect=OSError("git binary missing")
+          "lib.tdd_guard.subprocess.run", side_effect=OSError("git binary missing")
       ):
         err_os = io.StringIO()
         code_os = TddGuardScript().execute(
@@ -1275,7 +1274,7 @@ class TestTddGuardScript(unittest.TestCase):
 
       _fix_calc_bug(tmpdir)
       with mock.patch(
-          "tdd_guard.os.replace",
+          "lib.tdd_guard.os.replace",
           side_effect=OSError("simulated atomic replace failure"),
       ):
         err_rep = io.StringIO()
@@ -1325,7 +1324,7 @@ class TestTddGuardScript(unittest.TestCase):
 
       # 1. Collision rollback path (_record_collision) with secondary I/O write error
       with mock.patch(
-          "tdd_guard.os.replace", side_effect=OSError("read-only disk")
+          "lib.tdd_guard.os.replace", side_effect=OSError("read-only disk")
       ):
         err_col = io.StringIO()
         code_col = TddGuardScript().execute(
@@ -1348,7 +1347,7 @@ class TestTddGuardScript(unittest.TestCase):
       ) as f:
         f.write("def add(a: int, b: int) -> int:\n  return a - b - 10\n")
       with mock.patch(
-          "tdd_guard.os.replace", side_effect=OSError("read-only disk")
+          "lib.tdd_guard.os.replace", side_effect=OSError("read-only disk")
       ):
         err_reg = io.StringIO()
         code_reg = TddGuardScript().execute(
@@ -2333,16 +2332,22 @@ class TestTddGuardScript(unittest.TestCase):
     with tempfile.TemporaryDirectory() as tmpdir:
       expected_head = _init_fixture_repo(tmpdir)
       scripts_dir = os.path.join(tmpdir, "scripts")
+      lib_dir = os.path.join(tmpdir, "lib")
       os.makedirs(scripts_dir, exist_ok=True)
-      for fname in ("tdd_guard.py", "workflow_gates.py", "base_script.py", "emit_reflex.py"):
+      os.makedirs(lib_dir, exist_ok=True)
+      for fname in ("tdd_guard.py", "workflow_gates.py", "emit_reflex.py"):
         src_path = os.path.join(_SCRIPTS_DIR, fname)
         dst_path = os.path.join(scripts_dir, fname)
+        shutil.copyfile(src_path, dst_path)
+      for fname in ("base_script.py", "tdd_guard.py", "workflow_gates.py", "reflex.py"):
+        src_path = os.path.join(_REPO_ROOT, "lib", fname)
+        dst_path = os.path.join(lib_dir, fname)
         shutil.copyfile(src_path, dst_path)
 
       with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
         f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
 
-      subprocess.run(["git", "add", "scripts", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
+      subprocess.run(["git", "add", "scripts", "lib", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
       subprocess.run(["git", "commit", "-q", "-m", "chore: add governance scripts and spec"], cwd=tmpdir, check=True, capture_output=True)
 
       cmd = _unit_test_cmd()
@@ -2399,25 +2404,31 @@ class TestTddGuardScript(unittest.TestCase):
     with tempfile.TemporaryDirectory() as tmpdir:
       expected_head = _init_fixture_repo(tmpdir)
       scripts_dir = os.path.join(tmpdir, "scripts")
+      lib_dir = os.path.join(tmpdir, "lib")
       os.makedirs(scripts_dir, exist_ok=True)
-      for fname in ("tdd_guard.py", "workflow_gates.py", "base_script.py", "emit_reflex.py"):
+      os.makedirs(lib_dir, exist_ok=True)
+      for fname in ("tdd_guard.py", "workflow_gates.py", "emit_reflex.py"):
         src_path = os.path.join(_SCRIPTS_DIR, fname)
         dst_path = os.path.join(scripts_dir, fname)
         shutil.copyfile(src_path, dst_path)
+      for fname in ("base_script.py", "tdd_guard.py", "workflow_gates.py", "reflex.py"):
+        src_path = os.path.join(_REPO_ROOT, "lib", fname)
+        dst_path = os.path.join(lib_dir, fname)
+        shutil.copyfile(src_path, dst_path)
 
-      # Add a non-governance script in scripts/ (e.g. scripts/safe_copy.py)
-      safe_copy_src = os.path.join(_SCRIPTS_DIR, "safe_copy.py")
-      safe_copy_dst = os.path.join(scripts_dir, "safe_copy.py")
+      # Add a non-governance file in lib/ (e.g. lib/safe_copy.py)
+      safe_copy_src = os.path.join(_REPO_ROOT, "lib", "safe_copy.py")
+      safe_copy_dst = os.path.join(lib_dir, "safe_copy.py")
       if os.path.isfile(safe_copy_src):
         shutil.copyfile(safe_copy_src, safe_copy_dst)
       else:
         with open(safe_copy_dst, "w", encoding="utf-8") as f:
-          f.write("#!/usr/bin/env python3\ndef safe_copy(): pass\n")
+          f.write("def safe_copy(): pass\n")
 
       with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
         f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
 
-      subprocess.run(["git", "add", "scripts", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
+      subprocess.run(["git", "add", "scripts", "lib", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
       subprocess.run(["git", "commit", "-q", "-m", "chore: add governance scripts, non-governance script, and spec"], cwd=tmpdir, check=True, capture_output=True)
 
       cmd = _unit_test_cmd()

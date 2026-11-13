@@ -14,13 +14,15 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+for _p in (_REPO_ROOT, _SCRIPTS_DIR):
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
-from signal_trap import SignalTrap
-from workflow_gates import WorkflowGatesScript
-from workspace_mutex import WorkspaceMutex, WorkspaceMutexScript
+from lib.signal_trap import SignalTrap
+from lib.workflow_gates import WorkflowGatesScript
+from lib.workspace_mutex import WorkspaceMutex, WorkspaceMutexScript
 
 
 class TestWorkspaceMutex(unittest.TestCase):

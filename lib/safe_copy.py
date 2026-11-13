@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Safe Cross-User File Promotion Utility (SCAR-SYS-05).
 
 Provides safe_copy_file and safe_copy_tree helpers that copy file data
@@ -26,7 +25,9 @@ def safe_copy_file(src: str, dst: str, follow_symlinks: bool = True) -> str:
       The path to the destination file.
   """
   if not os.path.isfile(src):
-    raise FileNotFoundError(f"Source file does not exist or is not a regular file: {src}")
+    raise FileNotFoundError(
+        f"Source file does not exist or is not a regular file: {src}"
+    )
 
   if os.path.isdir(dst):
     dst = os.path.join(dst, os.path.basename(src))
@@ -63,7 +64,9 @@ def safe_copy_tree(
   dst_path = os.path.abspath(dst)
 
   if not os.path.isdir(src_path):
-    raise NotADirectoryError(f"Source directory does not exist or is not a directory: {src}")
+    raise NotADirectoryError(
+        f"Source directory does not exist or is not a directory: {src}"
+    )
 
   os.makedirs(dst_path, exist_ok=dirs_exist_ok)
 

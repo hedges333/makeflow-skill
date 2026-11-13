@@ -10,10 +10,12 @@ import time
 import unittest
 import unittest.mock
 
-# Ensure scripts directory is on sys.path for direct execution
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
 
-from signal_trap import SignalTrap
+from lib.signal_trap import SignalTrap
 
 
 class TestSignalTrap(unittest.TestCase):
@@ -166,7 +168,7 @@ class TestSignalTrap(unittest.TestCase):
     """TestCase 10: End-to-end subprocess signal trapping with SIGTERM."""
     lockfile_path = os.path.join(self.test_root, "subproc_term.lock")
     ready_file_path = os.path.join(self.test_root, "subproc_term.ready")
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_trap.py")
+    script_path = os.path.join(_SCRIPTS_DIR, "signal_trap.py")
 
     cmd = [
         sys.executable,
@@ -220,7 +222,7 @@ class TestSignalTrap(unittest.TestCase):
     """TestCase 11: End-to-end subprocess signal trapping with SIGINT."""
     lockfile_path = os.path.join(self.test_root, "subproc_int.lock")
     ready_file_path = os.path.join(self.test_root, "subproc_int.ready")
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_trap.py")
+    script_path = os.path.join(_SCRIPTS_DIR, "signal_trap.py")
 
     cmd = [
         sys.executable,
@@ -309,7 +311,7 @@ class TestSignalTrap(unittest.TestCase):
     trap.register_lockfile(lock_file)
 
     # Neither exists on disk; remove_lockfiles() must catch FileNotFoundError silently
-    with unittest.mock.patch("signal_trap.logger.warning") as mock_warn:
+    with unittest.mock.patch("lib.signal_trap.logger.warning") as mock_warn:
       errors = trap.remove_lockfiles()
       self.assertEqual(errors, [])
       mock_warn.assert_not_called()
@@ -319,7 +321,7 @@ class TestSignalTrap(unittest.TestCase):
     trap.register_lock_dir(lock_dir)
     with unittest.mock.patch("os.unlink", side_effect=FileNotFoundError("No such file")), \
          unittest.mock.patch("os.rmdir", side_effect=FileNotFoundError("No such directory")), \
-         unittest.mock.patch("signal_trap.logger.warning") as mock_warn:
+         unittest.mock.patch("lib.signal_trap.logger.warning") as mock_warn:
       errors = trap.remove_lockfiles()
       self.assertEqual(errors, [])
       mock_warn.assert_not_called()
@@ -328,7 +330,7 @@ class TestSignalTrap(unittest.TestCase):
     """TestCase 15: End-to-end subprocess signal trapping with --lock-dir and SIGTERM."""
     lock_dir_path = os.path.join(self.test_root, "subproc_dir.lock.d")
     ready_file_path = os.path.join(self.test_root, "subproc_dir.ready")
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_trap.py")
+    script_path = os.path.join(_SCRIPTS_DIR, "signal_trap.py")
 
     cmd = [
         sys.executable,
@@ -379,7 +381,7 @@ class TestSignalTrap(unittest.TestCase):
 
   def test_cli_description_contains_both_scars(self):
     """TestCase 16: CLI help description references both SCAR-SYS-07 and SCAR-SYS-08."""
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_trap.py")
+    script_path = os.path.join(_SCRIPTS_DIR, "signal_trap.py")
     result = subprocess.run(
         [sys.executable, script_path, "--help"],
         capture_output=True,

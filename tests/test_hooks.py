@@ -1074,6 +1074,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "echo 'bad' 1> hooks.json",
         "true >| .workflow/state/Makefile",
         "echo 'x' &> scripts/workflow_gates.py",
+        "echo 'x' > lib/tdd_guard.py",
     ]
     for cmd in bad_commands:
       res = run_hook(
@@ -1100,6 +1101,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "rm hooks.json",
         "rm -f .workflow/state/Makefile",
         "rm -rf scripts/",
+        "rm -rf lib/",
         "unlink hooks.json",
         "truncate -s 0 scripts/tdd_guard.py",
         "truncate -s 0 hooks.json",
@@ -1172,10 +1174,11 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
   def test_denies_copying_and_moving_over_protected_governance_files(self):
     denied_commands = [
         "cp evil.py scripts/tdd_guard.py",
+        "cp evil.py lib/workflow_gates.py",
         "cp fake_makefile .workflow/state/Makefile",
         "cp fake_receipt.json .workflow/state/30_tdd_receipt.json",
         "mv evil.py scripts/workflow_gates.py",
-        "mv evil.py scripts/base_script.py",
+        "mv evil.py lib/base_script.py",
         "mv evil.py scripts/emit_reflex.py",
         "mv evil.py hooks.json",
     ]
@@ -1497,13 +1500,13 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
   def test_dynamic_terminal_title_handles_expected_exceptions(self):
     # 1. ImportError in set_dynamic_terminal_title
     with mock.patch(
-        "terminal_title.set_terminal_title",
+        "lib.terminal_title.set_terminal_title",
         side_effect=ImportError("No module named terminal_title"),
     ):
       getattr(self.session_start, "set_dynamic_terminal_title", lambda p: None)("/fake/ws")
     # 2. OSError in set_dynamic_terminal_title
     with mock.patch(
-        "terminal_title.set_terminal_title",
+        "lib.terminal_title.set_terminal_title",
         side_effect=OSError("TTY write error"),
     ):
       getattr(self.session_start, "set_dynamic_terminal_title", lambda p: None)("/fake/ws")
@@ -1512,13 +1515,13 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
     set_dyn = getattr(self.session_start, "set_dynamic_terminal_title", None)
     if set_dyn is not None:
       with mock.patch(
-          "terminal_title.set_terminal_title",
+          "lib.terminal_title.set_terminal_title",
           side_effect=TypeError("Synthetic TypeError"),
       ):
         with self.assertRaises(TypeError):
           set_dyn("/fake/ws")
       with mock.patch(
-          "terminal_title.set_terminal_title",
+          "lib.terminal_title.set_terminal_title",
           side_effect=RuntimeError("Synthetic RuntimeError"),
       ):
         with self.assertRaises(RuntimeError):
@@ -1531,7 +1534,7 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
       with open(os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8") as f:
         f.write("# Ticket\n")
       for exc in (ImportError("Synthetic ImportError"), OSError("Synthetic OSError")):
-        with mock.patch("terminal_title.set_terminal_title", side_effect=exc):
+        with mock.patch("lib.terminal_title.set_terminal_title", side_effect=exc):
           with mock.patch("sys.stdin", io.StringIO(json.dumps({"workspacePaths": [td]}))):
             with mock.patch("sys.stdout", new_callable=io.StringIO) as mock_out:
               self.session_start.main()

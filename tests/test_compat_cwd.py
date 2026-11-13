@@ -7,9 +7,11 @@ import sys
 import unittest
 from unittest.mock import patch
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_TESTS_DIR)
+for _p in (_REPO_ROOT, _TESTS_DIR):
+  if _p not in sys.path:
+    sys.path.insert(0, _p)
 
 from test_cross_agent_compatibility import validate_arbitrary_cwd_execution
 

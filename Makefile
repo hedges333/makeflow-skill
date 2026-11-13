@@ -1,14 +1,17 @@
 # Makefile Workflow Plugin Management
 
 MKFILE_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+LIB_DIR := $(MKFILE_DIR)/lib
 SCRIPTS_DIR := $(MKFILE_DIR)/scripts
+MCP_DIR := $(MKFILE_DIR)/mcp
+TESTS_DIR := $(MKFILE_DIR)/tests
 PLUGIN_NAME = makeflow
 INSTALL_DIR = $(HOME)/.gemini/config/plugins/$(PLUGIN_NAME)
 PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -32,6 +35,7 @@ help:
 	@echo "  make test-tdd-guard     - Test cryptographically anchored TDD receipts (SCAR-TEST-12)"
 	@echo "  make test-workspace-mutex - Test multi-workspace mutual exclusion (SCAR-SYS-08)"
 	@echo "  make test-commit-msg    - Test Conventional Commits formatter and validator (GH-112)"
+	@echo "  make test-interpreter-invocation - Test explicit runtime interpreter invocation (SCAR-SH-01)"
 	@echo "  make check-plugin-files - Check required plugin manifests and core skill files"
 	@echo "  make check-skill-budget - Check SKILL.md context size ceiling (SCAR-PROC-99)"
 	@echo "  make install            - Install plugin into ~/.gemini/config/plugins/$(PLUGIN_NAME)"
@@ -58,7 +62,10 @@ check-skill-budget:
 
 ast-lint:
 	@echo "Running structural AST scrubber..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir scripts --strict
+	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir "$(LIB_DIR)" --strict
+	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir "$(SCRIPTS_DIR)" --strict
+	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir "$(MCP_DIR)" --strict
+	@$(PYTHON) "$(SCRIPTS_DIR)/ast_scrub.py" --src-dir "$(TESTS_DIR)" --strict
 
 check-intake:
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" intake $(if $(TICKET),--ticket $(TICKET),)
@@ -74,57 +81,57 @@ test-static: ast-lint
 		--trigger "scripts/static_check.py reported Python syntax or undefined-symbol errors." \
 		--rejected "Running functional suites before structural static checks pass." \
 		--reflex "Fix reported syntax or symbol errors and re-run make test-static."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_static_analysis.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_static_analysis.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id TEST-10 \
 		--code STATIC_ANALYSIS_SUITE_FAILED \
-		--trigger "scripts/test_static_analysis.py failed." \
+		--trigger "tests/test_static_analysis.py failed." \
 		--rejected "Proceeding when pre-flight static analysis tests fail." \
-		--reflex "Run $(PYTHON) scripts/test_static_analysis.py directly, fix the regression, and re-run make test-static."
+		--reflex "Run $(PYTHON) tests/test_static_analysis.py directly, fix the regression, and re-run make test-static."
 
 test-safe-copy:
 	@echo "Testing safe cross-user file promotion..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_safe_copy.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_safe_copy.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id SYS-05 \
 		--code SAFE_COPY_SUITE_FAILED \
-		--trigger "scripts/test_safe_copy.py failed." \
+		--trigger "tests/test_safe_copy.py failed." \
 		--rejected "Using metadata-copying primitives across user boundaries." \
-		--reflex "Inspect safe_copy.py stream-copy semantics with shutil.copyfile and re-run make test-safe-copy."
+		--reflex "Inspect lib/safe_copy.py stream-copy semantics with shutil.copyfile and re-run make test-safe-copy."
 
 test-env-preflight:
 	@echo "Testing native runtime environment path pre-flight..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_env_preflight.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_env_preflight.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id SYS-06 \
 		--code ENV_PREFLIGHT_SUITE_FAILED \
-		--trigger "scripts/test_env_preflight.py failed." \
+		--trigger "tests/test_env_preflight.py failed." \
 		--rejected "Launching runtimes without writable TMPDIR fallback checks." \
-		--reflex "Inspect env_preflight.py validate_runtime_path logic and re-run make test-env-preflight."
+		--reflex "Inspect lib/env_preflight.py validate_runtime_path logic and re-run make test-env-preflight."
 
 test-signal-trap:
 	@echo "Testing POSIX signal trapping and worker cleanup..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_signal_trap.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_signal_trap.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id SYS-07 \
 		--code SIGNAL_TRAP_SUITE_FAILED \
-		--trigger "scripts/test_signal_trap.py failed." \
+		--trigger "tests/test_signal_trap.py failed." \
 		--rejected "Leaving worker lockfiles or signal handlers unrestored on exit." \
-		--reflex "Inspect SignalTrap LIFO cleanup and lockfile unlinking in signal_trap.py and re-run make test-signal-trap."
+		--reflex "Inspect SignalTrap LIFO cleanup and lockfile unlinking in lib/signal_trap.py and re-run make test-signal-trap."
 
 test-mcp:
 	@echo "Testing MCP server JSON-RPC protocol..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_mcp_server.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_mcp_server.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id GIT-25 \
 		--code MCP_SERVER_SUITE_FAILED \
-		--trigger "scripts/test_mcp_server.py failed." \
+		--trigger "tests/test_mcp_server.py failed." \
 		--rejected "Breaking MCP state transition, tree check, or safety guard contracts." \
-		--reflex "Run $(PYTHON) scripts/test_mcp_server.py directly, inspect failing JSON-RPC case, and fix mcp/server.py."
+		--reflex "Run $(PYTHON) tests/test_mcp_server.py directly, inspect failing JSON-RPC case, and fix mcp/server.py."
 
 test-sync-scars:
 	@echo "Testing synthetic scars SQLite sync and query..."
-	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_sync_synthetic_scars.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_sync_synthetic_scars.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id ARCH-05 \
 		--code SCARS_SYNC_SUITE_FAILED \
-		--trigger "scripts/test_sync_synthetic_scars.py failed." \
+		--trigger "tests/test_sync_synthetic_scars.py failed." \
 		--rejected "Failing synthetic scars synchronization, FTS5 indexing, or query tests." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts/test_sync_synthetic_scars.py, fix failing tests, and re-run make test-sync-scars."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_sync_synthetic_scars.py, fix failing tests, and re-run make test-sync-scars."
 
 sync-scars:
 	@echo "Syncing public synthetic scars registry into bundled package database..."
@@ -135,104 +142,113 @@ sync-scars-registry: sync-scars
 
 test-scar-candidate:
 	@echo "Testing synthetic scar candidate validator..."
-	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_test_scar_candidate.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_validate_scar_candidate.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id ARCH-05 \
 		--code SCAR_CANDIDATE_SUITE_FAILED \
-		--trigger "scripts/test_test_scar_candidate.py failed." \
+		--trigger "tests/test_validate_scar_candidate.py failed." \
 		--rejected "Failing synthetic scar candidate validation, sentence length checks, or span preservation." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts/test_test_scar_candidate.py, fix failing tests, and re-run make test-scar-candidate."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_validate_scar_candidate.py, fix failing tests, and re-run make test-scar-candidate."
 
 test-compat:
 	@echo "Testing cross-agent compatibility..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_cross_agent_compatibility.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_cross_agent_compatibility.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id DOC-16 \
 		--code CROSS_AGENT_COMPAT_FAILED \
-		--trigger "scripts/test_cross_agent_compatibility.py reported contract drift." \
+		--trigger "tests/test_cross_agent_compatibility.py reported contract drift." \
 		--rejected "Breaking adapter, scar routing, pause gate, or manifest invariants." \
 		--reflex "Read the reported compatibility errors above, align the affected file, and re-run make test-compat."
 
 test-compat-cwd:
 	@echo "Testing arbitrary CWD subprocess timeout..."
-	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_compat_cwd.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_compat_cwd.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id TEST-08 \
 		--code COMPAT_CWD_SUITE_FAILED \
-		--trigger "scripts/test_compat_cwd.py failed." \
+		--trigger "tests/test_compat_cwd.py failed." \
 		--rejected "Failing arbitrary CWD timeout or exception handling unit tests." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts/test_compat_cwd.py, fix failing tests, and re-run make test-compat-cwd."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_compat_cwd.py, fix failing tests, and re-run make test-compat-cwd."
 
 test-base-script:
 	@echo "Testing BaseScript execution lifecycle..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_base_script.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_base_script.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id ARCH-05 \
 		--code BASE_SCRIPT_SUITE_FAILED \
-		--trigger "scripts/test_base_script.py failed." \
+		--trigger "tests/test_base_script.py failed." \
 		--rejected "Calling process-terminating sys.exit inside script business logic." \
 		--reflex "Preserve BaseScript execute/setup/run/cleanup stream isolation and re-run make test-base-script."
 
 test-terminal-title:
 	@echo "Testing terminal title detection and setting..."
-	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_terminal_title.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_terminal_title.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id ARCH-05 \
 		--code TERMINAL_TITLE_SUITE_FAILED \
-		--trigger "scripts/test_terminal_title.py failed." \
+		--trigger "tests/test_terminal_title.py failed." \
 		--rejected "Failing terminal capability detection or title escape formatting." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts/test_terminal_title.py, fix failing tests, and re-run make test-terminal-title."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_terminal_title.py, fix failing tests, and re-run make test-terminal-title."
 
 test-hooks:
 	@echo "Testing SessionStart and PreToolUse hooks..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_hooks.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_hooks.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id GIT-25 \
 		--code HOOK_GUARD_SUITE_FAILED \
-		--trigger "scripts/test_hooks.py failed." \
+		--trigger "tests/test_hooks.py failed." \
 		--rejected "Weakening PreToolUse command guards or SessionStart state restoration." \
-		--reflex "Run $(PYTHON) scripts/test_hooks.py directly, inspect the failing hook assertion, and re-run make test-hooks."
+		--reflex "Run $(PYTHON) tests/test_hooks.py directly, inspect the failing hook assertion, and re-run make test-hooks."
 
 test-reflex:
 	@echo "Testing Vector 4 Reflex emitter and workflow gates..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_emit_reflex.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_emit_reflex.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id ARCH-06 \
 		--code REFLEX_GATE_SUITE_FAILED \
-		--trigger "scripts/test_emit_reflex.py failed." \
+		--trigger "tests/test_emit_reflex.py failed." \
 		--rejected "Breaking Vector 4 Reflex output contracts, gate exit codes, or SKILL.md budget." \
-		--reflex "Run $(PYTHON) -m unittest -v -f scripts/test_emit_reflex.py, fix the failing gate or SKILL.md size, and re-test."
+		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_emit_reflex.py, fix the failing gate or SKILL.md size, and re-test."
 
 test-tdd-guard:
 	@echo "Testing cryptographically anchored TDD receipts..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/test_tdd_guard.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(TESTS_DIR)/test_tdd_guard.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id TEST-12 \
 		--code TDD_GUARD_SUITE_FAILED \
-		--trigger "scripts/test_tdd_guard.py failed." \
+		--trigger "tests/test_tdd_guard.py failed." \
 		--rejected "Weakening witness-red sealing, verify-green replay, or forensic collision logging." \
-		--reflex "Run $(PYTHON) -m unittest -v -f scripts/test_tdd_guard.py, fix the failing guard check, and re-run make test-tdd-guard."
+		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_tdd_guard.py, fix the failing guard check, and re-run make test-tdd-guard."
 
 test-ast-scrub:
 	@echo "Testing structural AST scrubber..."
-	@$(PYTHON) -m unittest -v scripts.test_ast_scrub || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_ast_scrub.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id AST-01 \
 		--code AST_SCRUB_SUITE_FAILED \
-		--trigger "scripts.test_ast_scrub failed." \
+		--trigger "tests/test_ast_scrub.py failed." \
 		--rejected "Weakening structural AST scrubber detection rules or execution speed." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts.test_ast_scrub directly, fix the regression, and re-run make test-ast-scrub."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_ast_scrub.py directly, fix the regression, and re-run make test-ast-scrub."
 
 test-workspace-mutex:
 	@echo "Testing multi-workspace ticket mutual exclusion and collision detection..."
-	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_workspace_mutex.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_workspace_mutex.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id SYS-08 \
 		--code WORKSPACE_MUTEX_SUITE_FAILED \
-		--trigger "scripts/test_workspace_mutex.py failed." \
+		--trigger "tests/test_workspace_mutex.py failed." \
 		--rejected "Allowing parallel sessions on the same ticket across workspaces." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts/test_workspace_mutex.py, fix failing tests, and re-run make test-workspace-mutex."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_workspace_mutex.py, fix failing tests, and re-run make test-workspace-mutex."
 
 test-commit-msg:
 	@echo "Testing Conventional Commits formatter and validator..."
-	@$(PYTHON) -m unittest "$(SCRIPTS_DIR)/test_commit_msg.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_commit_msg.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id GIT-20 \
 		--code COMMIT_MSG_SUITE_FAILED \
-		--trigger "scripts/test_commit_msg.py failed." \
+		--trigger "tests/test_commit_msg.py failed." \
 		--rejected "Failing Conventional Commits parsing, formatting, or trailer validation." \
-		--reflex "Run $(PYTHON) -m unittest -v scripts/test_commit_msg.py, fix failing tests, and re-run make test-commit-msg."
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_commit_msg.py, fix failing tests, and re-run make test-commit-msg."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-scar-candidate test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg
+test-interpreter-invocation:
+	@echo "Testing explicit runtime interpreter invocation..."
+	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_interpreter_invocation.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id SH-01 \
+		--code INTERPRETER_INVOCATION_SUITE_FAILED \
+		--trigger "tests/test_interpreter_invocation.py failed." \
+		--rejected "Violating explicit runtime interpreter invocation or SCAR-ARCH-05 layer separation rules." \
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_interpreter_invocation.py, fix failing tests, and re-run make test-interpreter-invocation."
+
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-scar-candidate test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg test-interpreter-invocation
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget

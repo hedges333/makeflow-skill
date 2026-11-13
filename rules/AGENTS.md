@@ -163,7 +163,7 @@ Apply these rules for scratch scripts and automation utilities:
 2. If Dart is not installed, use Python.
 3. Never attempt to install Dart.
 4. If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the script path to the runtime interpreter command (`dart` or `python3`) under `SCAR-SH-01`.
-5. Encapsulate script and entry-point logic in testable class objects or lifecycle runners that manage argument parsing, setup, execution, cleanup, and fatal exception trapping (the BaseScript / Template Method pattern, `SCAR-ARCH-05`). Keep executable CLI entry points to thin two-line wrappers (`sys.exit(ScriptClass().execute())`).
+5. Encapsulate CLI script logic in `BaseScript` Template Method subclasses under `SCAR-ARCH-05`. Place shared library modules in `lib/` without shebang headers. Keep thin CLI wrappers (`sys.exit(ScriptClass().execute())`) in `scripts/` without cross-script imports. Put unit tests in `tests/`.
 
 ## 4. Simple English Documentation Rules
 

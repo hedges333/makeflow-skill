@@ -1,11 +1,7 @@
-#!/usr/bin/env python3
-"""Persistent test utility to validate synthetic scar candidate JSON files (SCAR-ARCH-05, SCAR-SH-01).
+"""Persistent validation library for synthetic scar candidate JSON files (SCAR-ARCH-05, SCAR-SH-01).
 
 Validates synthetic scar candidate JSON files against Simple English rules, sentence
 word count constraints, byte-for-byte LaTeX and code span preservation, and schema.
-
-Usage:
-    python3 scripts/test_scar_candidate.py <candidate_file.json> [--db-path <path>] [--json]
 """
 
 import json
@@ -13,19 +9,13 @@ import os
 import re
 import sqlite3
 import string
-import sys
-from typing import Any, Dict, List, NoReturn, Optional, TextIO
+from typing import Any, Dict, List, NoReturn, Optional
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-  sys.path.insert(0, _SCRIPTS_DIR)
-
-from base_script import BaseScript
-from emit_reflex import SilentArgumentParser
-from sync_synthetic_scars import (
+from lib.base_script import BaseScript, SilentArgumentParser
+from lib.scars_db import (
+    _strip_protected_and_inline_code,
     extract_protected_spans,
     resolve_scars_db_path,
-    _strip_protected_and_inline_code,
 )
 
 _PUNCTUATION_CHARS = string.punctuation + "«»“”‘’"
@@ -229,7 +219,7 @@ class ScarCandidateValidator:
 
 
 class ScarCandidateTestScript(BaseScript):
-  """CLI test script validating synthetic scar candidate JSON files (SCAR-ARCH-05)."""
+  """CLI runner validating synthetic scar candidate JSON files (SCAR-ARCH-05)."""
 
   def __init__(self) -> None:
     super().__init__()
@@ -241,7 +231,7 @@ class ScarCandidateTestScript(BaseScript):
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
     parser = CandidateArgumentParser(
-        prog="test_scar_candidate.py",
+        prog="validate_scar_candidate.py",
         description="Validate synthetic scar candidate JSON files against Simple English rules and spans.",
     )
     parser.add_argument(
@@ -279,7 +269,7 @@ class ScarCandidateTestScript(BaseScript):
       cur.execute(
           """
           SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
-                 wound, trap, circuit_breaker, reflex
+                  wound, trap, circuit_breaker, reflex
           FROM scars
           WHERE id = ?
           """,
@@ -391,5 +381,4 @@ class ScarCandidateTestScript(BaseScript):
     return 0
 
 
-if __name__ == "__main__":
-  sys.exit(ScarCandidateTestScript().execute())
+ValidateScarCandidateScript = ScarCandidateTestScript

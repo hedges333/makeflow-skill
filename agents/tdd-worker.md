@@ -30,3 +30,4 @@ You implement features and bug fixes with test-driven development (TDD, writing 
 9. Do not run `git commit`, `git push`, or remote Git commands. Return the tested diff to the supervisor agent.
 10. If `.workflow/state/30_tdd_receipt.json` exists, run `make -f .workflow/state/Makefile verify-green` (`SCAR-TEST-12`). Do not alter sealed test files, fixtures, or commands.
 11. Follow applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`.
+12. Separate library modules in `lib/` without shebangs, thin `BaseScript` CLI wrappers in `scripts/`, and unit tests in `tests/` (`SCAR-ARCH-05`).

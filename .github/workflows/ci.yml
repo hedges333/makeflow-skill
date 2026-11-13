@@ -20,16 +20,16 @@ jobs:
         python-version: '3.11'
 
     - name: Check cross-agent compatibility
-      run: python3 scripts/test_cross_agent_compatibility.py
+      run: python3 tests/test_cross_agent_compatibility.py
 
     - name: Test arbitrary CWD subprocess timeout
-      run: python3 -m unittest -v scripts/test_compat_cwd.py
+      run: python3 -m unittest -v tests/test_compat_cwd.py
 
     - name: Test MCP server JSON-RPC
-      run: python3 scripts/test_mcp_server.py
+      run: python3 tests/test_mcp_server.py
 
     - name: Test lifecycle hooks
-      run: python3 scripts/test_hooks.py
+      run: python3 tests/test_hooks.py
 
     - name: Run Makefile test suite
       run: make test
