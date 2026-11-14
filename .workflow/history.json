@@ -2102,5 +2102,26 @@
     "closes_issue": true,
     "tests_added": 5,
     "scars_earned": []
+  },
+  {
+    "id": "GH-195",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/195",
+    "title": "[FEAT] investigate earlier git pull or rebase-to-main to avoid wasted cycles",
+    "request": "Add inspect_main_sync, fetch_and_inspect_main_sync, main-sync gate, check-main-sync Makefile target, and target-transition origin/main sync and 3-way merge-tree conflict checks across lib/workflow_gates.py, mcp/server.py, and skills/makeflow docs.",
+    "branch": "feat/195-early-main-rebase-check",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T21:53:24Z",
+    "completed_at": "2026-11-14T22:56:07Z",
+    "commit_sha": "a299575ac2acd61c168fd39a8f01a8fa54d29333",
+    "pr_number": 206,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/206",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
