@@ -2012,5 +2012,30 @@
     "closes_issue": true,
     "tests_added": 13,
     "scars_earned": []
+  },
+  {
+    "id": "GH-192",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/192",
+    "title": "[FEAT] Stack multi-path scar queries, filter processed scars, migrate polyglot scars to SQLite, and wire workflow_query_scars into workflow targets",
+    "request": "Stack workflow_query_scars across five database tiers in precedence order, filter for processed scars with non-empty wound, trap, reflex, and socratic_probe fields, migrate SCAR-LANG-DART-01 into SQLite, track session-loaded scars in loaded_scars.json with compact reminders, wire scar queries into five workflow targets, and emit Tier 1 core scar Socratic probes on gate-failure reflexes.",
+    "branch": "feat/192-stack-scar-queries-and-workflow-wiring",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "agents",
+      "rules",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T19:42:00Z",
+    "completed_at": "2026-11-14T20:51:56Z",
+    "commit_sha": "5b3f0e4e3bda132426a995695f96e7ab6e2d4025",
+    "pr_number": 194,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/194",
+    "closes_issue": true,
+    "tests_added": 12,
+    "scars_earned": [
+      "SCAR-LANG-DART-01: Async Timers: fakeAsync and Frame Pumping"
+    ]
   }
 ]
