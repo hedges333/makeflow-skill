@@ -52,6 +52,15 @@ Loop:
 ```
 
 
+Launch the `synthetic-scar-importer` subagent to process the next pending synthetic scar into simple English and generate its Socratic probe question.  Follow the process and rules in `./agents/synthetic_scar_importer.md`.  The `synthetic-scar-importer` subagent will process one pending scar and end its work.  After it finishes, make sure it has been terminated to end its context.
+
+Repeat the `synthetic-scar-importer` subagent one at a time until no more pending synthetic scars are available to process.
+
+When all scars are transformed, run `python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --verify-transformed` to verify that all 595 scars pass with zero errors.
+
+Do not stop until the database status reports zero pending transformations and the verification gate exits with code 0.
+
+
 
 --------------------------
 
