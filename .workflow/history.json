@@ -1867,5 +1867,25 @@
     "scars_earned": [
       "SCAR-PROC-124: Review Process or Halt on Guard Denial"
     ]
+  },
+  {
+    "id": "GH-154",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/154",
+    "title": "[DOCS] Enumerate all six canonical human approval evidence keys in workflow_advance_target schema and references",
+    "request": "Enumerate all six canonical boolean human approval keys from GATE_EVIDENCE_KEYS and blockersCount in the workflow_advance_target MCP tool schema and reference manuals, and add hermetic unit test coverage in tests/test_mcp_server.py.",
+    "branch": "feat/154-enumerate-gate-evidence-keys",
+    "subprojects": [
+      "mcp",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T01:19:35Z",
+    "completed_at": "2026-11-14T02:24:49Z",
+    "commit_sha": "c673dca6d27968654c2a15167313619933137a67",
+    "pr_number": 180,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/180",
+    "closes_issue": true,
+    "tests_added": 1,
+    "scars_earned": []
   }
 ]
