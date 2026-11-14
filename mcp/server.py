@@ -710,8 +710,14 @@ def handle_tools_list(request_id):
                   "evidence": {
                       "type": "object",
                       "description": (
-                          "Proof of prerequisite completion, such as"
-                          " humanPlanApproved or blockersCount"
+                          "Proof of prerequisite completion: boolean gate keys"
+                          " humanPlanApproved (T20->T30),"
+                          " humanBlockerTriageApproved (T42->T30),"
+                          " humanReviewApproved (T45->T50),"
+                          " humanCommitApproved (T50->T60),"
+                          " humanPushApproved (T60->T70), and"
+                          " humanLandingApproved (T75->T80), plus integer"
+                          " blockersCount (T40->T42 and T40->T45)."
                       ),
                   },
                   "workspaceDir": {

@@ -59,11 +59,11 @@ Start a task or query status with direct chat prompts:
 - View progress: `"Show the active target and readerboard."`
 - View backlog: `"List the top open issues by priority."`
 
-When the agent stops at a human pause gate, reply in chat to continue:
+When the agent stops at a human pause gate, reply in chat to continue. After you reply, the agent calls `workflow_advance_target` with the matching boolean `evidence` key (`blockersCount` routes `T40` to `T42` or `T45`):
 
-- Plan Gate (`T20`): `"Plan approved. Proceed."`
-- Blocker Gate (`T42`): `"Approved. Fix blockers 1 and 2."`
-- Review Gate (`T45`): `"Review approved. Proceed to commit."`
-- Commit Gate (`T50`): `"Approved. Commit the changes."`
-- Push Gate (`T60`): `"Approved. Push branch and open PR."`
-- Landing Gate (`T75`): `"CI is green. Squash and merge."`
+- Plan Gate (`T20 -> T30`, `humanPlanApproved: true`): `"Plan approved. Proceed."`
+- Blocker Gate (`T42 -> T30`, `humanBlockerTriageApproved: true`): `"Approved. Fix blockers 1 and 2."`
+- Review Gate (`T45 -> T50`, `humanReviewApproved: true`): `"Review approved. Proceed to commit."`
+- Commit Gate (`T50 -> T60`, `humanCommitApproved: true`): `"Approved. Commit the changes."`
+- Push Gate (`T60 -> T70`, `humanPushApproved: true`): `"Approved. Push branch and open PR."`
+- Landing Gate (`T75 -> T80`, `humanLandingApproved: true`): `"CI is green. Squash and merge."`

@@ -52,4 +52,4 @@ After the user approves the push, run these steps:
    - Readability notes.
    - Error handling and edge cases covered.
 3. If in Pure Git Mode (`SCAR-GIT-30`), record `HOSTING_MODE: PURE_GIT` in `.workflow/state/99_next_action.md` and skip `gh pr create`.
-4. Advance to Target 70.
+4. Advance to Target 70 with `humanPushApproved: true`.

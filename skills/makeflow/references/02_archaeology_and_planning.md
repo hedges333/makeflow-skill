@@ -80,4 +80,4 @@ Target 20 is a mandatory human pause gate.
 2. Set `.workflow/state/99_next_action.md` to `AWAITING_DECLARATION (human-plan-approval)`.
 3. Stop execution with empty tool calls (`tool_calls: []`).
 4. Wait for explicit human approval in chat before editing any source files.
-5. After the user approves the plan, write `.workflow/state/20_plan_approved.md` and advance to Target 30.
+5. After the user approves the plan, write `.workflow/state/20_plan_approved.md` and advance to Target 30 with `humanPlanApproved: true`.

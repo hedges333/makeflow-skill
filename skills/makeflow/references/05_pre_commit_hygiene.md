@@ -119,4 +119,4 @@ Target 50 is a mandatory human pause gate.
    ```bash
    test "$(git rev-parse HEAD^{tree})" = "$(cat .workflow/state/approved_tree.txt)"
    ```
-6. Advance to Target 60.
+6. Advance to Target 60 with `humanCommitApproved: true`.
