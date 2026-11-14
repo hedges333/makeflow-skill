@@ -21,6 +21,7 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 | `SCAR-PROC-110` | Premature Subagent Termination and Speculative Verdict Hallucination | Subagent Lifecycle & Verdicts |
 | `SCAR-PROC-120` | Belnap Four-Valued Epistemic State Ledger and Fact Retraction | Fact State Ledger & Archaeology |
 | `SCAR-PROC-122` | Upfront Human-Review Policy Evaluation Matrix | Landing Gate Policy Evaluation |
+| `SCAR-PROC-124` | Review Process or Halt on Guard Denial | Guard & Hook Denial Handling |
 | `SCAR-PROC-138` | Yield on Repeated Timer Conflicts | Schedule Conflict Handling |
 | `SCAR-PROC-150` | Target Transition Header Dead-Air Cliff | Automated Target Transitions |
 | `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | State Machine Graph Completeness |
@@ -138,6 +139,14 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 - **Circuit Breaker**: If you reach a landing gate, never self-approve the merge. Stop tool calls immediately.
 - **Permanent Reflex**: Evaluate landing conditions against the mechanical seven-criteria matrix. Before merging, verify that CI passes, zero blockers remain, and the human operator approves.
 - **Socratic Probe**: Are you evaluating an objective mechanical matrix, or are you grading your own work with prose?
+
+### SCAR-PROC-124: Review Process or Halt on Guard Denial
+
+- **Wound**: When a workflow guard denies a command, an agent reads hook source code or probes rules to force the blocked action through.
+- **Trap**: The agent treats a guard denial as a puzzle to bypass instead of a hard boundary that protects project integrity.
+- **Circuit Breaker**: If a hook or guard denies a tool call, stop probing immediately. Review makeflow process files and tier-1 scars first. If no valid workflow path exists, stop tool calls and report the denial verbatim to the user.
+- **Permanent Reflex**: Never read, grep, or test guard or hook source files to evade a denial. Follow documented makeflow alternatives, such as forward-merging instead of force-pushing. If no documented path exists, wait for explicit user direction.
+- **Socratic Probe**: Did you inspect makeflow workflow guides instead of probing guard scripts? Can you trust these guards and ask the user when blocked?
 
 ### SCAR-PROC-138: Yield on Repeated Timer Conflicts
 

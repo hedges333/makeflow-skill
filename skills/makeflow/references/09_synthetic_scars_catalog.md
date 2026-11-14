@@ -73,6 +73,7 @@ Agents must use Socratic Probes during:
 | `SCAR-PROC-110` | Premature Subagent Termination and Speculative Verdict Hallucination | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-120` | Belnap Four-Valued Epistemic State Ledger and Fact Retraction | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-122` | Upfront Human-Review Policy Evaluation Matrix | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-124` | Review Process or Halt on Guard Denial | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-138` | Yield on Repeated Timer Conflicts | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-150` | Target Transition Header Dead-Air Cliff | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | Process | [`scars/process.md`](./scars/process.md) |

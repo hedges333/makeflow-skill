@@ -18,6 +18,10 @@ import sys
 import tempfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+  sys.path.insert(0, REPO_ROOT)
+
+from lib.scar_candidate import ScarCandidateValidator, split_into_sentences
 
 
 def repo_path(*parts):
@@ -3403,6 +3407,268 @@ def validate_volume_triage_interview_scar_tool_16():
   return errors
 
 
+def check_scar_proc_124_spoke(spoke_text):
+  """Checks scars/process.md for SCAR-PROC-124 placement, invariants, and Simple English rules."""
+  errors = []
+  spoke_rel = "skills/makeflow/references/scars/process.md"
+
+  # 1. Verify category table lists SCAR-PROC-124 monotonically between SCAR-PROC-122 and SCAR-PROC-138
+  cat_match = re.search(
+      r"(?m)^##\s+Scars in this Category\b.*?(?=^---|^###\s+SCAR-|\Z)",
+      spoke_text,
+      re.DOTALL,
+  )
+  if not cat_match:
+    errors.append(f"{spoke_rel} missing '## Scars in this Category' section")
+  else:
+    cat_sec = cat_match.group(0)
+    t122 = re.search(r"(?m)^\|\s*`SCAR-PROC-122`\s*\|", cat_sec)
+    t124 = re.search(r"(?m)^\|\s*`SCAR-PROC-124`\s*\|", cat_sec)
+    t138 = re.search(r"(?m)^\|\s*`SCAR-PROC-138`\s*\|", cat_sec)
+    if not t124:
+      errors.append(f"{spoke_rel} '## Scars in this Category' missing SCAR-PROC-124 row")
+    elif not (t122 and t138 and t122.start() < t124.start() < t138.start()):
+      errors.append(
+          f"{spoke_rel} table must place SCAR-PROC-124 monotonically between SCAR-PROC-122 and SCAR-PROC-138"
+      )
+
+  # 2. Verify body section placement monotonically between SCAR-PROC-122 and SCAR-PROC-138
+  h122 = re.search(r"(?m)^###\s+SCAR-PROC-122\b", spoke_text)
+  h124 = re.search(r"(?m)^###\s+SCAR-PROC-124:", spoke_text)
+  h138 = re.search(r"(?m)^###\s+SCAR-PROC-138\b", spoke_text)
+  if not h124:
+    errors.append(f"{spoke_rel} missing '### SCAR-PROC-124:' heading")
+    return errors
+  if not (h122 and h138 and h122.start() < h124.start() < h138.start()):
+    errors.append(
+        f"{spoke_rel} must place '### SCAR-PROC-124:' monotonically between SCAR-PROC-122 and SCAR-PROC-138"
+    )
+
+  sec_match = re.search(
+      r"(?m)^###\s+SCAR-PROC-124:.*?(?=^###\s+SCAR-|\Z)", spoke_text, re.DOTALL
+  )
+  if not sec_match:
+    errors.append(f"{spoke_rel} could not isolate SCAR-PROC-124 section")
+    return errors
+  sec = sec_match.group(0)
+
+  # 3. Extract 5 required fields (single-line text after each bold label)
+  required_fields = (
+      "Wound",
+      "Trap",
+      "Circuit Breaker",
+      "Permanent Reflex",
+      "Socratic Probe",
+  )
+  extracted = {}
+  for field in required_fields:
+    field_match = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", sec)
+    val = field_match.group(1).strip() if field_match else ""
+    if not val:
+      errors.append(f"{spoke_rel} SCAR-PROC-124 missing non-empty '**{field}**:'")
+    extracted[field] = val
+
+  cb_lower = extracted["Circuit Breaker"].lower()
+  reflex_lower = extracted["Permanent Reflex"].lower()
+  combined_lower = f"{cb_lower} {reflex_lower}"
+
+  # 4. Core behavioral invariants
+  if cb_lower and not (
+      ("guard" in cb_lower or "hook" in cb_lower)
+      and "process" in cb_lower
+      and "scar" in cb_lower
+  ):
+    errors.append(
+        f"{spoke_rel} SCAR-PROC-124 Circuit Breaker must instruct reviewing makeflow process files and tier-1 scars on guard/hook denial"
+    )
+  if cb_lower and (
+      "stop tool calls" not in cb_lower
+      or "verbatim" not in cb_lower
+      or "user" not in cb_lower
+  ):
+    errors.append(
+        f"{spoke_rel} SCAR-PROC-124 Circuit Breaker must instruct stopping tool calls and reporting the denial verbatim to the user"
+    )
+  if reflex_lower and ("wait" not in reflex_lower or "user" not in reflex_lower):
+    errors.append(
+        f"{spoke_rel} SCAR-PROC-124 Permanent Reflex must instruct waiting for explicit user direction when no documented path exists"
+    )
+  if reflex_lower and not (
+      "never" in combined_lower
+      and "read" in reflex_lower
+      and "grep" in reflex_lower
+      and ("guard" in reflex_lower or "hook" in reflex_lower)
+      and ("evade" in reflex_lower or "bypass" in reflex_lower)
+  ):
+    errors.append(
+        f"{spoke_rel} SCAR-PROC-124 Permanent Reflex must prohibit reading, grepping, or testing guard/hook source files to evade or bypass a denial"
+    )
+
+  # 5. Simple English & punctuation compliance via ScarCandidateValidator + _check_prose_punctuation
+  if all(extracted[f] for f in required_fields):
+    candidate = {
+        "id": "SCAR-PROC-124",
+        "raw_wound": extracted["Wound"],
+        "wound": extracted["Wound"],
+        "raw_trap": extracted["Trap"],
+        "trap": extracted["Trap"],
+        "raw_circuit_breaker": extracted["Circuit Breaker"],
+        "circuit_breaker": extracted["Circuit Breaker"],
+        "raw_reflex": extracted["Permanent Reflex"],
+        "reflex": extracted["Permanent Reflex"],
+        "socratic_probe": extracted["Socratic Probe"],
+    }
+    errors.extend(ScarCandidateValidator().validate(candidate))
+    probe_sentences = split_into_sentences(extracted["Socratic Probe"])
+    if not (1 <= len(probe_sentences) <= 3):
+      errors.append(
+          f"{spoke_rel} SCAR-PROC-124 Socratic Probe must contain 1-3 '?' sentences, found {len(probe_sentences)}"
+      )
+  errors.extend(_check_prose_punctuation(f"{spoke_rel}#SCAR-PROC-124", sec))
+
+  return errors
+
+
+def check_scar_proc_124_catalog(catalog_text):
+  """Checks that 09_synthetic_scars_catalog.md routes SCAR-PROC-124 monotonically to scars/process.md."""
+  errors = []
+  catalog_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  if not check_scar_catalog_routing(catalog_text, "SCAR-PROC-124", "process.md"):
+    errors.append(
+        f"{catalog_rel} Master Routing Table must strictly route SCAR-PROC-124 to scars/process.md"
+    )
+    return errors
+
+  m122 = re.search(r"(?m)^\|\s*`SCAR-PROC-122`\s*\|", catalog_text)
+  m124 = re.search(r"(?m)^\|\s*`SCAR-PROC-124`\s*\|", catalog_text)
+  m138 = re.search(r"(?m)^\|\s*`SCAR-PROC-138`\s*\|", catalog_text)
+  if not (m122 and m124 and m138 and m122.start() < m124.start() < m138.start()):
+    errors.append(
+        f"{catalog_rel} must place SCAR-PROC-124 monotonically between SCAR-PROC-122 and SCAR-PROC-138"
+    )
+  return errors
+
+
+def validate_guard_denial_protocol_scar_proc_124():
+  """Validates SCAR-PROC-124 guard denial protocol and negative mutation falsification (GH-167)."""
+  errors = []
+
+  spoke_rel = "skills/makeflow/references/scars/process.md"
+  spoke_path = repo_path(spoke_rel)
+  if not os.path.exists(spoke_path):
+    errors.append(f"Missing {spoke_rel}")
+  else:
+    with open(spoke_path, "r", encoding="utf-8") as f:
+      spoke_text = f.read()
+    errors.extend(check_scar_proc_124_spoke(spoke_text))
+
+  catalog_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  catalog_path = repo_path(catalog_rel)
+  if not os.path.exists(catalog_path):
+    errors.append(f"Missing {catalog_rel}")
+  else:
+    with open(catalog_path, "r", encoding="utf-8") as f:
+      catalog_text = f.read()
+    errors.extend(check_scar_proc_124_catalog(catalog_text))
+
+  # Negative Mutation Falsification Tests
+  sample_spoke = """
+## Scars in this Category
+
+| ID | Title | Scope |
+| :--- | :--- | :--- |
+| `SCAR-PROC-122` | Upfront Human-Review Policy Evaluation Matrix | Landing Gate Policy Evaluation |
+| `SCAR-PROC-124` | Review Process or Halt on Guard Denial | Guard & Hook Denial Handling |
+| `SCAR-PROC-138` | Yield on Repeated Timer Conflicts | Schedule Conflict Handling |
+
+---
+
+### SCAR-PROC-122: Upfront Human-Review Policy Evaluation Matrix
+
+- **Wound**: Placeholder wound.
+- **Trap**: Placeholder trap.
+- **Circuit Breaker**: Placeholder breaker.
+- **Permanent Reflex**: Placeholder reflex.
+- **Socratic Probe**: Placeholder probe?
+
+### SCAR-PROC-124: Review Process or Halt on Guard Denial
+
+- **Wound**: When a workflow guard denies a command, an agent reads hook source code or probes rules to force the blocked action through.
+- **Trap**: The agent treats a guard denial as a puzzle to bypass instead of a hard boundary that protects project integrity.
+- **Circuit Breaker**: If a hook or guard denies a tool call, stop probing immediately. Review makeflow process files and tier-1 scars first. If no valid workflow path exists, stop tool calls and report the denial verbatim to the user.
+- **Permanent Reflex**: Never read, grep, or test guard or hook source files to evade a denial. Follow documented makeflow alternatives, such as forward-merging instead of force-pushing. If no documented path exists, wait for explicit user direction.
+- **Socratic Probe**: Did you inspect makeflow workflow guides instead of probing guard scripts? Can you trust these guards and ask the user when blocked?
+
+### SCAR-PROC-138: Yield on Repeated Timer Conflicts
+
+- **Wound**: Placeholder wound.
+- **Trap**: Placeholder trap.
+- **Permanent Reflex**: Placeholder reflex.
+- **Socratic Probe**: Placeholder probe?
+"""
+  sample_catalog = (
+      "| `SCAR-PROC-122` | Upfront Human-Review Policy Evaluation Matrix | Process | [`scars/process.md`](./scars/process.md) |\n"
+      "| `SCAR-PROC-124` | Review Process or Halt on Guard Denial | Process | [`scars/process.md`](./scars/process.md) |\n"
+      "| `SCAR-PROC-138` | Yield on Repeated Timer Conflicts | Process | [`scars/process.md`](./scars/process.md) |\n"
+  )
+
+  baseline_spoke_errs = check_scar_proc_124_spoke(sample_spoke)
+  if baseline_spoke_errs:
+    errors.append(
+        f"Negative falsification baseline failed for valid SCAR-PROC-124 spoke sample: {baseline_spoke_errs}"
+    )
+  baseline_cat_errs = check_scar_proc_124_catalog(sample_catalog)
+  if baseline_cat_errs:
+    errors.append(
+        f"Negative falsification baseline failed for valid SCAR-PROC-124 catalog sample: {baseline_cat_errs}"
+    )
+
+  bad_no_cb = sample_spoke.replace("- **Circuit Breaker**:", "- **Other Field**:")
+  if not check_scar_proc_124_spoke(bad_no_cb):
+    errors.append("Negative falsification failed: spoke missing Circuit Breaker was not rejected")
+
+  bad_no_reflex = sample_spoke.replace("- **Permanent Reflex**:", "- **Other Field**:")
+  if not check_scar_proc_124_spoke(bad_no_reflex):
+    errors.append("Negative falsification failed: spoke missing Permanent Reflex was not rejected")
+
+  bad_no_anti_evasion = sample_spoke.replace(
+      "Never read, grep, or test guard or hook source files to evade a denial.",
+      "Inspect environment paths first.",
+  )
+  if not check_scar_proc_124_spoke(bad_no_anti_evasion):
+    errors.append("Negative falsification failed: spoke missing anti-evasion prohibition was not rejected")
+
+  bad_no_halt = sample_spoke.replace(
+      "stop tool calls and report the denial verbatim to the user",
+      "retry the tool call automatically",
+  )
+  if not check_scar_proc_124_spoke(bad_no_halt):
+    errors.append("Negative falsification failed: spoke missing halt/user-escalation requirement was not rejected")
+
+  bad_long_proc = sample_spoke.replace(
+      "If a hook or guard denies a tool call, stop probing immediately.",
+      "If a hook or guard denies a tool call then you must immediately stop probing and carefully check every single workflow file first.",
+  )
+  if not check_scar_proc_124_spoke(bad_long_proc):
+    errors.append("Negative falsification failed: spoke with >20-word procedural sentence was not rejected")
+
+  bad_semicolon = sample_spoke.replace(
+      "stop probing immediately. Review",
+      "stop probing immediately; review",
+  )
+  if not check_scar_proc_124_spoke(bad_semicolon):
+    errors.append("Negative falsification failed: spoke with prose semicolon was not rejected")
+
+  bad_catalog = sample_catalog.replace(
+      "[`scars/process.md`](./scars/process.md) |\n| `SCAR-PROC-138`",
+      "[`scars/other.md`](./scars/other.md) |\n| `SCAR-PROC-138`",
+  )
+  if not check_scar_proc_124_catalog(bad_catalog):
+    errors.append("Negative falsification failed: catalog with misrouted SCAR-PROC-124 row was not rejected")
+
+  return errors
+
+
 def check_optional_circuit_breaker_catalog(catalog_text):
   errs = []
   if "Circuit Breaker" not in catalog_text:
@@ -5429,8 +5695,8 @@ def validate():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 57:
-    errors.append(f"Expected 57 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 58:
+    errors.append(f"Expected 58 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -6159,6 +6425,12 @@ def validate():
         "✔ Three-layer Python module architecture (GH-169, SCAR-ARCH-05)"
         " verified."
     )
+
+  # Guard Denial Protocol Invariants (GH-167, SCAR-PROC-124)
+  scar_124_errors = validate_guard_denial_protocol_scar_proc_124()
+  errors.extend(scar_124_errors)
+  if not scar_124_errors:
+    print("✔ Guard denial protocol invariants (GH-167, SCAR-PROC-124) verified.")
 
   if errors:
     print(f"\n❌ Validation failed with {len(errors)} error(s):")
