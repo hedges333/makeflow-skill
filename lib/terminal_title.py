@@ -5,6 +5,7 @@ tmux DCS passthrough, GNU screen), resolves project name, active ticket ID, and 
 and sets the terminal title to '{ticket_number} {project_name}: {issue_tag}'.
 """
 
+import argparse
 import json
 import os
 import re
@@ -551,36 +552,146 @@ class TerminalTitleScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = SilentArgumentParser(prog="terminal_title.py", add_help=False)
-    parser.add_argument("--repo-root", default=os.getcwd())
-    parser.add_argument("--json", action="store_true", dest="as_json")
-
-    subparsers = parser.add_subparsers(
-        dest="command", parser_class=SilentArgumentParser
+    parser = SilentArgumentParser(
+        prog="terminal_title.py",
+        description="Detect terminal capabilities and update terminal window titles (GH-103, GH-113).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/terminal_title.py detect --json\n"
+            "  python3 scripts/terminal_title.py info --repo-root .\n"
+            "  python3 scripts/terminal_title.py set --ticket GH-170 --issue-tag 'cli help output'\n"
+            "  python3 scripts/terminal_title.py reset"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=os.getcwd(),
+        help="Repository root directory.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit output as JSON.",
     )
 
-    p_detect = subparsers.add_parser("detect", add_help=False)
-    p_detect.add_argument("--json", action="store_true", dest="sub_json")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        parser_class=SilentArgumentParser,
+        help="Terminal title subcommand to execute.",
+    )
 
-    p_info = subparsers.add_parser("info", add_help=False)
-    p_info.add_argument("--ticket", default=None)
-    p_info.add_argument("--project", default=None)
-    p_info.add_argument("--issue-tag", default=None)
-    p_info.add_argument("--repo-root", default=None)
-    p_info.add_argument("--json", action="store_true", dest="sub_json")
+    p_detect = subparsers.add_parser(
+        "detect",
+        help="Detect whether the current terminal supports title updates.",
+        description="Detect whether the active terminal supports window/tab title changes and report the mechanism.",
+        epilog="Example:\n  python3 scripts/terminal_title.py detect --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_detect.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit detection result as JSON.",
+    )
 
-    p_set = subparsers.add_parser("set", add_help=False)
-    p_set.add_argument("--ticket", default=None)
-    p_set.add_argument("--project", default=None)
-    p_set.add_argument("--issue-tag", default=None)
-    p_set.add_argument("--title", default=None)
-    p_set.add_argument("--repo-root", default=None)
-    p_set.add_argument("--json", action="store_true", dest="sub_json")
+    p_info = subparsers.add_parser(
+        "info",
+        help="Inspect resolved ticket ID, project name, issue tag, and formatted title.",
+        description="Display the detected ticket ID, project name, issue tag, formatted title, and capability.",
+        epilog="Example:\n  python3 scripts/terminal_title.py info --repo-root . --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_info.add_argument(
+        "--ticket",
+        default=None,
+        help="Override ticket identifier.",
+    )
+    p_info.add_argument(
+        "--project",
+        default=None,
+        help="Override project name.",
+    )
+    p_info.add_argument(
+        "--issue-tag",
+        default=None,
+        help="Override short issue description tag.",
+    )
+    p_info.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_info.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit info result as JSON.",
+    )
 
-    p_reset = subparsers.add_parser("reset", add_help=False)
-    p_reset.add_argument("--project", default=None)
-    p_reset.add_argument("--repo-root", default=None)
-    p_reset.add_argument("--json", action="store_true", dest="sub_json")
+    p_set = subparsers.add_parser(
+        "set",
+        help="Format and apply the terminal window/tab title for the active ticket.",
+        description="Format and write the escape sequence to set the terminal window or tab title.",
+        epilog="Example:\n  python3 scripts/terminal_title.py set --ticket GH-170 --project makeflow",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_set.add_argument(
+        "--ticket",
+        default=None,
+        help="Ticket identifier (for example GH-170 or LOCAL-1).",
+    )
+    p_set.add_argument(
+        "--project",
+        default=None,
+        help="Project name.",
+    )
+    p_set.add_argument(
+        "--issue-tag",
+        default=None,
+        help="Short issue description tag.",
+    )
+    p_set.add_argument(
+        "--title",
+        default=None,
+        help="Explicit full title string override.",
+    )
+    p_set.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_set.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit set result as JSON.",
+    )
+
+    p_reset = subparsers.add_parser(
+        "reset",
+        help="Reset the terminal title to the project name.",
+        description="Reset the terminal window or tab title to the bare project name.",
+        epilog="Example:\n  python3 scripts/terminal_title.py reset --repo-root .",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_reset.add_argument(
+        "--project",
+        default=None,
+        help="Explicit project name override.",
+    )
+    p_reset.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_reset.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit reset result as JSON.",
+    )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.command:

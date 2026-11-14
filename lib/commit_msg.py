@@ -7,6 +7,7 @@ and the 2-line changed files section format.
 Subclasses BaseScript to provide CLI validate and format subcommands.
 """
 
+import argparse
 from dataclasses import dataclass, field
 import json
 import os
@@ -385,34 +386,149 @@ class CommitMsgScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = SilentArgumentParser(prog="commit_msg.py", add_help=False)
-    parser.add_argument("--repo-root", default=os.getcwd())
-    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser = SilentArgumentParser(
+        prog="commit_msg.py",
+        description="Format and validate Conventional Commits 1.0.0 messages and trailers.",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/commit_msg.py validate --file .workflow/state/50_commit_msg.txt\n"
+            "  python3 scripts/commit_msg.py format --type feat --scope cli --desc 'add help output' \\\n"
+            "    --issue 170 --file-change lib/base_script.py 'Add HelpExit.' 'Supports --help.' \\\n"
+            "    --out .workflow/state/50_commit_msg.txt"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=os.getcwd(),
+        help="Repository root directory (defaults to current working directory).",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit validation or error output as JSON.",
+    )
 
     subparsers = parser.add_subparsers(
-        dest="subcommand", parser_class=SilentArgumentParser
+        dest="subcommand",
+        parser_class=SilentArgumentParser,
+        help="Subcommand to execute (validate or format).",
     )
 
     # validate subcommand
-    p_val = subparsers.add_parser("validate", add_help=False)
-    p_val.add_argument("--file", default=None)
-    p_val.add_argument("--ticket", default=None)
-    p_val.add_argument("--local", action="store_true", default=None, dest="local_flag")
-    p_val.add_argument("--remote", action="store_false", default=None, dest="local_flag")
-    p_val.add_argument("--json", action="store_true", dest="sub_json")
+    p_val = subparsers.add_parser(
+        "validate",
+        help="Validate a commit message file or stdin against Conventional Commits 1.0.0.",
+        description="Validate a commit message file or stdin against Conventional Commits 1.0.0 and trailer rules.",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/commit_msg.py validate --file .workflow/state/50_commit_msg.txt\n"
+            "  python3 scripts/commit_msg.py validate --local --ticket LOCAL-1 --file .workflow/state/50_commit_msg.txt"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_val.add_argument(
+        "--file",
+        default=None,
+        help="Path to commit message file (defaults to .workflow/state/50_commit_msg.txt or stdin).",
+    )
+    p_val.add_argument(
+        "--ticket",
+        default=None,
+        help="Expected ticket identifier (for example GH-170 or LOCAL-1).",
+    )
+    p_val.add_argument(
+        "--local",
+        action="store_true",
+        default=None,
+        dest="local_flag",
+        help="Validate in local session task mode (requires 'Ticket: LOCAL-<N>').",
+    )
+    p_val.add_argument(
+        "--remote",
+        action="store_false",
+        default=None,
+        dest="local_flag",
+        help="Validate in remote issue mode (requires 'Issue: #<N>' or 'closes #<N>').",
+    )
+    p_val.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit validation result as JSON.",
+    )
 
     # format subcommand
-    p_fmt = subparsers.add_parser("format", add_help=False)
-    p_fmt.add_argument("--type", required=True, dest="type_name")
-    p_fmt.add_argument("--scope", default=None)
-    p_fmt.add_argument("--desc", required=True, dest="description")
-    p_fmt.add_argument("--body", default=None)
-    p_fmt.add_argument("--issue", default=None)
-    p_fmt.add_argument("--ticket", default=None)
-    p_fmt.add_argument("--local", action="store_true", default=None, dest="local_flag")
-    p_fmt.add_argument("--remote", action="store_false", default=None, dest="local_flag")
-    p_fmt.add_argument("--breaking", action="store_true", default=False)
-    p_fmt.add_argument("--reviewed-by", default=None)
+    p_fmt = subparsers.add_parser(
+        "format",
+        help="Format a compliant Conventional Commits 1.0.0 message.",
+        description="Format a compliant Conventional Commits 1.0.0 message with changed files and trailers.",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/commit_msg.py format --type feat --scope cli --desc 'add help flags' \\\n"
+            "    --issue 170 --file-change PATH DESC RELATION --out .workflow/state/50_commit_msg.txt\n"
+            "  python3 scripts/commit_msg.py format --type fix --desc 'handle local task' --local --ticket LOCAL-2"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_fmt.add_argument(
+        "--type",
+        required=True,
+        dest="type_name",
+        help="Conventional Commit type (feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert).",
+    )
+    p_fmt.add_argument(
+        "--scope",
+        default=None,
+        help="Optional commit scope in parentheses.",
+    )
+    p_fmt.add_argument(
+        "--desc",
+        required=True,
+        dest="description",
+        help="Short subject line description without a trailing period.",
+    )
+    p_fmt.add_argument(
+        "--body",
+        default=None,
+        help="Optional commit body paragraph.",
+    )
+    p_fmt.add_argument(
+        "--issue",
+        default=None,
+        help="Remote issue number (for example 170 or #170).",
+    )
+    p_fmt.add_argument(
+        "--ticket",
+        default=None,
+        help="Local session ticket ID (for example LOCAL-1).",
+    )
+    p_fmt.add_argument(
+        "--local",
+        action="store_true",
+        default=None,
+        dest="local_flag",
+        help="Format commit message for a local session task.",
+    )
+    p_fmt.add_argument(
+        "--remote",
+        action="store_false",
+        default=None,
+        dest="local_flag",
+        help="Format commit message for a remote tracked issue.",
+    )
+    p_fmt.add_argument(
+        "--breaking",
+        action="store_true",
+        default=False,
+        help="Mark commit as a breaking change with '!'.",
+    )
+    p_fmt.add_argument(
+        "--reviewed-by",
+        default=None,
+        help="Optional 'Reviewed-by:' trailer value.",
+    )
     p_fmt.add_argument(
         "--file-change",
         action="append",
@@ -420,9 +536,19 @@ class CommitMsgScript(BaseScript):
         metavar=("PATH", "DESC", "RELATION"),
         default=[],
         dest="raw_changes",
+        help="Add a 3-tuple entry (PATH DESC RELATION) to the 'Files changed:' section.",
     )
-    p_fmt.add_argument("--out", default=None)
-    p_fmt.add_argument("--json", action="store_true", dest="sub_json")
+    p_fmt.add_argument(
+        "--out",
+        default=None,
+        help="Write formatted commit message to file instead of stdout.",
+    )
+    p_fmt.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors in JSON format.",
+    )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.subcommand:

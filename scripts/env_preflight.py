@@ -10,6 +10,7 @@ if _REPO_ROOT not in sys.path:
 
 from lib.env_preflight import (  # noqa: E402
     STANDARD_ENV_VARS,
+    EnvPreflightScript,
     main,
     preflight_env_vars,
     sanitize_runtime_env,
@@ -17,6 +18,7 @@ from lib.env_preflight import (  # noqa: E402
 )
 
 __all__ = [
+    "EnvPreflightScript",
     "STANDARD_ENV_VARS",
     "validate_runtime_path",
     "preflight_env_vars",
@@ -25,4 +27,4 @@ __all__ = [
 ]
 
 if __name__ == "__main__":
-  sys.exit(main())
+  sys.exit(EnvPreflightScript().execute())

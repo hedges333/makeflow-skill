@@ -5,6 +5,7 @@ exit code 2 so deterministic Make and Python gates guide agent self-correction
 without inflating static SKILL.md context.
 """
 
+import argparse
 import json
 from typing import List, Optional, TextIO, Tuple
 
@@ -80,14 +81,53 @@ class EmitReflexScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = SilentArgumentParser(prog="emit_reflex.py", add_help=False)
-    parser.add_argument("--scar-id", dest="opt_scar_id")
-    parser.add_argument("--code", dest="opt_code")
-    parser.add_argument("--trigger", dest="opt_trigger")
-    parser.add_argument("--rejected", dest="opt_rejected")
-    parser.add_argument("--reflex", dest="opt_reflex")
-    parser.add_argument("--json", action="store_true", dest="as_json")
-    parser.add_argument("positional", nargs="*")
+    parser = SilentArgumentParser(
+        prog="emit_reflex.py",
+        description="Emit a structured Vector 4 Reflex recovery directive on stderr and exit 2 (SCAR-ARCH-06).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/emit_reflex.py --scar-id GIT-25 --code UNCLEAN_STATE \\\n"
+            "    --trigger 'Dirty tree.' --rejected 'Committing dirty tree.' --reflex 'Clean tree.'\n"
+            "  python3 scripts/emit_reflex.py GIT-25 UNCLEAN_STATE 'Dirty tree.' 'Committing dirty tree.' 'Clean tree.'"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--scar-id",
+        dest="opt_scar_id",
+        help="Synthetic scar identifier (for example SCAR-GIT-25 or GIT-25).",
+    )
+    parser.add_argument(
+        "--code",
+        dest="opt_code",
+        help="Machine-readable violation code (for example UNCLEAN_INTAKE_STATE).",
+    )
+    parser.add_argument(
+        "--trigger",
+        dest="opt_trigger",
+        help="Description of the condition that triggered the violation.",
+    )
+    parser.add_argument(
+        "--rejected",
+        dest="opt_rejected",
+        help="Description of the rejected action or trap.",
+    )
+    parser.add_argument(
+        "--reflex",
+        dest="opt_reflex",
+        help="Actionable recovery instruction for the agent.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit the Vector 4 Reflex payload as single-line JSON on stderr.",
+    )
+    parser.add_argument(
+        "positional",
+        nargs="*",
+        help="Optional 5 positional arguments: <scar_id> <code> <trigger> <rejected> <reflex>.",
+    )
 
     ns = parser.parse_args(self.raw_args)
     named = (

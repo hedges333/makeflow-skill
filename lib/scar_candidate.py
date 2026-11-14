@@ -4,6 +4,7 @@ Validates synthetic scar candidate JSON files against Simple English rules, sent
 word count constraints, byte-for-byte LaTeX and code span preservation, and schema.
 """
 
+import argparse
 import json
 import os
 import re
@@ -28,14 +29,19 @@ class ScarCandidateCliError(Exception):
 
 
 class CandidateArgumentParser(SilentArgumentParser):
-  """ArgumentParser subclass that raises ScarCandidateCliError with exit_code = 2."""
+  """ArgumentParser subclass that raises ScarCandidateCliError with exit_code = 2 on errors."""
 
   def error(self, message: str) -> NoReturn:
+    self._printed_messages.clear()
     raise ScarCandidateCliError(message)
 
   def exit(self, status: int = 0, message: Optional[str] = None) -> NoReturn:
+    if status == 0:
+      super().exit(status, message)
+    buffered = "".join(self._printed_messages)
+    self._printed_messages.clear()
     raise ScarCandidateCliError(
-        message or f"Argument parser exited with status {status}"
+        message or buffered or f"Argument parser exited with status {status}"
     )
 
 
@@ -233,10 +239,24 @@ class ScarCandidateTestScript(BaseScript):
     parser = CandidateArgumentParser(
         prog="validate_scar_candidate.py",
         description="Validate synthetic scar candidate JSON files against Simple English rules and spans.",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/validate_scar_candidate.py candidate.json\n"
+            "  python3 scripts/validate_scar_candidate.py --candidate candidate.json --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "candidate_file",
+        nargs="?",
+        default=None,
         help="Path to synthetic scar candidate JSON file.",
+    )
+    parser.add_argument(
+        "--candidate",
+        dest="candidate_opt",
+        default=None,
+        help="Path to synthetic scar candidate JSON file (named flag alternative).",
     )
     parser.add_argument(
         "--db-path",
@@ -251,7 +271,10 @@ class ScarCandidateTestScript(BaseScript):
     )
 
     parsed = parser.parse_args(self.raw_args)
-    self.candidate_file = parsed.candidate_file
+    resolved_candidate = parsed.candidate_opt or parsed.candidate_file
+    if not resolved_candidate:
+      parser.error("the following arguments are required: candidate_file")
+    self.candidate_file = resolved_candidate
     self.db_path = parsed.db_path
     self.json_output = parsed.json_output
 

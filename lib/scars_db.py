@@ -13,11 +13,11 @@ import os
 import re
 import sqlite3
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NoReturn, Optional
 import urllib.error
 import urllib.request
 
-from lib.base_script import BaseScript
+from lib.base_script import BaseScript, SilentArgumentParser
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REGISTRY_URL = "https://syntheticscars.org/registry.json"
@@ -426,22 +426,30 @@ class ScriptArgumentError(Exception):
     self.exit_code = exit_code
 
 
-class ScriptArgumentParser(argparse.ArgumentParser):
-  """Custom ArgumentParser that redirects output to script streams."""
+class ScriptArgumentParser(SilentArgumentParser):
+  """Custom ArgumentParser that raises HelpExit on status 0 and ScriptArgumentError on errors."""
 
-  def __init__(self, script: Any, *args: Any, **kwargs: Any) -> None:
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
+    if args and not isinstance(args[0], str):
+      self.script = args[0]
+      args = args[1:]
+    else:
+      self.script = kwargs.pop("script", None)
     super().__init__(*args, **kwargs)
-    self.script = script
 
-  def _print_message(self, message: str, file: Optional[Any] = None) -> None:
-    if message:
-      if file is sys.stderr:
-        self.script.stderr.write(message)
-      else:
-        self.script.stdout.write(message)
-
-  def error(self, message: str) -> None:
+  def error(self, message: str) -> NoReturn:
+    self._printed_messages.clear()
     raise ScriptArgumentError(message, exit_code=2)
+
+  def exit(self, status: int = 0, message: Optional[str] = None) -> NoReturn:
+    if status == 0:
+      super().exit(status, message)
+    buffered = "".join(self._printed_messages)
+    self._printed_messages.clear()
+    raise ScriptArgumentError(
+        message or buffered or f"Argument parser exited with status {status}",
+        exit_code=2,
+    )
 
 
 class SyncSyntheticScarsScript(BaseScript):
@@ -453,7 +461,6 @@ class SyncSyntheticScarsScript(BaseScript):
     self.url: str = DEFAULT_REGISTRY_URL
     self.force: bool = False
     self.status_only: bool = False
-    self.is_help: bool = False
     self.agent: Optional[str] = None
     self.query: Optional[str] = None
     self.category: Optional[str] = None
@@ -470,16 +477,14 @@ class SyncSyntheticScarsScript(BaseScript):
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
     parser = ScriptArgumentParser(
-        self,
         prog="sync_synthetic_scars.py",
         description="Synchronize and query synthetic scars registry.",
-        add_help=False,
-    )
-    parser.add_argument(
-        "-h",
-        "--help",
-        action="store_true",
-        help="Show this help message and exit.",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/sync_synthetic_scars.py --status\n"
+            "  python3 scripts/sync_synthetic_scars.py --query 'BaseScript' --limit 3"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--db-path",
@@ -563,11 +568,6 @@ class SyncSyntheticScarsScript(BaseScript):
     )
 
     parsed = parser.parse_args(self.raw_args)
-    if parsed.help:
-      parser.print_help(self.stdout)
-      self.is_help = True
-      return
-
     self.url = parsed.url
     self.force = parsed.force
     self.status_only = parsed.status_only
@@ -588,8 +588,6 @@ class SyncSyntheticScarsScript(BaseScript):
 
   def setup(self) -> None:
     """Ensures destination directory exists and prepares schema."""
-    if self.is_help:
-      return
     if self.db_path:
       os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
 
@@ -1123,9 +1121,6 @@ class SyncSyntheticScarsScript(BaseScript):
 
   def run(self) -> int:
     """Executes synchronization or query workflow."""
-    if self.is_help:
-      return 0
-
     if self.status_only:
       return self._report_status()
 

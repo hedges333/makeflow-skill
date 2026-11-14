@@ -5,10 +5,13 @@ TEMP, TMP, CACHE_DIR, XDG_CACHE_HOME) exist and are writable before launching
 native compiled runtimes, preventing silent segmentation faults (SIGSEGV).
 """
 
+import argparse
 import os
 import sys
 import tempfile
-from typing import Dict, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
+
+from lib.base_script import BaseScript, SilentArgumentParser
 
 STANDARD_ENV_VARS = (
     "TMPDIR",
@@ -168,37 +171,65 @@ def sanitize_runtime_env(
   return base_env
 
 
+class EnvPreflightScript(BaseScript):
+  """CLI runner for native runtime environment path pre-flight validation (SCAR-SYS-06, SCAR-ARCH-05)."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self.paths: List[str] = []
+
+  def parse_args(self, args: Optional[List[str]] = None) -> None:
+    super().parse_args(args)
+    parser = SilentArgumentParser(
+        prog="env_preflight.py",
+        description="Validate runtime environment directory paths exist and are writable (SCAR-SYS-06).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/env_preflight.py\n"
+            "  python3 scripts/env_preflight.py /tmp /var/tmp"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Optional directory paths to validate (defaults to TMPDIR, TEMP, TMP, CACHE_DIR, XDG_CACHE_HOME).",
+    )
+    parsed = parser.parse_args(self.raw_args)
+    self.paths = list(parsed.paths or [])
+
+  def run(self) -> int:
+    errors = 0
+
+    if self.paths:
+      for p in self.paths:
+        try:
+          validate_runtime_path(p, test_writable=True)
+          self.stdout.write(f"✔ Path valid: {p}\n")
+        except Exception as exc:  # pylint: disable=broad-except
+          self.stderr.write(f"Pre-flight error for '{p}': {exc}\n")
+          errors += 1
+    else:
+      for var in STANDARD_ENV_VARS:
+        if var in os.environ:
+          val = os.environ[var]
+          try:
+            validate_runtime_path(val, test_writable=True)
+            self.stdout.write(f"✔ {var}={val} is valid.\n")
+          except Exception as exc:  # pylint: disable=broad-except
+            self.stderr.write(
+                f"Pre-flight error: {var}='{val}' is invalid: {exc}\n"
+            )
+            errors += 1
+
+    if errors > 0:
+      return 1
+    self.stdout.write("✔ All runtime environment paths valid.\n")
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
   """CLI entrypoint for environment pre-flight path validation."""
-  args = list(sys.argv[1:] if argv is None else argv)
-  errors = 0
-
-  # If paths are provided as CLI arguments, validate each one
-  paths_to_check = [a for a in args if not a.startswith("-")]
-
-  if paths_to_check:
-    for p in paths_to_check:
-      try:
-        validate_runtime_path(p, test_writable=True)
-        print(f"✔ Path valid: {p}")
-      except Exception as exc:  # pylint: disable=broad-except
-        sys.stderr.write(f"Pre-flight error for '{p}': {exc}\n")
-        errors += 1
-  else:
-    # Default: validate standard runtime environment variables
-    for var in STANDARD_ENV_VARS:
-      if var in os.environ:
-        val = os.environ[var]
-        try:
-          validate_runtime_path(val, test_writable=True)
-          print(f"✔ {var}={val} is valid.")
-        except Exception as exc:  # pylint: disable=broad-except
-          sys.stderr.write(
-              f"Pre-flight error: {var}='{val}' is invalid: {exc}\n"
-          )
-          errors += 1
-
-  if errors > 0:
-    return 1
-  print("✔ All runtime environment paths valid.")
-  return 0
+  return EnvPreflightScript().execute(
+      args=list(argv) if argv is not None else None
+  )

@@ -15,7 +15,12 @@ _LIB_DIR = os.path.join(_REPO_ROOT, "lib")
 if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
-from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
+from lib.base_script import (
+    BaseScript,
+    HelpExit,
+    ReflexArgumentError,
+    SilentArgumentParser,
+)
 
 
 class ConcreteSuccessScript(BaseScript):
@@ -359,6 +364,266 @@ class TestThreeLayerArchitectureInvariants(unittest.TestCase):
                 "scripts",
                 f"scripts/{fname} must not import from 'scripts.*'; import from lib.* instead",
             )
+
+
+class TestCliHelpAndSubcommandUsage(unittest.TestCase):
+  """Verifies GH-170 --help and subcommand usage output across all 12 CLI BaseScript runners."""
+
+  def test_help_exit_exception_contract(self):
+    """Verifies HelpExit is exported from lib.base_script with exit_code == 0."""
+    self.assertTrue(issubclass(HelpExit, Exception))
+    self.assertEqual(HelpExit.exit_code, 0)
+    exc = HelpExit("usage: test\n")
+    self.assertEqual(exc.exit_code, 0)
+    self.assertEqual(str(exc), "usage: test\n")
+
+  def test_silent_argument_parser_buffers_help_and_raises_help_exit(self):
+    """Verifies SilentArgumentParser raises HelpExit on root/subparser --help and ReflexArgumentError on errors."""
+    parser = SilentArgumentParser(
+        prog="demo.py",
+        description="Demo tool description.",
+    )
+    parser.add_argument("--flag", help="Demo root flag.")
+    subparsers = parser.add_subparsers(
+        dest="subcmd", parser_class=SilentArgumentParser
+    )
+    sub = subparsers.add_parser("run-job", description="Run job subcommand.")
+    sub.add_argument("--target", help="Target path for run-job.")
+
+    with self.assertRaises(HelpExit) as root_ctx:
+      parser.parse_args(["--help"])
+    self.assertIn("usage: demo.py", str(root_ctx.exception))
+    self.assertIn("Demo tool description.", str(root_ctx.exception))
+    self.assertIn("--flag", str(root_ctx.exception))
+
+    with self.assertRaises(HelpExit) as sub_ctx:
+      parser.parse_args(["run-job", "--help"])
+    self.assertIn("usage: demo.py run-job", str(sub_ctx.exception))
+    self.assertIn("--target", str(sub_ctx.exception))
+
+    with self.assertRaises(ReflexArgumentError) as err_ctx:
+      parser.parse_args(["--unknown-option"])
+    self.assertEqual(err_ctx.exception.exit_code, 1)
+
+    with self.assertRaises(ReflexArgumentError) as exit_ctx:
+      parser.exit(status=2, message="custom error exit")
+    self.assertEqual(exit_ctx.exception.exit_code, 1)
+    self.assertIn("custom error exit", str(exit_ctx.exception))
+
+  def test_base_script_execute_handles_help_exit_hermetically(self):
+    """Verifies BaseScript.execute(['--help']) skips setup/run, calls cleanup(0), and writes to stdout."""
+    class HelpDemoScript(BaseScript):
+      def __init__(self):
+        super().__init__()
+        self.events = []
+
+      def parse_args(self, args=None):
+        super().parse_args(args)
+        self.events.append("parse_args")
+        parser = SilentArgumentParser(prog="help_demo.py", description="Help demo.")
+        parser.add_argument("--item", help="Item option.")
+        parser.parse_args(self.raw_args)
+
+      def setup(self):
+        self.events.append("setup")
+
+      def run(self):
+        self.events.append("run")
+        return 0
+
+      def cleanup(self, exit_code: int):
+        self.events.append(f"cleanup:{exit_code}")
+
+    script = HelpDemoScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    try:
+      sys.stdout = None
+      sys.stderr = None
+      code = script.execute(["--help"], stdout=out, stderr=err)
+    finally:
+      sys.stdout = orig_stdout
+      sys.stderr = orig_stderr
+
+    self.assertEqual(code, 0)
+    self.assertEqual(script.events, ["parse_args", "cleanup:0"])
+    self.assertIn("usage: help_demo.py", out.getvalue())
+    self.assertIn("--item", out.getvalue())
+    self.assertEqual(err.getvalue(), "")
+
+  def test_all_twelve_cli_scripts_root_help(self):
+    """Verifies all 12 CLI BaseScript classes return 0 and print usage on --help and -h."""
+    from lib.ast_scrub import AstScrubScript
+    from lib.commit_msg import CommitMsgScript
+    from lib.env_preflight import EnvPreflightScript
+    from lib.reflex import EmitReflexScript
+    from lib.scar_candidate import ScarCandidateTestScript
+    from lib.scars_db import SyncSyntheticScarsScript
+    from lib.signal_trap import SignalTrapScript
+    from lib.static_check import StaticCheckScript
+    from lib.tdd_guard import TddGuardScript
+    from lib.terminal_title import TerminalTitleScript
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutexScript
+
+    script_classes = [
+        (CommitMsgScript, "commit_msg.py"),
+        (WorkflowGatesScript, "workflow_gates.py"),
+        (TddGuardScript, "tdd_guard.py"),
+        (WorkspaceMutexScript, "workspace_mutex.py"),
+        (TerminalTitleScript, "terminal_title.py"),
+        (ScarCandidateTestScript, "validate_scar_candidate.py"),
+        (StaticCheckScript, "static_check.py"),
+        (EmitReflexScript, "emit_reflex.py"),
+        (EnvPreflightScript, "env_preflight.py"),
+        (AstScrubScript, "ast_scrub.py"),
+        (SyncSyntheticScarsScript, "sync_synthetic_scars.py"),
+        (SignalTrapScript, "signal_trap.py"),
+    ]
+
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    try:
+      sys.stdout = None
+      sys.stderr = None
+      for cls, expected_prog in script_classes:
+        for flag in ("--help", "-h"):
+          with self.subTest(script=cls.__name__, flag=flag):
+            out = io.StringIO()
+            err = io.StringIO()
+            code = cls().execute([flag], stdout=out, stderr=err)
+            self.assertEqual(code, 0, f"{cls.__name__}({flag}) returned {code}, err={err.getvalue()}")
+            self.assertEqual(err.getvalue(), "")
+            help_text = out.getvalue()
+            self.assertIn("usage:", help_text.lower())
+            self.assertIn(expected_prog, help_text)
+    finally:
+      sys.stdout = orig_stdout
+      sys.stderr = orig_stderr
+
+  def test_all_twenty_four_subcommands_help(self):
+    """Verifies all 24 subcommands across the 5 multi-command CLI scripts support --help and -h."""
+    from lib.commit_msg import CommitMsgScript
+    from lib.tdd_guard import TddGuardScript
+    from lib.terminal_title import TerminalTitleScript
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutexScript
+
+    subcommand_matrix = [
+        (CommitMsgScript, ["validate", "format"]),
+        (
+            WorkflowGatesScript,
+            [
+                "init-makefile",
+                "plugin-files",
+                "skill-budget",
+                "intake",
+                "release-intake",
+                "release-lock",
+                "approved-tree",
+                "commit-msg",
+                "terminal-title",
+            ],
+        ),
+        (
+            TddGuardScript,
+            ["witness-red", "verify-green", "verify-citation"],
+        ),
+        (
+            WorkspaceMutexScript,
+            [
+                "acquire",
+                "release",
+                "status",
+                "check-remote",
+                "check-dependencies",
+                "claim-issue",
+            ],
+        ),
+        (
+            TerminalTitleScript,
+            ["detect", "info", "set", "reset"],
+        ),
+    ]
+
+    total_subcommands = sum(len(subs) for _, subs in subcommand_matrix)
+    self.assertEqual(total_subcommands, 24)
+
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    try:
+      sys.stdout = None
+      sys.stderr = None
+      for cls, subcommands in subcommand_matrix:
+        for sub in subcommands:
+          for flag in ("--help", "-h"):
+            with self.subTest(script=cls.__name__, subcommand=sub, flag=flag):
+              out = io.StringIO()
+              err = io.StringIO()
+              code = cls().execute([sub, flag], stdout=out, stderr=err)
+              self.assertEqual(code, 0, f"{cls.__name__} {sub} {flag} returned {code}, err={err.getvalue()}")
+              self.assertEqual(err.getvalue(), "")
+              help_text = out.getvalue()
+              self.assertIn("usage:", help_text.lower())
+              self.assertIn(sub, help_text)
+              if cls is CommitMsgScript and sub == "format":
+                self.assertIn("--file-change PATH DESC RELATION", help_text)
+    finally:
+      sys.stdout = orig_stdout
+      sys.stderr = orig_stderr
+
+  def test_unknown_flag_falsification_across_twelve_cli_scripts(self):
+    """Verifies passing --unknown-flag-xyz fails with non-zero exit code and Error: on stderr."""
+    from lib.ast_scrub import AstScrubScript
+    from lib.commit_msg import CommitMsgScript
+    from lib.env_preflight import EnvPreflightScript
+    from lib.reflex import EmitReflexScript
+    from lib.scar_candidate import ScarCandidateTestScript
+    from lib.scars_db import SyncSyntheticScarsScript
+    from lib.signal_trap import SignalTrapScript
+    from lib.static_check import StaticCheckScript
+    from lib.tdd_guard import TddGuardScript
+    from lib.terminal_title import TerminalTitleScript
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutexScript
+
+    expected_exit_codes = [
+        (CommitMsgScript, 1),
+        (WorkflowGatesScript, 1),
+        (TddGuardScript, 1),
+        (WorkspaceMutexScript, 1),
+        (TerminalTitleScript, 1),
+        (ScarCandidateTestScript, 2),
+        (StaticCheckScript, 1),
+        (EmitReflexScript, 1),
+        (EnvPreflightScript, 1),
+        (AstScrubScript, 1),
+        (SyncSyntheticScarsScript, 2),
+        (SignalTrapScript, 1),
+    ]
+
+    for cls, expected_code in expected_exit_codes:
+      with self.subTest(script=cls.__name__):
+        out = io.StringIO()
+        err = io.StringIO()
+        code = cls().execute(["--unknown-flag-xyz"], stdout=out, stderr=err)
+        self.assertEqual(code, expected_code)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("Error:", err.getvalue())
+
+  def test_signal_trap_script_rejects_unexpected_positional_args(self):
+    """Verifies SignalTrapScript strictly accepts only its documented flags and rejects positional args."""
+    from lib.signal_trap import SignalTrapScript
+
+    script = SignalTrapScript()
+    script.run = lambda: 99
+    out = io.StringIO()
+    err = io.StringIO()
+    code = script.execute(
+        args=["unexpected-positional-arg"], stdout=out, stderr=err
+    )
+    self.assertEqual(code, 1)
+    self.assertEqual(out.getvalue(), "")
+    self.assertIn("Error:", err.getvalue())
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ if _REPO_ROOT not in sys.path:
 from lib.signal_trap import (  # noqa: E402
     DEFAULT_SIGNALS,
     SignalTrap,
+    SignalTrapScript,
     logger,
     main,
 )
@@ -18,9 +19,10 @@ from lib.signal_trap import (  # noqa: E402
 __all__ = [
     "DEFAULT_SIGNALS",
     "SignalTrap",
+    "SignalTrapScript",
     "logger",
     "main",
 ]
 
 if __name__ == "__main__":
-  sys.exit(main())
+  sys.exit(SignalTrapScript().execute())
