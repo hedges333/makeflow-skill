@@ -2081,5 +2081,26 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-196",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/196",
+    "title": "[BUG] Enforce chat detail presentation before blocking ask_question prompt",
+    "request": "Update rules/AGENTS.md Rule 1.2 for ask_question chat presentation, add ask_question to hooks.json PreToolUse matcher, enforce non-empty assistant content since the latest USER_INPUT step in lib/turn_boundary.py and scripts/pre_tool_guard.py with a SCAR-HCI-08 Vector 4 Reflex, and add hermetic unit tests in tests/test_pre_tool_guard.py.",
+    "branch": "fix/196-chat-detail-before-ask-question",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "rules",
+      "tests"
+    ],
+    "started_at": "2026-11-14T21:54:00Z",
+    "completed_at": "2026-11-14T22:21:11Z",
+    "commit_sha": "8f7703ba6c58824637db26fbf2510f4ba119aba7",
+    "pr_number": 201,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/201",
+    "closes_issue": true,
+    "tests_added": 5,
+    "scars_earned": []
   }
 ]
