@@ -1846,5 +1846,26 @@
     "closes_issue": true,
     "tests_added": 11,
     "scars_earned": []
+  },
+  {
+    "id": "GH-167",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/167",
+    "title": "[SCAR] SCAR-PROC-124: Review makeflow process or halt on guard denial without evading hook internals or probing guard restrictions",
+    "request": "Codify Tier 1 process scar SCAR-PROC-124 in skills/makeflow/references/scars/process.md and 09_synthetic_scars_catalog.md, update expected spoke scar count to 58, and add validation and negative falsification tests in tests/test_cross_agent_compatibility.py.",
+    "branch": "feat/167-codify-scar-proc-124",
+    "subprojects": [
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T00:47:44Z",
+    "completed_at": "2026-11-14T01:14:01Z",
+    "commit_sha": "f339b7e2278f530d91201810030556212e099fd9",
+    "pr_number": 179,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/179",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": [
+      "SCAR-PROC-124: Review Process or Halt on Guard Denial"
+    ]
   }
 ]
