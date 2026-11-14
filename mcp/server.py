@@ -831,14 +831,15 @@ def handle_tools_list(request_id):
           "name": "workflow_query_scars",
           "description": (
               "Queries public synthetic scars database using full-text search"
-              " (FTS5) or keywords with category and language filters."
+              " (FTS5) or keywords with category, language, framework,"
+              " diagnostic code, and workflow phase filters."
           ),
           "inputSchema": {
               "type": "object",
               "properties": {
                   "query": {
                       "type": "string",
-                      "description": "Keyword search query for scars (e.g. 'BaseScript', 'isolation')",
+                      "description": "Keyword or scar ID search query (e.g. 'BaseScript', 'SCAR-ARCH-05')",
                   },
                   "category": {
                       "type": "string",
@@ -846,7 +847,19 @@ def handle_tools_list(request_id):
                   },
                   "language": {
                       "type": "string",
-                      "description": "Optional programming language filter (e.g. 'Python', 'Go')",
+                      "description": "Optional programming language filter (e.g. 'python', 'dart', 'go')",
+                  },
+                  "framework": {
+                      "type": "string",
+                      "description": "Optional framework or library filter (e.g. 'flutter', 'riverpod', 'pytest')",
+                  },
+                  "diagnosticCode": {
+                      "type": "string",
+                      "description": "Optional diagnostic, signal, or error code filter (e.g. 'StateError', 'SIGTERM')",
+                  },
+                  "workflowPhase": {
+                      "type": "string",
+                      "description": "Optional workflow phase filter (e.g. 'Target 30: tdd', 'T30')",
                   },
                   "limit": {
                       "type": "integer",
@@ -1150,16 +1163,33 @@ def handle_tools_call(request_id, tool_name, arguments):
 
   elif tool_name == "workflow_query_scars":
     query = (arguments.get("query") or "").strip()
-    if not query:
+    category = arguments.get("category")
+    language = arguments.get("language")
+    source = arguments.get("source")
+    framework = arguments.get("framework")
+    diagnostic_code = arguments.get("diagnosticCode") or arguments.get(
+        "diagnostic_code"
+    )
+    workflow_phase = arguments.get("workflowPhase") or arguments.get(
+        "workflow_phase"
+    )
+    if not query and not any(
+        val
+        for val in (
+            category,
+            language,
+            source,
+            framework,
+            diagnostic_code,
+            workflow_phase,
+        )
+    ):
       return _error_result(
           request_id,
           "Missing required argument 'query'. Provide a keyword or search query.",
       )
 
     ws = resolve_workspace_dir(arguments)
-    category = arguments.get("category")
-    language = arguments.get("language")
-    source = arguments.get("source")
     try:
       limit = int(arguments.get("limit", 3))
     except (ValueError, TypeError):
@@ -1205,6 +1235,9 @@ def handle_tools_call(request_id, tool_name, arguments):
         language=language,
         limit=limit,
         source=source,
+        framework=framework,
+        diagnostic_code=diagnostic_code,
+        workflow_phase=workflow_phase,
     )
 
     if not results:

@@ -146,3 +146,31 @@ Agents must use Socratic Probes during:
 2. Inside external user projects, offer to record project-specific lessons in `.workflow/scars/local.md` (or `.workflow/scars/*.md`) during Target 90.
 3. Format each project-local scar with the Wound, Trap, Permanent Reflex, and Socratic Probe fields.
 4. Record earned project-local scar IDs in `.workflow/history.json` and `.workflow/history.md`.
+
+---
+
+## 4. Multi-Dimensional SQLite Registry and FTS5 Search
+
+The bundled SQLite database (`skills/makeflow/data/scars_registry.db`) stores all scars with an FTS5 (full-text search) virtual index.
+The `scars_fts` table indexes `id`, `original_id`, `keywords`, `languages`, `frameworks`, `diagnostic_codes`, and `workflow_phases` directly.
+
+### 4.1 Multi-Dimensional Query Filters
+
+Use `workflow_query_scars` or `scripts/sync_synthetic_scars.py` to filter scars by multiple dimensions:
+
+1. `query` (`--query`): Search by exact scar ID (`SCAR-ARCH-05`), ID prefix (`SCAR-ARCH`), or technical keywords.
+2. `category` (`--category`): Filter by category name or slug (for example `Testing` or `architecture`).
+3. `language` (`--language`): Filter by normalized language (for example `dart`, `python`, `rust`, `go`, or `universal`).
+4. `framework` (`--framework`): Filter by framework or library (for example `flutter`, `riverpod`, `bloc`, `pytest`, or `sqlite`).
+5. `diagnosticCode` (`--diagnostic-code`): Filter by compiler, signal, or runtime code (for example `StateError`, `UNDEFINED_GETTER`, or `SIGTERM`).
+6. `workflowPhase` (`--workflow-phase`): Filter by canonical target phase (for example `Target 20: plan` or `Target 30: tdd`).
+
+### 4.2 Metadata Enrichment Command
+
+If you import or synchronize new scars, run the metadata enrichment script to update the FTS5 index:
+
+```bash
+python3 scripts/enrich_scars_index.py --db-path skills/makeflow/data/scars_registry.db
+```
+
+You can also run `make enrich-scars` or `python3 scripts/sync_synthetic_scars.py --enrich`.

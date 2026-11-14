@@ -10,13 +10,16 @@ if _REPO_ROOT not in sys.path:
 
 from lib.scars_db import (  # noqa: E402
     DEFAULT_REGISTRY_URL,
+    EnrichScarsIndexScript,
     ScriptArgumentError,
     ScriptArgumentParser,
     SyncSyntheticScarsScript,
     _format_scar_row,
     _sanitize_fts_query,
     _strip_protected_and_inline_code,
+    enrich_scars_database,
     extract_protected_spans,
+    extract_scar_metadata,
     query_scars,
     resolve_scars_db_path,
     verify_scar_transformation,
@@ -24,13 +27,16 @@ from lib.scars_db import (  # noqa: E402
 
 __all__ = [
     "DEFAULT_REGISTRY_URL",
+    "EnrichScarsIndexScript",
     "ScriptArgumentError",
     "ScriptArgumentParser",
     "SyncSyntheticScarsScript",
     "_format_scar_row",
     "_sanitize_fts_query",
     "_strip_protected_and_inline_code",
+    "enrich_scars_database",
     "extract_protected_spans",
+    "extract_scar_metadata",
     "query_scars",
     "resolve_scars_db_path",
     "verify_scar_transformation",
