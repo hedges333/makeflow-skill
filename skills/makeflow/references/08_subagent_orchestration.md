@@ -55,13 +55,13 @@ Follow three rules when launching background subagents:
 Do not prompt subagents with flat imperative commands alone. Frame dispatch prompts using directive-embedded Socratic questions to prune reckless reasoning branches:
 
 1. **`archaeology-worker` (Target 15)**:
-   > *"Can you discover all languages, subprojects, manifests, test runners, Tier 1 scars (`skills/makeflow/references/scars/`), and Tier 2 scars (`.workflow/scars/`) across the repository? For every technical claim, what concrete file evidence proves it is ESTABLISHED before we plan changes?"*
+   > *"Can you discover all languages, subprojects, manifests, test runners, Tier 1 scars (`skills/makeflow/references/scars/`), Tier 2 scars (`.workflow/scars/`), and SQLite registry scars via `workflow_query_scars` across the repository? For every technical claim, what concrete file evidence proves it is ESTABLISHED before we plan changes?"*
 2. **`tdd-worker` (Target 30)**:
-   > *"Would most comprehensive testing result from writing the smallest code change that makes the failing test pass while honoring `skills/makeflow/references/scars/` and `.workflow/scars/`? Did this test fail before you edited production code? Does this production change introduce any abstraction not required by the failing test, and if so, can you do without it to prevent unintended consequences?"*
+   > *"Would most comprehensive testing result from writing the smallest code change that makes the failing test pass while honoring `skills/makeflow/references/scars/`, `.workflow/scars/`, and `workflow_query_scars`? Did this test fail before you edited production code? Does this production change introduce any abstraction not required by the failing test, and if so, can you do without it to prevent unintended consequences?"*
 3. **`adversarial-critic` (Target 40)**:
-   > *"Does this staged Merkle tree diff conform to the Six Pillars in skills/makeflow/references/04_six_pillars_adversarial_review.md and both Tier 1 (`skills/makeflow/references/scars/`) and Tier 2 (`.workflow/scars/`) scars? If this diff causes a production outage, what is the most likely failure point? Did changing an existing test mask a real regression?"* (`SCAR-PROC-105`)
+   > *"Does this staged Merkle tree diff conform to the Six Pillars in skills/makeflow/references/04_six_pillars_adversarial_review.md and both Tier 1 (`skills/makeflow/references/scars/`), Tier 2 (`.workflow/scars/`), and `workflow_query_scars` scars? If this diff causes a production outage, what is the most likely failure point? Did changing an existing test mask a real regression?"* (`SCAR-PROC-105`)
 4. **`triage-worker` (Target 70)**:
-   > *"Did continuous integration checks pass, and did bots or contributors file comments that need to be triaged? If comments exist, does each finding require an Accept, Defend, Defer, or Acknowledge action without expanding ticket scope?"*
+   > *"Did continuous integration checks pass, and did bots or contributors file comments that need to be triaged against `workflow_query_scars`? If comments exist, does each finding require an Accept, Defend, Defer, or Acknowledge action without expanding ticket scope?"*
 5. **`synthetic-scar-importer` (Registry Sync)**:
    > *"Did you export one pending scar and preserve every LaTeX formula and fenced code block byte-for-byte? Does each transformed field follow Simple English rules, and does `socratic_probe` end with a question mark?"*
 

@@ -20,7 +20,7 @@ Do not plan code edits from guesswork. Inspect the repository first to gather fa
 8. If the target subproject has no test runner or test directory, prepare a smoke test template.
 9. Classify the underlying failure mechanism and evaluate testing feasibility and execution burden balance (< 100 ms execution budget, hermetic fixtures) (`SCAR-TEST-11`).
 10. Discover repository-scoped hosting mode (`SCAR-GIT-30`). Check `git remote get-url origin`, `gh` binary, `gh auth status`, and `gh repo view`. If origin does not point to GitHub or CLI checks fail, record `HOSTING_MODE: PURE_GIT`.
-11. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`.
+11. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`, and call `workflow_query_scars` (`workflowPhase: "Target 15: archaeology"`) for detected languages and frameworks.
 12. Write `.workflow/state/15_archaeology_receipt.md` and advance to Target 20.
 
 ### 1.1 Post-Archaeology Dependency Coupling Evaluation
@@ -46,7 +46,7 @@ Do not draft implementation plans from passive checklists. Before writing `.work
 3. **Existing Test Modifications**: If an existing test must change, does the change reflect a true contract update rather than masking a bug?
 4. **Comprehensive Coverage**: Do new tests reproduce the conditions and desired behavior addressed by the change request ticket?
 5. **Minimal Scoped Edits (`SCAR-PROC-104`)**: If you keep changes narrow and leave unrelated defects for future tickets, will regressions be less likely?
-6. **Two-Tier Scar Discovery**: Did you check Tier 1 core scars (`skills/makeflow/references/scars/`) and Tier 2 project-local scars (`.workflow/scars/`) for relevant failure reflexes?
+6. **Two-Tier Scar Discovery**: Did you check Tier 1 core scars (`skills/makeflow/references/scars/`), Tier 2 project-local scars (`.workflow/scars/`), and stacked SQLite registries via `workflow_query_scars` (`workflowPhase: "Target 20: plan"`) for relevant failure reflexes?
 7. **Code Structure and Layer Separation (`SCAR-ARCH-08`)**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?
 
 ### 2.2 Socratic Invariant Audit Table

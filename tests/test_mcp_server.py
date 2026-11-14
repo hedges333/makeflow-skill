@@ -12,6 +12,7 @@ Checks JSON-RPC 2.0 communication over standard input/output:
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -586,6 +587,7 @@ def run_test():
               trap TEXT,
               circuit_breaker TEXT,
               reflex TEXT,
+              socratic_probe TEXT,
               source TEXT DEFAULT 'upstream',
               original_id TEXT,
               raw_hash TEXT
@@ -593,15 +595,16 @@ def run_test():
       """)
       conn.execute("""
           CREATE VIRTUAL TABLE scars_fts USING fts5(
-              id UNINDEXED,
+              id,
               title,
               category,
               applies_when,
               wound,
               trap,
               reflex,
+              socratic_probe,
               source UNINDEXED,
-              original_id UNINDEXED
+              original_id
           )
       """)
       test_scars = [
@@ -618,6 +621,7 @@ def run_test():
               "Running CLI scripts that terminate test suites",
               "Wrap all CLI scripts in BaseScript execute template",
               "Inherit from BaseScript and override run and cleanup",
+              "Did you inherit from BaseScript?",
               "upstream",
               None,
               "hash-arch-05",
@@ -635,14 +639,36 @@ def run_test():
               "Using unmocked socket connections or live databases in unit tests",
               "Use tempfile.TemporaryDirectory and mock urllib.request",
               "Point tests to temporary directories or in-memory SQLite fixtures",
+              "Do your tests run hermetically in temporary directories?",
               "upstream",
               None,
               "hash-test-08",
           ),
+          (
+              "SCAR-UNPROC-99",
+              "Unprocessed BaseScript Draft",
+              "Architecture",
+              "architecture",
+              "public",
+              json.dumps(["T30"]),
+              "Draft unprocessed scar",
+              "experimental",
+              None,
+              "Draft trap",
+              "",
+              "Draft reflex",
+              None,
+              "upstream",
+              None,
+              "hash-unproc-99",
+          ),
       ]
       for s in test_scars:
-        conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
-        conn.execute("INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (s[0], s[1], s[2], s[6], s[8], s[9], s[11], s[12], s[13]))
+        conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
+        conn.execute(
+            "INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (s[0], s[1], s[2], s[6], s[8] or "", s[9] or "", s[11] or "", s[12] or "", s[13], s[14] or ""),
+        )
       conn.commit()
       conn.close()
 
@@ -664,12 +690,15 @@ def run_test():
       )
       query_data = json.loads(query_resp["result"]["content"][0]["text"])
       assert query_data["status"] == "OK"
-      assert query_data["totalResults"] >= 1
+      assert query_data["totalResults"] == 1
       assert query_data["scars"][0]["id"] == "SCAR-ARCH-05"
+      assert "wound" in query_data["scars"][0]
       assert "source" in query_data["scars"][0]
       assert query_data["scars"][0]["source"] == "upstream"
+      assert query_data.get("alreadyLoaded") == []
+      assert os.path.abspath(test_scars_db) in query_data.get("searchedDatabases", [])
 
-      # Query with source filter
+      # Query with source filter (with refreshLoaded=True to get full scar fields again)
       src_resp = send_rpc(
           p,
           {
@@ -682,6 +711,7 @@ def run_test():
                       "query": "BaseScript",
                       "source": "upstream",
                       "dbPath": test_scars_db,
+                      "refreshLoaded": True,
                   },
               },
           },
@@ -690,6 +720,7 @@ def run_test():
       assert src_data["status"] == "OK"
       assert src_data["totalResults"] >= 1
       assert src_data["scars"][0]["source"] == "upstream"
+      assert "wound" in src_data["scars"][0]
 
       # Query with category filter
       cat_resp = send_rpc(
@@ -726,6 +757,7 @@ def run_test():
                       "query": "SCAR",
                       "limit": 1,
                       "dbPath": test_scars_db,
+                      "refreshLoaded": True,
                   },
               },
           },
@@ -734,7 +766,16 @@ def run_test():
       assert lim_data["status"] == "OK"
       assert len(lim_data["scars"]) == 1
 
-      # Case d: Query when dbPath is omitted -> resolves to bundled package database
+      # Case d: Query when dbPath is omitted -> resolves stacked databases including workspace and bundled
+      ws_cache_dir = os.path.join(non_git_cwd, ".workflow", "cache")
+      ws_state_dir = os.path.join(non_git_cwd, ".workflow", "state")
+      os.makedirs(ws_cache_dir, exist_ok=True)
+      os.makedirs(ws_state_dir, exist_ok=True)
+      with open(os.path.join(ws_state_dir, "10_ticket.md"), "w", encoding="utf-8") as tf:
+        tf.write("# Ticket: GH-192\n")
+      ws_scars_db = os.path.join(ws_cache_dir, "scars_registry.db")
+      shutil.copyfile(test_scars_db, ws_scars_db)
+
       default_resp = send_rpc(
           p,
           {
@@ -744,8 +785,9 @@ def run_test():
               "params": {
                   "name": "workflow_query_scars",
                   "arguments": {
-                      "query": "SCAR",
+                      "query": "BaseScript",
                       "workspaceDir": non_git_cwd,
+                      "limit": 2,
                   },
               },
           },
@@ -753,6 +795,33 @@ def run_test():
       default_data = json.loads(default_resp["result"]["content"][0]["text"])
       assert default_data["status"] == "OK"
       assert len(default_data["scars"]) > 0
+      assert os.path.abspath(ws_scars_db) in default_data.get("searchedDatabases", [])
+      assert len(default_data.get("searchedDatabases", [])) >= 2
+      assert os.path.isfile(os.path.join(ws_state_dir, "loaded_scars.json"))
+
+      # Second query in same workspace session returns compact reminder for already-loaded SCAR-ARCH-05
+      second_resp = send_rpc(
+          p,
+          {
+              "jsonrpc": "2.0",
+              "id": 257,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {
+                      "query": "SCAR-ARCH-05",
+                      "workspaceDir": non_git_cwd,
+                      "limit": 1,
+                  },
+              },
+          },
+      )
+      second_data = json.loads(second_resp["result"]["content"][0]["text"])
+      assert second_data["status"] == "OK"
+      assert len(second_data["alreadyLoaded"]) >= 1
+      assert second_data["alreadyLoaded"][0]["id"] == "SCAR-ARCH-05"
+      assert second_data["alreadyLoaded"][0]["alreadyLoaded"] is True
+      assert "wound" not in second_data["alreadyLoaded"][0]
 
       print("✔ MCP workflow_query_scars JSON-RPC checks passed.")
     finally:

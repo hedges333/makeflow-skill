@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 import sys
-from typing import Any, Dict, List, NoReturn, Optional, Sequence
+from typing import Any, Dict, Iterable, List, NoReturn, Optional, Sequence, Set, Tuple, Union
 import urllib.error
 import urllib.request
 
@@ -84,6 +84,228 @@ def resolve_scars_db_path(
     return user_default
 
   return os.path.abspath(bundled_path)
+
+
+def resolve_scars_db_paths(
+    db_path: Optional[str] = None,
+    agent: Optional[str] = None,
+    workspace_dir: Optional[str] = None,
+    package_root: Optional[str] = None,
+) -> List[str]:
+  """Resolves all existing SQLite scars databases in 5-tier precedence order:
+  1. Explicit path (db_path)
+  2. Environment override (MAKEFLOW_SCARS_DB)
+  3. Workspace database (<workspace_dir>/.workflow/cache/scars_registry.db, <workspace_dir>/.workflow/scars_registry.db)
+  4. User database (agent plugin_data and XDG/user cache)
+  5. Bundled database (<package_root>/skills/makeflow/data/scars_registry.db)
+  """
+  candidates: List[str] = []
+
+  if db_path:
+    candidates.append(db_path)
+
+  env_path = os.getenv("MAKEFLOW_SCARS_DB")
+  if env_path:
+    candidates.append(env_path)
+
+  if workspace_dir:
+    candidates.append(
+        os.path.join(workspace_dir, ".workflow", "cache", "scars_registry.db")
+    )
+    candidates.append(
+        os.path.join(workspace_dir, ".workflow", "scars_registry.db")
+    )
+
+  home = os.path.expanduser("~")
+  agent_paths = {
+      "gemini": os.path.join(
+          home,
+          ".gemini",
+          "antigravity-cli",
+          "plugin_data",
+          "makeflow",
+          "scars_registry.db",
+      ),
+      "claude": os.path.join(
+          home, ".claude", "plugin_data", "makeflow", "scars_registry.db"
+      ),
+      "cursor": os.path.join(
+          home, ".cursor", "plugin_data", "makeflow", "scars_registry.db"
+      ),
+      "copilot": os.path.join(
+          home, ".copilot", "plugin_data", "makeflow", "scars_registry.db"
+      ),
+      "chatgpt": os.path.join(
+          home, ".chatgpt", "plugin_data", "makeflow", "scars_registry.db"
+      ),
+  }
+
+  agent_key = (agent or "").strip().lower()
+  if agent_key in agent_paths:
+    candidates.append(agent_paths[agent_key])
+  for k, p in agent_paths.items():
+    if k != agent_key:
+      candidates.append(p)
+
+  xdg_cache = os.getenv("XDG_CACHE_HOME")
+  if xdg_cache:
+    candidates.append(os.path.join(xdg_cache, "makeflow", "scars_registry.db"))
+  candidates.append(
+      os.path.join(home, ".cache", "makeflow", "scars_registry.db")
+  )
+
+  pkg_root = package_root or _REPO_ROOT
+  candidates.append(
+      os.path.join(pkg_root, "skills", "makeflow", "data", "scars_registry.db")
+  )
+
+  resolved: List[str] = []
+  seen: Set[str] = set()
+  for raw_p in candidates:
+    if not raw_p:
+      continue
+    norm_p = os.path.abspath(os.path.expanduser(raw_p))
+    if norm_p not in seen and os.path.isfile(norm_p):
+      seen.add(norm_p)
+      resolved.append(norm_p)
+  return resolved
+
+
+_IN_MEMORY_LOADED_SCARS: Dict[str, Set[str]] = {}
+
+
+def detect_active_ticket_id(state_dir: Optional[str]) -> str:
+  """Extracts the active ticket ID from <state_dir>/10_ticket.md if present."""
+  if not state_dir or not os.path.isdir(state_dir):
+    return ""
+  ticket_card = os.path.join(state_dir, "10_ticket.md")
+  if not os.path.isfile(ticket_card):
+    return ""
+  try:
+    with open(ticket_card, "r", encoding="utf-8") as f:
+      text = f.read()
+    m = re.search(r"\b((?:GH|LOCAL)-[A-Za-z0-9_-]+)\b", text)
+    if m:
+      return m.group(1)
+  except OSError:
+    pass
+  return ""
+
+
+def load_session_scars(
+    state_dir: Optional[str] = None,
+    session_key: Optional[str] = None,
+) -> Set[str]:
+  """Loads the set of scar IDs already returned in the current ticket session."""
+  if state_dir and os.path.isdir(state_dir):
+    ledger_path = os.path.join(state_dir, "loaded_scars.json")
+    active_ticket = detect_active_ticket_id(state_dir)
+    if os.path.isfile(ledger_path):
+      try:
+        with open(ledger_path, "r", encoding="utf-8") as f:
+          data = json.load(f)
+        if isinstance(data, dict):
+          recorded_ticket = str(data.get("ticketId") or "")
+          if recorded_ticket == active_ticket:
+            ids = data.get("loadedIds")
+            if isinstance(ids, list):
+              return {str(x) for x in ids if str(x).strip()}
+          return set()
+      except (OSError, ValueError, TypeError):
+        return set()
+    return set()
+
+  key = os.path.abspath(state_dir or session_key or "default")
+  return set(_IN_MEMORY_LOADED_SCARS.get(key, set()))
+
+
+def save_session_scars(
+    loaded_ids: Iterable[str],
+    state_dir: Optional[str] = None,
+    session_key: Optional[str] = None,
+) -> None:
+  """Persists the set of loaded scar IDs to <state_dir>/loaded_scars.json or memory."""
+  clean_ids = sorted({str(x).strip() for x in loaded_ids if str(x).strip()})
+  key = os.path.abspath(state_dir or session_key or "default")
+  _IN_MEMORY_LOADED_SCARS[key] = set(clean_ids)
+
+  if state_dir and os.path.isdir(state_dir):
+    ledger_path = os.path.join(state_dir, "loaded_scars.json")
+    payload = {
+        "ticketId": detect_active_ticket_id(state_dir),
+        "loadedIds": clean_ids,
+    }
+    try:
+      with open(ledger_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    except OSError:
+      pass
+
+
+def format_loaded_scar_reminder(scar: Dict[str, Any]) -> Dict[str, Any]:
+  """Formats a compact reminder for a scar already loaded in the current session."""
+  scar_id = str(scar.get("id", ""))
+  title = str(scar.get("title", ""))
+  probe = str(scar.get("socraticProbe") or scar.get("socratic_probe") or "")
+  return {
+      "id": scar_id,
+      "title": title,
+      "category": scar.get("category", ""),
+      "categorySlug": scar.get("categorySlug", ""),
+      "source": scar.get("source", "upstream"),
+      "originalId": scar.get("originalId"),
+      "original_id": scar.get("original_id"),
+      "workflowPhases": scar.get("workflowPhases", []),
+      "workflow_phases": scar.get("workflow_phases", []),
+      "keywords": scar.get("keywords", []),
+      "languages": scar.get("languages", []),
+      "frameworks": scar.get("frameworks", []),
+      "diagnosticCodes": scar.get("diagnosticCodes", []),
+      "diagnostic_codes": scar.get("diagnostic_codes", []),
+      "alreadyLoaded": True,
+      "reminder": (
+          f"Scar {scar_id} ({title}) was already loaded in this session. "
+          "Refer to its reflex and socratic_probe in your context or .workflow/state/ cards."
+      ),
+      "socraticProbe": probe,
+      "socratic_probe": probe,
+  }
+
+
+def partition_session_scars(
+    matches: Sequence[Dict[str, Any]],
+    loaded_ids: Set[str],
+    limit: int = 3,
+    refresh_loaded: bool = False,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Set[str]]:
+  """Partitions query matches into new full scars and compact already-loaded reminders."""
+  eff_limit = max(1, limit)
+  if refresh_loaded:
+    selected = list(matches[:eff_limit])
+    updated = set(loaded_ids) | {
+        str(m["id"]) for m in selected if m.get("id")
+    }
+    return selected, [], updated
+
+  new_scars: List[Dict[str, Any]] = []
+  already_loaded: List[Dict[str, Any]] = []
+  for m in matches:
+    m_id = str(m.get("id", ""))
+    if m_id in loaded_ids:
+      already_loaded.append(format_loaded_scar_reminder(m))
+    else:
+      new_scars.append(m)
+
+  selected_new = new_scars[:eff_limit]
+  updated_loaded = set(loaded_ids) | {
+      str(m["id"]) for m in selected_new if m.get("id")
+  }
+  if selected_new:
+    return selected_new, already_loaded, updated_loaded
+  if already_loaded:
+    rem_slice = already_loaded[:eff_limit]
+    return rem_slice, rem_slice, updated_loaded
+  return [], [], updated_loaded
 
 
 def _sanitize_fts_query(query: str) -> str:
@@ -288,8 +510,17 @@ _SYNONYM_RULES = (
         ("mutex",),
     ),
     (
-        re.compile(r"\b(?:hydration\s+mismatch|ssr\s+hydration)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:hydration\s+mismatch|ssr\s+hydration)\b", re.IGNORECASE
+        ),
         ("hydration",),
+    ),
+    (
+        re.compile(
+            r"\b(?:StreamController|controller\s+disposal|state\s+ownership|dispose\(\))\b",
+            re.IGNORECASE,
+        ),
+        ("focusnode", "texteditingcontroller", "animationcontroller"),
     ),
 )
 
@@ -297,7 +528,7 @@ _LANGUAGE_RULES = (
     (
         "dart",
         re.compile(
-            r"(?:\bdart\b|\bflutter\b|\briverpod\b|\bbloc\b|\bcubit\b|\bpubspec\b|\bCompleter\b|\bWidgetTester\b|\bStatefulWidget\b|\bStatelessWidget\b|\bBuildContext\b|\bfakeAsync\b|\bAsyncNotifier\b|\bStateNotifier\b|\bChangeNotifier\b|\bValueNotifier\b|\.dart\b|```dart\b|SCAR-(?:LANG-DART|FLUTTER|BLOC|RIV|PUB))",
+            r"(?:\bdart\b|\bflutter\b|\briverpod\b|\bbloc\b|\bcubit\b|\bBlocSignal\b|\bCubitSignal\b|\bStreamController\b|\bpubspec\b|\bCompleter\b|\bWidgetTester\b|\bStatefulWidget\b|\bStatelessWidget\b|\bBuildContext\b|\bfakeAsync\b|\bAsyncNotifier\b|\bStateNotifier\b|\bChangeNotifier\b|\bValueNotifier\b|\.dart\b|```dart\b|SCAR-(?:LANG-DART|FLUTTER|BLOC|RIV|PUB))",
             re.IGNORECASE,
         ),
     ),
@@ -754,7 +985,7 @@ def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, List[str]]:
   }
 
 
-def query_scars(
+def _query_single_scars_db(
     db_path: str,
     query: str = "",
     category: Optional[str] = None,
@@ -765,7 +996,7 @@ def query_scars(
     diagnostic_code: Optional[str] = None,
     workflow_phase: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-  """Queries SQLite scars database using FTS5, fallback keyword search, or metadata filters."""
+  """Queries a single SQLite scars database for processed scars only."""
   if not db_path or not os.path.isfile(db_path):
     return []
 
@@ -782,6 +1013,10 @@ def query_scars(
 
     cur.execute("PRAGMA table_info(scars)")
     cols = {r[1] for r in cur.fetchall()}
+    for req_col in ("wound", "trap", "reflex", "socratic_probe"):
+      if req_col not in cols:
+        return []
+
     has_source = "source" in cols
     has_orig_id = "original_id" in cols
     has_raw_hash = "raw_hash" in cols
@@ -790,27 +1025,13 @@ def query_scars(
     has_frameworks = "frameworks" in cols
     has_diag_codes = "diagnostic_codes" in cols
 
-    wound_expr = (
-        "COALESCE(s.wound, s.raw_wound)" if "raw_wound" in cols else "s.wound"
-    )
-    trap_expr = (
-        "COALESCE(s.trap, s.raw_trap)" if "raw_trap" in cols else "s.trap"
-    )
+    wound_expr = "s.wound"
+    trap_expr = "s.trap"
     cb_expr = (
-        "COALESCE(s.circuit_breaker, s.raw_circuit_breaker)"
-        if "raw_circuit_breaker" in cols
-        else "s.circuit_breaker"
+        "COALESCE(s.circuit_breaker, '')" if "circuit_breaker" in cols else "''"
     )
-    reflex_expr = (
-        "COALESCE(s.reflex, s.raw_reflex)"
-        if "raw_reflex" in cols
-        else "s.reflex"
-    )
-    probe_expr = (
-        "COALESCE(s.socratic_probe, '')"
-        if "socratic_probe" in cols
-        else "''"
-    )
+    reflex_expr = "s.reflex"
+    probe_expr = "s.socratic_probe"
     source_col = "s.source" if has_source else "'upstream' AS source"
     orig_id_col = "s.original_id" if has_orig_id else "NULL AS original_id"
     raw_hash_col = "s.raw_hash" if has_raw_hash else "NULL AS raw_hash"
@@ -830,7 +1051,13 @@ def query_scars(
     )
 
     def _append_filters(base_sql: str, params_list: List[Any]) -> Optional[str]:
-      sql_out = base_sql
+      sql_out = (
+          base_sql
+          + "AND s.wound IS NOT NULL AND TRIM(s.wound) != '' "
+          + "AND s.trap IS NOT NULL AND TRIM(s.trap) != '' "
+          + "AND s.reflex IS NOT NULL AND TRIM(s.reflex) != '' "
+          + "AND s.socratic_probe IS NOT NULL AND TRIM(s.socratic_probe) != '' "
+      )
       if source and source.strip():
         if has_source:
           sql_out += "AND LOWER(s.source) = LOWER(?) "
@@ -1038,6 +1265,67 @@ def query_scars(
   finally:
     if conn:
       conn.close()
+
+
+def query_scars(
+    db_path: Union[str, Sequence[str]],
+    query: str = "",
+    category: Optional[str] = None,
+    language: Optional[str] = None,
+    limit: int = 3,
+    source: Optional[str] = None,
+    framework: Optional[str] = None,
+    diagnostic_code: Optional[str] = None,
+    workflow_phase: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+  """Queries one or more stacked SQLite scars databases in precedence order.
+
+  Returns only processed scars (non-empty wound, trap, reflex, socratic_probe)
+  and deduplicates across databases by id and original_id.
+  """
+  if not db_path:
+    return []
+  if isinstance(db_path, str):
+    paths = [db_path]
+  else:
+    paths = [str(p) for p in db_path if p]
+
+  eff_limit = max(1, limit)
+  combined: List[Dict[str, Any]] = []
+  seen_from_prior_dbs: Set[str] = set()
+
+  for single_path in paths:
+    if not os.path.isfile(single_path):
+      continue
+    db_matches = _query_single_scars_db(
+        db_path=single_path,
+        query=query,
+        category=category,
+        language=language,
+        limit=eff_limit + len(seen_from_prior_dbs) + 5,
+        source=source,
+        framework=framework,
+        diagnostic_code=diagnostic_code,
+        workflow_phase=workflow_phase,
+    )
+    current_db_ids: Set[str] = set()
+    for row in db_matches:
+      scar_id = str(row.get("id") or "")
+      orig_id = str(row.get("originalId") or row.get("original_id") or "")
+      if scar_id in seen_from_prior_dbs or (
+          orig_id and orig_id in seen_from_prior_dbs
+      ):
+        continue
+      if scar_id:
+        current_db_ids.add(scar_id)
+      if orig_id:
+        current_db_ids.add(orig_id)
+      combined.append(row)
+      if len(combined) >= eff_limit:
+        return combined
+    seen_from_prior_dbs.update(current_db_ids)
+
+  return combined
 
 
 def _format_scar_row(row: Any) -> Dict[str, Any]:

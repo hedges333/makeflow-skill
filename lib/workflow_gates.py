@@ -661,11 +661,15 @@ class WorkflowGatesScript(BaseScript):
     return 0
 
   def _cleanup_tdd_receipt(self, ticket_id: str) -> None:
-    """Archives or unlinks .workflow/state/30_tdd_receipt.json on intake release."""
-    receipt_path = os.path.join(
-        self.repo_root, ".workflow", "state", "30_tdd_receipt.json"
-    )
-    if not os.path.isfile(receipt_path):
+    """Archives or unlinks 30_tdd_receipt.json and loaded_scars.json on intake release."""
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    json_artifacts = ("30_tdd_receipt.json", "loaded_scars.json")
+    existing = [
+        name
+        for name in json_artifacts
+        if os.path.isfile(os.path.join(state_dir, name))
+    ]
+    if not existing:
       return
 
     completed_action = "unlink"
@@ -680,28 +684,31 @@ class WorkflowGatesScript(BaseScript):
     except (ImportError, OSError):
       completed_action = "unlink"
 
-    try:
-      if completed_action == "archive":
-        from lib.safe_copy import safe_copy_file
-        archive_ticket = (
-            re.sub(r"[^A-Za-z0-9._-]", "_", ticket_id or "").strip("._")
-            or "unknown"
-        )
-        archive_dst = os.path.join(
-            self.repo_root,
-            ".workflow",
-            "archive",
-            archive_ticket,
-            "30_tdd_receipt.json",
-        )
-        safe_copy_file(receipt_path, archive_dst)
-      os.unlink(receipt_path)
-    except (ImportError, OSError) as exc:
-      stream = getattr(self, "stderr", None)
-      if stream is not None:
-        stream.write(
-            f"Warning: failed to clean up {receipt_path}: {exc}\n"
-        )
+    archive_ticket = (
+        re.sub(r"[^A-Za-z0-9._-]", "_", ticket_id or "").strip("._")
+        or "unknown"
+    )
+
+    for artifact_name in existing:
+      artifact_path = os.path.join(state_dir, artifact_name)
+      try:
+        if completed_action == "archive":
+          from lib.safe_copy import safe_copy_file
+          archive_dst = os.path.join(
+              self.repo_root,
+              ".workflow",
+              "archive",
+              archive_ticket,
+              artifact_name,
+          )
+          safe_copy_file(artifact_path, archive_dst)
+        os.unlink(artifact_path)
+      except (ImportError, OSError) as exc:
+        stream = getattr(self, "stderr", None)
+        if stream is not None:
+          stream.write(
+              f"Warning: failed to clean up {artifact_path}: {exc}\n"
+          )
 
   def _check_approved_tree(self) -> int:
     tree_path = os.path.join(

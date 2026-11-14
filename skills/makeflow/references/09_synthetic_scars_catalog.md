@@ -24,9 +24,9 @@ references/
 │   ├── tooling_and_hci.md           <-- SCAR-TOOL-*, SCAR-HCI-*, SCAR-DOC-*
 │   └── architecture.md              <-- SCAR-ARCH-*
 └── polyglot/                        <-- Language Spokes (Domain-Specific)
-    ├── dart_flutter.md              <-- SCAR-LANG-DART-*
-    ├── python.md                    <-- SCAR-LANG-PYTHON-*
-    ├── typescript_node.md           <-- SCAR-LANG-TYPESCRIPT-*
+    ├── dart_flutter.md              <-- Dart and Flutter Stack Guide
+    ├── python.md                    <-- Python Stack Guide
+    ├── typescript_node.md           <-- TypeScript and Node Stack Guide
     └── ... (27 languages)
 ```
 
@@ -120,12 +120,8 @@ Agents must use Socratic Probes during:
 
 ### Language-Specific Failure Vaccines
 
-| Scar ID | Title | Language | Spoke File |
-| :--- | :--- | :--- | :--- |
-| `SCAR-LANG-DART-01` | Async Timers (fakeAsync & Frame Pumping) | Dart & Flutter | [`polyglot/dart_flutter.md`](./polyglot/dart_flutter.md) |
-| `SCAR-LANG-DART-02` | Completer Guard (!isCompleted) | Dart & Flutter | [`polyglot/dart_flutter.md`](./polyglot/dart_flutter.md) |
-| `SCAR-LANG-DART-03` | Cascade AST Node Member Offset Inspection | Dart & Flutter | [`polyglot/dart_flutter.md`](./polyglot/dart_flutter.md) |
-| `SCAR-LANG-DART-04` | Widget Lifecycle & Controller Disposal | Dart & Flutter | [`polyglot/dart_flutter.md`](./polyglot/dart_flutter.md) |
+Language-specific failure vaccines and framework scars are stored in the SQLite registry (`skills/makeflow/data/scars_registry.db`).
+Query them on demand with `workflow_query_scars` using `language` and `framework` filters across Target 15, Target 20, Target 30, Target 40, and Target 70.
 
 ---
 

@@ -28,7 +28,7 @@ Follow five shell hygiene rules in every command script:
 2. Quote path variables such as `"$TARGET_DIR"` to prevent word splitting.
 3. Do not execute dynamic strings with `eval`.
 4. Write commit messages and pull request bodies to files inside `.workflow/state/` and pass `-F <file>` instead of inline shell strings.
-5. If an automation script requires complex string escaping, write the script to a file in a native temporary directory (`SCAR-SH-01`, `SCAR-TOOL-07`). Pass the script path directly to the runtime interpreter command (`dart` or `python3`). This bypasses `noexec` mount restrictions and avoids `chmod +x` permission errors. Prefer Dart over Python if Dart is installed. If Dart is not installed, use Python without attempting to install Dart.
+5. If an automation script requires complex string escaping, write the script to a file in a native temporary directory (`SCAR-SH-01`, `SCAR-TOOL-07`). Pass the script path directly to the runtime interpreter command (`dart` or `python3`). This bypasses `noexec` mount restrictions and avoids `chmod +x` permission errors. Prefer Dart over Python if Dart is installed. If Dart is not installed, use Python without attempting to install Dart. Before writing the temporary script, call `workflow_query_scars` for the selected language (`dart` or `python`).
 
 ## 3. Production Data Protection
 
