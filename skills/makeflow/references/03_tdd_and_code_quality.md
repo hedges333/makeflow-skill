@@ -4,12 +4,13 @@ This manual covers test-driven development (TDD, writing tests before production
 
 ## 1. Review Before Edit (`SCAR-PROC-104`)
 
-Follow four rules before you modify any source file:
+Follow five rules before you modify any source file:
 
 1. Read the file, its imports, its type signatures, and its comments first (`SCAR-PROC-104`).
 2. Make minimal, confident edits that solve the ticket. Do not rewrite an entire module when a three-line fix works.
 3. Leave unrelated defects or style issues untouched, and note them for a separate ticket.
 4. Read and enforce applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`.
+5. Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`) under `SCAR-ARCH-08` and `SCAR-ARCH-05`.
 
 ## 2. Red-Green-Refactor TDD Loop
 
@@ -41,7 +42,7 @@ The `pre_tool_guard.py` hook blocks shell commands attempting output redirection
 
 ### Phase 3: Refactor
 
-1. Remove duplicate logic and keep function interfaces clear.
+1. Remove duplicate logic, keep function interfaces clear, and verify one-way layer boundaries (`entrypoints -> library`, `SCAR-ARCH-08`).
 2. Run the code formatter and linter on the modified files.
 3. Re-run the targeted test command to make sure that tests stay green.
 

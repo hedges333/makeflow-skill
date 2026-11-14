@@ -23,7 +23,7 @@ Antigravity renders an interactive review panel for artifacts. Follow these rule
 11. Do not use shell `rm` commands to delete artifacts. Overwriting with the built-in tool updates markdown content and companion JSON attributes safely.
 12. If `.workflow/state/20_plan_approved.md` exists, never re-execute Target 30 from old artifact notifications. Always verify progress from `.workflow/state/`.
 13. Include Testing Strategy and Burden-Balance Analysis (`SCAR-TEST-11`): In Target 20 plans, disclose testing depth against speed and dependency constraints. Prohibit surface-only testing when hermetic boundary testing is feasible.
-14. Socratic Pre-Planning Inquiry and Invariant Audit: Before writing `.workflow/state/20_plan.md`, interrogate the solution with Socratic pre-planning inquiries. Include the mandatory Socratic Invariant Audit table in every plan artifact.
+14. Socratic Pre-Planning Inquiry and Invariant Audit: Before writing `.workflow/state/20_plan.md`, interrogate the solution with Socratic pre-planning inquiries. Include the mandatory Socratic Invariant Audit table (including `Code Structure and Layer Separation` under `SCAR-ARCH-08`) in every plan artifact. Disclose each file layer role, and offer a user choice at Target 20 when an existing layout is messy.
 
 ### 1.2 Pause Gates, Question Prompts, and Declaration Authority (SCAR-PROC-102)
 
@@ -154,6 +154,7 @@ Keep each code change small and within ticket scope.
 5. Use an ORM (a library that maps database rows to objects) by default. If large datasets slow down the ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
 6. If you find unrelated defects during a ticket, do not edit them. Record them in ticket notes for a separate task.
 7. Anti-speculative defenses and caller grounding (`SCAR-ARCH-07`): Defend only against inputs and states reachable by verified, real callers. Do not add speculative defense layers, multi-source regex heuristics, or unrequested CLI flag-order handling for internal scripts invoked only by deterministic targets. Balance "the problem could occur" against "the problem will occur": if an edge case is certain to occur for actual callers, address it; if it is merely hypothetical problem-hunting without observed failures, defer defense until a bug is observed or reported.
+8. Polyglot layer separation and structural debt triage (`SCAR-ARCH-08`): Follow `skills/makeflow/references/polyglot/<lang>.md` and enforce one-way dependencies (`entrypoints -> library`). Adapt to clean existing layouts, and enforce canonical layouts for new subprojects. If an existing layout is messy, offer a user choice at Target 20. Either keep in-ticket edits minimal with a follow-up ticket, or include scoped reorganization with explicit human approval.
 
 ### 3.1 Temporary Script and Automation Rules (`SCAR-SH-01`, `SCAR-TOOL-07`, `SCAR-ARCH-05`)
 

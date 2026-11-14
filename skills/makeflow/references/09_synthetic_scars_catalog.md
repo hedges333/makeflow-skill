@@ -116,6 +116,7 @@ Agents must use Socratic Probes during:
 | `SCAR-ARCH-05` | Testable Object-Oriented Script Template (BaseScript Pattern) | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 | `SCAR-ARCH-06` | Just-in-Time Vector 4 Reflex Gates | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 | `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
+| `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 
 ### Language-Specific Failure Vaccines
 

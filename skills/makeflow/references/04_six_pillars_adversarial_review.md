@@ -164,6 +164,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 - **Design Pattern Discipline**: Does the code use suitable Gang of Four or Game Programming Patterns (`14_design_patterns_and_architecture.md`) without introducing unnecessary abstraction layers?
 - **Persistence Boundaries**: Does the code use an ORM for standard entity relationships? If processing high-volume datasets, are parameterized queries cleanly encapsulated behind repository interfaces?
 - **Structural Decoupling**: Are user interfaces, business logic controllers, and runtime entry points cleanly separated?
+- **Polyglot Layer Separation and Structural Debt Triage (`SCAR-ARCH-08`)**: Does the diff respect `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`)? Treat new layer-boundary violations introduced in the diff as Pillar 3 Blockers. Treat pre-existing structural debt in adjacent legacy files as Non-Blocking Observations (`SCAR-PROC-108`) to prevent unapproved mid-ticket directory reorganizations.
 - **Socratic Probe**: Does this design create tight coupling or premature abstractions that will complicate future maintenance?
 
 ### 4. Blast Radius

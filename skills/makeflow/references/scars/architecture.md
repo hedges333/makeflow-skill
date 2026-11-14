@@ -9,6 +9,7 @@ This reference manual documents universal architecture and software design patte
 | `SCAR-ARCH-05` | Testable Object-Oriented Script Template (BaseScript Pattern) | Script Lifecycles & In-Memory Testability |
 | `SCAR-ARCH-06` | Just-in-Time Vector 4 Reflex Gates | Context Budget & Runtime Recovery |
 | `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture & Caller Invariants |
+| `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Layer Boundaries & Structural Triage |
 
 ---
 
@@ -32,3 +33,10 @@ This reference manual documents universal architecture and software design patte
 - **Trap**: Designing or critiquing code around hypothetical "what if" scenarios before verifying who calls the code and whether the problem exists in practice.
 - **Permanent Reflex**: Ground every implementation branch and review finding in an observed failure or a concrete caller contract. If a caller is internal and deterministic, reject speculative flag-shuffling or heuristic fallbacks. Balance "the problem could occur" against "the problem will occur": address certain failures, but defer hypothetical problems until a bug is observed or reported.
 - **Socratic Probe**: Have you identified a specific, existing use case or real caller contract that makes this change necessary?
+
+### SCAR-ARCH-08: Polyglot Layer Separation and Structural Debt Triage
+
+- **Wound**: Copying sibling file placement into a conflated directory compounds structural debt and cross-entrypoint coupling, while unapproved mid-ticket directory reorganizations cause severe blast-radius regressions.
+- **Trap**: Adding new domain logic into executable scripts or flat directories without auditing structure at Target 15 and Target 20. Reorganizing unrelated legacy directories mid-ticket without explicit Target 20 human approval.
+- **Permanent Reflex**: Audit subproject layout at Target 15 against `skills/makeflow/references/polyglot/<lang>.md` and disclose module placement in `20_plan.md`. Enforce one-way dependencies (`entrypoints -> library`). If an existing layout is messy, offer a user choice at Target 20. Either keep in-ticket edits minimal with a follow-up ticket, or include scoped reorganization with explicit human approval.
+- **Socratic Probe**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?

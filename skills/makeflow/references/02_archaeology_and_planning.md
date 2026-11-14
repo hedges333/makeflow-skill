@@ -8,7 +8,7 @@ Do not plan code edits from guesswork. Inspect the repository first to gather fa
 
 1. Fork an `archaeology-worker` subagent so the supervisor context stays small.
 2. Scan the repository across all 27 supported languages to find every subproject root, manifest, runtime, and test runner.
-3. Read sibling modules so that new code matches existing names, error handling, and return types.
+3. Read sibling modules so that new code matches existing names, error handling, and return types. Record **Module Layout and Layer Separation** against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`), and flag structural anti-patterns with Belnap `ESTABLISHED` file evidence.
 4. Inspect `.workflow/config.json`, environment variables, and database manifests to identify live and test database names.
 5. Tag each technical claim with one Belnap truth state (a four-state fact label):
    - `ESTABLISHED`: Proved true by reading source files or test output.
@@ -39,7 +39,7 @@ Write the implementation plan to `.workflow/state/20_plan.md`.
 
 ### 2.1 Socratic Pre-Planning Deliberation
 
-Do not draft implementation plans from passive checklists. Before writing `.workflow/state/20_plan.md`, interrogate your proposed solution with these four Socratic questions:
+Do not draft implementation plans from passive checklists. Before writing `.workflow/state/20_plan.md`, interrogate your proposed solution with these seven Socratic questions:
 
 1. **Targeted Test Loops (`SCAR-PROC-104`, `SCAR-TEST-09`)**: Will running targeted test loops with fail-fast flags (`-v -x`) isolate failures before running full test suites?
 2. **Hermetic Test Isolation (`SCAR-TEST-08`)**: Can tests run in memory, in temporary directories, or against mock fixtures without touching live databases or systems?
@@ -47,6 +47,7 @@ Do not draft implementation plans from passive checklists. Before writing `.work
 4. **Comprehensive Coverage**: Do new tests reproduce the conditions and desired behavior addressed by the change request ticket?
 5. **Minimal Scoped Edits (`SCAR-PROC-104`)**: If you keep changes narrow and leave unrelated defects for future tickets, will regressions be less likely?
 6. **Two-Tier Scar Discovery**: Did you check Tier 1 core scars (`skills/makeflow/references/scars/`) and Tier 2 project-local scars (`.workflow/scars/`) for relevant failure reflexes?
+7. **Code Structure and Layer Separation (`SCAR-ARCH-08`)**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?
 
 ### 2.2 Socratic Invariant Audit Table
 
@@ -59,13 +60,17 @@ Include this audit table in every `.workflow/state/20_plan.md`:
 | **Existing Test Modification** | If any existing test is altered, why does this modification not mask a regression? | State the semantic reason, or note that zero existing tests change. |
 | **Comprehensive Coverage** | Do new tests model the desired behavior of the new feature or bug fix? | State the ways that new tests will comprehensively cover the requested change. |
 | **Minimal Scoped Edits** | What files will remain untouched, and how are unrelated defects quarantined? | List untouched modules and verify ticket scope boundaries. |
+| **Code Structure and Layer Separation** | Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization? | State the layer role of each file and the structural posture (`SCAR-ARCH-08`). |
 
 ### 2.3 Required Plan Disclosures
 
 Include these seven items in every plan:
 
 1. Target subprojects and programming languages involved in the task.
-2. Exact file paths to create or edit.
+2. Exact file paths to create or edit, the layer role of each planned file (library module, thin entrypoint, or test), and the three-tier structural posture (`SCAR-ARCH-08`):
+   - **Adapt to clean existing layout**: Place files in the subproject's established layers.
+   - **Enforce canonical layout for new subprojects or subsystems**: Follow `skills/makeflow/references/polyglot/<lang>.md` and `entrypoints -> library` one-way dependencies.
+   - **Flag messy existing layout at Target 15 and Target 20**: Offer a user choice at Target 20. Either keep in-ticket edits minimal with a follow-up reorganization ticket, or include scoped reorganization with explicit human approval.
 3. Targeted subproject test commands for Target 30 and full repository test commands for Target 50.
 4. Smoke test files and directories to create if the subproject lacks tests.
 5. Any existing tests that must change, paired with the technical reason for each change.
