@@ -21,7 +21,7 @@ This repository uses the Makefile Workflow. Follow these rules for every coding 
 8. Write documentation, commit messages, and pull request summaries in Simple English with short sentences and active voice.
 9. Intercept POSIX signals (`SIGTERM` and `SIGINT`) in long-running workers and clean up lockfiles under `SCAR-SYS-07`.
 10. If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the path to the runtime interpreter under `SCAR-SH-01`.
-11. Encapsulate script logic in testable classes using the BaseScript Template Method pattern under `SCAR-ARCH-05`. Separate library modules in `lib/` without shebangs, thin CLI wrappers in `scripts/`, and unit tests in `tests/`.
+11. Encapsulate script logic in testable classes using the BaseScript Template Method pattern under `SCAR-ARCH-05`. Separate library modules in `lib/` without shebangs, thin CLI wrappers in `scripts/`, and unit tests in `tests/`. Enforce polyglot layer separation (`entrypoints -> library`) and Target 20 structural debt triage under `SCAR-ARCH-08`.
 12. Use atomic directory creation (`mkdir`) for mutual exclusion locks under `SCAR-SYS-08`.
 13. Never arbitrarily impose `--limit` or truncation flags before assessing the full dataset. If output volume threatens context limits, halt tool execution immediately. Interview the user to select a triage path under `SCAR-TOOL-16`.
 

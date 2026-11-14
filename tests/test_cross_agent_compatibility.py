@@ -1067,6 +1067,515 @@ def validate_polyglot_directory_and_module_structure() -> list[str]:
   return errors
 
 
+SCAR_ARCH_08_ADAPTER_FILES = (
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+SCAR_ARCH_08_TARGET_FILES = (
+    "skills/makeflow/references/scars/architecture.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "agents/archaeology-worker.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/11_polyglot_monorepos.md",
+    "rules/AGENTS.md",
+    "agents/tdd-worker.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "agents/adversarial-critic.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+) + SCAR_ARCH_08_ADAPTER_FILES
+
+
+def check_scar_arch_08_layer_separation(
+    files_map: dict[str, str],
+) -> list[str]:
+  """Validates SCAR-ARCH-08 and shift-left structural review invariants across Target 15/20/30/40 (GH-175)."""
+  errs = []
+  for rel in SCAR_ARCH_08_TARGET_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # a. skills/makeflow/references/scars/architecture.md
+  arch_rel = "skills/makeflow/references/scars/architecture.md"
+  arch_text = files_map[arch_rel]
+  table_match = re.search(
+      r"## Scars in this Category.*?(?=\n###|\Z)", arch_text, re.DOTALL
+  )
+  table_sec = table_match.group(0) if table_match else ""
+  if (
+      "SCAR-ARCH-08" not in table_sec
+      or "Polyglot Layer Separation and Structural Debt Triage" not in table_sec
+  ):
+    errs.append(
+        f"{arch_rel} category table must list SCAR-ARCH-08 (Polyglot Layer Separation and Structural Debt Triage)"
+    )
+
+  m07 = re.search(r"(?m)^###\s+SCAR-ARCH-07\b", arch_text)
+  m08 = re.search(
+      r"(?m)^###\s+SCAR-ARCH-08:\s+Polyglot Layer Separation and Structural Debt Triage\b",
+      arch_text,
+  )
+  if not (m07 and m08 and m07.start() < m08.start()):
+    errs.append(
+        f"{arch_rel} must define '### SCAR-ARCH-08: Polyglot Layer Separation and Structural Debt Triage' monotonically after SCAR-ARCH-07"
+    )
+  else:
+    sec08 = arch_text[m08.start() :].split("\n### SCAR-")[0]
+    extracted = {}
+    req_fields = ("Wound", "Trap", "Permanent Reflex", "Socratic Probe")
+    for field in req_fields:
+      fm = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", sec08)
+      val = fm.group(1).strip() if fm else ""
+      extracted[field] = val
+      if not val:
+        errs.append(f"{arch_rel} SCAR-ARCH-08 missing non-empty '**{field}**:'")
+
+    for tok in (
+        "skills/makeflow/references/polyglot/<lang>.md",
+        "20_plan.md",
+        "entrypoints -> library",
+        "Target 15",
+        "Target 20",
+    ):
+      if tok not in sec08:
+        errs.append(f"{arch_rel} SCAR-ARCH-08 missing required token '{tok}'")
+
+    if all(extracted[f] for f in req_fields):
+      candidate = {
+          "id": "SCAR-ARCH-08",
+          "raw_wound": extracted["Wound"],
+          "wound": extracted["Wound"],
+          "raw_trap": extracted["Trap"],
+          "trap": extracted["Trap"],
+          "raw_circuit_breaker": "",
+          "circuit_breaker": "",
+          "raw_reflex": extracted["Permanent Reflex"],
+          "reflex": extracted["Permanent Reflex"],
+          "socratic_probe": extracted["Socratic Probe"],
+      }
+      errs.extend(ScarCandidateValidator().validate(candidate))
+      probe_sents = split_into_sentences(extracted["Socratic Probe"])
+      if not (1 <= len(probe_sents) <= 3):
+        errs.append(
+            f"{arch_rel} SCAR-ARCH-08 Socratic Probe must contain 1-3 '?' sentences, found {len(probe_sents)}"
+        )
+
+  errs.extend(_check_prose_punctuation(arch_rel, arch_text))
+
+  # b. skills/makeflow/references/09_synthetic_scars_catalog.md
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_text = files_map[cat_rel]
+  if not check_scar_catalog_routing(cat_text, "SCAR-ARCH-08", "architecture.md"):
+    errs.append(
+        f"{cat_rel} Master Routing Table must strictly route SCAR-ARCH-08 to scars/architecture.md"
+    )
+  c07 = re.search(r"(?m)^\|\s*`SCAR-ARCH-07`\s*\|", cat_text)
+  c08 = re.search(r"(?m)^\|\s*`SCAR-ARCH-08`\s*\|", cat_text)
+  if not (c07 and c08 and c07.start() < c08.start()):
+    errs.append(
+        f"{cat_rel} must place SCAR-ARCH-08 monotonically after SCAR-ARCH-07"
+    )
+
+  # c. Target 15: agents/archaeology-worker.md and 02_archaeology_and_planning.md (Section 1)
+  aw_rel = "agents/archaeology-worker.md"
+  aw_text = files_map[aw_rel]
+  for tok in (
+      "Module Layout and Layer Separation",
+      "skills/makeflow/references/polyglot/<lang>.md",
+      "SCAR-ARCH-08",
+      "ESTABLISHED",
+  ):
+    if tok not in aw_text:
+      errs.append(f"{aw_rel} missing required Target 15 structural token '{tok}'")
+  if "anti-pattern" not in aw_text.lower():
+    errs.append(f"{aw_rel} must instruct flagging structural anti-patterns")
+
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  r02_sec1 = _extract_markdown_h2_section(r02_text, "## 1. Target 15")
+  for tok in (
+      "Module Layout and Layer Separation",
+      "skills/makeflow/references/polyglot/<lang>.md",
+      "SCAR-ARCH-08",
+      "ESTABLISHED",
+  ):
+    if tok not in r02_sec1:
+      errs.append(
+          f"{r02_rel} Section 1 missing required Target 15 structural token '{tok}'"
+      )
+  if "anti-pattern" not in r02_sec1.lower():
+    errs.append(
+        f"{r02_rel} Section 1 must require flagging structural anti-patterns"
+    )
+
+  # d. Target 20: 02_archaeology_and_planning.md (Section 2), 11_polyglot_monorepos.md, rules/AGENTS.md
+  r02_sec2 = _extract_markdown_h2_section(r02_text, "## 2. Target 20")
+  if (
+      "### 2.1 Socratic Pre-Planning Deliberation" not in r02_sec2
+      or "### 2.2 Socratic Invariant Audit Table" not in r02_sec2
+      or "### 2.3 Required Plan Disclosures" not in r02_sec2
+  ):
+    errs.append(f"{r02_rel} Section 2 missing required 2.1, 2.2, or 2.3 headings")
+  else:
+    s21 = r02_sec2.split("### 2.1 Socratic Pre-Planning Deliberation")[1].split(
+        "### 2.2"
+    )[0]
+    s22 = r02_sec2.split("### 2.2 Socratic Invariant Audit Table")[1].split(
+        "### 2.3"
+    )[0]
+    s23 = r02_sec2.split("### 2.3 Required Plan Disclosures")[1]
+
+    if "Code Structure and Layer Separation" not in s21 or "SCAR-ARCH-08" not in s21:
+      errs.append(
+          f"{r02_rel} Section 2.1 must include Socratic question on Code Structure and Layer Separation (SCAR-ARCH-08)"
+      )
+    if (
+        "| **Code Structure and Layer Separation** |" not in s22
+        or "SCAR-ARCH-08" not in s22
+    ):
+      errs.append(
+          f"{r02_rel} Section 2.2 Socratic Invariant Audit Table must include row '**Code Structure and Layer Separation**' citing SCAR-ARCH-08"
+      )
+    for tok in (
+        "layer role",
+        "Adapt to clean existing layout",
+        "Enforce canonical layout for new subprojects or subsystems",
+        "Flag messy existing layout at Target 15 and Target 20",
+        "SCAR-ARCH-08",
+    ):
+      if tok not in s23:
+        errs.append(
+            f"{r02_rel} Section 2.3 missing required plan disclosure token '{tok}'"
+        )
+
+  r11_rel = "skills/makeflow/references/11_polyglot_monorepos.md"
+  r11_text = files_map[r11_rel]
+  r11_sec1 = _extract_markdown_h2_section(r11_text, "## 1. Subproject Discovery")
+  r11_sec2 = _extract_markdown_h2_section(r11_text, "## 2. Directory Layout Rules")
+  for tok in (
+      "Module Layout and Layer Separation",
+      "skills/makeflow/references/polyglot/<lang>.md",
+      "SCAR-ARCH-08",
+  ):
+    if tok not in r11_sec1:
+      errs.append(f"{r11_rel} Section 1 missing required token '{tok}'")
+  for tok in (
+      "SCAR-ARCH-08",
+      "entrypoints -> library",
+      "Adapt to clean existing layout",
+      "Enforce canonical layout",
+      "Flag messy existing layout",
+  ):
+    if tok not in r11_sec2:
+      errs.append(f"{r11_rel} Section 2 missing required token '{tok}'")
+
+  agents_rel = "rules/AGENTS.md"
+  agents_text = files_map[agents_rel]
+  for tok in (
+      "SCAR-ARCH-08",
+      "entrypoints -> library",
+      "skills/makeflow/references/polyglot/<lang>.md",
+      "layer role",
+  ):
+    if tok not in agents_text:
+      errs.append(f"{agents_rel} missing required token '{tok}'")
+  if "messy" not in agents_text.lower() or "choice" not in agents_text.lower():
+    errs.append(
+        f"{agents_rel} must document Target 20 user choice when existing layout is messy"
+    )
+
+  # e. Target 30: agents/tdd-worker.md and 03_tdd_and_code_quality.md
+  for t30_rel in (
+      "agents/tdd-worker.md",
+      "skills/makeflow/references/03_tdd_and_code_quality.md",
+  ):
+    t30_text = files_map[t30_rel]
+    for tok in (
+        "SCAR-ARCH-08",
+        "SCAR-ARCH-05",
+        "skills/makeflow/references/polyglot/<lang>.md",
+        "entrypoints -> library",
+    ):
+      if tok not in t30_text:
+        errs.append(f"{t30_rel} missing required Target 30 token '{tok}'")
+
+  # f. Target 40: agents/adversarial-critic.md and 04_six_pillars_adversarial_review.md
+  for t40_rel in (
+      "agents/adversarial-critic.md",
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+  ):
+    t40_text = files_map[t40_rel]
+    p3_match = re.search(
+        r"(?m)^###\s+3\.\s+Architecture\b.*?(?=^###\s+4\b|\Z)",
+        t40_text,
+        re.DOTALL,
+    )
+    p3_sec = p3_match.group(0) if p3_match else ""
+    p3_lower = p3_sec.lower()
+    if "SCAR-ARCH-08" not in p3_sec:
+      errs.append(f"{t40_rel} Pillar 3 must reference SCAR-ARCH-08")
+    if "SCAR-PROC-108" not in p3_sec:
+      errs.append(f"{t40_rel} Pillar 3 must reference SCAR-PROC-108")
+    if (
+        ("layer-boundary" not in p3_lower and "layer boundary" not in p3_lower)
+        or "blocker" not in p3_lower
+    ):
+      errs.append(
+          f"{t40_rel} Pillar 3 must classify new layer-boundary violations in the diff as Pillar 3 Blockers"
+      )
+    if (
+        "pre-existing structural debt" not in p3_lower
+        or "non-blocking observation" not in p3_lower
+    ):
+      errs.append(
+          f"{t40_rel} Pillar 3 must classify pre-existing structural debt in adjacent legacy files as Non-Blocking Observations"
+      )
+
+  # g. 5 Agent Adapters
+  for adapter_rel in SCAR_ARCH_08_ADAPTER_FILES:
+    ad_text = files_map[adapter_rel]
+    for tok in ("SCAR-ARCH-08", "SCAR-ARCH-05", "entrypoints -> library"):
+      if tok not in ad_text:
+        errs.append(f"{adapter_rel} missing required token '{tok}'")
+
+  return errs
+
+
+def validate_polyglot_layer_separation_scar_arch_08() -> list[str]:
+  """Validates SCAR-ARCH-08 codification and Target 15/20/30/40 shift-left structural rules (GH-175)."""
+  errors = []
+  repo_files = {}
+  for rel in SCAR_ARCH_08_TARGET_FILES:
+    fpath = repo_path(rel)
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        repo_files[rel] = f.read()
+
+  errors.extend(check_scar_arch_08_layer_separation(repo_files))
+
+  # Hermetic in-memory negative falsification checks (SCAR-TEST-11)
+  sample_files = {
+      "skills/makeflow/references/scars/architecture.md": (
+          "# Architecture and Pattern Scars\n\n"
+          "## Scars in this Category\n\n"
+          "| ID | Title | Scope |\n"
+          "| :--- | :--- | :--- |\n"
+          "| `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture |\n"
+          "| `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Layer Boundaries & Structural Triage |\n\n"
+          "### SCAR-ARCH-07: Anti-Speculative Defenses and Caller Grounding\n\n"
+          "- **Wound**: Speculative regex branches stalled reviews.\n"
+          "- **Trap**: Designing around hypothetical scenarios.\n"
+          "- **Permanent Reflex**: Ground every branch in a real caller contract.\n"
+          "- **Socratic Probe**: Have you identified a real caller contract?\n\n"
+          "### SCAR-ARCH-08: Polyglot Layer Separation and Structural Debt Triage\n\n"
+          "- **Wound**: Copying sibling file placement into a conflated directory compounds structural debt and cross-entrypoint coupling, while unapproved mid-ticket directory reorganizations cause severe blast-radius regressions.\n"
+          "- **Trap**: Adding new domain logic into executable scripts or flat directories without auditing structure at Target 15 and Target 20. Reorganizing unrelated legacy directories mid-ticket without explicit Target 20 human approval.\n"
+          "- **Permanent Reflex**: Audit subproject layout at Target 15 against `skills/makeflow/references/polyglot/<lang>.md` and disclose module placement in `20_plan.md`. Enforce one-way dependencies (`entrypoints -> library`). If an existing layout is messy, offer a user choice at Target 20. Either keep in-ticket edits minimal with a follow-up ticket, or include scoped reorganization with explicit human approval.\n"
+          "- **Socratic Probe**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?\n"
+      ),
+      "skills/makeflow/references/09_synthetic_scars_catalog.md": (
+          "| `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+          "| `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+      ),
+      "agents/archaeology-worker.md": (
+          "Record Module Layout and Layer Separation against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`) "
+          "and flag structural anti-patterns with Belnap `ESTABLISHED` file evidence.\n"
+      ),
+      "skills/makeflow/references/02_archaeology_and_planning.md": (
+          "## 1. Target 15: Codebase Archaeology\n"
+          "Record Module Layout and Layer Separation against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`) "
+          "and flag structural anti-patterns with Belnap `ESTABLISHED` file evidence.\n\n"
+          "## 2. Target 20: Plan File Creation (`20_plan.md`)\n"
+          "### 2.1 Socratic Pre-Planning Deliberation\n"
+          "7. **Code Structure and Layer Separation (`SCAR-ARCH-08`)**: Does this change place reusable logic in idiomatic layers?\n"
+          "### 2.2 Socratic Invariant Audit Table\n"
+          "| **Code Structure and Layer Separation** | Does this change place reusable logic in idiomatic layers? | State layer role (`SCAR-ARCH-08`). |\n"
+          "### 2.3 Required Plan Disclosures\n"
+          "State the layer role of each planned file under `SCAR-ARCH-08`: "
+          "Adapt to clean existing layout, Enforce canonical layout for new subprojects or subsystems, "
+          "or Flag messy existing layout at Target 15 and Target 20.\n"
+      ),
+      "skills/makeflow/references/11_polyglot_monorepos.md": (
+          "## 1. Subproject Discovery (Target 15)\n"
+          "6. **Module Layout and Layer Separation** compared against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`).\n"
+          "## 2. Directory Layout Rules\n"
+          "Enforce `SCAR-ARCH-08` (`entrypoints -> library`): Adapt to clean existing layout, "
+          "Enforce canonical layout for new subprojects or subsystems, or Flag messy existing layout.\n"
+      ),
+      "rules/AGENTS.md": (
+          "Disclose each file layer role in `20_plan.md` under `SCAR-ARCH-08` (`skills/makeflow/references/polyglot/<lang>.md`, "
+          "`entrypoints -> library`). If an existing layout is messy, offer a user choice at Target 20.\n"
+      ),
+      "agents/tdd-worker.md": (
+          "Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and `SCAR-ARCH-08` "
+          "(`entrypoints -> library`) alongside `SCAR-ARCH-05`.\n"
+      ),
+      "skills/makeflow/references/03_tdd_and_code_quality.md": (
+          "Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and `SCAR-ARCH-08` "
+          "(`entrypoints -> library`) alongside `SCAR-ARCH-05`.\n"
+      ),
+      "agents/adversarial-critic.md": (
+          "### 3. Architecture\n"
+          "Enforce `SCAR-ARCH-08`: treat new layer-boundary violations in the diff as Pillar 3 Blockers, "
+          "and treat pre-existing structural debt in adjacent legacy files as Non-Blocking Observations (`SCAR-PROC-108`).\n"
+          "### 4. Blast Radius\n"
+      ),
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md": (
+          "### 3. Architecture\n"
+          "Enforce `SCAR-ARCH-08`: treat new layer-boundary violations in the diff as Pillar 3 Blockers, "
+          "and treat pre-existing structural debt in adjacent legacy files as Non-Blocking Observations (`SCAR-PROC-108`).\n"
+          "### 4. Blast Radius\n"
+      ),
+  }
+  for ad_rel in SCAR_ARCH_08_ADAPTER_FILES:
+    sample_files[ad_rel] = (
+        "Follow `SCAR-ARCH-05` and `SCAR-ARCH-08` (`entrypoints -> library`).\n"
+    )
+
+  baseline_errs = check_scar_arch_08_layer_separation(sample_files)
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for SCAR-ARCH-08: {baseline_errs}"
+    )
+
+  # 1) Missing SCAR-ARCH-08 or missing Four-Part Anatomy field in architecture.md
+  bad_arch = dict(sample_files)
+  bad_arch["skills/makeflow/references/scars/architecture.md"] = bad_arch[
+      "skills/makeflow/references/scars/architecture.md"
+  ].replace("- **Socratic Probe**:", "- **Other Field**:")
+  if not any(
+      "missing non-empty '**Socratic Probe**:'" in e
+      for e in check_scar_arch_08_layer_separation(bad_arch)
+  ):
+    errors.append(
+        "Negative falsification failed: missing Socratic Probe in architecture.md was not rejected"
+    )
+
+  # 2) Misrouted SCAR-ARCH-08 row in 09_synthetic_scars_catalog.md
+  bad_cat = dict(sample_files)
+  bad_cat["skills/makeflow/references/09_synthetic_scars_catalog.md"] = (
+      "| `SCAR-ARCH-07` | Anti-Speculative Defenses | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+      "| `SCAR-ARCH-08` | Polyglot Layer Separation | Architecture | [`scars/process.md`](./scars/process.md) |\n"
+  )
+  if not any(
+      "must strictly route SCAR-ARCH-08 to scars/architecture.md" in e
+      for e in check_scar_arch_08_layer_separation(bad_cat)
+  ):
+    errors.append(
+        "Negative falsification failed: misrouted SCAR-ARCH-08 catalog row was not rejected"
+    )
+
+  # 3) Permanent Reflex sentence exceeding 20 words or containing a prose semicolon ';'
+  bad_reflex_long = dict(sample_files)
+  bad_reflex_long["skills/makeflow/references/scars/architecture.md"] = (
+      bad_reflex_long[
+          "skills/makeflow/references/scars/architecture.md"
+      ].replace(
+          "Enforce one-way dependencies (`entrypoints -> library`).",
+          "Enforce strict one-way dependencies (`entrypoints -> library`) across every single module directory inside the entire active repository workspace before running any unit tests today.",
+      )
+  )
+  if not any(
+      "reflex" in e.lower() and "> 20 words" in e.lower()
+      for e in check_scar_arch_08_layer_separation(bad_reflex_long)
+  ):
+    errors.append(
+        "Negative falsification failed: >20-word Permanent Reflex sentence was not rejected"
+    )
+
+  bad_reflex_semi = dict(sample_files)
+  bad_reflex_semi["skills/makeflow/references/scars/architecture.md"] = (
+      bad_reflex_semi[
+          "skills/makeflow/references/scars/architecture.md"
+      ].replace(
+          "Enforce one-way dependencies (`entrypoints -> library`). If",
+          "Enforce one-way dependencies (`entrypoints -> library`); if",
+      )
+  )
+  if not any(
+      "semicolon" in e.lower()
+      for e in check_scar_arch_08_layer_separation(bad_reflex_semi)
+  ):
+    errors.append(
+        "Negative falsification failed: prose semicolon in SCAR-ARCH-08 was not rejected"
+    )
+
+  # 4) Missing 6th subproject fact (Module Layout and Layer Separation) in agents/archaeology-worker.md
+  bad_aw = dict(sample_files)
+  bad_aw["agents/archaeology-worker.md"] = "Record five facts only.\n"
+  if not any(
+      "agents/archaeology-worker.md" in e
+      and "Module Layout and Layer Separation" in e
+      for e in check_scar_arch_08_layer_separation(bad_aw)
+  ):
+    errors.append(
+        "Negative falsification failed: missing Module Layout and Layer Separation in archaeology-worker.md was not rejected"
+    )
+
+  # 5) Missing Code Structure and Layer Separation row or three-tier posture in 02_archaeology_and_planning.md
+  bad_r02 = dict(sample_files)
+  bad_r02["skills/makeflow/references/02_archaeology_and_planning.md"] = (
+      bad_r02[
+          "skills/makeflow/references/02_archaeology_and_planning.md"
+      ].replace(
+          "| **Code Structure and Layer Separation** |",
+          "| **Other Row** |",
+      ).replace(
+          "Adapt to clean existing layout",
+          "Omitted posture",
+      )
+  )
+  r02_errs = check_scar_arch_08_layer_separation(bad_r02)
+  if not any("Code Structure and Layer Separation" in e for e in r02_errs) or not any(
+      "Adapt to clean existing layout" in e for e in r02_errs
+  ):
+    errors.append(
+        "Negative falsification failed: missing Code Structure row or three-tier posture in 02_archaeology_and_planning.md was not rejected"
+    )
+
+  # 6) Missing SCAR-ARCH-08 in agents/tdd-worker.md or 03_tdd_and_code_quality.md
+  bad_tdd = dict(sample_files)
+  bad_tdd["agents/tdd-worker.md"] = "Follow SCAR-ARCH-05 only.\n"
+  if not any(
+      "agents/tdd-worker.md" in e and "SCAR-ARCH-08" in e
+      for e in check_scar_arch_08_layer_separation(bad_tdd)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-08 in tdd-worker.md was not rejected"
+    )
+
+  # 7) Missing Pillar 3 Blocker vs Non-Blocking Observation (SCAR-PROC-108) distinction in critic files
+  bad_critic = dict(sample_files)
+  bad_critic["agents/adversarial-critic.md"] = (
+      "### 3. Architecture\nEnforce `SCAR-ARCH-08`.\n### 4. Blast Radius\n"
+  )
+  critic_errs = check_scar_arch_08_layer_separation(bad_critic)
+  if not any("Pillar 3 Blockers" in e for e in critic_errs) or not any(
+      "Non-Blocking Observations" in e for e in critic_errs
+  ):
+    errors.append(
+        "Negative falsification failed: missing Pillar 3 Blocker vs NBO distinction in adversarial-critic.md was not rejected"
+    )
+
+  # 8) Missing SCAR-ARCH-08 in any of the 5 adapters
+  bad_adapter = dict(sample_files)
+  bad_adapter["CLAUDE.md"] = "Follow SCAR-ARCH-05 only.\n"
+  if not any(
+      "CLAUDE.md" in e and "SCAR-ARCH-08" in e
+      for e in check_scar_arch_08_layer_separation(bad_adapter)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-08 in CLAUDE.md was not rejected"
+    )
+
+  return errors
+
+
 def validate_vector4_reflex_gates_scar():
   """Validates Just-in-Time Vector 4 Reflex gates and SCAR-ARCH-06 (GH-57)."""
   errors = []
@@ -5924,8 +6433,8 @@ def validate():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 58:
-    errors.append(f"Expected 58 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 59:
+    errors.append(f"Expected 59 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -6667,6 +7176,15 @@ def validate():
   if not polyglot_dir_errors:
     print(
         "✔ Polyglot idiomatic directory and module structure (GH-174)"
+        " verified."
+    )
+
+  # Polyglot Layer Separation and Structural Debt Triage Invariants (GH-175, SCAR-ARCH-08)
+  scar_arch_08_errors = validate_polyglot_layer_separation_scar_arch_08()
+  errors.extend(scar_arch_08_errors)
+  if not scar_arch_08_errors:
+    print(
+        "✔ Polyglot layer separation and structural debt triage (GH-175, SCAR-ARCH-08)"
         " verified."
     )
 

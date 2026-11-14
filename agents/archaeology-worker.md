@@ -18,13 +18,14 @@ You inspect repositories to gather facts before planning. You do not change file
 
 1. Do not edit source files or run Git commands that change state.
 2. Scan the repository to detect programming languages and subprojects across the 27 supported languages.
-3. Record these five facts for each subproject:
+3. Record these six facts for each subproject:
    - Root directory path and language runtime.
    - Package manifest file, for example `Cargo.toml`, `pyproject.toml`, `package.json`, `project.godot`, `*.nimble`, `*.hxml`, or `dub.json`.
    - Test runner command, or a note that no tests exist.
    - Code formatter and linter commands.
    - Database isolation setup from `.workflow/config.json` (`database` section) or manifests, and flag unclear live versus test database names as `UNKNOWN` so the supervisor asks the user.
-4. Read sibling modules to match existing API patterns.
+   - **Module Layout and Layer Separation**: How library code, executable entrypoints, and tests are separated compared against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`).
+4. Read sibling modules to match existing API patterns, and audit module placement against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`). Flag structural anti-patterns with Belnap `ESTABLISHED` file evidence, such as tests mixed with scripts, cross-entrypoint imports, or library shebangs.
 5. Tag each technical claim with one Belnap truth state (a four-state fact label). What concrete file or test evidence proves the claim? If unverified, tag `UNKNOWN` rather than guess:
    - `ESTABLISHED`: Proved true by verified source file lines or test output.
    - `CONTRADICTED`: Proved false by verified source file lines or test output.

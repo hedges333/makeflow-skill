@@ -28,13 +28,14 @@ In multi-language repositories (for example a Rust backend, a TypeScript web cli
 - Odin: `ols.json`, `*.odin`
 - D: `dub.json`, `dub.sdl`, `*.d`
 
-When manifests appear in multiple directories, record a subproject table in `.workflow/state/15_archaeology_receipt.md` with five fields:
+When manifests appear in multiple directories, record a subproject table in `.workflow/state/15_archaeology_receipt.md` with six fields:
 
 1. Subproject name and relative directory path.
 2. Language and runtime version.
 3. Targeted unit test command.
 4. Formatter and linter commands.
 5. Test database isolation method.
+6. **Module Layout and Layer Separation**: How library code, executable entrypoints, and tests are separated compared against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`).
 
 ## 2. Directory Layout Rules
 
@@ -43,6 +44,12 @@ If a repository mixes multiple languages in the root directory without clear bou
 1. Note the mixed layout in `.workflow/state/15_archaeology_receipt.md` during Target 15.
 2. If moving files helps the ticket, propose clear subproject directories (for example `backend/`, `frontend/`, `scripts/`) in `.workflow/state/20_plan.md`.
 3. Never move directories without explicit user approval at Target 20.
+
+Within each subproject, enforce one-way dependencies (`entrypoints -> library`) under `SCAR-ARCH-08` using this three-tier structural posture:
+
+- **Adapt to clean existing layout**: Place files in the subproject's established layers.
+- **Enforce canonical layout for new subprojects or subsystems**: Follow `skills/makeflow/references/polyglot/<lang>.md` (`entrypoints -> library`).
+- **Flag messy existing layout at Target 15 and Target 20**: Offer a user choice at Target 20. Either keep in-ticket edits minimal with a follow-up ticket, or include scoped reorganization with explicit human approval.
 
 ## 3. Inner Test Loops vs Full Test Sweeps
 
