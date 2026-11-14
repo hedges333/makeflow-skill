@@ -1971,5 +1971,25 @@
     "closes_issue": true,
     "tests_added": 6,
     "scars_earned": []
+  },
+  {
+    "id": "GH-187",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/187",
+    "title": "[DOCS] Add canonical repository path note and qualify bare filenames in references",
+    "request": "Add Section 1.12 Canonical Plugin and Repository Path Map to rules/AGENTS.md, qualify bare governance and manifest filenames across reference manuals, scar spokes, and README.md, and add hermetic regression and negative falsification checks in tests/test_cross_agent_compatibility.py.",
+    "branch": "feat/187-canonical-repo-paths",
+    "subprojects": [
+      "rules",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T06:29:16Z",
+    "completed_at": "2026-11-14T07:04:10Z",
+    "commit_sha": "33def1a465134d3421c7290e8a101da1601b06c6",
+    "pr_number": 188,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/188",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
