@@ -2123,5 +2123,25 @@
     "closes_issue": true,
     "tests_added": 2,
     "scars_earned": []
+  },
+  {
+    "id": "GH-197",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/197",
+    "title": "[FEAT] comment tickets with resolution summary when closing ticket at target 90",
+    "request": "Post the Target 90 Workflow Complete resolution summary as a comment on the ticket after recording the final ledger commit at Target 90, support --comment and --comment-file on scripts/local_tickets.py close, and wire test-local-tickets into Makefile.",
+    "branch": "feat/197-comment-tickets-resolution-summary",
+    "subprojects": [
+      "lib",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T21:53:38Z",
+    "completed_at": "2026-11-14T23:13:00Z",
+    "commit_sha": "351b12778197c15a863f7a2ef8aca29ad817595f",
+    "pr_number": 207,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/207",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
