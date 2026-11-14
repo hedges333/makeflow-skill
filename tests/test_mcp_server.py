@@ -1539,7 +1539,206 @@ class TestGateEvidenceKeysEnumeration(unittest.TestCase):
         )
 
 
+class TestMcpServerMultiDimensionalQueryScars(unittest.TestCase):
+  """Tests workflow_query_scars multi-dimensional filters and metadata fields (GH-145)."""
+
+  def test_workflow_query_scars_multidimensional_filters(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+    from mcp.server import handle_tools_call, handle_tools_list
+
+    tools_resp = handle_tools_list(1)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    q_props = tools["workflow_query_scars"]["inputSchema"]["properties"]
+    for expected_prop in (
+        "query",
+        "category",
+        "language",
+        "framework",
+        "diagnosticCode",
+        "workflowPhase",
+        "limit",
+        "source",
+        "workspaceDir",
+        "dbPath",
+    ):
+      self.assertIn(expected_prop, q_props)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_multidim.db")
+      conn = sqlite3.connect(db_path)
+      conn.close()
+
+      script = SyncSyntheticScarsScript()
+      script.db_path = db_path
+      script._init_db_schema()
+      cur = script.conn.cursor()
+      cur.execute(
+          """
+          INSERT INTO scars (
+              id, title, category, category_slug, visibility,
+              workflow_phases, applies_when, graduation_status,
+              raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+              wound, trap, circuit_breaker, reflex, socratic_probe,
+              source, original_id
+          ) VALUES (
+              'SCAR-RIV-01',
+              'Riverpod Completer Reentrancy Guard',
+              'RIV',
+              'riv',
+              'public',
+              '["Target 20: plan", "Target 30: tdd"]',
+              'Using Flutter Riverpod with Completer',
+              'graduated',
+              'Reentrancy deadlock causes `StateError` and `UNDEFINED_GETTER`.',
+              'Calling complete twice.',
+              'If completed, stop.',
+              'Check `!completer.isCompleted` in Dart.',
+              'hash-riv-01',
+              'Simple wound.',
+              'Simple trap.',
+              'If completed, stop.',
+              'Check completer in Dart.',
+              'Did you check isCompleted?',
+              'upstream',
+              NULL
+          )
+          """
+      )
+      cur.execute(
+          """
+          INSERT INTO scars (
+              id, title, category, category_slug, visibility,
+              workflow_phases, applies_when, graduation_status,
+              raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+              wound, trap, circuit_breaker, reflex, socratic_probe,
+              source, original_id
+          ) VALUES (
+              'SCAR-PY-02',
+              'Pytest FastAPI Worker Signal Trap',
+              'SYS',
+              'sys',
+              'public',
+              '["Target 30: tdd", "Target 40: review"]',
+              'Running Python FastAPI and pytest in Docker with SQLite',
+              'graduated',
+              'Uncaught `SIGTERM` causes `EADDRINUSE` and `FileExistsError`.',
+              'Missing signal trap.',
+              '',
+              'Trap `SIGTERM` in Python.',
+              'hash-py-02',
+              'Simple signal wound.',
+              'Simple signal trap.',
+              '',
+              'Trap SIGTERM in Python.',
+              'Did you trap SIGTERM?',
+              'upstream',
+              NULL
+          )
+          """
+      )
+      script.conn.commit()
+      script.cleanup(0)
+
+      enrich_scars_database(db_path)
+
+      # 1. Exact ID query via FTS5
+      id_resp = handle_tools_call(
+          10,
+          "workflow_query_scars",
+          {"query": "SCAR-RIV-01", "dbPath": db_path},
+      )
+      self.assertFalse(id_resp["result"].get("isError"))
+      id_data = json.loads(id_resp["result"]["content"][0]["text"])
+      self.assertEqual(id_data["status"], "OK")
+      self.assertEqual(id_data["scars"][0]["id"], "SCAR-RIV-01")
+      for meta_field in (
+          "keywords",
+          "languages",
+          "frameworks",
+          "diagnosticCodes",
+          "diagnostic_codes",
+          "workflowPhases",
+          "workflow_phases",
+      ):
+        self.assertIn(meta_field, id_data["scars"][0])
+
+      # 2. Filter by framework
+      fw_resp = handle_tools_call(
+          11,
+          "workflow_query_scars",
+          {"query": "Completer", "framework": "riverpod", "dbPath": db_path},
+      )
+      fw_data = json.loads(fw_resp["result"]["content"][0]["text"])
+      self.assertEqual(fw_data["totalResults"], 1)
+      self.assertEqual(fw_data["scars"][0]["id"], "SCAR-RIV-01")
+
+      # 3. Filter by diagnosticCode
+      diag_resp = handle_tools_call(
+          12,
+          "workflow_query_scars",
+          {"query": "SIGTERM", "diagnosticCode": "EADDRINUSE", "dbPath": db_path},
+      )
+      diag_data = json.loads(diag_resp["result"]["content"][0]["text"])
+      self.assertEqual(diag_data["totalResults"], 1)
+      self.assertEqual(diag_data["scars"][0]["id"], "SCAR-PY-02")
+
+      # 4. Filter by workflowPhase
+      wp_resp = handle_tools_call(
+          13,
+          "workflow_query_scars",
+          {
+              "query": "",
+              "workflowPhase": "Target 40: review",
+              "dbPath": db_path,
+          },
+      )
+      wp_data = json.loads(wp_resp["result"]["content"][0]["text"])
+      self.assertEqual(wp_data["totalResults"], 1)
+      self.assertEqual(wp_data["scars"][0]["id"], "SCAR-PY-02")
+
+      wp_short_resp = handle_tools_call(
+          131,
+          "workflow_query_scars",
+          {
+              "query": "",
+              "workflowPhase": "T40",
+              "dbPath": db_path,
+          },
+      )
+      wp_short_data = json.loads(wp_short_resp["result"]["content"][0]["text"])
+      self.assertEqual(wp_short_data["totalResults"], 1)
+      self.assertEqual(wp_short_data["scars"][0]["id"], "SCAR-PY-02")
+
+      wp_neg_resp = handle_tools_call(
+          132,
+          "workflow_query_scars",
+          {
+              "query": "Python",
+              "workflowPhase": "Target 99: nonexistent",
+              "dbPath": db_path,
+          },
+      )
+      wp_neg_data = json.loads(wp_neg_resp["result"]["content"][0]["text"])
+      self.assertEqual(wp_neg_data["totalResults"], 0)
+      self.assertEqual(wp_neg_data["scars"], [])
+
+      # 5. Filter-only query (omitting query)
+      filter_only_resp = handle_tools_call(
+          14,
+          "workflow_query_scars",
+          {"framework": "flutter", "dbPath": db_path},
+      )
+      filter_only_data = json.loads(
+          filter_only_resp["result"]["content"][0]["text"]
+      )
+      self.assertEqual(filter_only_data["totalResults"], 1)
+      self.assertEqual(filter_only_data["scars"][0]["id"], "SCAR-RIV-01")
+
+
 if __name__ == "__main__":
   run_test()
   TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
   TestGateEvidenceKeysEnumeration().test_gate_evidence_keys_schema_runtime_and_docs()
+  TestMcpServerMultiDimensionalQueryScars().test_workflow_query_scars_multidimensional_filters()

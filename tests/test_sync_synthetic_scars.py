@@ -1610,5 +1610,650 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     self.assertIn("semicolon", err_semi.getvalue())
 
 
+class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
+  """Tests multi-dimensional indexing, keyword enrichment, and FTS5 ID search (GH-145)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.TemporaryDirectory()
+    self.db_path = os.path.join(self.temp_dir.name, "scars_multidim.db")
+
+  def tearDown(self):
+    self.temp_dir.cleanup()
+
+  def test_schema_migration_adds_metadata_columns_and_indexes_id_in_fts5(self):
+    legacy_db = os.path.join(self.temp_dir.name, "legacy_20col.db")
+    conn = sqlite3.connect(legacy_db)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE scars (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            category TEXT,
+            category_slug TEXT,
+            visibility TEXT,
+            workflow_phases TEXT,
+            applies_when TEXT,
+            graduation_status TEXT,
+            raw_wound TEXT,
+            raw_trap TEXT,
+            raw_circuit_breaker TEXT,
+            raw_reflex TEXT,
+            raw_hash TEXT,
+            wound TEXT,
+            trap TEXT,
+            circuit_breaker TEXT,
+            reflex TEXT,
+            socratic_probe TEXT,
+            source TEXT DEFAULT 'upstream',
+            original_id TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE scars_fts USING fts5(
+            id UNINDEXED,
+            title,
+            category,
+            applies_when,
+            wound,
+            trap,
+            reflex,
+            socratic_probe,
+            source UNINDEXED,
+            original_id UNINDEXED
+        )
+        """
+    )
+    s = SAMPLE_SCARS[0]
+    conn.execute(
+        """
+        INSERT INTO scars (
+            id, title, category, category_slug, visibility,
+            workflow_phases, applies_when, graduation_status,
+            raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+            wound, trap, circuit_breaker, reflex, socratic_probe,
+            source, original_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upstream', 'ORIG-ARCH-05')
+        """,
+        (
+            s["id"],
+            s["title"],
+            s["category"],
+            s["categorySlug"],
+            s["visibility"],
+            json.dumps(s["workflowPhases"]),
+            s["appliesWhen"],
+            s["graduationStatus"],
+            s["wound"],
+            s["trap"],
+            s["circuitBreaker"],
+            s["reflex"],
+            "hash_arch_05",
+            s["wound"],
+            s["trap"],
+            s["circuitBreaker"],
+            s["reflex"],
+            "Did you inherit from BaseScript?",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    script = SyncSyntheticScarsScript()
+    script.db_path = legacy_db
+    script._init_db_schema()
+    script.cleanup(0)
+
+    conn = sqlite3.connect(legacy_db)
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(scars)")
+    scars_cols = {r[1] for r in cur.fetchall()}
+    for new_col in ("keywords", "languages", "frameworks", "diagnostic_codes"):
+      self.assertIn(new_col, scars_cols)
+
+    cur.execute("PRAGMA table_info(scars_fts)")
+    fts_cols = {r[1] for r in cur.fetchall()}
+    for fts_col in (
+        "id",
+        "original_id",
+        "keywords",
+        "languages",
+        "frameworks",
+        "diagnostic_codes",
+        "workflow_phases",
+    ):
+      self.assertIn(fts_col, fts_cols)
+
+    cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='scars_fts'"
+    )
+    fts_ddl = cur.fetchone()[0]
+    self.assertNotIn("id unindexed", fts_ddl.lower())
+    self.assertNotIn("original_id unindexed", fts_ddl.lower())
+
+    cur.execute(
+        "SELECT id FROM scars_fts WHERE scars_fts MATCH '\"SCAR-ARCH-05\"*'"
+    )
+    self.assertEqual(cur.fetchall(), [("SCAR-ARCH-05",)])
+
+    cur.execute(
+        "SELECT id FROM scars_fts WHERE scars_fts MATCH '\"SCAR-ARCH\"*'"
+    )
+    self.assertEqual(cur.fetchall(), [("SCAR-ARCH-05",)])
+
+    cur.execute(
+        "SELECT id FROM scars_fts WHERE scars_fts MATCH '\"SCAR-ARCH-05\"* \"BaseScript\"*'"
+    )
+    self.assertEqual(cur.fetchall(), [("SCAR-ARCH-05",)])
+    conn.close()
+
+    self.assertEqual(
+        query_scars(legacy_db, query="SCAR-ARCH-05")[0]["id"], "SCAR-ARCH-05"
+    )
+    self.assertEqual(
+        query_scars(legacy_db, query="SCAR-ARCH")[0]["id"], "SCAR-ARCH-05"
+    )
+    self.assertEqual(
+        query_scars(legacy_db, query="SCAR-ARCH-05 BaseScript")[0]["id"],
+        "SCAR-ARCH-05",
+    )
+
+  def test_extract_scar_metadata_dimensions(self):
+    from lib.scars_db import extract_scar_metadata
+    import scripts.sync_synthetic_scars as cli_mod
+
+    self.assertTrue(hasattr(cli_mod, "extract_scar_metadata"))
+
+    row_a = {
+        "id": "SCAR-RIV-99",
+        "title": "AsyncNotifier Reentrancy & Completer StateError in Riverpod",
+        "category": "RIV",
+        "category_slug": "riv",
+        "applies_when": (
+            "Using Flutter Riverpod or Bloc with `Completer` and `WidgetTester`"
+        ),
+        "workflow_phases": (
+            '["Step 4 (Plan Approval) & Step 6 (TDD Implementation) & Step 9'
+            ' (Adversarial Review)"]'
+        ),
+        "raw_wound": (
+            "Concurrent mutation causes race condition, deadlock, and memory"
+            " leak with `StateError` and `UNDEFINED_GETTER`."
+        ),
+        "raw_trap": (
+            "Calling `completer.complete()` twice without checking"
+            " `!isCompleted`."
+        ),
+        "raw_circuit_breaker": "If `isCompleted` is true, stop.",
+        "raw_reflex": (
+            "Guard with ```dart\nif (!completer.isCompleted)"
+            " completer.complete();\n```."
+        ),
+        "wound": "Simple wound text.",
+        "trap": "Simple trap text.",
+        "circuit_breaker": "If completed, stop.",
+        "reflex": "Check before completing.",
+        "socratic_probe": "Did you guard the completer?",
+    }
+    meta_a = extract_scar_metadata(row_a)
+    for key in (
+        "keywords",
+        "languages",
+        "frameworks",
+        "diagnostic_codes",
+        "workflow_phases",
+    ):
+      self.assertIn(key, meta_a)
+      self.assertIsInstance(meta_a[key], list)
+
+    kw_lower_a = {k.lower() for k in meta_a["keywords"]}
+    for expected_kw in (
+        "reentrancy",
+        "race condition",
+        "deadlock",
+        "memory leak",
+        "completer",
+    ):
+      self.assertIn(expected_kw, kw_lower_a)
+    self.assertIn("dart", meta_a["languages"])
+    for expected_fw in ("flutter", "riverpod", "bloc"):
+      self.assertIn(expected_fw, meta_a["frameworks"])
+    for expected_diag in ("StateError", "UNDEFINED_GETTER"):
+      self.assertIn(expected_diag, meta_a["diagnostic_codes"])
+    for expected_phase in (
+        "Target 20: plan",
+        "Target 30: tdd",
+        "Target 40: review",
+    ):
+      self.assertIn(expected_phase, meta_a["workflow_phases"])
+
+    row_b = {
+        "id": "SCAR-SYS-99",
+        "title": "FastAPI SQLite Worker Shutdown and SemVer Breakage",
+        "category": "SYS",
+        "category_slug": "sys",
+        "applies_when": (
+            "Running Python FastAPI and pytest inside Docker containers with"
+            " SQLite"
+        ),
+        "workflow_phases": '["T30", "T50", "T70"]',
+        "raw_wound": (
+            "Worker ignores `SIGTERM`, fails with `EADDRINUSE` and"
+            " `FileExistsError`, or introduces semver breakage."
+        ),
+        "raw_trap": "Skipping signal trap in Python.",
+        "raw_circuit_breaker": "",
+        "raw_reflex": "Trap `SIGTERM` and test with `pytest`.",
+    }
+    meta_b = extract_scar_metadata(row_b)
+    kw_lower_b = {k.lower() for k in meta_b["keywords"]}
+    self.assertIn("semver breakage", kw_lower_b)
+    self.assertIn("python", meta_b["languages"])
+    for expected_fw in ("fastapi", "pytest", "sqlite", "docker"):
+      self.assertIn(expected_fw, meta_b["frameworks"])
+    for expected_diag in ("SIGTERM", "EADDRINUSE", "FileExistsError"):
+      self.assertIn(expected_diag, meta_b["diagnostic_codes"])
+    for expected_phase in (
+        "Target 30: tdd",
+        "Target 50: commit",
+        "Target 70: ci-triage",
+    ):
+      self.assertIn(expected_phase, meta_b["workflow_phases"])
+
+    row_c = {
+        "id": "SCAR-POLY-99",
+        "title": (
+            "Polyglot React TypeScript, Rust Cargo, Go Goroutine, C malloc,"
+            " and Bash Trap"
+        ),
+        "category": "ARCH",
+        "category_slug": "arch",
+        "applies_when": (
+            "Building TypeScript React UI, Rust crates, Go services, C"
+            " modules, Java JVM, or bash scripts"
+        ),
+        "workflow_phases": "[]",
+        "raw_wound": (
+            "C `malloc` leak, Go goroutine leak, Rust borrow error, React"
+            " hydration mismatch, or `NullPointerException`."
+        ),
+        "raw_trap": "Ignoring polyglot boundaries in bash scripts.",
+        "raw_circuit_breaker": "",
+        "raw_reflex": "Validate across languages.",
+    }
+    meta_c = extract_scar_metadata(row_c)
+    for expected_lang in ("typescript", "rust", "go", "c", "bash"):
+      self.assertIn(expected_lang, meta_c["languages"])
+    self.assertIn("react", meta_c["frameworks"])
+    self.assertIn("NullPointerException", meta_c["diagnostic_codes"])
+    self.assertGreaterEqual(len(meta_c["workflow_phases"]), 1)
+
+    row_d = {
+        "id": "SCAR-PROC-999",
+        "title": "Human Approval Gate Enforcement",
+        "category": "Process",
+        "category_slug": "process",
+        "applies_when": "Transitioning between workflow targets",
+        "workflow_phases": '["Target 20: approved-plan"]',
+        "raw_wound": "Self-approving pause gates.",
+        "raw_trap": "Bypassing human review.",
+        "raw_circuit_breaker": "",
+        "raw_reflex": "Wait for explicit operator confirmation.",
+    }
+    meta_d = extract_scar_metadata(row_d)
+    self.assertIn("universal", meta_d["languages"])
+    self.assertIn("Target 20: plan", meta_d["workflow_phases"])
+
+  def test_enrich_scars_database_and_cli_scripts_preserve_prose_and_raw_hash(self):
+    from lib.scars_db import EnrichScarsIndexScript, enrich_scars_database
+    import scripts.sync_synthetic_scars as cli_mod
+
+    self.assertTrue(hasattr(cli_mod, "EnrichScarsIndexScript"))
+    self.assertTrue(hasattr(cli_mod, "enrich_scars_database"))
+    enrich_script_path = os.path.join(_SCRIPTS_DIR, "enrich_scars_index.py")
+    self.assertTrue(os.path.isfile(enrich_script_path))
+
+    scars_input = [
+        {
+            "id": "SCAR-RIV-01",
+            "title": "Riverpod AsyncNotifier Reentrancy Guard",
+            "category": "RIV",
+            "categorySlug": "riv",
+            "visibility": "public",
+            "workflowPhases": ["Step 4 (Plan) & Step 6 (TDD)"],
+            "appliesWhen": "Using Flutter Riverpod AsyncNotifier with Completer",
+            "graduationStatus": "graduated",
+            "wound": (
+                "Reentrancy race condition throws `StateError` and"
+                " `UNDEFINED_GETTER`."
+            ),
+            "trap": "Unchecked concurrent `Completer` completion.",
+            "circuitBreaker": "If `isCompleted` is true, stop.",
+            "reflex": "Check `!completer.isCompleted` in Dart.",
+        }
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    sync_script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-enr"'),
+    ):
+      self.assertEqual(
+          sync_script.execute(
+              args=["--db-path", self.db_path], stdout=io.StringIO()
+          ),
+          0,
+      )
+
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        """
+        UPDATE scars
+        SET wound = 'Simple wound.',
+            trap = 'Simple trap.',
+            circuit_breaker = 'If completed, stop.',
+            reflex = 'Check completer in Dart.',
+            socratic_probe = 'Did you check isCompleted?',
+            keywords = NULL,
+            languages = NULL,
+            frameworks = NULL,
+            diagnostic_codes = NULL
+        WHERE id = 'SCAR-RIV-01'
+        """
+    )
+    conn.commit()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT raw_hash, wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE id = 'SCAR-RIV-01'"
+    )
+    before_row = cur.fetchone()
+    conn.close()
+
+    out_enr = io.StringIO()
+    err_enr = io.StringIO()
+    enr_script = EnrichScarsIndexScript()
+    self.assertIsInstance(enr_script, BaseScript)
+    code_enr = enr_script.execute(
+        args=["--db-path", self.db_path], stdout=out_enr, stderr=err_enr
+    )
+    self.assertEqual(code_enr, 0, err_enr.getvalue())
+    self.assertIn("Enriched", out_enr.getvalue())
+
+    # NBO-2: --status on an empty uninitialized SQLite file on disk exits 0 cleanly
+    uninit_db = os.path.join(self.temp_dir.name, "empty_uninitialized.db")
+    open(uninit_db, "wb").close()
+    out_uninit = io.StringIO()
+    err_uninit = io.StringIO()
+    code_uninit = EnrichScarsIndexScript().execute(
+        args=["--db-path", uninit_db, "--status"],
+        stdout=out_uninit,
+        stderr=err_uninit,
+    )
+    self.assertEqual(code_uninit, 0, err_uninit.getvalue())
+    self.assertIn("uninitialized", out_uninit.getvalue().lower())
+
+    out_flag = io.StringIO()
+    code_flag = SyncSyntheticScarsScript().execute(
+        args=["--db-path", self.db_path, "--enrich"], stdout=out_flag
+    )
+    self.assertEqual(code_flag, 0)
+
+    summary = enrich_scars_database(self.db_path)
+    self.assertEqual(summary["total_scars"], 1)
+    self.assertEqual(summary["enriched_scars"], 1)
+
+    conn = sqlite3.connect(self.db_path)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT raw_hash, wound, trap, circuit_breaker, reflex,"
+        " socratic_probe, keywords, languages, frameworks, diagnostic_codes,"
+        " workflow_phases FROM scars WHERE id = 'SCAR-RIV-01'"
+    )
+    after_row = cur.fetchone()
+    conn.close()
+
+    self.assertEqual(after_row[:6], before_row)
+    self.assertIn(
+        "reentrancy", [k.lower() for k in json.loads(after_row[6])]
+    )
+    self.assertIn("dart", json.loads(after_row[7]))
+    self.assertIn("riverpod", json.loads(after_row[8]))
+    self.assertIn("flutter", json.loads(after_row[8]))
+    self.assertIn("StateError", json.loads(after_row[9]))
+    self.assertIn("UNDEFINED_GETTER", json.loads(after_row[9]))
+    self.assertIn("Target 20: plan", json.loads(after_row[10]))
+    self.assertIn("Target 30: tdd", json.loads(after_row[10]))
+
+  def test_multi_dimensional_filtering_in_query_scars_and_cli(self):
+    scars_input = [
+        {
+            "id": "SCAR-FLUTTER-10",
+            "title": "Flutter Riverpod Completer Lifecycle",
+            "category": "FLUTTER",
+            "categorySlug": "flutter",
+            "visibility": "public",
+            "workflowPhases": ["Target 20: plan", "Target 30: tdd"],
+            "appliesWhen": "Building Flutter widgets with Riverpod and Bloc",
+            "graduationStatus": "graduated",
+            "wound": (
+                "Reentrancy deadlock causes `StateError` and"
+                " `UNDEFINED_GETTER`."
+            ),
+            "trap": "Unchecked `Completer` completion in Dart.",
+            "circuitBreaker": "If `isCompleted` is true, stop.",
+            "reflex": "Guard `Completer` in Dart.",
+        },
+        {
+            "id": "SCAR-PY-20",
+            "title": "Python FastAPI Pytest Docker Signal Handling",
+            "category": "SYS",
+            "categorySlug": "sys",
+            "visibility": "public",
+            "workflowPhases": ["Target 30: tdd", "Target 40: review"],
+            "appliesWhen": "Running Python FastAPI and pytest in Docker with SQLite",
+            "graduationStatus": "graduated",
+            "wound": (
+                "Uncaught `SIGTERM` causes `EADDRINUSE`, `FileExistsError`, and"
+                " semver breakage."
+            ),
+            "trap": "Ignoring POSIX signals in Python workers.",
+            "circuitBreaker": "",
+            "reflex": "Trap `SIGTERM` and clean up SQLite locks.",
+        },
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    script = SyncSyntheticScarsScript()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-filter"'),
+    ):
+      self.assertEqual(
+          script.execute(
+              args=["--db-path", self.db_path], stdout=io.StringIO()
+          ),
+          0,
+      )
+
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        "UPDATE scars SET wound = 'Simple widget wound.' WHERE id = 'SCAR-FLUTTER-10'"
+    )
+    conn.commit()
+    conn.close()
+    SyncSyntheticScarsScript().execute(
+        args=["--db-path", self.db_path, "--enrich"], stdout=io.StringIO()
+    )
+
+    # 1. Search by enriched keyword ('reentrancy') that was simplified out of in-use wound
+    reent_res = query_scars(self.db_path, query="reentrancy")
+    self.assertEqual(len(reent_res), 1)
+    self.assertEqual(reent_res[0]["id"], "SCAR-FLUTTER-10")
+    for expected_field in (
+        "keywords",
+        "languages",
+        "frameworks",
+        "diagnosticCodes",
+        "diagnostic_codes",
+        "workflowPhases",
+        "workflow_phases",
+    ):
+      self.assertIn(expected_field, reent_res[0])
+
+    # 2. Filter by framework
+    fw_res = query_scars(self.db_path, query="", framework="riverpod")
+    self.assertEqual(len(fw_res), 1)
+    self.assertEqual(fw_res[0]["id"], "SCAR-FLUTTER-10")
+
+    fw_py = query_scars(self.db_path, query="Worker", framework="fastapi")
+    self.assertEqual(len(fw_py), 1)
+    self.assertEqual(fw_py[0]["id"], "SCAR-PY-20")
+
+    # 3. Filter by diagnostic_code
+    diag_res = query_scars(self.db_path, query="", diagnostic_code="SIGTERM")
+    self.assertEqual(len(diag_res), 1)
+    self.assertEqual(diag_res[0]["id"], "SCAR-PY-20")
+
+    diag_dart = query_scars(
+        self.db_path, query="Completer", diagnostic_code="UNDEFINED_GETTER"
+    )
+    self.assertEqual(len(diag_dart), 1)
+    self.assertEqual(diag_dart[0]["id"], "SCAR-FLUTTER-10")
+
+    # 4. Filter by workflow_phase
+    wp_plan = query_scars(
+        self.db_path, query="", workflow_phase="Target 20: plan"
+    )
+    self.assertEqual(len(wp_plan), 1)
+    self.assertEqual(wp_plan[0]["id"], "SCAR-FLUTTER-10")
+
+    wp_rev = query_scars(
+        self.db_path, query="", workflow_phase="Target 40: review"
+    )
+    self.assertEqual(len(wp_rev), 1)
+    self.assertEqual(wp_rev[0]["id"], "SCAR-PY-20")
+
+    wp_short = query_scars(self.db_path, query="", workflow_phase="T40")
+    self.assertEqual(len(wp_short), 1)
+    self.assertEqual(wp_short[0]["id"], "SCAR-PY-20")
+
+    # 4b. Negative boundary assertions (BLOCKER-1)
+    self.assertEqual(
+        query_scars(
+            self.db_path,
+            query="python",
+            workflow_phase="Target 99: nonexistent",
+        ),
+        [],
+    )
+    self.assertEqual(
+        query_scars(
+            self.db_path,
+            query="",
+            workflow_phase="Target 99: nonexistent",
+        ),
+        [],
+    )
+    self.assertEqual(
+        query_scars(self.db_path, query="", framework="nonexistent-fw"),
+        [],
+    )
+    self.assertEqual(
+        query_scars(
+            self.db_path, query="Completer", framework="nonexistent-fw"
+        ),
+        [],
+    )
+    self.assertEqual(
+        query_scars(
+            self.db_path, query="", diagnostic_code="NONEXISTENT_CODE"
+        ),
+        [],
+    )
+
+    # 5. CLI flags --framework, --diagnostic-code, --workflow-phase
+    out_cli = io.StringIO()
+    code_cli = SyncSyntheticScarsScript().execute(
+        args=[
+            "--db-path",
+            self.db_path,
+            "--query",
+            "SIGTERM",
+            "--framework",
+            "pytest",
+            "--diagnostic-code",
+            "EADDRINUSE",
+            "--workflow-phase",
+            "Target 30: tdd",
+        ],
+        stdout=out_cli,
+    )
+    self.assertEqual(code_cli, 0)
+    cli_data = json.loads(out_cli.getvalue())
+    self.assertEqual(len(cli_data), 1)
+    self.assertEqual(cli_data[0]["id"], "SCAR-PY-20")
+
+  def test_bundled_scars_registry_db_is_enriched_and_indexed(self):
+    bundled_db = os.path.join(
+        _REPO_ROOT, "skills", "makeflow", "data", "scars_registry.db"
+    )
+    self.assertTrue(os.path.isfile(bundled_db))
+
+    conn = sqlite3.connect(bundled_db)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM scars")
+    total_scars = cur.fetchone()[0]
+    self.assertEqual(total_scars, 595)
+
+    cur.execute("SELECT COUNT(*) FROM scars_fts")
+    fts_scars = cur.fetchone()[0]
+    self.assertEqual(fts_scars, total_scars)
+
+    cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='scars_fts'"
+    )
+    fts_sql = cur.fetchone()[0]
+    self.assertNotIn("id unindexed", fts_sql.lower())
+
+    cur.execute(
+        "SELECT id, keywords, languages, frameworks, diagnostic_codes,"
+        " workflow_phases FROM scars"
+    )
+    for row in cur.fetchall():
+      scar_id = row[0]
+      keywords = json.loads(row[1] or "null")
+      languages = json.loads(row[2] or "null")
+      frameworks = json.loads(row[3] or "null")
+      diag_codes = json.loads(row[4] or "null")
+      phases = json.loads(row[5] or "null")
+
+      self.assertIsInstance(keywords, list, f"{scar_id} keywords not a list")
+      self.assertGreaterEqual(
+          len(keywords), 1, f"{scar_id} keywords must be non-empty"
+      )
+      self.assertIsInstance(languages, list, f"{scar_id} languages not a list")
+      self.assertGreaterEqual(
+          len(languages), 1, f"{scar_id} languages must be non-empty"
+      )
+      self.assertIsInstance(
+          frameworks, list, f"{scar_id} frameworks not a list"
+      )
+      self.assertIsInstance(
+          diag_codes, list, f"{scar_id} diagnostic_codes not a list"
+      )
+      self.assertIsInstance(
+          phases, list, f"{scar_id} workflow_phases not a list"
+      )
+      self.assertGreaterEqual(
+          len(phases), 1, f"{scar_id} workflow_phases must be non-empty"
+      )
+    conn.close()
+
+    id_matches = query_scars(bundled_db, query="SCAR-ARCH-05", limit=5)
+    self.assertTrue(any(m["id"] == "SCAR-ARCH-05" for m in id_matches))
+
+
 if __name__ == "__main__":
   unittest.main()
