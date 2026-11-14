@@ -44,3 +44,10 @@ Follow three isolation rules in Swift tests:
 - **Executable Entrypoints and Controllers**: Place thin `@main` structs or `main.swift` files in `Sources/<ExecutableTarget>/` that depend on `<LibraryTarget>`.
 - **Test Suite Placement and Naming**: Place XCTest and Swift Testing suites in `Tests/<Target>Tests/*Tests.swift` using `@testable import <LibraryTarget>`.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag business logic inside executable targets that test targets cannot import, or view controllers executing raw networking.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `Package.swift` for `swift-docc-plugin` and `.docc` catalog bundles at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `DocC` `///` comments using `- Parameter`, `- Returns:`, and `- Throws:` callouts on `public` declarations.
+- **Documentation Tree Assembly Command**: Run `swift package generate-documentation --warnings-as-errors` to compile the `DocC` archive and validate symbol links.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `public` throwing functions missing `- Throws:` documentation or unresolved `` ``Symbol`` `` links.

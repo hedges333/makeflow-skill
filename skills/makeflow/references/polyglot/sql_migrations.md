@@ -47,3 +47,10 @@ Follow five mandatory rules in SQL and NoSQL projects:
 - **Executable Entrypoints and Controllers**: Place ordered, immutable DDL change scripts in `migrations/` (such as `V1__init.sql`). Never edit a deployed migration file.
 - **Test Suite Placement and Naming**: Place pgTAP or singular dbt assertion scripts in `tests/*.sql` and wrap procedural SQL tests in `BEGIN` and `ROLLBACK`.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag mutated historical files in `migrations/`, hardcoded production schema names, or unparameterized SQL queries outside repository methods.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `dbt_project.yml`, `models/schema.yml`, and SQL migration headers for documentation conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `COMMENT ON TABLE` and `COMMENT ON COLUMN` statements in SQL DDL and `description:` fields in dbt YAML.
+- **Documentation Tree Assembly Command**: Run `dbt docs generate` or inspect catalog metadata views to verify schema documentation trees.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag new tables or columns missing `COMMENT ON TABLE`, `COMMENT ON COLUMN`, or dbt `schema.yml` descriptions.

@@ -78,6 +78,7 @@ Agents must use Socratic Probes during:
 | `SCAR-PROC-150` | Target Transition Header Dead-Air Cliff | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-158` | Persistent Memento Readerboard Truncation Trap | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-159` | Project-Adaptive Code Documentation Standards and Tree Verification | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-TEST-05` | Isolated Test Environments | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-08` | Two-Tier Test Isolation | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-09` | Fail-Fast Targeted TDD Loop | Testing | [`scars/testing.md`](./scars/testing.md) |
@@ -112,7 +113,7 @@ Agents must use Socratic Probes during:
 | `SCAR-TOOL-15` | Anchored State Marker Detection vs Substring Matching | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-TOOL-16` | Prohibit Arbitrary Output Limits and Require Volume Triage Interview | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-HCI-08` | Multi-Choice Prompt Rule | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
-| `SCAR-DOC-16` | Concentric Documentation Rings | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
+| `SCAR-DOC-16` | Documentation Tree (Progressive Disclosure) | Tooling & HCI | [`scars/tooling_and_hci.md`](./scars/tooling_and_hci.md) |
 | `SCAR-ARCH-05` | Testable Object-Oriented Script Template (BaseScript Pattern) | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 | `SCAR-ARCH-06` | Just-in-Time Vector 4 Reflex Gates | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 | `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture | [`scars/architecture.md`](./scars/architecture.md) |

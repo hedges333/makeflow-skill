@@ -41,3 +41,10 @@ Follow three isolation rules in PowerShell tests:
 - **Executable Entrypoints and Controllers**: Export only `Public/` functions in `FunctionsToExport` inside `<Module>.psd1` and keep automation wrappers in `scripts/` thin.
 - **Test Suite Placement and Naming**: Place Pester v5 suites in `tests/` using the `*.Tests.ps1` suffix so `Invoke-Pester` discovers them.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag wildcard `FunctionsToExport = '*'` in manifests, top-level execution side effects on `Import-Module`, or unapproved verbs.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `*.psd1` manifests and `platyPS` markdown folders for help conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write PowerShell Comment-Based Help blocks (`<# .SYNOPSIS .DESCRIPTION .PARAMETER .EXAMPLE #>`) inside exported cmdlets.
+- **Documentation Tree Assembly Command**: Run `Get-Help <Cmdlet> -Full` and `platyPS` (`New-MarkdownHelp`) to assemble and verify the module documentation tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `.PARAMETER` tags that do not match `param()` blocks or exported cmdlets missing `.SYNOPSIS` and `.EXAMPLE`.

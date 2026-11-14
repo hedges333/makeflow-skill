@@ -44,3 +44,10 @@ Follow three database isolation rules in Elixir tests:
 - **Executable Entrypoints and Controllers**: Keep Phoenix controllers in `lib/<app>_web/` and Mix tasks in `lib/mix/tasks/` as thin callers of `lib/<app>/`.
 - **Test Suite Placement and Naming**: Mirror the `lib/` tree inside `test/` using the `*_test.exs` suffix and load `test/test_helper.exs` first.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag `lib/<app>/` modules that call `lib/<app>_web/`, raw `Repo` queries in controllers, or tests without `_test.exs`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `mix.exs` for `:ex_doc` (`ex_doc`) dependencies and `@moduledoc` usage at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `@moduledoc`, `@doc`, and `@spec` attributes with `iex>` doctest examples on public functions.
+- **Documentation Tree Assembly Command**: Run `mix docs --warnings-as-errors` to compile the HTML documentation tree and reject broken cross-references.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag missing `@moduledoc` on public modules, out-of-date `@spec` types, or failing `iex>` doctests.

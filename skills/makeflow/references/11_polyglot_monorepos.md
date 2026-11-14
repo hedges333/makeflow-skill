@@ -36,6 +36,7 @@ When manifests appear in multiple directories, record a subproject table in `.wo
 4. Formatter and linter commands.
 5. Test database isolation method.
 6. **Module Layout and Layer Separation**: How library code, executable entrypoints, and tests are separated compared against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`).
+7. **Project Documentation Standard and Tree Assembly (`SCAR-PROC-159`)**: Existing doc comment conventions and generator configs, or the default standard from `skills/makeflow/references/polyglot/<lang>.md`.
 
 ## 2. Directory Layout Rules
 

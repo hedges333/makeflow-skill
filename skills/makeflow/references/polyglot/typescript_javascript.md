@@ -58,3 +58,10 @@ Follow three isolation rules in Node.js and TypeScript tests:
 - **Executable Entrypoints and Controllers**: Place thin CLI scripts or server bootstrap files in `src/cli/` or `bin/` that import one-way from `src/lib/`.
 - **Test Suite Placement and Naming**: Place Vitest or Jest suites in `tests/*.test.ts` (or co-located `*.spec.ts`) and exclude test files from `tsconfig.build.json`.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag circular barrel `index.ts` imports, business logic in CLI entrypoints, or unguarded top-level side effects on module import.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `typedoc.json`, `tsdoc.json`, or `jsdoc.json` and `package.json` doc scripts at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `TSDoc` or `JSDoc` blocks (`/** @param @returns @throws @example */`) on exported functions, classes, and interfaces.
+- **Documentation Tree Assembly Command**: Run `npx typedoc --treatWarningsAsErrors` to build the API documentation tree and catch broken symbol links.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `@param` tags duplicating TypeScript types in `TSDoc`, stale parameter names, or undocumented exports.

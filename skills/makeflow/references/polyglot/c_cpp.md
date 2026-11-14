@@ -56,3 +56,10 @@ Follow three safety rules in C and C++ tests:
 - **Executable Entrypoints and Controllers**: Place thin `main()` binaries in `apps/` or `tools/`. Link executables one-way against library targets.
 - **Test Suite Placement and Naming**: Place unit and integration suites in `tests/` and register them with CTest in `CMakeLists.txt`.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag non-inline function definitions in headers, circular header includes, or test binaries inside `src/`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `Doxyfile` or `CMakeLists.txt` (`find_package(Doxygen)`) and existing header comments before writing code (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Use `Doxygen` blocks (`/** ... */`) with `@param` and `@return` tags above public declarations in `include/`.
+- **Documentation Tree Assembly Command**: Run `doxygen Doxyfile` with `WARN_AS_ERROR = YES` so missing parameter docs fail the build.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `@param` tags that mismatch function signatures, undocumented public headers, or broken `Doxygen` references.

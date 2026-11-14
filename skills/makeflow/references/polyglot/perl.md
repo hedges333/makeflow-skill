@@ -42,3 +42,10 @@ Follow three isolation rules in Perl tests:
 - **Executable Entrypoints and Controllers**: Place thin `.pl` CLI scripts in `bin/` or `script/`. Parse options and call `lib/` modules immediately.
 - **Test Suite Placement and Naming**: Place `Test::More` or `Test2::V0` test scripts in `t/` with the `.t` extension for `prove -lv t/` execution.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag business logic inside `.pl` scripts, `.pm` files missing `use strict; use warnings;`, or `.pm` modules outside `lib/`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `Makefile.PL`, `cpanfile`, or `dist.ini` and existing `.pm` files for POD blocks at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write Plain Old Documentation using `=head1`, `=over`, `=item`, and `=cut` directives for public subroutines.
+- **Documentation Tree Assembly Command**: Run `podchecker lib/` and `pod2html` to validate POD syntax and build the documentation tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag unclosed `=over` blocks, missing `=cut` terminators, or `podchecker` syntax warnings.

@@ -43,3 +43,10 @@ Follow three isolation rules in D tests:
 - **Executable Entrypoints and Controllers**: Keep the `main()` entrypoint thin inside `source/app.d`. Delegate argument parsing and work to library modules.
 - **Test Suite Placement and Naming**: Use inline `unittest` blocks for module unit checks and place integration test modules in `tests/`.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag `module` names that mismatch file paths, heavy logic in `source/app.d`, or network calls in `unittest` blocks.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `dub.json` (`ddoxFilterArgs`) or `.ddoc` macro files for project conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `Ddoc` comments (`///` or `/** ... */`) with `Params:`, `Returns:`, and `Throws:` sections on exported symbols.
+- **Documentation Tree Assembly Command**: Run `dub build --build=docs` or `dmd -D` to assemble the package documentation tree cleanly.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `Params:` entries that do not match parameter names or undocumented public symbols in `source/`.

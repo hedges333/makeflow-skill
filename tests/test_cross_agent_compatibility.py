@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -6734,8 +6735,8 @@ def validate():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 59:
-    errors.append(f"Expected 59 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 60:
+    errors.append(f"Expected 60 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -7541,6 +7542,24 @@ def validate():
         " verified."
     )
 
+  # Polyglot Code Documentation Standards and Tree Assembly Invariants (GH-44)
+  polyglot_doc_errors = validate_polyglot_documentation_standards()
+  errors.extend(polyglot_doc_errors)
+  if not polyglot_doc_errors:
+    print(
+        "✔ Polyglot code documentation standards and tree assembly (GH-44)"
+        " verified."
+    )
+
+  # Project-Adaptive Documentation Standards & Progressive Disclosure Tree (GH-44, SCAR-PROC-159, SCAR-DOC-16)
+  scar_proc_159_errors = validate_scar_proc_159_documentation_standards()
+  errors.extend(scar_proc_159_errors)
+  if not scar_proc_159_errors:
+    print(
+        "✔ Project-adaptive documentation standards and SCAR-PROC-159 / SCAR-DOC-16 (GH-44)"
+        " verified."
+    )
+
   if errors:
     print(f"\n❌ Validation failed with {len(errors)} error(s):")
     for err in errors:
@@ -7548,6 +7567,790 @@ def validate():
     sys.exit(1)
   else:
     print("\n✔ All cross-agent configuration files validated successfully!")
+
+
+validate_all = validate
+
+
+POLYGLOT_DOCUMENTATION_STANDARDS_REQUIREMENTS = {
+    "c_cpp.md": ("Doxyfile", "Doxygen", "@param", "@return", "doxygen"),
+    "csharp_dotnet.md": (
+        "GenerateDocumentationFile",
+        "<summary>",
+        "<param",
+        "<returns>",
+        "CS1591",
+    ),
+    "dart_flutter.md": (
+        "dartdoc_options.yaml",
+        "public_member_api_docs",
+        "///",
+        "dart doc",
+    ),
+    "dlang.md": ("Ddoc", "Params:", "Returns:", "dub build --build=docs"),
+    "elixir.md": ("ex_doc", "@moduledoc", "@doc", "@spec", "mix docs"),
+    "gdscript_godot.md": ("project.godot", "##", "--doctool"),
+    "go.md": ("Godoc", "go doc", "pkgsite"),
+    "haxe.md": ("-xml", "dox", "haxelib run dox"),
+    "java_kotlin_scala.md": (
+        "Javadoc",
+        "KDoc",
+        "Scaladoc",
+        "javadoc:javadoc",
+        "dokkaHtml",
+        "sbt doc",
+    ),
+    "nim.md": ("##", "runnableExamples", "nim doc"),
+    "odin.md": ("ols.json", "//", "odin doc"),
+    "perl.md": ("=head1", "=cut", "podchecker", "pod2html"),
+    "php.md": ("phpdoc", "/** @param", "phpstan"),
+    "powershell.md": (".SYNOPSIS", ".PARAMETER", ".EXAMPLE", "platyPS"),
+    "python.md": ("docs/conf.py", "mkdocs.yml", "PEP 257", "sphinx-build"),
+    "ruby.md": (".yardopts", "YARD", "@param", "yard doc"),
+    "rust.md": ("rustdoc", "///", "//!", "RUSTDOCFLAGS", "cargo doc"),
+    "scientific_r_julia_lua.md": (
+        "roxygen2",
+        "pkgdown",
+        "Documenter.jl",
+        "docs/make.jl",
+        "LDoc",
+        "ldoc",
+    ),
+    "sql_migrations.md": (
+        "dbt_project.yml",
+        "COMMENT ON TABLE",
+        "COMMENT ON COLUMN",
+        "dbt docs generate",
+    ),
+    "swift.md": ("swift-docc-plugin", "DocC", "///", "generate-documentation"),
+    "typescript_javascript.md": (
+        "typedoc.json",
+        "TSDoc",
+        "JSDoc",
+        "npx typedoc",
+    ),
+}
+
+POLYGLOT_DOCUMENTATION_MARKERS = (
+    "Project Convention Detection",
+    "Idiomatic Doc Comment Standard",
+    "Documentation Tree Assembly Command",
+    "Documentation Anti-Patterns to Flag at Target 40",
+)
+
+
+def _check_polyglot_documentation_standards_guides(
+    guide_files: dict[str, str],
+) -> list[str]:
+  """Validates Code Documentation Standards and Tree Assembly sections across all 21 polyglot guides (GH-44)."""
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scar_candidate import (
+      count_words_in_sentence,
+      mask_code_and_math_spans,
+      split_into_sentences,
+  )
+
+  errs: list[str] = []
+  base_rel = "skills/makeflow/references/polyglot"
+  section_heading = "## Code Documentation Standards and Tree Assembly"
+
+  for fname, req_tokens in POLYGLOT_DOCUMENTATION_STANDARDS_REQUIREMENTS.items():
+    rel_path = f"{base_rel}/{fname}"
+    if fname not in guide_files:
+      errs.append(f"Missing {rel_path}")
+      continue
+    text = guide_files[fname]
+    section = _extract_markdown_h2_section(text, section_heading)
+    if not section.strip():
+      errs.append(
+          f"{rel_path} missing required H2 section '{section_heading}'"
+      )
+      continue
+
+    for marker in POLYGLOT_DOCUMENTATION_MARKERS:
+      if marker not in section:
+        errs.append(
+            f"{rel_path} section '{section_heading}' missing required documentation marker '{marker}'"
+        )
+
+    for tok in req_tokens:
+      if tok not in section:
+        errs.append(
+            f"{rel_path} section '{section_heading}' missing required documentation token '{tok}'"
+        )
+
+    errs.extend(_check_prose_punctuation(rel_path, section))
+
+    in_fence = False
+    for idx, raw_line in enumerate(section.splitlines(), start=1):
+      stripped = raw_line.strip()
+      if stripped.startswith("```"):
+        in_fence = not in_fence
+        continue
+      if in_fence or not stripped or stripped.startswith("#"):
+        continue
+      no_code = re.sub(r"`[^`]*`", "", stripped)
+      match = _POLYGLOT_CONTRACTION_RE.search(no_code)
+      if match:
+        errs.append(
+            f"{rel_path}:{idx} contains prohibited contraction '{match.group(0)}' in prose"
+        )
+      prose_body = re.sub(r"^-\s+(?:\*\*[^*]+\*\*:\s*)?", "", stripped)
+      masked = mask_code_and_math_spans(prose_body)
+      for sent in split_into_sentences(masked):
+        wc = count_words_in_sentence(sent)
+        if wc > 20:
+          errs.append(
+              f"{rel_path}:{idx} sentence exceeds 20-word limit ({wc} words): {sent}"
+          )
+
+  return errs
+
+
+def validate_polyglot_documentation_standards() -> list[str]:
+  """Validates Code Documentation Standards and Tree Assembly sections across all 21 polyglot guides (GH-44)."""
+  errors: list[str] = []
+  base_rel = "skills/makeflow/references/polyglot"
+  guide_files: dict[str, str] = {}
+  for fname in POLYGLOT_DOCUMENTATION_STANDARDS_REQUIREMENTS:
+    fpath = repo_path(f"{base_rel}/{fname}")
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        guide_files[fname] = f.read()
+
+  errors.extend(_check_polyglot_documentation_standards_guides(guide_files))
+
+  # In-memory negative falsification checks (SCAR-TEST-11)
+  sample_guides: dict[str, str] = {}
+  for fname, req_tokens in POLYGLOT_DOCUMENTATION_STANDARDS_REQUIREMENTS.items():
+    tok_spans = " ".join(f"`{t}`" for t in req_tokens)
+    sample_guides[fname] = (
+        f"# {fname}\n\n"
+        "## Code Documentation Standards and Tree Assembly\n\n"
+        f"- **Project Convention Detection**: Inspect {tok_spans} before writing code.\n"
+        "- **Idiomatic Doc Comment Standard**: Write clear doc comments on public symbols.\n"
+        "- **Documentation Tree Assembly Command**: Build the documentation tree cleanly.\n"
+        "- **Documentation Anti-Patterns to Flag at Target 40**: Flag missing parameter tags.\n"
+    )
+
+  baseline_errs = _check_polyglot_documentation_standards_guides(sample_guides)
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for polyglot doc guides: {baseline_errs}"
+    )
+
+  # 1. Missing H2 heading
+  bad_no_heading = dict(sample_guides)
+  bad_no_heading["python.md"] = "# Python Guide\n\n## Core Idioms\n\n- Use Python.\n"
+  if not any(
+      "missing required H2 section '## Code Documentation Standards and Tree Assembly'"
+      in e
+      for e in _check_polyglot_documentation_standards_guides(bad_no_heading)
+  ):
+    errors.append(
+        "Negative falsification failed: missing doc H2 section in python.md was not rejected"
+    )
+
+  # 2. Missing marker
+  bad_no_marker = dict(sample_guides)
+  bad_no_marker["rust.md"] = bad_no_marker["rust.md"].replace(
+      "Documentation Anti-Patterns to Flag at Target 40", "Other Notes"
+  )
+  if not any(
+      "Documentation Anti-Patterns to Flag at Target 40" in e
+      for e in _check_polyglot_documentation_standards_guides(bad_no_marker)
+  ):
+    errors.append(
+        "Negative falsification failed: missing documentation marker in rust.md was not rejected"
+    )
+
+  # 3. Missing language token
+  bad_no_tok = dict(sample_guides)
+  bad_no_tok["c_cpp.md"] = bad_no_tok["c_cpp.md"].replace("Doxyfile", "OtherFile")
+  if not any(
+      "Doxyfile" in e
+      for e in _check_polyglot_documentation_standards_guides(bad_no_tok)
+  ):
+    errors.append(
+        "Negative falsification failed: missing Doxyfile token in c_cpp.md was not rejected"
+    )
+
+  return errors
+
+
+SCAR_PROC_159_TARGET_FILES = (
+    "skills/makeflow/references/scars/process.md",
+    "skills/makeflow/references/scars/tooling_and_hci.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "agents/adversarial-critic.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/11_polyglot_monorepos.md",
+    "agents/archaeology-worker.md",
+)
+
+
+def check_scar_proc_159_documentation_standards(
+    files_map: dict[str, str] | None = None,
+) -> list[str]:
+  """Validates SCAR-PROC-159, SCAR-DOC-16 progressive disclosure tree, and Six Pillars doc rules (GH-44)."""
+  if files_map is None:
+    files_map = {}
+    for rel in SCAR_PROC_159_TARGET_FILES:
+      fpath = repo_path(rel)
+      if os.path.isfile(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  errs: list[str] = []
+  for rel in SCAR_PROC_159_TARGET_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. skills/makeflow/references/scars/process.md (SCAR-PROC-159)
+  proc_rel = "skills/makeflow/references/scars/process.md"
+  proc_text = files_map[proc_rel]
+  table_match = re.search(
+      r"## Scars in this Category.*?(?=\n###|\Z)", proc_text, re.DOTALL
+  )
+  table_sec = table_match.group(0) if table_match else ""
+  t158 = re.search(r"(?m)^\|\s*`SCAR-PROC-158`\s*\|", table_sec)
+  t159 = re.search(r"(?m)^\|\s*`SCAR-PROC-159`\s*\|", table_sec)
+  if (
+      not t159
+      or "Project-Adaptive Code Documentation Standards and Tree Verification"
+      not in table_sec
+  ):
+    errs.append(
+        f"{proc_rel} category table must list SCAR-PROC-159 (Project-Adaptive Code Documentation Standards and Tree Verification)"
+    )
+  elif not (t158 and t158.start() < t159.start()):
+    errs.append(
+        f"{proc_rel} category table must place SCAR-PROC-159 monotonically after SCAR-PROC-158"
+    )
+
+  m158 = re.search(r"(?m)^###\s+SCAR-PROC-158\b", proc_text)
+  m159 = re.search(
+      r"(?m)^###\s+SCAR-PROC-159:\s+Project-Adaptive Code Documentation Standards and Tree Verification\b",
+      proc_text,
+  )
+  if not (m158 and m159 and m158.start() < m159.start()):
+    errs.append(
+        f"{proc_rel} must define '### SCAR-PROC-159: Project-Adaptive Code Documentation Standards and Tree Verification' monotonically after SCAR-PROC-158"
+    )
+  else:
+    sec159 = proc_text[m159.start() :].split("\n### SCAR-")[0]
+    extracted: dict[str, str] = {}
+    req_fields = ("Wound", "Trap", "Permanent Reflex", "Socratic Probe")
+    for field in req_fields:
+      fm = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", sec159)
+      val = fm.group(1).strip() if fm else ""
+      extracted[field] = val
+      if not val:
+        errs.append(f"{proc_rel} SCAR-PROC-159 missing non-empty '**{field}**:'")
+
+    cb_match = re.search(r"\*\*Circuit Breaker\*\*:[ \t]*([^\n\r]+)", sec159)
+    cb_val = cb_match.group(1).strip() if cb_match else ""
+
+    for tok in (
+        "skills/makeflow/references/polyglot/<lang>.md",
+        "15_archaeology_receipt.md",
+        "20_plan.md",
+        "Target 15",
+        "Target 40",
+    ):
+      if tok not in sec159:
+        errs.append(f"{proc_rel} SCAR-PROC-159 missing required token '{tok}'")
+
+    if all(extracted[f] for f in req_fields):
+      candidate = {
+          "id": "SCAR-PROC-159",
+          "raw_wound": extracted["Wound"],
+          "wound": extracted["Wound"],
+          "raw_trap": extracted["Trap"],
+          "trap": extracted["Trap"],
+          "raw_circuit_breaker": cb_val,
+          "circuit_breaker": cb_val,
+          "raw_reflex": extracted["Permanent Reflex"],
+          "reflex": extracted["Permanent Reflex"],
+          "socratic_probe": extracted["Socratic Probe"],
+      }
+      errs.extend(ScarCandidateValidator().validate(candidate))
+      probe_sents = split_into_sentences(extracted["Socratic Probe"])
+      if not (1 <= len(probe_sents) <= 3):
+        errs.append(
+            f"{proc_rel} SCAR-PROC-159 Socratic Probe must contain 1-3 '?' sentences, found {len(probe_sents)}"
+        )
+    errs.extend(_check_prose_punctuation(f"{proc_rel}#SCAR-PROC-159", sec159))
+
+  # 2. skills/makeflow/references/scars/tooling_and_hci.md (SCAR-DOC-16)
+  hci_rel = "skills/makeflow/references/scars/tooling_and_hci.md"
+  hci_text = files_map[hci_rel]
+  if "concentric documentation rings" in hci_text.lower() or "concentric rings" in hci_text.lower():
+    errs.append(
+        f"{hci_rel} must not contain legacy 'Concentric Documentation Rings' or 'concentric rings'"
+    )
+  hci_table_match = re.search(
+      r"## Scars in this Category.*?(?=\n###|\Z)", hci_text, re.DOTALL
+  )
+  hci_table = hci_table_match.group(0) if hci_table_match else ""
+  if (
+      "SCAR-DOC-16" not in hci_table
+      or "Documentation Tree (Progressive Disclosure)" not in hci_table
+  ):
+    errs.append(
+        f"{hci_rel} category table must list SCAR-DOC-16 titled 'Documentation Tree (Progressive Disclosure)'"
+    )
+  mdoc16 = re.search(
+      r"(?m)^###\s+SCAR-DOC-16:\s+Documentation Tree \(Progressive Disclosure\)\s*$",
+      hci_text,
+  )
+  if not mdoc16:
+    errs.append(
+        f"{hci_rel} must define '### SCAR-DOC-16: Documentation Tree (Progressive Disclosure)'"
+    )
+  else:
+    sec_doc16 = hci_text[mdoc16.start() :].split("\n### SCAR-")[0]
+    doc16_fields: dict[str, str] = {}
+    for field in ("Wound", "Trap", "Permanent Reflex", "Socratic Probe"):
+      fm = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", sec_doc16)
+      val = fm.group(1).strip() if fm else ""
+      doc16_fields[field] = val
+      if not val:
+        errs.append(f"{hci_rel} SCAR-DOC-16 missing non-empty '**{field}**:'")
+    if all(doc16_fields[f] for f in ("Wound", "Trap", "Permanent Reflex", "Socratic Probe")):
+      doc16_candidate = {
+          "id": "SCAR-DOC-16",
+          "raw_wound": doc16_fields["Wound"],
+          "wound": doc16_fields["Wound"],
+          "raw_trap": doc16_fields["Trap"],
+          "trap": doc16_fields["Trap"],
+          "raw_circuit_breaker": "",
+          "circuit_breaker": "",
+          "raw_reflex": doc16_fields["Permanent Reflex"],
+          "reflex": doc16_fields["Permanent Reflex"],
+          "socratic_probe": doc16_fields["Socratic Probe"],
+      }
+      errs.extend(ScarCandidateValidator().validate(doc16_candidate))
+    errs.extend(_check_prose_punctuation(f"{hci_rel}#SCAR-DOC-16", sec_doc16))
+
+  # 3. skills/makeflow/references/09_synthetic_scars_catalog.md
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_text = files_map[cat_rel]
+  if "concentric documentation rings" in cat_text.lower() or "concentric rings" in cat_text.lower():
+    errs.append(
+        f"{cat_rel} must not contain legacy 'Concentric Documentation Rings'"
+    )
+  if not check_scar_catalog_routing(cat_text, "SCAR-PROC-159", "process.md"):
+    errs.append(
+        f"{cat_rel} Master Routing Table must strictly route SCAR-PROC-159 to scars/process.md"
+    )
+  c158 = re.search(r"(?m)^\|\s*`SCAR-PROC-158`\s*\|", cat_text)
+  c159 = re.search(r"(?m)^\|\s*`SCAR-PROC-159`\s*\|", cat_text)
+  if not (c158 and c159 and c158.start() < c159.start()):
+    errs.append(
+        f"{cat_rel} must place SCAR-PROC-159 monotonically after SCAR-PROC-158"
+    )
+  if (
+      not check_scar_catalog_routing(cat_text, "SCAR-DOC-16", "tooling_and_hci.md")
+      or "Documentation Tree (Progressive Disclosure)" not in cat_text
+  ):
+    errs.append(
+        f"{cat_rel} must route SCAR-DOC-16 titled 'Documentation Tree (Progressive Disclosure)' to scars/tooling_and_hci.md"
+    )
+
+  # 4. skills/makeflow/references/03_tdd_and_code_quality.md
+  r03_rel = "skills/makeflow/references/03_tdd_and_code_quality.md"
+  r03_text = files_map[r03_rel]
+  if "concentric documentation rings" in r03_text.lower() or "concentric rings" in r03_text.lower():
+    errs.append(
+        f"{r03_rel} must not contain legacy 'Concentric Documentation Rings'"
+    )
+  if "## 4. Documentation Tree (Progressive Disclosure) (`SCAR-DOC-16`)" not in r03_text:
+    errs.append(
+        f"{r03_rel} must contain '## 4. Documentation Tree (Progressive Disclosure) (`SCAR-DOC-16`)'"
+    )
+
+  # 5. Six Pillars Manual & Critic Agent (Pillars 1, 5, 6)
+  from lib.scar_candidate import (
+      count_words_in_sentence,
+      mask_code_and_math_spans,
+  )
+
+  for t40_rel in (
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+      "agents/adversarial-critic.md",
+  ):
+    t40_text = files_map[t40_rel]
+    p1_match = re.search(
+        r"(?m)^###\s+1\.\s+Intent\b.*?(?=^###\s+2\b|\Z)",
+        t40_text,
+        re.DOTALL,
+    )
+    p1_sec = p1_match.group(0) if p1_match else ""
+    for req_p1 in (
+        "SCAR-PROC-159",
+        "SCAR-DOC-16",
+        "Documentation Tree (Progressive Disclosure)",
+    ):
+      if req_p1 not in p1_sec:
+        errs.append(f"{t40_rel} Pillar 1 must reference '{req_p1}'")
+
+    p5_match = re.search(
+        r"(?m)^###\s+5\.\s+Reviewer Defense\b.*?(?=^###\s+6\b|\Z)",
+        t40_text,
+        re.DOTALL,
+    )
+    p5_sec = p5_match.group(0) if p5_match else ""
+    p5_lower = p5_sec.lower()
+    for req_p5 in ("parameter", "return", "exception", "example", "simple english"):
+      if req_p5 not in p5_lower:
+        errs.append(
+            f"{t40_rel} Pillar 5 must check documentation accuracy and Simple English token '{req_p5}'"
+        )
+
+    p6_match = re.search(
+        r"(?m)^###\s+6\.\s+Immune Defenses & Crash Antibodies\b.*?(?=^---|\n##\s+|\n4\.\s+End your report|\Z)",
+        t40_text,
+        re.DOTALL,
+    )
+    p6_sec = p6_match.group(0) if p6_match else ""
+    p6_lower = p6_sec.lower()
+    if "SCAR-PROC-159" not in p6_sec:
+      errs.append(f"{t40_rel} Pillar 6 must reference 'SCAR-PROC-159'")
+    if "documentation tree" not in p6_lower or "doc comment" not in p6_lower:
+      errs.append(
+          f"{t40_rel} Pillar 6 must check doc comment formatting and documentation tree buildability"
+      )
+    if "warning" not in p6_lower or "broken link" not in p6_lower:
+      errs.append(
+          f"{t40_rel} Pillar 6 must check for clean builds without warnings or broken links"
+      )
+
+    for pillar_label, pillar_sec in (
+        ("Pillar 1", p1_sec),
+        ("Pillar 5", p5_sec),
+        ("Pillar 6", p6_sec),
+    ):
+      errs.extend(
+          _check_prose_punctuation(f"{t40_rel}#{pillar_label}", pillar_sec)
+      )
+      in_fence = False
+      for idx, raw_line in enumerate(pillar_sec.splitlines(), start=1):
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+          in_fence = not in_fence
+          continue
+        if in_fence or not stripped or stripped.startswith("#"):
+          continue
+        no_code = re.sub(r"`[^`]*`", "", stripped)
+        cmatch = _POLYGLOT_CONTRACTION_RE.search(no_code)
+        if cmatch:
+          errs.append(
+              f"{t40_rel} {pillar_label}:{idx} contains prohibited contraction '{cmatch.group(0)}' in prose"
+          )
+        prose_body = re.sub(
+            r"^(?:-\s+|\d+\.\s+)(?:\*\*[^*]+\*\*:\s*)?", "", stripped
+        )
+        masked = mask_code_and_math_spans(prose_body)
+        for sent in split_into_sentences(masked):
+          wc = count_words_in_sentence(sent)
+          if wc > 25:
+            errs.append(
+                f"{t40_rel} {pillar_label}:{idx} sentence exceeds 25-word descriptive limit ({wc} words): {sent}"
+            )
+
+  # 6. Target 15 & Target 20 Archaeology and Planning Manuals
+  for arch_rel in (
+      "skills/makeflow/references/02_archaeology_and_planning.md",
+      "skills/makeflow/references/11_polyglot_monorepos.md",
+      "agents/archaeology-worker.md",
+  ):
+    arch_text = files_map[arch_rel]
+    if "SCAR-PROC-159" not in arch_text:
+      errs.append(f"{arch_rel} must reference 'SCAR-PROC-159'")
+    if "skills/makeflow/references/polyglot/<lang>.md" not in arch_text:
+      errs.append(
+          f"{arch_rel} must reference 'skills/makeflow/references/polyglot/<lang>.md'"
+      )
+    if "documentation" not in arch_text.lower():
+      errs.append(
+          f"{arch_rel} must mandate discovering project documentation standards"
+      )
+    for idx, raw_line in enumerate(arch_text.splitlines(), start=1):
+      if "SCAR-PROC-159" not in raw_line:
+        continue
+      stripped = raw_line.strip()
+      errs.extend(_check_prose_punctuation(f"{arch_rel}:{idx}", stripped))
+      prose_body = re.sub(
+          r"^(?:-\s+|\d+\.\s+)(?:\*\*[^*]+\*\*:\s*|[A-Za-z0-9_ ()`-]+:\s*)?",
+          "",
+          stripped,
+      )
+      masked = mask_code_and_math_spans(prose_body)
+      for sent in split_into_sentences(masked):
+        wc = count_words_in_sentence(sent)
+        if wc > 25:
+          errs.append(
+              f"{arch_rel}:{idx} sentence exceeds 25-word descriptive limit ({wc} words): {sent}"
+          )
+
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  r02_sec1 = _extract_markdown_h2_section(r02_text, "## 1. Target 15")
+  r02_sec2 = _extract_markdown_h2_section(r02_text, "## 2. Target 20")
+  if "SCAR-PROC-159" not in r02_sec1:
+    errs.append(f"{r02_rel} Section 1 (Target 15) must reference SCAR-PROC-159")
+  if "SCAR-PROC-159" not in r02_sec2:
+    errs.append(f"{r02_rel} Section 2 (Target 20) must reference SCAR-PROC-159")
+
+  return errs
+
+
+def validate_scar_proc_159_documentation_standards() -> list[str]:
+  """Validates SCAR-PROC-159 and SCAR-DOC-16 on the live repository (GH-44)."""
+  return check_scar_proc_159_documentation_standards()
+
+
+class TestScarProc159DocumentationStandards(unittest.TestCase):
+  """Hermetic unit and negative mutation falsification tests for GH-44 (SCAR-PROC-159, SCAR-DOC-16)."""
+
+  def test_live_repository_polyglot_documentation_standards(self):
+    """Verifies all 21 polyglot guides satisfy Code Documentation Standards and Tree Assembly rules."""
+    self.assertEqual(validate_polyglot_documentation_standards(), [])
+
+  def test_live_repository_scar_proc_159_and_doc_16(self):
+    """Verifies SCAR-PROC-159, SCAR-DOC-16, Six Pillars 1/5/6, and Target 15/20 documentation rules."""
+    self.assertEqual(check_scar_proc_159_documentation_standards(), [])
+
+  def test_negative_falsification_polyglot_guides_in_tempdir(self):
+    """Verifies mutations to polyglot documentation sections in a temporary directory fail validation."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      guide_files: dict[str, str] = {}
+      for fname, req_tokens in POLYGLOT_DOCUMENTATION_STANDARDS_REQUIREMENTS.items():
+        tok_spans = " ".join(f"`{t}`" for t in req_tokens)
+        content = (
+            f"# {fname}\n\n"
+            "## Code Documentation Standards and Tree Assembly\n\n"
+            f"- **Project Convention Detection**: Inspect {tok_spans} before writing code.\n"
+            "- **Idiomatic Doc Comment Standard**: Write clear doc comments on public symbols.\n"
+            "- **Documentation Tree Assembly Command**: Build the documentation tree cleanly.\n"
+            "- **Documentation Anti-Patterns to Flag at Target 40**: Flag missing parameter tags.\n"
+        )
+        fpath = os.path.join(tmpdir, fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+          f.write(content)
+        with open(fpath, "r", encoding="utf-8") as f:
+          guide_files[fname] = f.read()
+
+      self.assertEqual(
+          _check_polyglot_documentation_standards_guides(guide_files), []
+      )
+
+      # 1. Removing ## Code Documentation Standards and Tree Assembly fails validation
+      mut_no_section = dict(guide_files)
+      mut_no_section["python.md"] = "# Python Guide\n\n## 1. Detection Markers\n"
+      errs_no_section = _check_polyglot_documentation_standards_guides(
+          mut_no_section
+      )
+      self.assertTrue(
+          any(
+              "missing required H2 section '## Code Documentation Standards and Tree Assembly'"
+              in e
+              for e in errs_no_section
+          ),
+          f"Expected missing H2 section error, got: {errs_no_section}",
+      )
+
+      # 2. Removing any of the 4 POLYGLOT_DOCUMENTATION_MARKERS or language tokens fails validation
+      for marker in POLYGLOT_DOCUMENTATION_MARKERS:
+        mut_no_marker = dict(guide_files)
+        mut_no_marker["rust.md"] = mut_no_marker["rust.md"].replace(
+            marker, "Omitted Marker"
+        )
+        errs_marker = _check_polyglot_documentation_standards_guides(
+            mut_no_marker
+        )
+        self.assertTrue(
+            any(marker in e for e in errs_marker),
+            f"Expected missing marker '{marker}' error, got: {errs_marker}",
+        )
+
+      mut_no_token = dict(guide_files)
+      mut_no_token["typescript_javascript.md"] = mut_no_token[
+          "typescript_javascript.md"
+      ].replace("typedoc.json", "omitted_config.json")
+      errs_token = _check_polyglot_documentation_standards_guides(mut_no_token)
+      self.assertTrue(
+          any("typedoc.json" in e for e in errs_token),
+          f"Expected missing token 'typedoc.json' error, got: {errs_token}",
+      )
+
+      # 3. Injecting >20-word sentence, contraction, semicolon, or em-dash fails validation
+      mut_long = dict(guide_files)
+      mut_long["go.md"] += (
+          "- Document every single exported package symbol with a complete sentence "
+          "whenever you build a new microservice handler for production deployment today.\n"
+      )
+      self.assertTrue(
+          any(
+              "exceeds 20-word limit" in e
+              for e in _check_polyglot_documentation_standards_guides(mut_long)
+          )
+      )
+
+      mut_contraction = dict(guide_files)
+      mut_contraction["elixir.md"] += "- You don't skip module documentation.\n"
+      self.assertTrue(
+          any(
+              "prohibited contraction" in e
+              for e in _check_polyglot_documentation_standards_guides(
+                  mut_contraction
+              )
+          )
+      )
+
+      mut_semi = dict(guide_files)
+      mut_semi["c_cpp.md"] += "- Document headers; build Doxygen.\n"
+      self.assertTrue(
+          any(
+              "semicolon" in e
+              for e in _check_polyglot_documentation_standards_guides(mut_semi)
+          )
+      )
+
+      mut_emdash = dict(guide_files)
+      mut_emdash["c_cpp.md"] += "- Document headers \u2014 build Doxygen.\n"
+      self.assertTrue(
+          any(
+              "em-dash" in e
+              for e in _check_polyglot_documentation_standards_guides(mut_emdash)
+          )
+      )
+
+  def test_negative_falsification_scar_proc_159_and_doc_16_in_tempdir(self):
+    """Verifies mutations to SCAR-PROC-159, SCAR-DOC-16, and Six Pillars files fail validation."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      base_files: dict[str, str] = {}
+      for rel in SCAR_PROC_159_TARGET_FILES:
+        src_path = repo_path(rel)
+        dst_path = os.path.join(tmpdir, rel)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        with open(src_path, "r", encoding="utf-8") as f:
+          text = f.read()
+        with open(dst_path, "w", encoding="utf-8") as f:
+          f.write(text)
+        base_files[rel] = text
+
+      # Verify live baseline passes once implemented
+      self.assertEqual(
+          check_scar_proc_159_documentation_standards(base_files), []
+      )
+
+      # 4. Reintroducing "Concentric Documentation Rings" or removing "Documentation Tree (Progressive Disclosure)"
+      for rel_doc16 in (
+          "skills/makeflow/references/scars/tooling_and_hci.md",
+          "skills/makeflow/references/09_synthetic_scars_catalog.md",
+          "skills/makeflow/references/03_tdd_and_code_quality.md",
+      ):
+        mut_concentric = dict(base_files)
+        mut_concentric[rel_doc16] += "\nConcentric Documentation Rings\n"
+        errs_conc = check_scar_proc_159_documentation_standards(mut_concentric)
+        self.assertTrue(
+            any(rel_doc16 in e and "Concentric" in e for e in errs_conc),
+            f"Expected Concentric rejection in {rel_doc16}, got: {errs_conc}",
+        )
+
+        mut_no_tree = dict(base_files)
+        mut_no_tree[rel_doc16] = mut_no_tree[rel_doc16].replace(
+            "Documentation Tree (Progressive Disclosure)",
+            "Flat Documentation Manual",
+        )
+        errs_tree = check_scar_proc_159_documentation_standards(mut_no_tree)
+        self.assertTrue(
+            any(rel_doc16 in e for e in errs_tree),
+            f"Expected missing Documentation Tree rejection in {rel_doc16}, got: {errs_tree}",
+        )
+
+      # 5. Removing SCAR-PROC-159 from process.md, 09_synthetic_scars_catalog.md, 04_six_pillars, or 02_archaeology
+      for rel_159 in (
+          "skills/makeflow/references/scars/process.md",
+          "skills/makeflow/references/09_synthetic_scars_catalog.md",
+          "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+          "skills/makeflow/references/02_archaeology_and_planning.md",
+      ):
+        mut_no_159 = dict(base_files)
+        mut_no_159[rel_159] = mut_no_159[rel_159].replace(
+            "SCAR-PROC-159", "SCAR-PROC-000"
+        )
+        errs_159 = check_scar_proc_159_documentation_standards(mut_no_159)
+        self.assertTrue(
+            any(rel_159 in e and "SCAR-PROC-159" in e for e in errs_159),
+            f"Expected missing SCAR-PROC-159 error for {rel_159}, got: {errs_159}",
+        )
+
+      # 6. Removing ONLY "documentation tree" (keeping "doc comment") or ONLY "broken link" (keeping "warning") in Pillar 6
+      r04_rel = "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+      mut_no_doc_tree_p6 = dict(base_files)
+      p6_start = mut_no_doc_tree_p6[r04_rel].index("### 6. Immune Defenses")
+      mut_no_doc_tree_p6[r04_rel] = (
+          mut_no_doc_tree_p6[r04_rel][:p6_start]
+          + re.sub(
+              r"(?i)documentation tree",
+              "reference manual",
+              mut_no_doc_tree_p6[r04_rel][p6_start:],
+          )
+      )
+      errs_no_p6_tree = check_scar_proc_159_documentation_standards(
+          mut_no_doc_tree_p6
+      )
+      self.assertTrue(
+          any("Pillar 6" in e and r04_rel in e for e in errs_no_p6_tree),
+          f"Expected Pillar 6 error when 'documentation tree' removed, got: {errs_no_p6_tree}",
+      )
+
+      mut_no_broken_link_p6 = dict(base_files)
+      mut_no_broken_link_p6[r04_rel] = (
+          mut_no_broken_link_p6[r04_rel][:p6_start]
+          + re.sub(
+              r"(?i)broken links?",
+              "bad refs",
+              mut_no_broken_link_p6[r04_rel][p6_start:],
+          )
+      )
+      errs_no_p6_link = check_scar_proc_159_documentation_standards(
+          mut_no_broken_link_p6
+      )
+      self.assertTrue(
+          any("Pillar 6" in e and r04_rel in e for e in errs_no_p6_link),
+          f"Expected Pillar 6 error when 'broken link' removed, got: {errs_no_p6_link}",
+      )
+
+      # 7. Injecting a >25-word descriptive sentence into Pillar 1/5/6 of 04_six_pillars or adversarial-critic.md
+      for target_p_rel in (
+          "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+          "agents/adversarial-critic.md",
+      ):
+        mut_long_pillar = dict(base_files)
+        mut_long_pillar[target_p_rel] = mut_long_pillar[target_p_rel].replace(
+            "### 1. Intent\n",
+            "### 1. Intent\n"
+            "- Does this overly verbose and meandering review question contain far more than twenty five descriptive words in a single sentence to test the Simple English word ceiling accurately?\n",
+        )
+        errs_long_pillar = check_scar_proc_159_documentation_standards(
+            mut_long_pillar
+        )
+        self.assertTrue(
+            any(
+                target_p_rel in e and "exceeds 25-word descriptive limit" in e
+                for e in errs_long_pillar
+            ),
+            f"Expected >25-word sentence rejection in {target_p_rel}, got: {errs_long_pillar}",
+        )
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 | `SCAR-TOOL-15` | Anchored State Marker Detection vs Substring Matching | Workflow State Parsing |
 | `SCAR-TOOL-16` | Prohibit Arbitrary Output Limits and Require Volume Triage Interview | Information Triage & Output Limits |
 | `SCAR-HCI-08` | Multi-Choice Prompt Rule | User Interaction & Choice Gates |
-| `SCAR-DOC-16` | Concentric Documentation Rings | Layered Architecture & Readability |
+| `SCAR-DOC-16` | Documentation Tree (Progressive Disclosure) | Layered Architecture & Readability |
 
 ---
 
@@ -38,12 +38,12 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 - **Permanent Reflex**: Call `ask_question` only when two or more choices exist ($N \ge 2$). For single approvals ($N = 1$), print the proposal in chat and stop tool calls.
 - **Socratic Probe**: If there is only one approval action, does opening a multiple-choice widget add unnecessary friction? Should you present the full proposal in chat with file links and reserve `ask_question` for multiple alternatives?
 
-### SCAR-DOC-16: Concentric Documentation Rings
+### SCAR-DOC-16: Documentation Tree (Progressive Disclosure)
 
 - **Wound**: Deep implementation mechanics mixed into top-level user guides overwhelm readers and cause prompt token exhaustion.
-- **Trap**: Treating all documentation as a single flat manual without audience layering.
-- **Permanent Reflex**: Layer documentation into concentric rings: Ring 1 (Surface Rules for agents and quick lookup), Ring 2 (Workflows and Procedures), and Ring 3 (Deep Architecture and Manuals).
-- **Socratic Probe**: If you put deep architectural internals into surface quickstart guides, will readers and models suffer context overload? Can you layer documentation into concentric rings so readers access detail only as needed?
+- **Trap**: Treating all documentation as a single flat manual without progressive disclosure.
+- **Permanent Reflex**: Organize documentation as a progressive disclosure tree: Root Overview and Index, Branch Workflow Guides, and Leaf API Reference Manuals.
+- **Socratic Probe**: If you put deep internals into root guides, will readers suffer context overload? Can you use a progressive disclosure tree?
 
 ### SCAR-TOOL-14: Programmatic Tool Polling vs Subagent Scrape Loops
 
