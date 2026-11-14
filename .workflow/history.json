@@ -2060,5 +2060,26 @@
       "SCAR-PROC-159: Project-Adaptive Code Documentation Standards and Tree Verification",
       "SCAR-DOC-16: Documentation Tree (Progressive Disclosure)"
     ]
+  },
+  {
+    "id": "GH-124",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/124",
+    "title": "[FEAT] local ticket management",
+    "request": "Implement a directory-per-ticket JSON backlog store in .workflow/tickets/LOCAL-<N>.json for Pure Git projects and unauthenticated gh environments, with collision-free multi-clone ID allocation, Mode B priority sorting, and local blocked_by dependency enforcement.",
+    "branch": "feat/124-local-ticket-management",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T20:28:07Z",
+    "completed_at": "2026-11-14T21:51:03Z",
+    "commit_sha": "a8dba454c1cf728ef0b6026a625852fca95e8844",
+    "pr_number": 199,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/199",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": []
   }
 ]
