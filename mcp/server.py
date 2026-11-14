@@ -28,7 +28,7 @@ except ImportError:
   query_scars = None
   resolve_scars_db_path = None
 
-from lib.config import (  # noqa: E402
+from lib.config import (
     _normalize_str_list,
     _parse_csv_env,
     deep_merge,
@@ -39,7 +39,7 @@ from lib.config import (  # noqa: E402
     resolve_workflow_config,
     resolve_workspace_dir,
 )
-from lib.shell_safety import (  # noqa: E402
+from lib.shell_safety import (
     DB_TOOLS,
     ENV_ASSIGN_RE,
     GIT_GLOBAL_VALUE_FLAGS,
@@ -68,6 +68,12 @@ from lib.shell_safety import (  # noqa: E402
     evaluate_mcp_database_safety as evaluate_database_safety,
     is_database_command,
 )
+from lib.turn_boundary import (
+    PAUSE_GATE_TARGETS,
+    clear_gate_entry,
+    record_gate_entry,
+    verify_mcp_gate_exit,
+)
 
 ALL_TARGETS = {
     "T00",
@@ -90,16 +96,16 @@ VALID_TRANSITIONS = {
     "T00": ALL_TARGETS - {"T00"},
     "T10": {"T15"},
     "T15": {"T20"},
-    "T20": {"T30"},
-    "T30": {"T40", "T20"},
+    "T20": {"T30", "T15"},
+    "T30": {"T40", "T20", "T15"},
     "T40": {"T42", "T45"},
-    "T42": {"T30"},
-    "T45": {"T50"},
-    "T50": {"T60"},
-    "T60": {"T70", "T40"},
+    "T42": {"T30", "T20", "T15"},
+    "T45": {"T50", "T30"},
+    "T50": {"T60", "T30"},
+    "T60": {"T70", "T40", "T30"},
     "T70": {"T75", "T30"},
-    "T75": {"T80"},
-    "T80": {"T90"},
+    "T75": {"T80", "T30", "T40", "T70"},
+    "T80": {"T90", "T30", "T40", "T60", "T70"},
     "T90": set(),
 }
 
@@ -1017,6 +1023,12 @@ def handle_tools_call(request_id, tool_name, arguments):
             " (approved-review) instead of T42.",
         )
 
+    state_dir = ""
+    transcript_path = (
+        arguments.get("transcriptPath")
+        or evidence.get("transcriptPath")
+        or ""
+    ).strip()
     if arguments.get("workspaceDir") or arguments.get("stateDir"):
       ws = resolve_workspace_dir(arguments)
       if ws is None:
@@ -1032,12 +1044,37 @@ def handle_tools_call(request_id, tool_name, arguments):
       )
       if os.path.isdir(state_dir):
         req_card = REQUIRED_STATE_CARDS.get((current, next_t))
-        if req_card and not os.path.isfile(os.path.join(state_dir, req_card)):
+        alt_cards = {
+            ("T15", "T20"): ("20_plan.md", "20_plan_approved.md"),
+            ("T40", "T45"): ("45_review_approved.md",),
+        }.get((current, next_t), ())
+        if (
+            req_card
+            and not os.path.isfile(os.path.join(state_dir, req_card))
+            and not any(
+                os.path.isfile(os.path.join(state_dir, ac)) for ac in alt_cards
+            )
+        ):
           return _error_result(
               request_id,
               f"BLOCKED: Required state card '{req_card}' does not exist in"
               f" '{state_dir}' for transition {current} -> {next_t}.",
           )
+
+    if gate_key:
+      ok, reason = verify_mcp_gate_exit(
+          state_dir, current, next_t, transcript_path=transcript_path
+      )
+      if not ok:
+        return _error_result(request_id, reason)
+
+    if state_dir and os.path.isdir(state_dir):
+      if next_t in PAUSE_GATE_TARGETS:
+        record_gate_entry(
+            state_dir, current, next_t, transcript_path=transcript_path
+        )
+      elif current in PAUSE_GATE_TARGETS or gate_key:
+        clear_gate_entry(state_dir, current)
 
     return {
         "jsonrpc": "2.0",
@@ -1250,7 +1287,7 @@ def handle_tools_call(request_id, tool_name, arguments):
         row = cur.fetchone()
         if row and row[0] == 0:
           is_empty = True
-      except Exception:
+      except sqlite3.Error:
         is_empty = True
       finally:
         if conn:

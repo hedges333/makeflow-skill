@@ -15,14 +15,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
-from lib.config import (  # noqa: E402
+from lib.config import (
     _normalize_str_list,
     _parse_csv_env,
     is_plugin_dir,
     load_database_config,
     resolve_state_dir,
 )
-from lib.shell_safety import (  # noqa: E402
+from lib.shell_safety import (
     DB_TOOLS,
     ENV_ASSIGN_RE,
     GIT_GLOBAL_VALUE_FLAGS,
@@ -50,6 +50,16 @@ from lib.shell_safety import (  # noqa: E402
     _unwrap_command_tokens,
     evaluate_database_safety,
     is_database_command,
+)
+from lib.turn_boundary import (
+    PAUSE_GATE_EXITS,
+    PAUSE_GATE_TARGETS,
+    clear_gate_entry,
+    evaluate_advance_target_turn_boundary,
+    evaluate_command_turn_boundary,
+    extract_advance_target_calls,
+    mark_gate_human_verified,
+    record_gate_entry,
 )
 
 
@@ -91,7 +101,12 @@ def _detect_target_90(cmd, state_dir=None):
 
 
 def _evaluate_git_tokens(
-    tokens, has_review, is_history_msg=False, is_t90_state=False
+    tokens,
+    has_review,
+    is_history_msg=False,
+    is_t90_state=False,
+    state_dir=None,
+    transcript_path="",
 ):
   """Returns ('deny'|'force_ask'|'allow', reason) for a single command's tokens."""
   exe, rem = _unwrap_command_tokens(tokens)
@@ -105,6 +120,12 @@ def _evaluate_git_tokens(
         long_value_flags=("--repo", "--hostname"),
     )
     if len(gh_pos) >= 2 and gh_pos[0] == "pr" and gh_pos[1] == "merge":
+      if transcript_path or state_dir:
+        ok, reason = evaluate_command_turn_boundary(
+            "T75", transcript_path, state_dir=state_dir
+        )
+        if not ok:
+          return "deny", reason
       return (
           "force_ask",
           "Target 75 Landing Gate: gh pr merge requires operator approval. "
@@ -337,6 +358,12 @@ def _evaluate_git_tokens(
           "force_ask",
           "Target 90 History Push Gate: Approve to push history ledger commit to origin/main.",
       )
+    if (transcript_path or state_dir) and not is_t90_state:
+      ok, reason = evaluate_command_turn_boundary(
+          "T60", transcript_path, state_dir=state_dir
+      )
+      if not ok:
+        return "deny", reason
     if has_review:
       reason = (
           "Target 60 Push Gate: 45_review_approved.md is present. "
@@ -377,6 +404,12 @@ def _evaluate_git_tokens(
           "force_ask",
           "Target 90 History Ledger Gate: Approve to commit history ledger updates.",
       )
+    if (transcript_path or state_dir) and not is_t90_state:
+      ok, reason = evaluate_command_turn_boundary(
+          "T50", transcript_path, state_dir=state_dir
+      )
+      if not ok:
+        return "deny", reason
     if has_review:
       reason = (
           "Target 50 Commit Gate: 45_review_approved.md is present. "
@@ -392,7 +425,7 @@ def _evaluate_git_tokens(
   return "allow", ""
 
 
-def evaluate_git_command(cmd, has_review, state_dir=None):
+def evaluate_git_command(cmd, has_review, state_dir=None, transcript_path=""):
   """Evaluates all subcommands with deny > force_ask > allow precedence."""
   is_history_msg, is_t90_state = _detect_target_90(cmd, state_dir)
   first_ask_reason = None
@@ -403,6 +436,8 @@ def evaluate_git_command(cmd, has_review, state_dir=None):
           has_review,
           is_history_msg=is_history_msg,
           is_t90_state=is_t90_state,
+          state_dir=state_dir,
+          transcript_path=transcript_path,
       )
       if decision == "deny":
         return {"decision": "deny", "reason": reason}
@@ -424,9 +459,11 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/reflex.py",
     "lib/config.py",
     "lib/shell_safety.py",
+    "lib/turn_boundary.py",
     "hooks.json",
     ".workflow/state/Makefile",
     ".workflow/state/30_tdd_receipt.json",
+    ".workflow/state/gate_entry.json",
 })
 
 
@@ -682,8 +719,47 @@ def evaluate_tool_call(payload):
   tool_call = payload.get("toolCall", {})
   tool_name = tool_call.get("name", "")
   args = tool_call.get("args", {})
+  transcript_path = payload.get("transcriptPath") or ""
+  state_dir = resolve_state_dir(payload)
 
   if tool_name != "run_command":
+    adv_calls = extract_advance_target_calls([tool_call])
+    if adv_calls:
+      adv = adv_calls[0]
+      curr_t = adv["currentTarget"]
+      next_t = adv["nextTarget"]
+      if adv["stateDir"]:
+        eff_state_dir = (
+            adv["stateDir"]
+            if os.path.isabs(adv["stateDir"]) or not adv["workspaceDir"]
+            else os.path.join(adv["workspaceDir"], adv["stateDir"])
+        )
+      elif adv["workspaceDir"]:
+        eff_state_dir = os.path.join(adv["workspaceDir"], ".workflow", "state")
+      else:
+        eff_state_dir = state_dir
+
+      if (curr_t, next_t) in PAUSE_GATE_EXITS:
+        ok, reason = evaluate_advance_target_turn_boundary(
+            curr_t, next_t, transcript_path, state_dir=eff_state_dir
+        )
+        if not ok:
+          return {"decision": "deny", "reason": reason}
+        if eff_state_dir:
+          mark_gate_human_verified(
+              eff_state_dir, curr_t, transcript_path=transcript_path
+          )
+      if next_t in PAUSE_GATE_TARGETS and eff_state_dir:
+        record_gate_entry(
+            eff_state_dir, curr_t, next_t, transcript_path=transcript_path
+        )
+      elif (
+          curr_t in PAUSE_GATE_TARGETS
+          and next_t not in PAUSE_GATE_TARGETS
+          and (curr_t, next_t) not in PAUSE_GATE_EXITS
+          and eff_state_dir
+      ):
+        clear_gate_entry(eff_state_dir, curr_t)
     return {"decision": "allow"}
 
   cmd = args.get("CommandLine", "").strip()
@@ -711,10 +787,11 @@ def evaluate_tool_call(payload):
     }
 
   # 3. Destructive Git guards and milestone pause gates
-  state_dir = resolve_state_dir(payload)
   review_card = os.path.join(state_dir, "45_review_approved.md") if state_dir else ""
   has_review = bool(review_card and os.path.isfile(review_card))
-  return evaluate_git_command(cmd, has_review, state_dir=state_dir)
+  return evaluate_git_command(
+      cmd, has_review, state_dir=state_dir, transcript_path=transcript_path
+  )
 
 
 def main():
