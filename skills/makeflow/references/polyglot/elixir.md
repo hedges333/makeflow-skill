@@ -37,3 +37,10 @@ Follow three database isolation rules in Elixir tests:
 1. Enable `Ecto.Adapters.SQL.Sandbox` so every test runs inside an isolated SQL transaction that rolls back on exit.
 2. In `config/test.exs`, make sure that `database:` points to a dedicated test database such as `<app>_test`.
 3. Set `pool: Ecto.Adapters.SQL.Sandbox` so database writes never leak across test runs.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place domain contexts, schemas, and pure modules in `lib/<app>/`. Keep contexts independent of web transport layers.
+- **Executable Entrypoints and Controllers**: Keep Phoenix controllers in `lib/<app>_web/` and Mix tasks in `lib/mix/tasks/` as thin callers of `lib/<app>/`.
+- **Test Suite Placement and Naming**: Mirror the `lib/` tree inside `test/` using the `*_test.exs` suffix and load `test/test_helper.exs` first.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag `lib/<app>/` modules that call `lib/<app>_web/`, raw `Repo` queries in controllers, or tests without `_test.exs`.

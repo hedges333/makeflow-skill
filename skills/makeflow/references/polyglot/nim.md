@@ -36,3 +36,10 @@ Follow three isolation rules in Nim tests:
 1. Create scratch directories with `createTempDir` from `std/tempfiles` and remove them in `defer:` blocks.
 2. Pass procedural callbacks or concept interfaces to isolate HTTP clients and external processes.
 3. Point SQLite or database tests to `:memory:` connections or dedicated `*_test` databases.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place submodules in `src/<pkg>/` and re-export the public API from the root `src/<pkg>.nim` module.
+- **Executable Entrypoints and Controllers**: Guard CLI entrypoints with `when isMainModule:` or place binary targets in `src/<cmd>.nim` calling library modules.
+- **Test Suite Placement and Naming**: Place Testament and `std/unittest` files in `tests/` using the `tests/t_<name>.nim` prefix so `nimble test` discovers them.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag top-level side effects that run on `import` without `when isMainModule:`, or recursive module imports.

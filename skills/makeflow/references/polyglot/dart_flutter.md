@@ -47,3 +47,10 @@ Follow these rules for temporary scripts (`SCAR-TOOL-07`):
 2. If Dart is not installed, use Python. Never attempt to install Dart.
 3. Run standalone scripts directly with `dart <script_path>` without virtual environments.
 4. Use core libraries (`dart:io`, `dart:convert`, `dart:async`) for file operations, JSON parsing, and process execution without external dependencies.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place private implementation files in `lib/src/` and export the public API through `lib/<package>.dart`.
+- **Executable Entrypoints and Controllers**: Place thin CLI scripts in `bin/` and Flutter entrypoints in `lib/main.dart`. Import domain logic from `package:<pkg>/`.
+- **Test Suite Placement and Naming**: Place all unit and widget tests in `test/` using the `*_test.dart` suffix so `dart test` discovers them.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag external imports of `lib/src/`, business logic inside `StatefulWidget` classes, or test files inside `lib/`.

@@ -38,3 +38,10 @@ Follow three isolation rules in Ruby tests:
 1. Make sure that `RAILS_ENV=test` or `RACK_ENV=test` is set before running any test command.
 2. Configure `database_cleaner` with `:transaction` strategy so all SQL changes roll back after each example.
 3. Block and stub external HTTP calls with `webmock` or `vcr`.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place gem entrypoints in `lib/<gem>.rb` and namespaced classes in `lib/<gem>/` (or `app/models/` and `app/services/` in Rails).
+- **Executable Entrypoints and Controllers**: Place thin CLI binstubs in `exe/` or `bin/` that `require` the gem from `lib/` and invoke a runner class.
+- **Test Suite Placement and Naming**: Mirror the `lib/` tree inside `spec/` with `*_spec.rb` files for RSpec or `test/` with `*_test.rb` for Minitest.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag business logic in `exe/` binstubs or Rake tasks, or class namespaces that mismatch `lib/` paths.

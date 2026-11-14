@@ -838,6 +838,235 @@ def validate_three_layer_python_architecture():
   return errors
 
 
+POLYGLOT_DIRECTORY_STRUCTURE_REQUIREMENTS = {
+    "c_cpp.md": ("include/", "src/", "tests/"),
+    "csharp_dotnet.md": ("src/", "Program.cs", ".Tests"),
+    "dart_flutter.md": ("lib/src/", "bin/", "_test.dart"),
+    "dlang.md": ("source/", "app.d", "unittest"),
+    "elixir.md": ("lib/", "test/", "_test.exs"),
+    "gdscript_godot.md": ("scripts/", "scenes/", "test_"),
+    "go.md": ("internal/", "cmd/", "_test.go"),
+    "haxe.md": ("src/", "Main.hx", "Test.hx"),
+    "java_kotlin_scala.md": ("src/main/", "src/test/"),
+    "nim.md": ("src/", "isMainModule", "tests/t_"),
+    "odin.md": ("package", "main :: proc()", "_test.odin"),
+    "perl.md": ("lib/", ".pm", "t/"),
+    "php.md": ("src/", "PSR-4", "Test.php"),
+    "powershell.md": ("Public/", "Private/", ".Tests.ps1"),
+    "python.md": ("lib/", "scripts/", "tests/test_", "BaseScript"),
+    "ruby.md": ("lib/", "spec/", "_spec.rb"),
+    "rust.md": ("src/lib.rs", "src/main.rs", "#[cfg(test)]", "tests/"),
+    "scientific_r_julia_lua.md": (
+        "R/",
+        "tests/testthat/",
+        "test/runtests.jl",
+        "_spec.lua",
+    ),
+    "sql_migrations.md": ("migrations/", "models/", "tests/"),
+    "swift.md": ("Sources/", "Tests/", "Tests.swift"),
+    "typescript_javascript.md": ("src/", "index.ts", ".test.ts"),
+}
+
+POLYGLOT_STRUCTURE_MARKERS = (
+    "Library and Domain Layer",
+    "Executable Entrypoints and Controllers",
+    "Test Suite Placement and Naming",
+    "Structural Anti-Patterns to Flag at Target 15",
+)
+
+_POLYGLOT_CONTRACTION_RE = re.compile(
+    r"\b(?:don't|doesn't|isn't|aren't|wasn't|weren't|can't|cannot't|won't|"
+    r"wouldn't|shouldn't|couldn't|hasn't|haven't|hadn't|it's|that's|there's|"
+    r"we're|they're|you're|I'm|let's)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_polyglot_directory_structure_guides(
+    guide_files: dict[str, str],
+) -> list[str]:
+  """Validates Idiomatic Directory and Module Structure sections across all 21 polyglot guides (GH-174)."""
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scar_candidate import (
+      count_words_in_sentence,
+      mask_code_and_math_spans,
+      split_into_sentences,
+  )
+
+  errs = []
+  base_rel = "skills/makeflow/references/polyglot"
+  section_heading = "## Idiomatic Directory and Module Structure"
+
+  for fname, req_tokens in POLYGLOT_DIRECTORY_STRUCTURE_REQUIREMENTS.items():
+    rel_path = f"{base_rel}/{fname}"
+    if fname not in guide_files:
+      errs.append(f"Missing {rel_path}")
+      continue
+    text = guide_files[fname]
+    section = _extract_markdown_h2_section(text, section_heading)
+    if not section.strip():
+      errs.append(
+          f"{rel_path} missing required H2 section '{section_heading}'"
+      )
+      continue
+
+    for marker in POLYGLOT_STRUCTURE_MARKERS:
+      if marker not in section:
+        errs.append(
+            f"{rel_path} section '{section_heading}' missing required structural marker '{marker}'"
+        )
+
+    for tok in req_tokens:
+      if tok not in section:
+        errs.append(
+            f"{rel_path} section '{section_heading}' missing required path/structure token '{tok}'"
+        )
+
+    errs.extend(_check_prose_punctuation(rel_path, section))
+
+    in_fence = False
+    for idx, raw_line in enumerate(section.splitlines(), start=1):
+      stripped = raw_line.strip()
+      if stripped.startswith("```"):
+        in_fence = not in_fence
+        continue
+      if in_fence or not stripped or stripped.startswith("#"):
+        continue
+      no_code = re.sub(r"`[^`]*`", "", stripped)
+      match = _POLYGLOT_CONTRACTION_RE.search(no_code)
+      if match:
+        errs.append(
+            f"{rel_path}:{idx} contains prohibited contraction '{match.group(0)}' in prose"
+        )
+      prose_body = re.sub(r"^-\s+(?:\*\*[^*]+\*\*:\s*)?", "", stripped)
+      masked = mask_code_and_math_spans(prose_body)
+      for sent in split_into_sentences(masked):
+        wc = count_words_in_sentence(sent)
+        if wc > 20:
+          errs.append(
+              f"{rel_path}:{idx} sentence exceeds 20-word limit ({wc} words): {sent}"
+          )
+
+  return errs
+
+
+def validate_polyglot_directory_and_module_structure() -> list[str]:
+  """Validates Idiomatic Directory and Module Structure sections across all 21 polyglot guides (GH-174)."""
+  errors = []
+  base_rel = "skills/makeflow/references/polyglot"
+  guide_files = {}
+  for fname in POLYGLOT_DIRECTORY_STRUCTURE_REQUIREMENTS:
+    fpath = repo_path(f"{base_rel}/{fname}")
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        guide_files[fname] = f.read()
+
+  errors.extend(_check_polyglot_directory_structure_guides(guide_files))
+
+  # In-memory negative falsification checks (SCAR-TEST-11)
+  sample_guides = {}
+  for fname, req_tokens in POLYGLOT_DIRECTORY_STRUCTURE_REQUIREMENTS.items():
+    tok_spans = " ".join(f"`{t}`" for t in req_tokens)
+    sample_guides[fname] = (
+        f"# {fname}\n\n"
+        "## Idiomatic Directory and Module Structure\n\n"
+        f"- **Library and Domain Layer**: Place modules in {tok_spans}.\n"
+        "- **Executable Entrypoints and Controllers**: Keep entrypoints thin.\n"
+        "- **Test Suite Placement and Naming**: Isolate tests cleanly.\n"
+        "- **Structural Anti-Patterns to Flag at Target 15**: Flag mixed layers.\n"
+    )
+
+  baseline_errs = _check_polyglot_directory_structure_guides(sample_guides)
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for polyglot guides: {baseline_errs}"
+    )
+
+  # 1. Missing guide file
+  bad_missing = dict(sample_guides)
+  del bad_missing["python.md"]
+  if not any(
+      "Missing skills/makeflow/references/polyglot/python.md" in e
+      for e in _check_polyglot_directory_structure_guides(bad_missing)
+  ):
+    errors.append(
+        "Negative falsification failed: missing python.md was not rejected"
+    )
+
+  # 2. Missing H2 heading
+  bad_no_heading = dict(sample_guides)
+  bad_no_heading["go.md"] = "# Go Guide\n\n## Core Idioms\n\n- Use Go.\n"
+  if not any(
+      "missing required H2 section '## Idiomatic Directory and Module Structure'"
+      in e
+      for e in _check_polyglot_directory_structure_guides(bad_no_heading)
+  ):
+    errors.append(
+        "Negative falsification failed: missing H2 section in go.md was not rejected"
+    )
+
+  # 3. Missing one of the 4 structural rule markers
+  bad_no_marker = dict(sample_guides)
+  bad_no_marker["rust.md"] = bad_no_marker["rust.md"].replace(
+      "Structural Anti-Patterns to Flag at Target 15", "Other Notes"
+  )
+  if not any(
+      "Structural Anti-Patterns to Flag at Target 15" in e
+      for e in _check_polyglot_directory_structure_guides(bad_no_marker)
+  ):
+    errors.append(
+        "Negative falsification failed: missing structural marker in rust.md was not rejected"
+    )
+
+  # 4. Prose semicolon or em-dash in section
+  bad_semi = dict(sample_guides)
+  bad_semi["c_cpp.md"] += "- Extra note; with semicolon.\n"
+  if not any(
+      "semicolon" in e
+      for e in _check_polyglot_directory_structure_guides(bad_semi)
+  ):
+    errors.append(
+        "Negative falsification failed: prose semicolon in c_cpp.md was not rejected"
+    )
+  bad_emdash = dict(sample_guides)
+  bad_emdash["c_cpp.md"] += "- Extra note \u2014 with em-dash.\n"
+  if not any(
+      "em-dash" in e
+      for e in _check_polyglot_directory_structure_guides(bad_emdash)
+  ):
+    errors.append(
+        "Negative falsification failed: prose em-dash in c_cpp.md was not rejected"
+    )
+
+  # 5. Prose contraction in section
+  bad_contraction = dict(sample_guides)
+  bad_contraction["elixir.md"] += "- You don't mix domain and web layers.\n"
+  if not any(
+      "prohibited contraction" in e
+      for e in _check_polyglot_directory_structure_guides(bad_contraction)
+  ):
+    errors.append(
+        "Negative falsification failed: prose contraction in elixir.md was not rejected"
+    )
+
+  # 6. Prose sentence exceeding 20 words in section
+  bad_long = dict(sample_guides)
+  bad_long["ruby.md"] += (
+      "- Place every single domain model class inside the primary library directory "
+      "whenever you build a new application service component for production deployment today.\n"
+  )
+  if not any(
+      "exceeds 20-word limit" in e
+      for e in _check_polyglot_directory_structure_guides(bad_long)
+  ):
+    errors.append(
+        "Negative falsification failed: sentence exceeding 20 words in ruby.md was not rejected"
+    )
+
+  return errors
+
+
 def validate_vector4_reflex_gates_scar():
   """Validates Just-in-Time Vector 4 Reflex gates and SCAR-ARCH-06 (GH-57)."""
   errors = []
@@ -6431,6 +6660,15 @@ def validate():
   errors.extend(scar_124_errors)
   if not scar_124_errors:
     print("✔ Guard denial protocol invariants (GH-167, SCAR-PROC-124) verified.")
+
+  # Polyglot Idiomatic Directory and Module Structure Invariants (GH-174)
+  polyglot_dir_errors = validate_polyglot_directory_and_module_structure()
+  errors.extend(polyglot_dir_errors)
+  if not polyglot_dir_errors:
+    print(
+        "✔ Polyglot idiomatic directory and module structure (GH-174)"
+        " verified."
+    )
 
   if errors:
     print(f"\n❌ Validation failed with {len(errors)} error(s):")

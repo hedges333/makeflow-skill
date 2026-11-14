@@ -35,3 +35,10 @@ Follow three isolation rules in Perl tests:
 1. Use `DBD::SQLite` with `:memory:` for unit database tests.
 2. Simulate SQL statements with `Test::MockDBI` when testing without a database server.
 3. Create temporary test directories with `File::Temp` (`tempdir(CLEANUP => 1)`).
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place reusable `.pm` packages in `lib/` where `lib/Foo/Bar.pm` declares `package Foo::Bar;` and ends with a true value.
+- **Executable Entrypoints and Controllers**: Place thin `.pl` CLI scripts in `bin/` or `script/`. Parse options and call `lib/` modules immediately.
+- **Test Suite Placement and Naming**: Place `Test::More` or `Test2::V0` test scripts in `t/` with the `.t` extension for `prove -lv t/` execution.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag business logic inside `.pl` scripts, `.pm` files missing `use strict; use warnings;`, or `.pm` modules outside `lib/`.
