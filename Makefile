@@ -11,7 +11,7 @@ PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry enrich-scars test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry enrich-scars test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -37,6 +37,7 @@ help:
 	@echo "  make test-workspace-mutex - Test multi-workspace mutual exclusion (SCAR-SYS-08)"
 	@echo "  make test-commit-msg    - Test Conventional Commits formatter and validator (GH-112)"
 	@echo "  make test-interpreter-invocation - Test explicit runtime interpreter invocation (SCAR-SH-01)"
+	@echo "  make test-local-tickets - Test local ticket store and CLI (GH-124, GH-197)"
 	@echo "  make check-plugin-files - Check required plugin manifests and core skill files"
 	@echo "  make check-skill-budget - Check SKILL.md context size ceiling (SCAR-PROC-99)"
 	@echo "  make install            - Install plugin into ~/.gemini/config/plugins/$(PLUGIN_NAME)"
@@ -259,7 +260,16 @@ test-interpreter-invocation:
 		--rejected "Violating explicit runtime interpreter invocation or SCAR-ARCH-05 layer separation rules." \
 		--reflex "Run $(PYTHON) -m unittest -v tests/test_interpreter_invocation.py, fix failing tests, and re-run make test-interpreter-invocation."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-scar-candidate test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg test-interpreter-invocation
+test-local-tickets:
+	@echo "Testing local ticket store and CLI..."
+	@$(PYTHON) -m unittest -v -f "$(TESTS_DIR)/test_local_tickets.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id ARCH-05 \
+		--code LOCAL_TICKETS_SUITE_FAILED \
+		--trigger "tests/test_local_tickets.py failed." \
+		--rejected "Breaking local ticket store CRUD, resolution comments, or dependency checks." \
+		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_local_tickets.py, fix failing tests, and re-run make test-local-tickets."
+
+test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-scar-candidate test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget
