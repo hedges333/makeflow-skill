@@ -57,3 +57,10 @@ describe("Smoke Test Harness", function()
   end)
 end)
 ```
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place R functions in `R/*.R`, Julia modules in `src/<Pkg>.jl`, and Lua module tables returning `M` in `lua/` or `src/`.
+- **Executable Entrypoints and Controllers**: Place thin CLI runners in `inst/scripts/` or `bin/` and import package functions instead of sourcing raw scripts.
+- **Test Suite Placement and Naming**: Place R tests in `tests/testthat/test-*.R`, Julia suites in `test/runtests.jl`, and Lua Busted specs in `spec/*_spec.lua`.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag top-level execution in `R/` files, `library()` calls inside `R/*.R`, or globals leaked without `local` in Lua.

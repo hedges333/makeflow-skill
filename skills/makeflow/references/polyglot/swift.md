@@ -37,3 +37,10 @@ Follow three isolation rules in Swift tests:
 1. Configure CoreData and SwiftData stores in memory during tests so zero rows write to disk.
 2. Place HTTP calls behind protocols and pass `URLProtocol` stubs in unit tests.
 3. Write temporary test files under unique subdirectories of `FileManager.default.temporaryDirectory`.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place reusable module code in `Sources/<LibraryTarget>/` and declare the library target in `Package.swift` with minimal `public` surface.
+- **Executable Entrypoints and Controllers**: Place thin `@main` structs or `main.swift` files in `Sources/<ExecutableTarget>/` that depend on `<LibraryTarget>`.
+- **Test Suite Placement and Naming**: Place XCTest and Swift Testing suites in `Tests/<Target>Tests/*Tests.swift` using `@testable import <LibraryTarget>`.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag business logic inside executable targets that test targets cannot import, or view controllers executing raw networking.

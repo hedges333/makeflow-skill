@@ -43,3 +43,10 @@ Follow three database safety rules in PHP tests:
 1. Make sure that `.env.testing` sets `DB_CONNECTION=sqlite` and `DB_DATABASE=:memory:`.
 2. Wrap database tests in transaction traits, for example `RefreshDatabase` or `DatabaseTransactions`.
 3. Never run `php artisan migrate` unless you first make sure that `APP_ENV=testing` is active.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place domain classes in `src/` or `app/` following `PSR-4` autoloading so namespaces match directory paths.
+- **Executable Entrypoints and Controllers**: Keep HTTP front controllers in `public/index.php` and CLI runners in `bin/` as thin callers of `src/` services.
+- **Test Suite Placement and Naming**: Place PHPUnit or Pest suites in `tests/Unit/` and `tests/Feature/` using the `*Test.php` filename suffix.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag side effects alongside class declarations (`PSR-1` violation), `PSR-4` namespace mismatches, or SQL queries inside controllers.

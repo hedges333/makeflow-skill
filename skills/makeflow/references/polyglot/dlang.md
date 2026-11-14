@@ -36,3 +36,10 @@ Follow three isolation rules in D tests:
 1. Create temporary test directories inside `std.file.tempDir` and remove them inside `scope(exit)` blocks.
 2. Place network and storage clients behind `interface` contracts so `unittest` blocks can pass in-memory fakes.
 3. Point SQLite or database integration tests to `:memory:` or dedicated `*_test` databases.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place reusable Dub modules in `source/<pkg>/` with `module <pkg>.<name>` declarations matching the directory hierarchy.
+- **Executable Entrypoints and Controllers**: Keep the `main()` entrypoint thin inside `source/app.d`. Delegate argument parsing and work to library modules.
+- **Test Suite Placement and Naming**: Use inline `unittest` blocks for module unit checks and place integration test modules in `tests/`.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag `module` names that mismatch file paths, heavy logic in `source/app.d`, or network calls in `unittest` blocks.

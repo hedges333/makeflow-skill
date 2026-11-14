@@ -40,3 +40,10 @@ Follow five mandatory rules in SQL and NoSQL projects:
 3. Declare custom live database names and hosts in `.workflow/config.json` or `MAKEFILE_WORKFLOW_PROD_DBS`. If live versus test database names are unclear at Target 15, ask the user.
 4. Wrap SQL test scripts in `BEGIN` and `ROLLBACK` statements so zero test rows persist.
 5. Use an ORM (a library that maps database rows to objects) for standard single-record access. If large datasets outgrow the ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place reusable dbt transformations in `models/staging/` and `models/marts/`, reusable SQL macros in `macros/`, and declarative views in `schema/`.
+- **Executable Entrypoints and Controllers**: Place ordered, immutable DDL change scripts in `migrations/` (such as `V1__init.sql`). Never edit a deployed migration file.
+- **Test Suite Placement and Naming**: Place pgTAP or singular dbt assertion scripts in `tests/*.sql` and wrap procedural SQL tests in `BEGIN` and `ROLLBACK`.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag mutated historical files in `migrations/`, hardcoded production schema names, or unparameterized SQL queries outside repository methods.

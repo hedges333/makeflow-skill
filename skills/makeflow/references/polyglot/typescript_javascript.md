@@ -51,3 +51,10 @@ Follow three isolation rules in Node.js and TypeScript tests:
 1. Make sure that `NODE_ENV=test` is set in every test command.
 2. Use in-memory SQLite (`better-sqlite3` with `:memory:`) or local Docker test containers.
 3. Stub external HTTP requests with `msw` (Mock Service Worker) or `nock`.
+
+## Idiomatic Directory and Module Structure
+
+- **Library and Domain Layer**: Place pure domain modules in `src/lib/` or `src/domain/` and export the public package surface through `src/index.ts`.
+- **Executable Entrypoints and Controllers**: Place thin CLI scripts or server bootstrap files in `src/cli/` or `bin/` that import one-way from `src/lib/`.
+- **Test Suite Placement and Naming**: Place Vitest or Jest suites in `tests/*.test.ts` (or co-located `*.spec.ts`) and exclude test files from `tsconfig.build.json`.
+- **Structural Anti-Patterns to Flag at Target 15**: Flag circular barrel `index.ts` imports, business logic in CLI entrypoints, or unguarded top-level side effects on module import.
