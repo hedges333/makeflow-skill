@@ -50,3 +50,10 @@ Follow three database safety rules in PHP tests:
 - **Executable Entrypoints and Controllers**: Keep HTTP front controllers in `public/index.php` and CLI runners in `bin/` as thin callers of `src/` services.
 - **Test Suite Placement and Naming**: Place PHPUnit or Pest suites in `tests/Unit/` and `tests/Feature/` using the `*Test.php` filename suffix.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag side effects alongside class declarations (`PSR-1` violation), `PSR-4` namespace mismatches, or SQL queries inside controllers.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `phpdoc.dist.xml`, `composer.json`, and `phpstan.neon` for PHPDoc conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write PHPDoc blocks (`/** @param @return @throws */`) with explicit generic and array type annotations on public methods.
+- **Documentation Tree Assembly Command**: Run `phpdoc` (`vendor/bin/phpdoc`) and `vendor/bin/phpstan analyse` to verify PHPDoc types and assemble the reference tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `@param` or `@return` types that contradict native PHP type hints or `phpstan` analysis.

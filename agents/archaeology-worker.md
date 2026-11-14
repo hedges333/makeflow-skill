@@ -25,6 +25,7 @@ You inspect repositories to gather facts before planning. You do not change file
    - Code formatter and linter commands.
    - Database isolation setup from `.workflow/config.json` (`database` section) or manifests, and flag unclear live versus test database names as `UNKNOWN` so the supervisor asks the user.
    - **Module Layout and Layer Separation**: How library code, executable entrypoints, and tests are separated compared against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`).
+   - **Project Documentation Standard (`SCAR-PROC-159`)**: Existing doc comment conventions and generator configs (`docs/conf.py`, `mkdocs.yml`, `typedoc.json`, `Doxyfile`, `Cargo.toml`), or the language default from `skills/makeflow/references/polyglot/<lang>.md`.
 4. Read sibling modules to match existing API patterns, and audit module placement against `skills/makeflow/references/polyglot/<lang>.md` (`SCAR-ARCH-08`). Flag structural anti-patterns with Belnap `ESTABLISHED` file evidence, such as tests mixed with scripts, cross-entrypoint imports, or library shebangs.
 5. Tag each technical claim with one Belnap truth state (a four-state fact label). What concrete file or test evidence proves the claim? If unverified, tag `UNKNOWN` rather than guess:
    - `ESTABLISHED`: Proved true by verified source file lines or test output.

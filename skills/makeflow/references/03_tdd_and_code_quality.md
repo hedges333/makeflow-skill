@@ -55,13 +55,13 @@ In repositories with multiple subprojects (for example `backend/`, `frontend/`, 
 3. Run targeted tests in tight loops with fail-fast flags (`pytest path/to/test.py::test_name -v -x` or script equivalent) until green (`SCAR-TEST-09`).
 4. Save the full repository test sweep for Target 50 before commit.
 
-## 4. Concentric Documentation Rings (`SCAR-DOC-16`)
+## 4. Documentation Tree (Progressive Disclosure) (`SCAR-DOC-16`)
 
-Update documentation alongside code across four rings:
+Update documentation alongside code across four progressive disclosure tree levels (`SCAR-DOC-16`, `SCAR-PROC-159`):
 
-- Ring 1 (Inline Code): Update docstrings, parameter descriptions, and return types in modified files.
-- Ring 2 (Subproject README): Update module README files when public contracts change.
-- Ring 3 (Guides and Examples): Update usage examples when flags or APIs change.
-- Ring 4 (Changelogs): Add an entry under the unreleased section of `CHANGELOG.md` when the project maintains one.
+- **Leaf Inline Code Docstrings**: Update doc comments, parameter descriptions, return types, and exceptions in modified files.
+- **Branch Subproject READMEs**: Update module README files when public contracts change.
+- **Branch Guides and Examples**: Update usage examples and tutorials when flags or APIs change.
+- **Root Overview and Changelogs**: Update top-level overview indexes and add an entry under the unreleased section of `CHANGELOG.md`.
 
 When targeted tests and docs are complete, update `.workflow/state/99_next_action.md` and advance to Target 40.

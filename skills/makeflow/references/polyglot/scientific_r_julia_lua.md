@@ -64,3 +64,10 @@ end)
 - **Executable Entrypoints and Controllers**: Place thin CLI runners in `inst/scripts/` or `bin/` and import package functions instead of sourcing raw scripts.
 - **Test Suite Placement and Naming**: Place R tests in `tests/testthat/test-*.R`, Julia suites in `test/runtests.jl`, and Lua Busted specs in `spec/*_spec.lua`.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag top-level execution in `R/` files, `library()` calls inside `R/*.R`, or globals leaked without `local` in Lua.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `DESCRIPTION` (`roxygen2`), `_pkgdown.yml` (`pkgdown`), `docs/make.jl` (`Documenter.jl`), or `config.ld` (`LDoc`) at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Use `roxygen2` `#' @param @return` in R, triple-quoted docstrings in Julia, and `LDoc` `--- @param` in Lua.
+- **Documentation Tree Assembly Command**: Run `pkgdown::build_site()` for R, `julia --project=docs docs/make.jl` for Julia, or `ldoc .` for Lua.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag manual `man/*.Rd` edits in R, missing `@docs` blocks in `Documenter.jl`, or untyped `LDoc` parameters.

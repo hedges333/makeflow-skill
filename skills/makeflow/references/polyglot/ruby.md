@@ -45,3 +45,10 @@ Follow three isolation rules in Ruby tests:
 - **Executable Entrypoints and Controllers**: Place thin CLI binstubs in `exe/` or `bin/` that `require` the gem from `lib/` and invoke a runner class.
 - **Test Suite Placement and Naming**: Mirror the `lib/` tree inside `spec/` with `*_spec.rb` files for RSpec or `test/` with `*_test.rb` for Minitest.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag business logic in `exe/` binstubs or Rake tasks, or class namespaces that mismatch `lib/` paths.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `.yardopts`, `Gemfile`, and `.rubocop.yml` (`Style/Documentation`) for `YARD` or RDoc conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `YARD` comments using `# @param`, `# @return`, `# @raise`, and `# @example` tags above public methods.
+- **Documentation Tree Assembly Command**: Run `bundle exec yard doc --fail-on-warning` and `yard stats --list-undoc` to verify the documentation tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag invalid `@param` names, untyped `@return` tags, or `yard doc` parser warnings.

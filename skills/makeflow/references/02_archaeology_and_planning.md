@@ -21,7 +21,8 @@ Do not plan code edits from guesswork. Inspect the repository first to gather fa
 9. Classify the underlying failure mechanism and evaluate testing feasibility and execution burden balance (< 100 ms execution budget, hermetic fixtures) (`SCAR-TEST-11`).
 10. Discover repository-scoped hosting mode (`SCAR-GIT-30`). Check `git remote get-url origin`, `gh` binary, `gh auth status`, and `gh repo view`. If origin does not point to GitHub or CLI checks fail, record `HOSTING_MODE: PURE_GIT`.
 11. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`, and call `workflow_query_scars` (`workflowPhase: "Target 15: archaeology"`) for detected languages and frameworks.
-12. Write `.workflow/state/15_archaeology_receipt.md` and advance to Target 20.
+12. Inspect the subproject for existing doc comment styles and documentation generator configs (`docs/conf.py`, `mkdocs.yml`, `typedoc.json`, `Doxyfile`, `Cargo.toml`) (`SCAR-PROC-159`). Adapt to existing conventions, or fall back to `skills/makeflow/references/polyglot/<lang>.md` defaults.
+13. Write `.workflow/state/15_archaeology_receipt.md` and advance to Target 20.
 
 ### 1.1 Post-Archaeology Dependency Coupling Evaluation
 
@@ -76,6 +77,7 @@ Include these seven items in every plan:
 5. Any existing tests that must change, paired with the technical reason for each change.
 6. Database and file isolation rules proving that tests use `*_test` databases, in-memory stores, or mocks, never production data.
 7. Testing Strategy and Burden-Balance Analysis (`SCAR-TEST-11`): Disclose testing depth against speed and dependency constraints. Prohibit surface-only testing when hermetic boundary testing is feasible.
+8. Active Project Documentation Standard and Tree Assembly Command (`SCAR-PROC-159`): Disclose the active doc comment standard and tree assembly command in `20_plan.md` from project conventions or `skills/makeflow/references/polyglot/<lang>.md`.
 
 ## 3. Human Plan Approval Gate
 

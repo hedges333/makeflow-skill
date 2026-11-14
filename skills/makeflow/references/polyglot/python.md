@@ -44,3 +44,10 @@ Follow four isolation rules in Python tests:
 - **Executable Entrypoints and Controllers**: Place thin CLI wrappers in `scripts/` subclassing `BaseScript` and delegating `run()` to `lib/` without cross-script imports.
 - **Test Suite Placement and Naming**: Place unit and integration suites in `tests/test_*.py` so `pytest` and `unittest` discover them automatically.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag peer script imports (`from scripts.other import ...`), shebangs inside `lib/`, or unguarded module-level side effects.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `docs/conf.py`, `mkdocs.yml`, or `pyproject.toml` (`[tool.ruff.lint.pydocstyle]`) for docstring conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `PEP 257` docstrings (Google, NumPy, or Sphinx style) documenting `Args:`, `Returns:`, and `Raises:`.
+- **Documentation Tree Assembly Command**: Run `sphinx-build -W -b html docs/ docs/_build/html` or `mkdocs build --strict` to verify the documentation tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `Args:` or `Raises:` sections that mismatch function signatures or mixed docstring styles.

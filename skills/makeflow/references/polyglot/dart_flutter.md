@@ -53,3 +53,10 @@ Follow these rules for temporary scripts (`SCAR-TOOL-07`):
 - **Executable Entrypoints and Controllers**: Place thin CLI scripts in `bin/` and Flutter entrypoints in `lib/main.dart`. Import domain logic from `package:<pkg>/`.
 - **Test Suite Placement and Naming**: Place all unit and widget tests in `test/` using the `*_test.dart` suffix so `dart test` discovers them.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag external imports of `lib/src/`, business logic inside `StatefulWidget` classes, or test files inside `lib/`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `dartdoc_options.yaml` and `analysis_options.yaml` for `public_member_api_docs` rules at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write Dartdoc `///` comments starting with a single-sentence summary and `[symbol]` cross-references on public APIs.
+- **Documentation Tree Assembly Command**: Run `dart doc --validate-links` to build the API reference tree and catch unresolved links.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `/** ... */` block comments instead of `///`, unresolved `[symbol]` links, or undocumented public classes.

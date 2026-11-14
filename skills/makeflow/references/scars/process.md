@@ -26,6 +26,7 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 | `SCAR-PROC-150` | Target Transition Header Dead-Air Cliff | Automated Target Transitions |
 | `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | State Machine Graph Completeness |
 | `SCAR-PROC-158` | Persistent Memento Readerboard Truncation Trap | Persistent Memento State Integrity |
+| `SCAR-PROC-159` | Project-Adaptive Code Documentation Standards and Tree Verification | Code Documentation & Tree Assembly |
 
 ---
 
@@ -178,3 +179,11 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 - **Circuit Breaker**: If you update the readerboard, never replace it with unstructured notes or truncated milestone lists.
 - **Permanent Reflex**: Keep the complete milestone checklist and active target header in `99_next_action.md`. On state transitions, update only the status markers.
 - **Socratic Probe**: Did you preserve the full milestone checklist and active target in `99_next_action.md`?
+
+### SCAR-PROC-159: Project-Adaptive Code Documentation Standards and Tree Verification
+
+- **Wound**: Omitting or misformatting code docstrings breaks documentation compilers and leaves maintainers without clear parameter, return, and exception contracts.
+- **Trap**: Writing ad-hoc comments or skipping documentation tree builds instead of discovering the project standard at Target 15.
+- **Circuit Breaker**: If public interfaces or module behaviors change, never advance to Target 40 with undocumented symbols or broken documentation trees.
+- **Permanent Reflex**: Discover existing project doc conventions at Target 15, or apply `skills/makeflow/references/polyglot/<lang>.md` defaults. Record the standard in `15_archaeology_receipt.md` and `20_plan.md`, and verify clean tree builds at Target 40.
+- **Socratic Probe**: Did you discover the active documentation standard at Target 15 and verify that the documentation tree builds without warnings?

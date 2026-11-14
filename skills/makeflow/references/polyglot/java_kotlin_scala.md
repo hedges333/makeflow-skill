@@ -84,3 +84,10 @@ Follow three database isolation rules in JVM tests:
 - **Executable Entrypoints and Controllers**: Keep `main` classes, CLI commands, and HTTP controllers thin at the application boundary. Inject service interfaces one-way.
 - **Test Suite Placement and Naming**: Mirror the domain package tree inside `src/test/java/`, `src/test/kotlin/`, or `src/test/scala/` so tests share package visibility.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag cyclic dependencies between packages, business logic inside controllers, or test sources placed under `src/main/`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `pom.xml`, `build.gradle`, or `build.sbt` for `Javadoc`, `KDoc`, or `Scaladoc` plugins at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `Javadoc` (`/** @param @return @throws */`), `KDoc`, or `Scaladoc` comments on public classes and methods.
+- **Documentation Tree Assembly Command**: Run `mvn javadoc:javadoc`, `./gradlew dokkaHtml`, or `sbt doc` to build and verify the documentation tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `@param` or `@throws` tags that do not match method signatures or broken `@link` references.

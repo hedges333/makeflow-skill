@@ -49,3 +49,10 @@ Follow three database safety rules in .NET tests:
 - **Executable Entrypoints and Controllers**: Keep `Program.cs` and host controllers thin inside `src/<Project>.Api/` or `src/<Project>.Cli/`. Reference domain class libraries one-way.
 - **Test Suite Placement and Naming**: Place xUnit or NUnit test projects in `tests/<Project>.Tests/` with `*Tests.cs` files mirroring the source namespaces.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag business logic inside `Program.cs` or controllers, circular `.csproj` references, or test classes inside `src/`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `*.csproj` for `<GenerateDocumentationFile>true</GenerateDocumentationFile>` or `docfx.json` at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write XML comments using `/// <summary>`, `<param name="...">`, `<returns>`, and `<exception>` tags on public members.
+- **Documentation Tree Assembly Command**: Run `dotnet build -warnaserror:CS1591` or `docfx build --warningsAsErrors` to verify the documentation tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag `CS1591` missing XML comment warnings, stale `<param>` names, or broken `<see cref="..."/>` links.

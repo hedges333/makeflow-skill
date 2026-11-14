@@ -43,3 +43,10 @@ Follow four rules in GDScript tests and gameplay code:
 - **Executable Entrypoints and Controllers**: Place `.tscn` hierarchies and thin node controllers in `scenes/`. Delegate state transitions and math to domain classes.
 - **Test Suite Placement and Naming**: Place GUT or gdUnit4 test scripts in `test/unit/` and `test/integration/` using the `test_<name>.gd` prefix.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag monolithic autoload singletons, coupled `get_node("../../...")` paths across scenes, or domain logic trapped inside UI nodes.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `project.godot` and existing `*.gd` scripts for `##` doc comments at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write double-hash `##` GDScript doc comments with `@tutorial` tags and BBCode formatting above classes, signals, and functions.
+- **Documentation Tree Assembly Command**: Run `godot --headless --doctool docs/` to extract XML class references from the project tree.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag single-hash `#` comments used instead of `##` on public APIs or invalid BBCode tags.

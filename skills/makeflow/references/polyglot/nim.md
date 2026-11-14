@@ -43,3 +43,10 @@ Follow three isolation rules in Nim tests:
 - **Executable Entrypoints and Controllers**: Guard CLI entrypoints with `when isMainModule:` or place binary targets in `src/<cmd>.nim` calling library modules.
 - **Test Suite Placement and Naming**: Place Testament and `std/unittest` files in `tests/` using the `tests/t_<name>.nim` prefix so `nimble test` discovers them.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag top-level side effects that run on `import` without `when isMainModule:`, or recursive module imports.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `*.nimble` and `nim.cfg` for `nim doc` settings and `##` doc comments at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write double-hash `##` ReStructuredText or Markdown comments and `runnableExamples:` blocks on exported `*` symbols.
+- **Documentation Tree Assembly Command**: Run `nim doc --project --index:on src/<pkg>.nim` to generate the HTML documentation tree and verify `runnableExamples`.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag single-hash `#` comments on exported `*` procs, failing `runnableExamples`, or broken `nim doc` links.

@@ -46,3 +46,10 @@ Follow three rules in Odin tests:
 - **Executable Entrypoints and Controllers**: Place thin `main :: proc()` entrypoints in `src/main/` or `cmd/<app>/`. Import domain packages one-way.
 - **Test Suite Placement and Naming**: Write `@(test)` procedures in `*_test.odin` files inside the package directory or inside a dedicated `tests/` package.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag multiple `package` names in one directory, circular package imports, or business logic inside `main :: proc()`.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `ols.json` and package directory comments for documentation conventions at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `//` doc comments directly above exported procedures, structs, and package declarations without blank lines.
+- **Documentation Tree Assembly Command**: Run `odin doc .` to extract and validate the package documentation tree cleanly.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag blank lines separating `//` doc comments from procedure signatures or undocumented public procedures.

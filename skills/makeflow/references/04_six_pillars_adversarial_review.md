@@ -125,7 +125,7 @@ The critic evaluates the diff against six engineering pillars. Every pillar must
 
 ### 1. Intent
 - **Requirement Completeness**: Does the diff fulfill all issue requirements without scope creep, unneeded refactorings, or piggybacking?
-- **Dual-Audience Documentation (`SCAR-DOC-16`)**: Does the change provide operational instructions for maintainers and clear guides for end consumers?
+- **Project-Adaptive Documentation Standard & Documentation Tree (Progressive Disclosure) (`SCAR-PROC-159`, `SCAR-DOC-16`)**: Does the diff follow the planned project or language documentation standard from `skills/makeflow/references/polyglot/<lang>.md`? Does it satisfy dual-audience documentation with operational instructions for maintainers and clear guides for end consumers organized as a progressive disclosure tree?
 - **Changelog and Release Hygiene**: If public APIs, packages, or schemas changed, did the author update unreleased notes and bump package manifest constraints?
 - **Socratic Probe**: Does this diff contain any edit that is not strictly required to resolve the ticket?
 
@@ -178,7 +178,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 ### 5. Reviewer Defense
 - **Intentional Non-Changes**: What trade-offs were made, and why were alternative approaches or untouched adjacent files intentionally left alone?
 - **Anticipation of Questions**: What questions will external human maintainers or automated bots raise? Are proactive explanations included?
-- **Documentation Code Snippet Parity (`SCAR-DOC-07`)**: Are documentation and README code snippets updated to match new API signatures and lifecycle invariants?
+- **Documentation Content Accuracy and Code Snippet Parity (`SCAR-DOC-07`, `SCAR-PROC-159`)**: Do doc comments accurately describe every parameter, return type, raised exception, and usage example? Are documentation and README code snippets updated to match new API signatures and lifecycle invariants?
 - **Essential vs Counterfeit Invariants (`SCAR-INV-03`)**: Does the code defend essential business invariants rather than brittle implementation details?
 - **Simple English Compliance**: Do comments, plans, and commit messages adhere to Simple English (`skills/makeflow/references/resources/language/english/`)?
   - Keep procedural sentences at 20 words or fewer.
@@ -190,6 +190,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 
 ### 6. Immune Defenses & Crash Antibodies
 - **Two-Tier Scar Audit**: Audit the diff against Tier 1 core scars in `skills/makeflow/references/scars/`, Tier 2 project-local scars in `.workflow/scars/`, and stacked SQLite registries via `workflow_query_scars` (`workflowPhase: "Target 40: review"`).
+- **Doc Comment Formatting & Machine-Extractable Documentation Tree Buildability (`SCAR-PROC-159`)**: Do modified doc comments follow language parser syntax? Does the documentation tree compiler build cleanly without warnings, invalid references, or broken links?
 - **Sensitive Runtime Boundaries**: Did the diff touch asynchronous streams, event loops, lifecycles, memory, or cache storage?
 - **Asynchronous 4-Tuple Contract**:
   1. Re-check mounted or open state after asynchronous suspensions.

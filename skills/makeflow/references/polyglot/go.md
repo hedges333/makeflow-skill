@@ -46,3 +46,10 @@ Follow three isolation rules in Go tests:
 - **Executable Entrypoints and Controllers**: Place each binary entrypoint in `cmd/<app>/main.go`. Keep `package main` limited to flag parsing, wiring, and signal handling.
 - **Test Suite Placement and Naming**: Co-locate `*_test.go` files in the same directory as the package under test, not in a separate `tests/` tree.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag business logic inside `cmd/`, separate Java-style `tests/` folders for unit tests, or catch-all `util` packages.
+
+## Code Documentation Standards and Tree Assembly
+
+- **Project Convention Detection**: Inspect `go.mod`, `doc.go` files, and `golangci-lint` (`revive` exported rules) at Target 15 (`SCAR-PROC-159`).
+- **Idiomatic Doc Comment Standard**: Write `Godoc` `// SymbolName ...` comments as complete sentences directly above every exported package, type, and function.
+- **Documentation Tree Assembly Command**: Run `go doc ./...` and `pkgsite` (or `golangci-lint run`) to verify package documentation trees.
+- **Documentation Anti-Patterns to Flag at Target 40**: Flag blank lines between a `Godoc` comment and its declaration, or exported symbols without `// SymbolName` prefixes.

@@ -26,7 +26,7 @@ You are an independent code reviewer. You inspect code changes without authoring
 3. Inspect the diff against the Six Pillars. You must structure your evaluation using these exact six canonical level-3 Markdown headings with comprehensive, multi-sentence architectural prose under every single heading. Never output a compressed six-row summary table:
 
 ### 1. Intent
-Does the diff solve the ticket completely without scope creep, unneeded refactorings, or piggybacking? Does it satisfy dual-audience documentation with operational developer instructions and user guides? If public interfaces changed, are changelogs and package manifests updated?
+Does the diff solve the ticket completely without scope creep, unneeded refactorings, or piggybacking? Does it follow the planned documentation standard (`SCAR-PROC-159`) and `Documentation Tree (Progressive Disclosure)` (`SCAR-DOC-16`)? Does it satisfy dual-audience documentation with operational developer instructions and user guides? If public interfaces changed, are changelogs and package manifests updated?
 
 ### 2. Verification
 Rigorously verify that the author followed Test-Driven Development (TDD) methodology and authored comprehensive tests:
@@ -47,10 +47,10 @@ Does the diff match existing contracts and apply suitable Gang of Four or Game P
 Inspect blast radius as a mandatory domain canary check. Can this change break sibling modules, callers, database schemas, or downstream subprojects? Did the author account for all caller contracts and preserve historical bug guards found in Git log (Chesterton's Fence)? Are dependency lower bounds bumped? Does this collide with concurrent in-flight branches?
 
 ### 5. Reviewer Defense
-What trade-offs were made, and why were alternative approaches or adjacent files intentionally left untouched? What will external reviewers or automated bots ask? Are documentation code snippets verified? Does the change defend essential invariants rather than counterfeit test mocks? Does modified documentation follow Simple English standards? Keep procedural sentences at 20 words or fewer and descriptive sentences at 25 words or fewer.
+What trade-offs were made, and why were alternative approaches or adjacent files intentionally left untouched? What will external reviewers or automated bots ask? Are doc comment parameters, return types, exceptions, usage examples, and documentation code snippets accurate and verified? Does the change defend essential invariants rather than counterfeit test mocks? Does modified documentation follow Simple English standards? Keep procedural sentences at 20 words or fewer and descriptive sentences at 25 words or fewer.
 
 ### 6. Immune Defenses & Crash Antibodies
-Did this change touch sensitive runtime boundaries such as asynchronous streams, event loops, lifecycles, or caches? Does asynchronous code verify mounted or open state after suspensions, re-throw unexpected errors, and release locks in finally blocks? Are observer hooks and error boundaries isolated with specific exception types (e.g. `on Exception catch`), strictly prohibiting bare error swallowing? Are null pointers, sentinels, and numerical ranges defensively clamped? Does the diff satisfy Tier 1 core scars in `skills/makeflow/references/scars/`, Tier 2 project-local scars in `.workflow/scars/`, and domain scars queried via `workflow_query_scars` (`workflowPhase: "Target 40: review"`)?
+Did this change touch sensitive runtime boundaries such as asynchronous streams, event loops, lifecycles, or caches? Does asynchronous code verify mounted or open state after suspensions, re-throw unexpected errors, and release locks in finally blocks? Are observer hooks and error boundaries isolated with specific exception types (e.g. `on Exception catch`), strictly prohibiting bare error swallowing? Are null pointers, sentinels, and numerical ranges defensively clamped? Do doc comments follow machine-extractable formatting (`SCAR-PROC-159`) so the documentation tree builds cleanly without warnings or broken links? Does the diff satisfy Tier 1 core scars in `skills/makeflow/references/scars/`, Tier 2 project-local scars in `.workflow/scars/`, and domain scars queried via `workflow_query_scars` (`workflowPhase: "Target 40: review"`)?
 
 4. End your report with one exact machine-readable verdict header:
    - If zero blockers exist, write:
