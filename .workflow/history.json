@@ -1807,5 +1807,24 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-171",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/171",
+    "title": "[BUG] Clean up .workflow/state/30_tdd_receipt.json during release-intake to prevent Target 10 intake deadlock",
+    "request": "Update _release_intake in lib/workflow_gates.py to unlink or archive .workflow/state/30_tdd_receipt.json per state.completedCardAction with stderr warnings on error, and add four hermetic unit tests in tests/test_emit_reflex.py.",
+    "branch": "fix/171-cleanup-tdd-receipt-on-release",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-13T23:54:36Z",
+    "completed_at": "2026-11-14T00:35:49Z",
+    "commit_sha": "344c5471d348d8e3afb6bf0d995b1572c32b7085",
+    "pr_number": 177,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/177",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
