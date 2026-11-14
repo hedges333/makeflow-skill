@@ -2037,5 +2037,28 @@
     "scars_earned": [
       "SCAR-LANG-DART-01: Async Timers: fakeAsync and Frame Pumping"
     ]
+  },
+  {
+    "id": "GH-44",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/44",
+    "title": "[FEAT] Establish code documentation standards framework for Six Pillars (Pillar 6)",
+    "request": "Append Code Documentation Standards and Tree Assembly across all 21 polyglot language guides, establish Project-Adaptive Convention Precedence (SCAR-PROC-159) at Target 15 and Target 20, partition code documentation scrutiny across Pillar 1, Pillar 5, and Pillar 6, rename SCAR-DOC-16 to Documentation Tree (Progressive Disclosure), and add 9 contract and negative mutation tests in tests/test_cross_agent_compatibility.py.",
+    "branch": "feat/44-code-doc-standards-framework",
+    "subprojects": [
+      "skills/makeflow",
+      "agents",
+      "tests"
+    ],
+    "started_at": "2026-11-14T20:20:00Z",
+    "completed_at": "2026-11-14T21:31:07Z",
+    "commit_sha": "5969887e23bef132115854d68d69e4008aacf40a",
+    "pr_number": 198,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/198",
+    "closes_issue": true,
+    "tests_added": 9,
+    "scars_earned": [
+      "SCAR-PROC-159: Project-Adaptive Code Documentation Standards and Tree Verification",
+      "SCAR-DOC-16: Documentation Tree (Progressive Disclosure)"
+    ]
   }
 ]
