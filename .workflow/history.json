@@ -1949,5 +1949,27 @@
     "scars_earned": [
       "SCAR-ARCH-08: Polyglot Layer Separation and Structural Debt Triage"
     ]
+  },
+  {
+    "id": "GH-145",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/145",
+    "title": "[FEAT] Multi-dimensional indexing and keyword enrichment for Synthetic Scars Registry",
+    "request": "Add structured taxonomy columns (keywords, languages, frameworks, diagnostic_codes), native scar ID indexing in SQLite FTS5, deterministic metadata extraction across all 595 scars, CLI enrichment scripts, and multi-dimensional query filters in query_scars and workflow_query_scars.",
+    "branch": "feat/145-scars-multi-dim-indexing",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "mcp",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T03:35:00Z",
+    "completed_at": "2026-11-14T06:02:57Z",
+    "commit_sha": "092257aeaf1fd7020056e685949d9cc103b4664a",
+    "pr_number": 185,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/185",
+    "closes_issue": true,
+    "tests_added": 6,
+    "scars_earned": []
   }
 ]
