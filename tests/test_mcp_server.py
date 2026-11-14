@@ -1433,6 +1433,113 @@ class TestMcpServerScarImporterAndSimpleEnglish(unittest.TestCase):
         p_env.wait()
 
 
+class TestGateEvidenceKeysEnumeration(unittest.TestCase):
+  """Tests schema bijection, runtime enforcement, and reference coverage for GATE_EVIDENCE_KEYS (GH-154)."""
+
+  def test_gate_evidence_keys_schema_runtime_and_docs(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import (
+        GATE_EVIDENCE_KEYS,
+        handle_tools_call,
+        handle_tools_list,
+    )
+
+    expected_keys = {
+        "humanPlanApproved",
+        "humanBlockerTriageApproved",
+        "humanReviewApproved",
+        "humanCommitApproved",
+        "humanPushApproved",
+        "humanLandingApproved",
+    }
+    self.assertEqual(set(GATE_EVIDENCE_KEYS.values()), expected_keys)
+
+    # 1. Schema Bijection: workflow_advance_target evidence description lists all 6 keys and blockersCount
+    tools_resp = handle_tools_list(1)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    adv_tool = tools["workflow_advance_target"]
+    evidence_desc = adv_tool["inputSchema"]["properties"]["evidence"][
+        "description"
+    ]
+    for key in sorted(expected_keys) + ["blockersCount"]:
+      self.assertIn(
+          key,
+          evidence_desc,
+          f"Expected canonical evidence key '{key}' in workflow_advance_target schema description: {evidence_desc}",
+      )
+
+    # 2. Runtime Gate Enforcement Across All 6 Transitions
+    for (current_t, next_t), gate_key in GATE_EVIDENCE_KEYS.items():
+      for bad_evidence in ({}, {gate_key: False}):
+        resp_blocked = handle_tools_call(
+            1,
+            "workflow_advance_target",
+            {
+                "currentTarget": current_t,
+                "nextTarget": next_t,
+                "evidence": bad_evidence,
+            },
+        )
+        self.assertTrue(
+            resp_blocked["result"].get("isError"),
+            f"Expected {current_t} -> {next_t} with evidence={bad_evidence} to fail",
+        )
+        err_text = resp_blocked["result"]["content"][0]["text"]
+        self.assertIn(gate_key, err_text)
+
+      resp_ok = handle_tools_call(
+          1,
+          "workflow_advance_target",
+          {
+              "currentTarget": current_t,
+              "nextTarget": next_t,
+              "evidence": {gate_key: True},
+          },
+      )
+      self.assertFalse(
+          resp_ok["result"].get("isError"),
+          f"Expected {current_t} -> {next_t} with {gate_key}=True to succeed, got {resp_ok}",
+      )
+
+    # 3. Reference Documentation Enumeration
+    refs_dir = os.path.join(REPO_ROOT, "skills", "makeflow", "references")
+    quickstart_path = os.path.join(
+        refs_dir, "00_quickstart_and_mental_model.md"
+    )
+    with open(quickstart_path, "r", encoding="utf-8") as f:
+      quickstart_text = f.read()
+    for key in sorted(expected_keys) + ["blockersCount"]:
+      self.assertIn(
+          key,
+          quickstart_text,
+          f"Expected '{key}' in 00_quickstart_and_mental_model.md",
+      )
+
+    phase_doc_expectations = {
+        "02_archaeology_and_planning.md": ("humanPlanApproved",),
+        "04_six_pillars_adversarial_review.md": (
+            "humanBlockerTriageApproved",
+            "humanReviewApproved",
+            "blockersCount",
+        ),
+        "05_pre_commit_hygiene.md": ("humanCommitApproved",),
+        "06_clean_commit_and_pr.md": ("humanPushApproved",),
+        "07_ci_and_bot_triage.md": ("humanLandingApproved",),
+    }
+    for doc_name, keys in phase_doc_expectations.items():
+      doc_path = os.path.join(refs_dir, doc_name)
+      with open(doc_path, "r", encoding="utf-8") as f:
+        doc_text = f.read()
+      for key in keys:
+        self.assertIn(
+            key,
+            doc_text,
+            f"Expected '{key}' in {doc_name}",
+        )
+
+
 if __name__ == "__main__":
   run_test()
   TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
+  TestGateEvidenceKeysEnumeration().test_gate_evidence_keys_schema_runtime_and_docs()

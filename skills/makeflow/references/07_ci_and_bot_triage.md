@@ -65,7 +65,7 @@ Target 75 is a mandatory human pause gate.
    - Documentation updates.
    - Dependency changes.
    - Test coverage.
-4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`.
+4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`. After approval, advance to Target 80 with `humanLandingApproved: true`.
 5. If branch protection forbids direct push, commit ledger updates on the feature branch before requesting landing approval.
 
 ---

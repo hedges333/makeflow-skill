@@ -208,7 +208,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 
 ## 5. Target 42: Blocker Triage Gate (`BLOCKERS > 0`)
 
-If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`:
+If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`, route from `T40` to `T42` with `blockersCount > 0`:
 
 ### 5.1 The Zero-Tool Blocker Airlock (`SCAR-PROC-89`)
 The agent is strictly prohibited from immediately modifying code, running tests, or arguing with the critic. The turn following a critic blocker wakeup must contain **zero tool calls (`tool_calls: []`)**.
@@ -227,13 +227,13 @@ Halt and wait for explicit human steering:
 - *"Reject blocker as counterfeit per SCAR-INV-03."*
 - Confirm or adjust proposed NBO dispositions (`Apply`, `Skip`, or `Defer to issue`).
 
-After human authorization, return to Target 30 to implement reproduction tests and fixes, then dispatch a fresh critic for Round $N+1$.
+After human authorization, advance from `T42` to `T30` with `humanBlockerTriageApproved: true`. Implement reproduction tests and fixes, then dispatch a fresh critic for Round $N+1$.
 
 ---
 
 ## 6. Target 45: Review Sign-Off Gate (`0 BLOCKERS`)
 
-If Target 40 yields `VERDICT: APPROVED (0 BLOCKERS)`:
+If Target 40 yields `VERDICT: APPROVED (0 BLOCKERS)`, route from `T40` to `T45` with `blockersCount: 0`:
 
 ### 6.1 Merkle Tree Verification
 Verify that the working tree still matches the recorded Merkle tree:
@@ -265,4 +265,4 @@ Target 45 is an absolute turn-ending airlock:
 1. Confirm that all accepted changes are tested and staged in the working tree.
 2. Prohibit looking ahead to commit messages or pull request drafting.
 3. Stop calling tools and wait for human review approval.
-4. After approval, write `.workflow/state/45_review_approved.md` and advance to Target 50 (`commit`).
+4. After approval, write `.workflow/state/45_review_approved.md` and advance to Target 50 (`commit`) with `humanReviewApproved: true`.
