@@ -2024,6 +2024,330 @@ class TestMcpPauseGateTurnBoundary(unittest.TestCase):
       self.assertFalse(os.path.exists(gate_entry_path))
 
 
+class TestMcpMainSyncTransitions(unittest.TestCase):
+  """Tests upstream origin/main sync and conflict checks in workflow_advance_target and workflow_get_state (GH-195)."""
+
+  def _init_repo_with_bare_origin(self, base_dir: str):
+    bare_dir = os.path.join(base_dir, "origin.git")
+    clone1 = os.path.join(base_dir, "clone1")
+    clone2 = os.path.join(base_dir, "clone2")
+    os.makedirs(bare_dir, exist_ok=True)
+    os.makedirs(clone1, exist_ok=True)
+
+    subprocess.run(
+        ["git", "init", "--bare", "-q"],
+        cwd=bare_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Makeflow Test"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-M", "main"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with open(os.path.join(clone1, "shared.txt"), "w", encoding="utf-8") as f:
+      f.write("initial content\n")
+    subprocess.run(
+        ["git", "add", "shared.txt"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "chore: initial commit"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", bare_dir],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "push", "-q", "-u", "origin", "main"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feat/195-early-sync"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    exclude_path = os.path.join(clone1, ".git", "info", "exclude")
+    os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+    with open(exclude_path, "a", encoding="utf-8") as f:
+      f.write("\n.workflow/state/\n.workflow/archive/\n")
+
+    subprocess.run(
+        ["git", "clone", "-q", "-b", "main", bare_dir, clone2],
+        cwd=base_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "clone2@example.com"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Clone Two"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return clone1, clone2
+
+  def test_mcp_main_sync_behind_clean_and_conflict_transitions(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import handle_tools_call
+
+    with tempfile.TemporaryDirectory() as base_dir:
+      clone1, clone2 = self._init_repo_with_bare_origin(base_dir)
+      state_dir = os.path.join(clone1, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      for card in (
+          "10_ticket.md",
+          "15_archaeology_receipt.md",
+          "20_plan_approved.md",
+          "40_critic_review.md",
+          "45_review_approved.md",
+          "70_bot_triage.md",
+      ):
+        with open(os.path.join(state_dir, card), "w", encoding="utf-8") as f:
+          f.write(f"# {card}\n")
+
+      # 1. Advance origin/main with a non-conflicting file in clone2
+      with open(os.path.join(clone2, "other.txt"), "w", encoding="utf-8") as f:
+        f.write("clean upstream update\n")
+      subprocess.run(
+          ["git", "add", "other.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: add other.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      # Pre-review transition T20 -> T30 succeeds and advises rebase before T40
+      resp_t20_t30 = handle_tools_call(
+          501,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T20",
+              "nextTarget": "T30",
+              "workspaceDir": clone1,
+              "evidence": {"humanPlanApproved": True},
+          },
+      )
+      self.assertFalse(resp_t20_t30["result"].get("isError"))
+      text_t20_t30 = resp_t20_t30["result"]["content"][0]["text"]
+      self.assertIn("MAIN_SYNC_NOTICE", text_t20_t30)
+      self.assertIn("git rebase origin/main", text_t20_t30)
+
+      # Locked-tree transition T40 -> T45 succeeds and warns about approved_tree.txt lock
+      resp_t40_t45 = handle_tools_call(
+          502,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T40",
+              "nextTarget": "T45",
+              "workspaceDir": clone1,
+              "evidence": {"blockersCount": 0, "skipMainFetch": True},
+          },
+      )
+      self.assertFalse(resp_t40_t45["result"].get("isError"))
+      text_t40_t45 = resp_t40_t45["result"]["content"][0]["text"]
+      self.assertIn("MAIN_SYNC_NOTICE", text_t40_t45)
+      self.assertIn("approved_tree.txt", text_t40_t45)
+
+      # Open PR transition T70 -> T75 succeeds and cites SCAR-GIT-18 against rebasing open PRs
+      resp_t70_t75 = handle_tools_call(
+          503,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T70",
+              "nextTarget": "T75",
+              "workspaceDir": clone1,
+              "evidence": {"skipMainFetch": True},
+          },
+      )
+      self.assertFalse(resp_t70_t75["result"].get("isError"))
+      text_t70_t75 = resp_t70_t75["result"]["content"][0]["text"]
+      self.assertIn("MAIN_SYNC_NOTICE", text_t70_t75)
+      self.assertIn("SCAR-GIT-18", text_t70_t75)
+
+      # workflow_get_state reports MAIN_SYNC: BEHIND_CLEAN
+      state_behind = handle_tools_call(
+          504,
+          "workflow_get_state",
+          {"workspaceDir": clone1},
+      )
+      self.assertIn(
+          "MAIN_SYNC: BEHIND_CLEAN",
+          state_behind["result"]["content"][0]["text"],
+      )
+
+      # 2. Advance origin/main with a conflicting edit to shared.txt
+      with open(os.path.join(clone2, "shared.txt"), "w", encoding="utf-8") as f:
+        f.write("upstream conflicting edit\n")
+      subprocess.run(
+          ["git", "add", "shared.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: upstream shared.txt conflict"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      # Uncommitted working-tree edit to shared.txt at T30 -> T40 is BLOCKED
+      with open(os.path.join(clone1, "shared.txt"), "w", encoding="utf-8") as f:
+        f.write("local uncommitted T30 edit\n")
+
+      resp_t30_t40_blocked = handle_tools_call(
+          505,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T30",
+              "nextTarget": "T40",
+              "workspaceDir": clone1,
+          },
+      )
+      self.assertTrue(resp_t30_t40_blocked["result"].get("isError"))
+      err_t30_t40 = resp_t30_t40_blocked["result"]["content"][0]["text"]
+      self.assertIn("UPSTREAM_MAIN_CONFLICT", err_t30_t40)
+      self.assertIn("shared.txt", err_t30_t40)
+      self.assertIn("SCAR-GIT-20", err_t30_t40)
+      self.assertIn("SCAR-GIT-25", err_t30_t40)
+
+      # workflow_get_state reports MAIN_SYNC: CONFLICT and shared.txt
+      state_conflict = handle_tools_call(
+          506,
+          "workflow_get_state",
+          {"workspaceDir": clone1},
+      )
+      state_conflict_text = state_conflict["result"]["content"][0]["text"]
+      self.assertIn("MAIN_SYNC: CONFLICT", state_conflict_text)
+      self.assertIn("shared.txt", state_conflict_text)
+
+      # Commit shared.txt locally and test T50 -> T60 block and allowMainConflict override
+      subprocess.run(
+          ["git", "add", "shared.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: commit local shared.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      gate_entry_file = os.path.join(state_dir, "gate_entry.json")
+      if os.path.exists(gate_entry_file):
+        os.unlink(gate_entry_file)
+
+      resp_t50_t60_blocked = handle_tools_call(
+          507,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T50",
+              "nextTarget": "T60",
+              "workspaceDir": clone1,
+              "evidence": {
+                  "humanCommitApproved": True,
+                  "skipMainFetch": True,
+              },
+          },
+      )
+      self.assertTrue(resp_t50_t60_blocked["result"].get("isError"))
+      self.assertIn(
+          "UPSTREAM_MAIN_CONFLICT",
+          resp_t50_t60_blocked["result"]["content"][0]["text"],
+      )
+
+      resp_t50_t60_override = handle_tools_call(
+          508,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T50",
+              "nextTarget": "T60",
+              "workspaceDir": clone1,
+              "evidence": {
+                  "humanCommitApproved": True,
+                  "skipMainFetch": True,
+                  "allowMainConflict": True,
+              },
+          },
+      )
+      self.assertFalse(resp_t50_t60_override["result"].get("isError"))
+
+
 if __name__ == "__main__":
   run_test()
   TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
@@ -2031,3 +2355,4 @@ if __name__ == "__main__":
   TestMcpServerMultiDimensionalQueryScars().test_workflow_query_scars_multidimensional_filters()
   TestMcpPauseGateTurnBoundary().test_mcp_pause_gate_entry_and_same_turn_chaining_blocked()
   TestMcpPauseGateTurnBoundary().test_mcp_declarative_recovery_transitions_and_gate_entry_cleanup()
+  TestMcpMainSyncTransitions().test_mcp_main_sync_behind_clean_and_conflict_transitions()

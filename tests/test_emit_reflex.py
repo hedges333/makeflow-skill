@@ -1056,6 +1056,522 @@ class TestWorkflowGatesScript(unittest.TestCase):
       self.assertIn("30_tdd_receipt.json", err_output)
       self.assertIn("Permission denied", err_output)
 
+  def test_main_sync_gate_and_inspection(self):
+    import hashlib
+    from lib.workflow_gates import (
+        fetch_and_inspect_main_sync,
+        generate_state_makefile,
+        inspect_main_sync,
+    )
+
+    with tempfile.TemporaryDirectory() as base_dir:
+      # 0. Verify generate_state_makefile includes check-main-sync
+      mk_text = generate_state_makefile(base_dir)
+      self.assertIn("check-main-sync", mk_text)
+      self.assertIn("check-main-sync:", mk_text)
+
+      # 1. NO_REMOTE: repo without origin remote
+      no_rem_dir = os.path.join(base_dir, "no_remote")
+      os.makedirs(no_rem_dir, exist_ok=True)
+      _init_git_repo(no_rem_dir)
+      _exclude_workflow_dirs(no_rem_dir)
+
+      no_rem_sync = inspect_main_sync(no_rem_dir)
+      self.assertEqual(
+          no_rem_sync,
+          {
+              "status": "NO_REMOTE",
+              "upstream_ref": None,
+              "ahead_count": 0,
+              "behind_count": 0,
+              "has_conflicts": False,
+              "conflicting_files": [],
+              "working_tree_dirty": False,
+          },
+      )
+      out_no_rem = io.StringIO()
+      err_no_rem = io.StringIO()
+      self.assertEqual(
+          WorkflowGatesScript().execute(
+              args=["--repo-root", no_rem_dir, "main-sync"],
+              stdout=out_no_rem,
+              stderr=err_no_rem,
+          ),
+          0,
+          err_no_rem.getvalue(),
+      )
+
+      # 2. UP_TO_DATE: local bare origin remote with matching main
+      bare_dir = os.path.join(base_dir, "origin.git")
+      os.makedirs(bare_dir, exist_ok=True)
+      subprocess.run(
+          ["git", "init", "--bare", "-q"],
+          cwd=bare_dir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      clone1 = os.path.join(base_dir, "clone1")
+      os.makedirs(clone1, exist_ok=True)
+      _init_git_repo(clone1)
+      _exclude_workflow_dirs(clone1)
+      subprocess.run(
+          ["git", "branch", "-M", "main"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      with open(os.path.join(clone1, "shared.txt"), "w", encoding="utf-8") as f:
+        f.write("line 1\n")
+      subprocess.run(
+          ["git", "add", "shared.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: add shared.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "remote", "add", "origin", bare_dir],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "-u", "origin", "main"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "checkout", "-q", "-b", "feat/195-sync-test"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      up_sync = inspect_main_sync(clone1)
+      self.assertEqual(up_sync["status"], "UP_TO_DATE")
+      self.assertEqual(up_sync["upstream_ref"], "origin/main")
+      self.assertEqual(up_sync["ahead_count"], 0)
+      self.assertEqual(up_sync["behind_count"], 0)
+      self.assertFalse(up_sync["has_conflicts"])
+      self.assertEqual(up_sync["conflicting_files"], [])
+      self.assertFalse(up_sync["working_tree_dirty"])
+
+      # 3. BEHIND_CLEAN: clone2 pushes a non-conflicting commit to origin/main
+      clone2 = os.path.join(base_dir, "clone2")
+      subprocess.run(
+          ["git", "clone", "-q", "-b", "main", bare_dir, clone2],
+          cwd=base_dir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "config", "user.email", "clone2@example.com"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "config", "user.name", "Clone Two"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      with open(os.path.join(clone2, "other.txt"), "w", encoding="utf-8") as f:
+        f.write("non-conflicting upstream change\n")
+      subprocess.run(
+          ["git", "add", "other.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: add other.txt on main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      # Before fetch, inspect_main_sync still sees UP_TO_DATE
+      self.assertEqual(inspect_main_sync(clone1)["status"], "UP_TO_DATE")
+
+      # fetch_and_inspect_main_sync fetches origin and sees BEHIND_CLEAN
+      behind_sync = fetch_and_inspect_main_sync(clone1)
+      self.assertEqual(behind_sync["status"], "BEHIND_CLEAN")
+      self.assertEqual(behind_sync["behind_count"], 1)
+      self.assertFalse(behind_sync["has_conflicts"])
+      self.assertEqual(behind_sync["conflicting_files"], [])
+
+      out_behind = io.StringIO()
+      err_behind = io.StringIO()
+      code_behind = WorkflowGatesScript().execute(
+          args=["--repo-root", clone1, "main-sync", "--no-fetch"],
+          stdout=out_behind,
+          stderr=err_behind,
+      )
+      self.assertEqual(code_behind, 0, err_behind.getvalue())
+      self.assertIn("MAIN_SYNC_NOTICE", out_behind.getvalue())
+
+      out_fail_behind = io.StringIO()
+      err_fail_behind = io.StringIO()
+      code_fail_behind = WorkflowGatesScript().execute(
+          args=[
+              "--repo-root",
+              clone1,
+              "main-sync",
+              "--no-fetch",
+              "--fail-on-behind",
+          ],
+          stdout=out_fail_behind,
+          stderr=err_fail_behind,
+      )
+      self.assertEqual(code_fail_behind, 2)
+      self.assertIn(
+          "[SCAR-ID: GIT-20] UPSTREAM_MAIN_BEHIND", err_fail_behind.getvalue()
+      )
+
+      # 4. CONFLICT (uncommitted working tree at T30/T40):
+      # clone2 pushes a conflicting change to shared.txt on origin/main
+      with open(os.path.join(clone2, "shared.txt"), "w", encoding="utf-8") as f:
+        f.write("upstream conflicting line 1\n")
+      subprocess.run(
+          ["git", "add", "shared.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: update shared.txt on main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      # In clone1, modify shared.txt in the working tree WITHOUT staging or committing
+      with open(os.path.join(clone1, "shared.txt"), "w", encoding="utf-8") as f:
+        f.write("local uncommitted conflicting line 1\n")
+      state_dir = os.path.join(clone1, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      tree_path = os.path.join(state_dir, "approved_tree.txt")
+      with open(tree_path, "w", encoding="utf-8") as f:
+        f.write("locked-tree-sentinel\n")
+      index_path = os.path.join(clone1, ".git", "index")
+      with open(index_path, "rb") as f:
+        index_sha_before = hashlib.sha256(f.read()).hexdigest()
+
+      wt_conflict_sync = fetch_and_inspect_main_sync(clone1)
+      self.assertEqual(wt_conflict_sync["status"], "CONFLICT")
+      self.assertEqual(wt_conflict_sync["behind_count"], 2)
+      self.assertTrue(wt_conflict_sync["has_conflicts"])
+      self.assertIn("shared.txt", wt_conflict_sync["conflicting_files"])
+      self.assertTrue(wt_conflict_sync["working_tree_dirty"])
+
+      # Verify .git/index and approved_tree.txt were NOT mutated by ephemeral index check
+      with open(index_path, "rb") as f:
+        index_sha_after = hashlib.sha256(f.read()).hexdigest()
+      self.assertEqual(index_sha_before, index_sha_after)
+      with open(tree_path, "r", encoding="utf-8") as f:
+        self.assertEqual(f.read(), "locked-tree-sentinel\n")
+
+      # 5. CONFLICT (committed on feature branch):
+      subprocess.run(
+          ["git", "add", "shared.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: local shared.txt change"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      head_before = subprocess.run(
+          ["git", "rev-parse", "HEAD"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      ).stdout.strip()
+      with open(index_path, "rb") as f:
+        committed_index_sha = hashlib.sha256(f.read()).hexdigest()
+
+      out_conf = io.StringIO()
+      err_conf = io.StringIO()
+      code_conf = WorkflowGatesScript().execute(
+          args=["--repo-root", clone1, "main-sync", "--no-fetch"],
+          stdout=out_conf,
+          stderr=err_conf,
+      )
+      self.assertEqual(code_conf, 2)
+      self.assertIn(
+          "[SCAR-ID: GIT-20] UPSTREAM_MAIN_CONFLICT", err_conf.getvalue()
+      )
+      self.assertIn("shared.txt", err_conf.getvalue())
+
+      head_after = subprocess.run(
+          ["git", "rev-parse", "HEAD"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      ).stdout.strip()
+      self.assertEqual(head_before, head_after)
+      with open(index_path, "rb") as f:
+        self.assertEqual(
+            committed_index_sha, hashlib.sha256(f.read()).hexdigest()
+        )
+
+      # 6. Clean deletions vs true modify/delete conflicts (BLOCKER-1):
+      for fname in (
+          "to_delete.txt",
+          "mod_delete.txt",
+          "local_del_conflict.txt",
+      ):
+        with open(os.path.join(clone2, fname), "w", encoding="utf-8") as f:
+          f.write(f"initial {fname}\n")
+      subprocess.run(
+          [
+              "git",
+              "add",
+              "to_delete.txt",
+              "mod_delete.txt",
+              "local_del_conflict.txt",
+          ],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: seed deletion test files"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "fetch", "-q", "origin", "main"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "checkout", "-q", "-B", "feat/195-delete-sync", "origin/main"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      # 6a. Clean upstream deletion on origin/main (removed in remote, our == base)
+      subprocess.run(
+          ["git", "rm", "-q", "to_delete.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: delete to_delete.txt on main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      clean_remote_del = fetch_and_inspect_main_sync(clone1)
+      self.assertEqual(clean_remote_del["status"], "BEHIND_CLEAN")
+      self.assertEqual(clean_remote_del["behind_count"], 1)
+      self.assertFalse(clean_remote_del["has_conflicts"])
+      self.assertEqual(clean_remote_del["conflicting_files"], [])
+
+      # 6b. Clean local deletion on feature branch (removed in local, their == base)
+      subprocess.run(
+          ["git", "rm", "-q", "shared.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: delete shared.txt locally"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      clean_local_del = inspect_main_sync(clone1)
+      self.assertEqual(clean_local_del["status"], "BEHIND_CLEAN")
+      self.assertFalse(clean_local_del["has_conflicts"])
+      self.assertEqual(clean_local_del["conflicting_files"], [])
+
+      # 6c. True modify/delete conflict: remote deletes mod_delete.txt, local modifies it
+      subprocess.run(
+          ["git", "rm", "-q", "mod_delete.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: delete mod_delete.txt on main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      with open(os.path.join(clone1, "mod_delete.txt"), "w", encoding="utf-8") as f:
+        f.write("local modification conflicting with remote delete\n")
+      subprocess.run(
+          ["git", "add", "mod_delete.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: modify mod_delete.txt locally"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      mod_del_sync = fetch_and_inspect_main_sync(clone1)
+      self.assertEqual(mod_del_sync["status"], "CONFLICT")
+      self.assertTrue(mod_del_sync["has_conflicts"])
+      self.assertEqual(mod_del_sync["conflicting_files"], ["mod_delete.txt"])
+
+      # 6d. True delete/modify conflict: local deletes local_del_conflict.txt, remote modifies it
+      subprocess.run(
+          [
+              "git",
+              "checkout",
+              "-q",
+              "-B",
+              "feat/195-local-del-conflict",
+              "origin/main",
+          ],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      with open(
+          os.path.join(clone2, "local_del_conflict.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write("remote modification conflicting with local delete\n")
+      subprocess.run(
+          ["git", "add", "local_del_conflict.txt"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          [
+              "git",
+              "commit",
+              "-q",
+              "-m",
+              "feat: modify local_del_conflict.txt on main",
+          ],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "push", "-q", "origin", "main"],
+          cwd=clone2,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "rm", "-q", "local_del_conflict.txt"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          [
+              "git",
+              "commit",
+              "-q",
+              "-m",
+              "chore: delete local_del_conflict.txt locally",
+          ],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      del_mod_sync = fetch_and_inspect_main_sync(clone1)
+      self.assertEqual(del_mod_sync["status"], "CONFLICT")
+      self.assertTrue(del_mod_sync["has_conflicts"])
+      self.assertEqual(
+          del_mod_sync["conflicting_files"], ["local_del_conflict.txt"]
+      )
+
 
 class TestCliAndMakefileIntegration(unittest.TestCase):
   """Boundary tests for CLI wrapper, consumer Makefile synthesis, and exit code 2."""

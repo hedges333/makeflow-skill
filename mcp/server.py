@@ -85,6 +85,10 @@ from lib.turn_boundary import (
     record_gate_entry,
     verify_mcp_gate_exit,
 )
+from lib.workflow_gates import (
+    fetch_and_inspect_main_sync,
+    inspect_main_sync,
+)
 
 ALL_TARGETS = {
     "T00",
@@ -734,7 +738,8 @@ def handle_tools_list(request_id):
                           " humanCommitApproved (T50->T60),"
                           " humanPushApproved (T60->T70), and"
                           " humanLandingApproved (T75->T80), plus integer"
-                          " blockersCount (T40->T42 and T40->T45)."
+                          " blockersCount (T40->T42 and T40->T45) and optional"
+                          " boolean allowMainConflict and skipMainFetch."
                       ),
                   },
                   "workspaceDir": {
@@ -983,6 +988,21 @@ def handle_tools_call(request_id, tool_name, arguments):
     summary = f"Found {len(files)} state card(s) in {state_dir}:\n" + "\n".join(
         f"- {f}" for f in files
     )
+    sync = inspect_main_sync(ws)
+    sync_status = sync.get("status", "NO_REMOTE")
+    upstream_ref = sync.get("upstream_ref") or "origin/main"
+    behind_count = sync.get("behind_count", 0)
+    if sync_status == "CONFLICT":
+      files_str = ", ".join(sync.get("conflicting_files") or []) or "unknown"
+      summary += (
+          f"\nMAIN_SYNC: CONFLICT with {upstream_ref} "
+          f"(behind={behind_count}, conflicting_files=[{files_str}])"
+      )
+    elif sync_status == "BEHIND_CLEAN":
+      summary += (
+          f"\nMAIN_SYNC: BEHIND_CLEAN with {upstream_ref} "
+          f"(behind={behind_count}, conflicts=0)"
+      )
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -1039,6 +1059,7 @@ def handle_tools_call(request_id, tool_name, arguments):
         )
 
     state_dir = ""
+    main_sync_notice = ""
     transcript_path = (
         arguments.get("transcriptPath")
         or evidence.get("transcriptPath")
@@ -1076,6 +1097,70 @@ def handle_tools_call(request_id, tool_name, arguments):
               f" '{state_dir}' for transition {current} -> {next_t}.",
           )
 
+      sync = (
+          inspect_main_sync(ws)
+          if evidence.get("skipMainFetch")
+          else fetch_and_inspect_main_sync(ws)
+      )
+      sync_status = sync.get("status", "NO_REMOTE")
+      upstream_ref = sync.get("upstream_ref") or "origin/main"
+      behind_count = sync.get("behind_count", 0)
+      conflicting_files = sync.get("conflicting_files") or []
+      if sync_status == "CONFLICT" and not evidence.get("allowMainConflict"):
+        files_str = ", ".join(conflicting_files) or "unknown"
+        if current in ("T70", "T75", "T80") or next_t in ("T70", "T75", "T80"):
+          guidance = (
+              "Stop tool calls without altering Git state (SCAR-GIT-25), report"
+              f" conflicting files ({files_str}) to the operator, and request"
+              f" approval to merge {upstream_ref} (git fetch origin main &&"
+              " git merge origin/main) and return to T30/T40 for re-verification."
+          )
+        else:
+          guidance = (
+              "Stop tool calls without altering Git state (SCAR-GIT-25), report"
+              f" conflicting files ({files_str}) to the operator, and request"
+              f" approval to run git rebase {upstream_ref} (and re-lock"
+              " approved_tree.txt + re-run T40 critic review if already past T40)."
+          )
+        return _error_result(
+            request_id,
+            f"BLOCKED: [SCAR-GIT-20] UPSTREAM_MAIN_CONFLICT on transition"
+            f" {current} -> {next_t}: branch is behind {upstream_ref} by"
+            f" {behind_count} commit(s) with merge conflicts in"
+            f" [{files_str}]. {guidance}",
+        )
+      elif sync_status == "BEHIND_CLEAN":
+        if next_t in ("T15", "T20", "T30", "T40"):
+          main_sync_notice = (
+              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
+              " commit(s) with 0 conflicts (BEHIND_CLEAN). You may offer an"
+              f" operator-approved 'git rebase {upstream_ref}' (SCAR-GIT-25)"
+              f" now while in pre-review targets ({current} -> {next_t}) before"
+              " locking approved_tree.txt at T40."
+          )
+        elif next_t in ("T42", "T45", "T50"):
+          main_sync_notice = (
+              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
+              " commit(s) with 0 conflicts (BEHIND_CLEAN). Preserve"
+              " .workflow/state/approved_tree.txt (SCAR-GIT-23); do not rebase"
+              " during locked-tree gates unless returning to T40 for critic"
+              " re-audit."
+          )
+        elif next_t == "T60":
+          main_sync_notice = (
+              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
+              " commit(s) with 0 conflicts (BEHIND_CLEAN). Branch merges"
+              " cleanly; rebasing now would invalidate approved_tree.txt and"
+              " require T60 -> T40 critic re-audit."
+          )
+        else:
+          main_sync_notice = (
+              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
+              " commit(s) with 0 conflicts (BEHIND_CLEAN). Per SCAR-GIT-18 and"
+              " SCAR-GIT-25, do not rebase or force-push an open pull request"
+              " when mergeable is CLEAN."
+          )
+
     if gate_key:
       ok, reason = verify_mcp_gate_exit(
           state_dir, current, next_t, transcript_path=transcript_path
@@ -1097,7 +1182,10 @@ def handle_tools_call(request_id, tool_name, arguments):
         "result": {
             "content": [{
                 "type": "text",
-                "text": f"SUCCESS: Target transition {current} -> {next_t} passed.",
+                "text": (
+                    f"SUCCESS: Target transition {current} -> {next_t} passed."
+                    f"{main_sync_notice}"
+                ),
             }]
         },
     }

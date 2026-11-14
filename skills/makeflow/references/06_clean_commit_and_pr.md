@@ -6,12 +6,13 @@ This manual covers the pre-push merge check, the human push gate, and pull reque
 
 Never push a branch that conflicts with the remote default branch.
 
-1. Fetch the latest default branch from `origin`:
+1. Run the deterministic upstream sync gate from `.workflow/state/Makefile`:
+   ```bash
+   make -f .workflow/state/Makefile check-main-sync
+   ```
+2. This gate fetches `origin/main` and tests a 3-way merge in memory with `git merge-tree`:
    ```bash
    git fetch origin main
-   ```
-2. Test a clean merge in memory with `git merge-tree`:
-   ```bash
    git merge-tree $(git merge-base HEAD origin/main) HEAD origin/main
    ```
 3. If `git merge-tree` reports conflict markers, stop tool calls immediately without altering Git state (`SCAR-GIT-25`). Print the conflicting files and upstream conflict details in chat. Pause and await explicit operator direction before any rebase or merge action.
@@ -27,6 +28,16 @@ Never push a branch that conflicts with the remote default branch.
    ```
 8. Re-dispatch `adversarial-critic` with explicit manual path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) before push.
 9. Advance target from `T60` to `T40` to complete the fresh review.
+
+### 1.1 Early Upstream Sync Across Target Transitions
+
+The `workflow_advance_target` MCP tool also checks `origin/main` at each target transition:
+
+1. From Target 10 through Target 40, if `origin/main` advances without conflicts, offer an operator-approved `git rebase origin/main` (`SCAR-GIT-25`).
+2. At Target 45 and Target 50, preserve `.workflow/state/approved_tree.txt` (`SCAR-GIT-23`) when `origin/main` has zero conflicts.
+3. If `origin/main` introduces merge conflicts at any transition, stop tool calls immediately without altering Git state (`SCAR-GIT-25`).
+4. Report the conflicting files in chat and wait for explicit operator direction.
+5. At Target 70 and Target 75, never rebase an open pull request (`SCAR-GIT-18`, `SCAR-GIT-25`). If conflicts arise on an open pull request, request operator approval to merge `origin/main` and return to Target 30.
 
 ## 2. Human Push Approval Gate
 
