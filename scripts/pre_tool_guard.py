@@ -56,6 +56,7 @@ from lib.turn_boundary import (
     PAUSE_GATE_TARGETS,
     clear_gate_entry,
     evaluate_advance_target_turn_boundary,
+    evaluate_ask_question_turn_boundary,
     evaluate_command_turn_boundary,
     extract_advance_target_calls,
     mark_gate_human_verified,
@@ -723,6 +724,11 @@ def evaluate_tool_call(payload):
   state_dir = resolve_state_dir(payload)
 
   if tool_name != "run_command":
+    if tool_name == "ask_question":
+      ok, reason = evaluate_ask_question_turn_boundary(transcript_path)
+      if not ok:
+        return {"decision": "deny", "reason": reason}
+      return {"decision": "allow"}
     adv_calls = extract_advance_target_calls([tool_call])
     if adv_calls:
       adv = adv_calls[0]

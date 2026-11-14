@@ -33,7 +33,9 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       data = json.load(f)
     pre_hooks = data["makeflow-guard"]["PreToolUse"]
     self.assertEqual(len(pre_hooks), 1)
-    self.assertEqual(pre_hooks[0]["matcher"], "run_command|call_mcp_tool")
+    self.assertEqual(
+        pre_hooks[0]["matcher"], "run_command|call_mcp_tool|ask_question"
+    )
 
   def test_gh145_same_turn_t70_t75_t80_and_merge_denied(self):
     """Reproduces the exact GH-145 step 151 -> 155 autonomous self-landing trajectory."""
@@ -911,6 +913,203 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
             "force_ask",
             f"Expected force_ask during T80/T90 for {cmd_str!r}, got {res}",
         )
+
+  def test_ask_question_denied_when_no_assistant_content_since_latest_user_input(
+      self,
+  ):
+    """Denies ask_question with SCAR-HCI-08 Vector 4 Reflex when current turn has no content."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      for empty_val in ("", None, "   \n\t  ", json.dumps(""), json.dumps("  ")):
+        with self.subTest(content=empty_val):
+          _write_transcript(
+              transcript_path,
+              [
+                  {
+                      "step_index": 1,
+                      "type": "USER_INPUT",
+                      "content": "Triage GH-196",
+                  },
+                  {
+                      "step_index": 2,
+                      "type": "PLANNER_RESPONSE",
+                      "content": empty_val,
+                      "tool_calls": [{
+                          "name": "ask_question",
+                          "args": {
+                              "Questions": [{
+                                  "Header": "Choice",
+                                  "Question": "Which option?",
+                                  "Options": [
+                                      {"Label": "A", "Description": "Opt A"},
+                                      {"Label": "B", "Description": "Opt B"},
+                                  ],
+                              }]
+                          },
+                      }],
+                  },
+              ],
+          )
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "ask_question",
+                  "args": {
+                      "Questions": [{
+                          "Header": "Choice",
+                          "Question": "Which option?",
+                      }]
+                  },
+              },
+          })
+          self.assertEqual(res["decision"], "deny")
+          reason = res.get("reason", "")
+          self.assertIn("[SCAR-ID: HCI-08]", reason)
+          self.assertIn("TRIGGER (THIS):", reason)
+          self.assertIn("REJECTED (TRAP):", reason)
+          self.assertIn("REFLEX (ACTION):", reason)
+          self.assertIn("SOCRATIC PROBE:", reason)
+          self.assertIn("content", reason)
+          self.assertIn("file://", reason)
+          self.assertIn("ask_question", reason)
+
+  def test_ask_question_denied_when_only_prior_turn_had_assistant_content(self):
+    """Denies ask_question when only a prior turn before the latest USER_INPUT emitted content."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {
+                  "step_index": 1,
+                  "type": "USER_INPUT",
+                  "content": "Start task",
+              },
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Prior turn explanation with [plan.md](file:///tmp/plan.md).",
+                  "tool_calls": [],
+              },
+              {
+                  "step_index": 3,
+                  "type": "USER_INPUT",
+                  "content": "Now choose an approach",
+              },
+              {
+                  "step_index": 4,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "",
+                  "tool_calls": [{"name": "read_file", "args": {"Path": "/tmp/a"}}],
+              },
+              {
+                  "step_index": 5,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "",
+                  "tool_calls": [{"name": "ask_question", "args": {}}],
+              },
+          ],
+      )
+      res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "ask_question",
+              "args": {},
+          },
+      })
+      self.assertEqual(res["decision"], "deny")
+      self.assertIn("[SCAR-ID: HCI-08]", res.get("reason", ""))
+
+  def test_ask_question_allowed_when_same_planner_response_step_has_content(
+      self,
+  ):
+    """Allows ask_question when the same PLANNER_RESPONSE step has non-empty markdown content."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      for valid_content in (
+          "Full markdown facts with [plan.md](file:///tmp/plan.md).",
+          json.dumps("Full markdown facts with [plan.md](file:///tmp/plan.md)."),
+      ):
+        with self.subTest(content=valid_content):
+          _write_transcript(
+              transcript_path,
+              [
+                  {
+                      "step_index": 1,
+                      "type": "USER_INPUT",
+                      "content": "Which layout should we use?",
+                  },
+                  {
+                      "step_index": 2,
+                      "type": "PLANNER_RESPONSE",
+                      "content": valid_content,
+                      "tool_calls": [{"name": "ask_question", "args": {}}],
+                  },
+              ],
+          )
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "ask_question",
+                  "args": {},
+              },
+          })
+          self.assertEqual(res["decision"], "allow")
+
+  def test_ask_question_allowed_when_earlier_step_in_same_turn_emitted_content(
+      self,
+  ):
+    """Allows ask_question when an earlier PLANNER_RESPONSE step in the same turn emitted content."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {
+                  "step_index": 1,
+                  "type": "USER_INPUT",
+                  "content": "Inspect and ask",
+              },
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Detailed analysis of [file.py](file:///tmp/file.py).",
+                  "tool_calls": [{"name": "read_file", "args": {"Path": "/tmp/file.py"}}],
+              },
+              {
+                  "step_index": 3,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "",
+                  "tool_calls": [{"name": "ask_question", "args": {}}],
+              },
+          ],
+      )
+      res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "ask_question",
+              "args": {},
+          },
+      })
+      self.assertEqual(res["decision"], "allow")
+
+  def test_rules_agents_md_rule_1_2_documents_ask_question_content_requirement(
+      self,
+  ):
+    """Verifies rules/AGENTS.md Section 1.2 documents the ask_question content presentation rules."""
+    agents_path = os.path.join(REPO_ROOT, "rules", "AGENTS.md")
+    with open(agents_path, "r", encoding="utf-8") as f:
+      text = f.read()
+    sec_1_2 = text.split("### 1.2 ")[1].split("### 1.3 ")[0]
+    self.assertIn("`ask_question`", sec_1_2)
+    self.assertIn("`content`", sec_1_2)
+    self.assertIn("`PLANNER_RESPONSE`", sec_1_2)
+    self.assertIn("`file://`", sec_1_2)
+    self.assertIn("in chat first", sec_1_2.lower())
 
 
 if __name__ == "__main__":
