@@ -1906,5 +1906,25 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-182",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/182",
+    "title": "[BUG] Stage clean plugin tree before agy plugin install to exclude .venv external symlinks and local state",
+    "request": "Stage a clean plugin copy in a temporary directory before running agy plugin install in Makefile and install.sh, add .venv and .workflow/archive exclusions to copy_plugin_tree, and add four hermetic boundary tests in tests/test_emit_reflex.py.",
+    "branch": "fix/182-stage-clean-plugin-install",
+    "subprojects": [
+      "Makefile",
+      "install.sh",
+      "tests"
+    ],
+    "started_at": "2026-11-14T02:50:39Z",
+    "completed_at": "2026-11-14T03:32:54Z",
+    "commit_sha": "eb02057cad1fa03819fbccf52d4efeef26c9c76f",
+    "pr_number": 183,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/183",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
