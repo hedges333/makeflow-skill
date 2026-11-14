@@ -407,6 +407,129 @@ class TestLocalTickets(unittest.TestCase):
     )
     self.assertEqual(code_close_missing, 1)
 
+  def test_close_ticket_with_resolution_comment_and_cli(self):
+    """TestCase 8: close_ticket and CLI close persist resolution_comment via --comment and --comment-file."""
+    store = LocalTicketStore(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    store.create_ticket(title="First task", ticket_id="LOCAL-1")
+    closed_1 = store.close_ticket(
+        "LOCAL-1",
+        comment="Target 90: Workflow Complete\n\nSummary of delivered changes.",
+    )
+    self.assertIsNotNone(closed_1)
+    self.assertEqual(closed_1["status"], "CLOSED")
+    self.assertEqual(
+        closed_1["resolution_comment"],
+        "Target 90: Workflow Complete\n\nSummary of delivered changes.",
+    )
+    reloaded_1 = store.get_ticket("LOCAL-1")
+    self.assertIsNotNone(reloaded_1)
+    self.assertEqual(
+        reloaded_1["resolution_comment"],
+        "Target 90: Workflow Complete\n\nSummary of delivered changes.",
+    )
+
+    store.create_ticket(title="Second task", ticket_id="LOCAL-2")
+    closed_2 = store.close_ticket("LOCAL-2")
+    self.assertIsNotNone(closed_2)
+    self.assertEqual(closed_2["status"], "CLOSED")
+    self.assertNotIn("resolution_comment", closed_2)
+
+    store.create_ticket(title="Third task", ticket_id="LOCAL-3")
+    script = LocalTicketScript()
+    out_3 = io.StringIO()
+    code_3 = script.execute(
+        args=[
+            "close",
+            "--ticket",
+            "LOCAL-3",
+            "--comment",
+            "Target 90: Workflow Complete - high-level summary",
+            "--repo-root",
+            self.repo_root,
+            "--json",
+        ],
+        stdout=out_3,
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(code_3, 0)
+    data_3 = json.loads(out_3.getvalue())
+    self.assertEqual(data_3["status"], "CLOSED")
+    self.assertEqual(
+        data_3["resolution_comment"],
+        "Target 90: Workflow Complete - high-level summary",
+    )
+
+    store.create_ticket(title="Fourth task", ticket_id="LOCAL-4")
+    comment_file_path = os.path.join(self.temp_dir.name, "resolution_comment.md")
+    with open(comment_file_path, "w", encoding="utf-8") as f:
+      f.write(
+          "Target 90: Workflow Complete\n\nDelivered CLI and ledger comment updates.\n"
+      )
+    out_4 = io.StringIO()
+    code_4 = script.execute(
+        args=[
+            "close",
+            "--ticket",
+            "LOCAL-4",
+            "--comment-file",
+            comment_file_path,
+            "--repo-root",
+            self.repo_root,
+            "--json",
+        ],
+        stdout=out_4,
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(code_4, 0)
+    data_4 = json.loads(out_4.getvalue())
+    self.assertEqual(
+        data_4["resolution_comment"],
+        "Target 90: Workflow Complete\n\nDelivered CLI and ledger comment updates.",
+    )
+
+    out_view_4 = io.StringIO()
+    code_view_4 = script.execute(
+        args=["view", "--ticket", "LOCAL-4", "--repo-root", self.repo_root],
+        stdout=out_view_4,
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(code_view_4, 0)
+    self.assertIn(
+        "Resolution: Target 90: Workflow Complete\n\nDelivered CLI and ledger comment updates.",
+        out_view_4.getvalue(),
+    )
+
+  def test_makefile_wires_test_local_tickets_target(self):
+    """TestCase 9: Root Makefile wires test-local-tickets into .PHONY and test: prerequisites."""
+    makefile_path = os.path.join(_REPO_ROOT, "Makefile")
+    with open(makefile_path, "r", encoding="utf-8") as f:
+      mk_text = f.read()
+
+    phony_lines = [
+        line for line in mk_text.splitlines() if line.startswith(".PHONY:")
+    ]
+    self.assertTrue(
+        any("test-local-tickets" in line for line in phony_lines),
+        "Makefile .PHONY must include test-local-tickets",
+    )
+    self.assertIn(
+        "test-local-tickets:",
+        mk_text,
+        "Makefile must define test-local-tickets: target",
+    )
+    self.assertIn(
+        "test_local_tickets.py",
+        mk_text,
+        "Makefile test-local-tickets recipe must invoke test_local_tickets.py",
+    )
+    test_prereq_lines = [
+        line for line in mk_text.splitlines() if line.startswith("test:")
+    ]
+    self.assertTrue(
+        any("test-local-tickets" in line for line in test_prereq_lines),
+        "Makefile test: target prerequisites must include test-local-tickets",
+    )
+
 
 if __name__ == "__main__":
   unittest.main()

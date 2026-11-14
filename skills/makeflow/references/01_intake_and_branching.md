@@ -124,10 +124,11 @@ Use `python3 scripts/local_tickets.py` to manage local tickets:
    ```bash
    python3 scripts/local_tickets.py list
    ```
-4. To view or close a local ticket, run:
+4. To view or close a local ticket with a resolution summary, run:
    ```bash
    python3 scripts/local_tickets.py view --ticket LOCAL-1
-   python3 scripts/local_tickets.py close --ticket LOCAL-1
+   python3 scripts/local_tickets.py close --ticket LOCAL-1 --comment-file <file>
+   python3 scripts/local_tickets.py close --ticket LOCAL-1 --comment "<summary>"
    ```
 
 ## 3. Live Readerboard (`99_next_action.md`)

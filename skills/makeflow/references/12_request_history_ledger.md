@@ -108,11 +108,12 @@ Run these steps during Target 90 after a pull request merges:
 2. Read `.workflow/history.json`, or start with `[]` when the file is new.
 3. Append the completed ticket object to `.workflow/history.json`.
 4. Add a matching summary row to `.workflow/history.md`.
-5. If the ticket is a local ticket, run `python3 scripts/local_tickets.py close --ticket <id>`.
+5. If the ticket is a local ticket, run `python3 scripts/local_tickets.py close --ticket <id> --comment-file <file>` with the resolution summary.
 6. Commit the updated ledger files when the project tracks `.workflow/history.*` in Git: `git commit -m "docs(history): record <id>"`.
 7. If direct push to `main` is permitted, push the ledger commit with `git push origin main`.
-8. Archive or clean up completed state cards and `approved_tree.txt` per `state.completedCardAction`:
+8. If the ticket is a GitHub issue, post the "Target 90: Workflow Complete" summary with `gh issue comment <number> --body-file <file>`. Use the same "Target 90: Workflow Complete" chat message to give a brief, high-level overview of delivered changes.
+9. Archive or clean up completed state cards and `approved_tree.txt` per `state.completedCardAction`:
    - If `state.completedCardAction` is `unlink` (default), remove intermediate cards `10_` through `80_` and `approved_tree.txt` from `.workflow/state/`.
    - If `state.completedCardAction` is `archive`, move intermediate cards `10_` through `80_` and `approved_tree.txt` to `.workflow/archive/<ticket-id>/`.
-9. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
-10. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.
+10. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
+11. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.

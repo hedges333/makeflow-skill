@@ -231,14 +231,28 @@ class LocalTicketStore:
       return None
     return None
 
-  def close_ticket(self, ticket_id: str) -> Optional[Dict[str, Any]]:
-    """Mark a local ticket CLOSED and update its updated_at timestamp."""
+  def close_ticket(
+      self,
+      ticket_id: str,
+      comment: Optional[str] = None,
+  ) -> Optional[Dict[str, Any]]:
+    """Mark a local ticket CLOSED, optionally record a resolution comment, and update updated_at.
+
+    Args:
+      ticket_id: Local ticket identifier (for example 'LOCAL-1' or '1').
+      comment: Optional high-level resolution summary recorded at Target 90.
+
+    Returns:
+      Updated ticket dictionary if found, or None if the ticket file does not exist.
+    """
     ticket = self.get_ticket(ticket_id)
     if ticket is None:
       return None
     norm_id = self.normalize_ticket_id(str(ticket.get("id") or ticket_id))
     ticket["id"] = norm_id
     ticket["status"] = "CLOSED"
+    if comment is not None and str(comment).strip():
+      ticket["resolution_comment"] = str(comment).strip()
     ticket["updated_at"] = datetime.now(timezone.utc).isoformat()
     path = self.ticket_path(norm_id)
     with open(path, "w", encoding="utf-8") as f:
@@ -362,6 +376,8 @@ class LocalTicketScript(BaseScript):
     self.ticket: str = ""
     self.status: str = "OPEN"
     self.include_active: bool = False
+    self.comment: Optional[str] = None
+    self.comment_file: Optional[str] = None
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -508,10 +524,21 @@ class LocalTicketScript(BaseScript):
     p_close = subparsers.add_parser(
         "close",
         help="Mark a local ticket CLOSED.",
-        description="Update status to CLOSED in .workflow/tickets/<ID>.json.",
+        description="Update status to CLOSED and optionally record a resolution comment in .workflow/tickets/<ID>.json.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_close.add_argument("--ticket", required=True, help="Ticket ID to close.")
+    p_close.add_argument(
+        "--comment",
+        default=None,
+        help="Optional resolution summary comment.",
+    )
+    p_close.add_argument(
+        "--comment-file",
+        default=None,
+        dest="comment_file",
+        help="Optional path to file containing resolution summary comment.",
+    )
     p_close.add_argument("--repo-root", default=None, help="Repository root directory.")
     p_close.add_argument("--lock-dir", default=None, help="Workspace lock directory.")
     p_close.add_argument(
@@ -536,6 +563,8 @@ class LocalTicketScript(BaseScript):
     self.ticket = getattr(ns, "ticket", "")
     self.status = getattr(ns, "status", "OPEN")
     self.include_active = bool(getattr(ns, "include_active", False))
+    self.comment = getattr(ns, "comment", None)
+    self.comment_file = getattr(ns, "comment_file", None)
 
     combined_labels: List[str] = []
     for item in getattr(ns, "label_list", []) or []:
@@ -613,10 +642,16 @@ class LocalTicketScript(BaseScript):
             f"Status: {ticket.get('status', '')}\n"
             f"Priority: {ticket.get('priority') or 'unlabeled'}\n"
         )
+        if ticket.get("resolution_comment"):
+          self.stdout.write(f"Resolution: {ticket['resolution_comment']}\n")
       return 0
 
     if self.subcommand == "close":
-      ticket = store.close_ticket(self.ticket)
+      comment_text = self.comment
+      if self.comment_file:
+        with open(self.comment_file, "r", encoding="utf-8") as f:
+          comment_text = f.read()
+      ticket = store.close_ticket(self.ticket, comment=comment_text)
       if ticket is None:
         self.stderr.write(f"Ticket not found: {self.ticket}\n")
         return 1

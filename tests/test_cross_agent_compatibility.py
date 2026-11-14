@@ -7560,6 +7560,15 @@ def validate():
         " verified."
     )
 
+  # Target 90 Ticket Resolution Comment Invariants (GH-197)
+  t90_comment_errors = validate_target_90_resolution_comment_invariants()
+  errors.extend(t90_comment_errors)
+  if not t90_comment_errors:
+    print(
+        "✔ Target 90 ticket resolution comment invariants (GH-197)"
+        " verified."
+    )
+
   if errors:
     print(f"\n❌ Validation failed with {len(errors)} error(s):")
     for err in errors:
@@ -8351,6 +8360,251 @@ class TestScarProc159DocumentationStandards(unittest.TestCase):
             ),
             f"Expected >25-word sentence rejection in {target_p_rel}, got: {errs_long_pillar}",
         )
+
+
+TARGET_90_RESOLUTION_COMMENT_FILES = (
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/12_request_history_ledger.md",
+    "skills/makeflow/references/01_intake_and_branching.md",
+)
+
+
+def check_target_90_resolution_comment_invariants(
+    files_map: dict[str, str] | None = None,
+) -> list[str]:
+  """Validates Target 90 ticket resolution comment instructions across skill and reference manuals (GH-197)."""
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scar_candidate import (
+      count_words_in_sentence,
+      mask_code_and_math_spans,
+      split_into_sentences,
+  )
+
+  if files_map is None:
+    files_map = {}
+    for rel in TARGET_90_RESOLUTION_COMMENT_FILES:
+      fpath = repo_path(rel)
+      if os.path.isfile(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  errs: list[str] = []
+  for rel in TARGET_90_RESOLUTION_COMMENT_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. skills/makeflow/SKILL.md Target 90 section
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  t90_match = re.search(
+      r"(?m)^###\s+Target 70, Target 75, Target 80, and Target 90\b.*?(?=^---|\n##\s+|\n###\s+|\Z)",
+      skill_text,
+      re.DOTALL,
+  )
+  t90_sec = t90_match.group(0) if t90_match else ""
+  if not t90_sec:
+    errs.append(
+        f"{skill_rel} missing section '### Target 70, Target 75, Target 80, and Target 90'"
+    )
+  else:
+    for req_tok in (
+        "gh issue comment",
+        "scripts/local_tickets.py close",
+        "Target 90: Workflow Complete",
+    ):
+      if req_tok not in t90_sec:
+        errs.append(
+            f"{skill_rel} Target 90 section must reference '{req_tok}'"
+        )
+    step6_lines = [
+        line.strip()
+        for line in t90_sec.splitlines()
+        if line.strip().startswith("6.")
+    ]
+    if not step6_lines:
+      errs.append(f"{skill_rel} Target 90 section missing step 6")
+    else:
+      for step_line in step6_lines:
+        errs.extend(_check_prose_punctuation(f"{skill_rel}#T90-step6", step_line))
+        prose_body = re.sub(r"^\d+\.\s+", "", step_line)
+        masked = mask_code_and_math_spans(prose_body)
+        for sent in split_into_sentences(masked):
+          wc = count_words_in_sentence(sent)
+          if wc > 20:
+            errs.append(
+                f"{skill_rel}#T90-step6 sentence exceeds 20-word procedural limit ({wc} words): {sent}"
+            )
+
+  # 2. skills/makeflow/references/12_request_history_ledger.md Section 4
+  ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
+  ledger_text = files_map[ledger_rel]
+  sec4 = _extract_markdown_h2_section(
+      ledger_text, "## 4. Update Steps at Target 90"
+  )
+  if not sec4.strip():
+    errs.append(
+        f"{ledger_rel} missing required section '## 4. Update Steps at Target 90'"
+    )
+  else:
+    for req_tok in (
+        "Target 90: Workflow Complete",
+        "gh issue comment",
+        "--body-file",
+        "python3 scripts/local_tickets.py close",
+        "--comment-file",
+    ):
+      if req_tok not in sec4:
+        errs.append(
+            f"{ledger_rel} Section 4 must reference '{req_tok}'"
+        )
+    sec4_lower = sec4.lower()
+    if "high-level" not in sec4_lower and "summary" not in sec4_lower:
+      errs.append(
+          f"{ledger_rel} Section 4 must specify posting a high-level resolution summary"
+      )
+    errs.extend(_check_prose_punctuation(f"{ledger_rel}#Section4", sec4))
+    in_fence = False
+    for idx, raw_line in enumerate(sec4.splitlines(), start=1):
+      stripped = raw_line.strip()
+      if stripped.startswith("```"):
+        in_fence = not in_fence
+        continue
+      if in_fence or not stripped or stripped.startswith("#"):
+        continue
+      prose_body = re.sub(r"^(?:-\s+|\d+\.\s+)", "", stripped)
+      masked = mask_code_and_math_spans(prose_body)
+      for sent in split_into_sentences(masked):
+        wc = count_words_in_sentence(sent)
+        if wc > 25:
+          errs.append(
+              f"{ledger_rel}#Section4:{idx} sentence exceeds 25-word limit ({wc} words): {sent}"
+          )
+
+  # 3. skills/makeflow/references/01_intake_and_branching.md Local Ticket Store
+  intake_rel = "skills/makeflow/references/01_intake_and_branching.md"
+  intake_text = files_map[intake_rel]
+  if "python3 scripts/local_tickets.py close" not in intake_text or (
+      "--comment" not in intake_text and "--comment-file" not in intake_text
+  ):
+    errs.append(
+        f"{intake_rel} must document 'python3 scripts/local_tickets.py close' with '--comment' or '--comment-file'"
+    )
+
+  return errs
+
+
+def validate_target_90_resolution_comment_invariants() -> list[str]:
+  """Validates Target 90 ticket resolution comment invariants on the live repository (GH-197)."""
+  return check_target_90_resolution_comment_invariants()
+
+
+class TestTarget90ResolutionCommentInvariants(unittest.TestCase):
+  """Hermetic unit and negative falsification tests for Target 90 ticket resolution comments (GH-197)."""
+
+  def test_live_repository_target_90_resolution_comment_invariants(self):
+    """Verifies live repository manuals satisfy Target 90 ticket resolution comment rules."""
+    self.assertEqual(check_target_90_resolution_comment_invariants(), [])
+
+  def test_negative_falsification_target_90_resolution_comment_in_tempdir(self):
+    """Verifies omitting Target 90 resolution comment tokens or violating Simple English fails validation."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      base_files: dict[str, str] = {}
+      for rel in TARGET_90_RESOLUTION_COMMENT_FILES:
+        src_path = repo_path(rel)
+        dst_path = os.path.join(tmpdir, rel)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        with open(src_path, "r", encoding="utf-8") as f:
+          text = f.read()
+        with open(dst_path, "w", encoding="utf-8") as f:
+          f.write(text)
+        base_files[rel] = text
+
+      self.assertEqual(
+          check_target_90_resolution_comment_invariants(base_files), []
+      )
+
+      # 1. Omitting gh issue comment from SKILL.md or 12_request_history_ledger.md fails validation
+      for target_rel in (
+          "skills/makeflow/SKILL.md",
+          "skills/makeflow/references/12_request_history_ledger.md",
+      ):
+        mut_no_gh = dict(base_files)
+        mut_no_gh[target_rel] = mut_no_gh[target_rel].replace(
+            "gh issue comment", "gh issue view"
+        )
+        errs_no_gh = check_target_90_resolution_comment_invariants(mut_no_gh)
+        self.assertTrue(
+            any(target_rel in e and "gh issue comment" in e for e in errs_no_gh),
+            f"Expected missing 'gh issue comment' error in {target_rel}, got: {errs_no_gh}",
+        )
+
+      # 2. Omitting Target 90: Workflow Complete from 12_request_history_ledger.md fails validation
+      ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
+      mut_no_banner = dict(base_files)
+      mut_no_banner[ledger_rel] = mut_no_banner[ledger_rel].replace(
+          "Target 90: Workflow Complete", "Workflow Done"
+      )
+      errs_no_banner = check_target_90_resolution_comment_invariants(
+          mut_no_banner
+      )
+      self.assertTrue(
+          any(
+              ledger_rel in e and "Target 90: Workflow Complete" in e
+              for e in errs_no_banner
+          ),
+          f"Expected missing 'Target 90: Workflow Complete' error, got: {errs_no_banner}",
+      )
+
+      # 3. Omitting --comment / --comment-file from 01_intake_and_branching.md fails validation
+      intake_rel = "skills/makeflow/references/01_intake_and_branching.md"
+      mut_no_comment_flag = dict(base_files)
+      mut_no_comment_flag[intake_rel] = (
+          mut_no_comment_flag[intake_rel]
+          .replace("--comment-file", "--flag-omitted")
+          .replace("--comment", "--flag-omitted")
+      )
+      errs_no_flag = check_target_90_resolution_comment_invariants(
+          mut_no_comment_flag
+      )
+      self.assertTrue(
+          any(intake_rel in e and "--comment" in e for e in errs_no_flag),
+          f"Expected missing '--comment' error in {intake_rel}, got: {errs_no_flag}",
+      )
+
+      # 4. Injecting a >25-word sentence or semicolon into Section 4 of 12_request_history_ledger.md fails validation
+      mut_long_sec4 = dict(base_files)
+      mut_long_sec4[ledger_rel] = mut_long_sec4[ledger_rel].replace(
+          "## 4. Update Steps at Target 90\n",
+          "## 4. Update Steps at Target 90\n\n"
+          "1. When you finish merging the pull request at the end of the workflow, always write an unnecessarily long and verbose sentence that contains far more than twenty five words in total.\n",
+      )
+      errs_long_sec4 = check_target_90_resolution_comment_invariants(
+          mut_long_sec4
+      )
+      self.assertTrue(
+          any(
+              ledger_rel in e and "exceeds 25-word limit" in e
+              for e in errs_long_sec4
+          ),
+          f"Expected >25-word sentence rejection in {ledger_rel}, got: {errs_long_sec4}",
+      )
+
+      mut_semi_sec4 = dict(base_files)
+      mut_semi_sec4[ledger_rel] = mut_semi_sec4[ledger_rel].replace(
+          "## 4. Update Steps at Target 90\n",
+          "## 4. Update Steps at Target 90\n\n"
+          "1. Close the ticket; push the branch.\n",
+      )
+      errs_semi_sec4 = check_target_90_resolution_comment_invariants(
+          mut_semi_sec4
+      )
+      self.assertTrue(
+          any(ledger_rel in e and "semicolon" in e for e in errs_semi_sec4),
+          f"Expected semicolon rejection in {ledger_rel}, got: {errs_semi_sec4}",
+      )
 
 
 if __name__ == "__main__":
