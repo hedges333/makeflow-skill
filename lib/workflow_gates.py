@@ -454,9 +454,13 @@ class WorkflowGatesScript(BaseScript):
       mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
       if ticket_id:
         mutex.release(ticket_id)
-      mutex.release_workspace(self.repo_root)
+      released_tickets = mutex.release_workspace(self.repo_root)
+      if not ticket_id and released_tickets:
+        ticket_id = released_tickets[0]
     except (ImportError, OSError):
       pass
+
+    self._cleanup_tdd_receipt(ticket_id or "")
 
     try:
       from lib.terminal_title import (
@@ -473,6 +477,49 @@ class WorkflowGatesScript(BaseScript):
     except (ImportError, OSError):
       pass
     return 0
+
+  def _cleanup_tdd_receipt(self, ticket_id: str) -> None:
+    """Archives or unlinks .workflow/state/30_tdd_receipt.json on intake release."""
+    receipt_path = os.path.join(
+        self.repo_root, ".workflow", "state", "30_tdd_receipt.json"
+    )
+    if not os.path.isfile(receipt_path):
+      return
+
+    completed_action = "unlink"
+    try:
+      from lib.config import resolve_workflow_config
+      cfg = resolve_workflow_config(workspace_dir=self.repo_root)
+      completed_action = (
+          cfg.get("state", {}).get("completedCardAction", "unlink")
+          if isinstance(cfg, dict)
+          else "unlink"
+      )
+    except (ImportError, OSError):
+      completed_action = "unlink"
+
+    try:
+      if completed_action == "archive":
+        from lib.safe_copy import safe_copy_file
+        archive_ticket = (
+            re.sub(r"[^A-Za-z0-9._-]", "_", ticket_id or "").strip("._")
+            or "unknown"
+        )
+        archive_dst = os.path.join(
+            self.repo_root,
+            ".workflow",
+            "archive",
+            archive_ticket,
+            "30_tdd_receipt.json",
+        )
+        safe_copy_file(receipt_path, archive_dst)
+      os.unlink(receipt_path)
+    except (ImportError, OSError) as exc:
+      stream = getattr(self, "stderr", None)
+      if stream is not None:
+        stream.write(
+            f"Warning: failed to clean up {receipt_path}: {exc}\n"
+        )
 
   def _check_approved_tree(self) -> int:
     tree_path = os.path.join(

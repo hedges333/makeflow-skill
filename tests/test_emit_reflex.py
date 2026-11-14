@@ -780,6 +780,206 @@ class TestWorkflowGatesScript(unittest.TestCase):
           "[SCAR-ID: GIT-25] UNAPPROVED_TREE_DRIFT", err_tree.getvalue()
       )
 
+  def test_release_intake_unlinks_tdd_receipt_and_unblocks_intake(self):
+    with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as lockdir:
+      _init_git_repo(tmpdir)
+      _exclude_workflow_dirs(tmpdir)
+      state_dir = os.path.join(tmpdir, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      receipt_path = os.path.join(state_dir, "30_tdd_receipt.json")
+      with open(receipt_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"ticket": "GH-171", "red_exit": 1}))
+
+      err_blocked = io.StringIO()
+      code_blocked = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "intake"],
+          stdout=io.StringIO(),
+          stderr=err_blocked,
+      )
+      self.assertEqual(code_blocked, 2)
+      self.assertIn(
+          "[SCAR-ID: GIT-25] UNCLEAN_INTAKE_STATE", err_blocked.getvalue()
+      )
+      self.assertIn("30_tdd_receipt.json", err_blocked.getvalue())
+
+      err_release = io.StringIO()
+      code_release = WorkflowGatesScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "--lock-dir",
+              lockdir,
+              "release-intake",
+              "--ticket",
+              "GH-171",
+          ],
+          stdout=io.StringIO(),
+          stderr=err_release,
+      )
+      self.assertEqual(code_release, 0, err_release.getvalue())
+      self.assertFalse(os.path.exists(receipt_path))
+
+      err_unblocked = io.StringIO()
+      code_unblocked = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "intake"],
+          stdout=io.StringIO(),
+          stderr=err_unblocked,
+      )
+      self.assertEqual(code_unblocked, 0, err_unblocked.getvalue())
+
+  def test_release_intake_archives_tdd_receipt_when_configured(self):
+    from lib.workspace_mutex import WorkspaceMutex
+
+    with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as lockdir:
+      _init_git_repo(tmpdir)
+      _exclude_workflow_dirs(tmpdir)
+      exclude_path = os.path.join(tmpdir, ".git", "info", "exclude")
+      with open(exclude_path, "a", encoding="utf-8") as f:
+        f.write(".workflow/config.json\n")
+
+      cfg_dir = os.path.join(tmpdir, ".workflow")
+      os.makedirs(cfg_dir, exist_ok=True)
+      with open(os.path.join(cfg_dir, "config.json"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"state": {"completedCardAction": "archive"}}))
+
+      state_dir = os.path.join(cfg_dir, "state")
+      os.makedirs(state_dir, exist_ok=True)
+      receipt_path = os.path.join(state_dir, "30_tdd_receipt.json")
+      receipt_payload = json.dumps({"ticket": "GH-171", "red_exit": 1}, indent=2)
+
+      # 1. Explicit --ticket GH-171
+      with open(receipt_path, "w", encoding="utf-8") as f:
+        f.write(receipt_payload)
+
+      err_rel = io.StringIO()
+      code_rel = WorkflowGatesScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "--lock-dir",
+              lockdir,
+              "release-intake",
+              "--ticket",
+              "GH-171",
+          ],
+          stdout=io.StringIO(),
+          stderr=err_rel,
+      )
+      self.assertEqual(code_rel, 0, err_rel.getvalue())
+      self.assertFalse(os.path.exists(receipt_path))
+      archived_path = os.path.join(
+          cfg_dir, "archive", "GH-171", "30_tdd_receipt.json"
+      )
+      self.assertTrue(os.path.isfile(archived_path))
+      with open(archived_path, "r", encoding="utf-8") as f:
+        self.assertEqual(f.read(), receipt_payload)
+
+      err_intake = io.StringIO()
+      code_intake = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "intake"],
+          stdout=io.StringIO(),
+          stderr=err_intake,
+      )
+      self.assertEqual(code_intake, 0, err_intake.getvalue())
+
+      # 2. Omitted --ticket detected from active workspace mutex
+      os.remove(archived_path)
+      mutex = WorkspaceMutex(repo_root=tmpdir, lock_dir=lockdir)
+      acq = mutex.acquire("GH-171", branch_name="main")
+      self.assertTrue(acq.get("acquired"))
+      with open(receipt_path, "w", encoding="utf-8") as f:
+        f.write(receipt_payload)
+
+      err_rel_auto = io.StringIO()
+      code_rel_auto = WorkflowGatesScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "--lock-dir",
+              lockdir,
+              "release-intake",
+          ],
+          stdout=io.StringIO(),
+          stderr=err_rel_auto,
+      )
+      self.assertEqual(code_rel_auto, 0, err_rel_auto.getvalue())
+      self.assertFalse(os.path.exists(receipt_path))
+      self.assertTrue(os.path.isfile(archived_path))
+      with open(archived_path, "r", encoding="utf-8") as f:
+        self.assertEqual(f.read(), receipt_payload)
+
+  def test_release_intake_is_idempotent_when_tdd_receipt_absent(self):
+    with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as lockdir:
+      _init_git_repo(tmpdir)
+      _exclude_workflow_dirs(tmpdir)
+      exclude_path = os.path.join(tmpdir, ".git", "info", "exclude")
+      with open(exclude_path, "a", encoding="utf-8") as f:
+        f.write(".workflow/config.json\n")
+
+      cfg_dir = os.path.join(tmpdir, ".workflow")
+      os.makedirs(cfg_dir, exist_ok=True)
+
+      for action in ("unlink", "archive"):
+        with open(
+            os.path.join(cfg_dir, "config.json"), "w", encoding="utf-8"
+        ) as f:
+          f.write(json.dumps({"state": {"completedCardAction": action}}))
+
+        err_rel = io.StringIO()
+        code_rel = WorkflowGatesScript().execute(
+            args=[
+                "--repo-root",
+                tmpdir,
+                "--lock-dir",
+                lockdir,
+                "release-intake",
+                "--ticket",
+                "GH-171",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_rel,
+        )
+        self.assertEqual(code_rel, 0, err_rel.getvalue())
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(cfg_dir, "archive", "GH-171", "30_tdd_receipt.json")
+            )
+        )
+
+  def test_release_intake_warns_on_tdd_receipt_cleanup_oserror(self):
+    with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as lockdir:
+      _init_git_repo(tmpdir)
+      _exclude_workflow_dirs(tmpdir)
+
+      state_dir = os.path.join(tmpdir, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      receipt_path = os.path.join(state_dir, "30_tdd_receipt.json")
+      with open(receipt_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"ticket_id": "GH-171", "green_exit": 0}))
+
+      err = io.StringIO()
+      with mock.patch("os.unlink", side_effect=OSError("Permission denied")):
+        code = WorkflowGatesScript().execute(
+            args=[
+                "--repo-root",
+                tmpdir,
+                "--lock-dir",
+                lockdir,
+                "release-intake",
+                "--ticket",
+                "GH-171",
+            ],
+            stdout=io.StringIO(),
+            stderr=err,
+        )
+
+      self.assertEqual(code, 0, err.getvalue())
+      self.assertTrue(os.path.isfile(receipt_path))
+      err_output = err.getvalue()
+      self.assertIn("Warning:", err_output)
+      self.assertIn("30_tdd_receipt.json", err_output)
+      self.assertIn("Permission denied", err_output)
+
 
 class TestCliAndMakefileIntegration(unittest.TestCase):
   """Boundary tests for CLI wrapper, consumer Makefile synthesis, and exit code 2."""
