@@ -22,5 +22,119 @@
   },
   "state": {
     "completedCardAction": "unlink"
+  },
+  "targets": {
+    "T00": {
+      "next": ["T10", "T15", "T20", "T30", "T40", "T42", "T45", "T50", "T60", "T70", "T75", "T80", "T90"],
+      "recoveryNext": [],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T10": {
+      "next": ["T15"],
+      "recoveryNext": [],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T15": {
+      "next": ["T20"],
+      "recoveryNext": [],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T20": {
+      "next": ["T30"],
+      "recoveryNext": ["T15"],
+      "pauseGate": true,
+      "evidenceKey": "humanPlanApproved",
+      "entryCards": ["20_plan.md"],
+      "gatedCommands": []
+    },
+    "T30": {
+      "next": ["T40"],
+      "recoveryNext": ["T20", "T15"],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T40": {
+      "next": ["T42", "T45"],
+      "recoveryNext": [],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T42": {
+      "next": ["T30"],
+      "recoveryNext": ["T20", "T15"],
+      "pauseGate": true,
+      "evidenceKey": "humanBlockerTriageApproved",
+      "entryCards": ["40_critic_review.md"],
+      "gatedCommands": []
+    },
+    "T45": {
+      "next": ["T50"],
+      "recoveryNext": ["T30"],
+      "pauseGate": true,
+      "evidenceKey": "humanReviewApproved",
+      "entryCards": ["40_critic_review.md"],
+      "gatedCommands": []
+    },
+    "T50": {
+      "next": ["T60"],
+      "recoveryNext": ["T30"],
+      "pauseGate": true,
+      "evidenceKey": "humanCommitApproved",
+      "entryCards": ["50_commit_msg.txt"],
+      "gatedCommands": ["git commit"]
+    },
+    "T60": {
+      "next": ["T70"],
+      "recoveryNext": ["T40", "T30"],
+      "pauseGate": true,
+      "evidenceKey": "humanPushApproved",
+      "entryCards": [],
+      "gatedCommands": ["git push"]
+    },
+    "T70": {
+      "next": ["T75"],
+      "recoveryNext": ["T30"],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T75": {
+      "next": ["T80"],
+      "recoveryNext": ["T30", "T40", "T70"],
+      "pauseGate": true,
+      "evidenceKey": "humanLandingApproved",
+      "entryCards": ["70_bot_triage.md"],
+      "gatedCommands": ["gh pr merge"]
+    },
+    "T80": {
+      "next": ["T90"],
+      "recoveryNext": ["T30", "T40", "T60", "T70"],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    },
+    "T90": {
+      "next": [],
+      "recoveryNext": [],
+      "pauseGate": false,
+      "evidenceKey": null,
+      "entryCards": [],
+      "gatedCommands": []
+    }
   }
 }

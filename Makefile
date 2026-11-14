@@ -198,6 +198,12 @@ test-hooks:
 		--trigger "tests/test_hooks.py failed." \
 		--rejected "Weakening PreToolUse command guards or SessionStart state restoration." \
 		--reflex "Run $(PYTHON) tests/test_hooks.py directly, inspect the failing hook assertion, and re-run make test-hooks."
+	@$(PYTHON) -m unittest -v -f "$(TESTS_DIR)/test_pre_tool_guard.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id PROC-102 \
+		--code PRE_TOOL_TURN_BOUNDARY_SUITE_FAILED \
+		--trigger "tests/test_pre_tool_guard.py failed." \
+		--rejected "Allowing same-turn pause-gate exits or pause-gated commands without an intervening human turn." \
+		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_pre_tool_guard.py directly, inspect the failing assertion, and re-run make test-hooks."
 
 test-reflex:
 	@echo "Testing Vector 4 Reflex emitter and workflow gates..."

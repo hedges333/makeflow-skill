@@ -1737,8 +1737,228 @@ class TestMcpServerMultiDimensionalQueryScars(unittest.TestCase):
       self.assertEqual(filter_only_data["scars"][0]["id"], "SCAR-RIV-01")
 
 
+class TestMcpPauseGateTurnBoundary(unittest.TestCase):
+  """Tests server-side pause-gate entry recording and same-turn chaining block (GH-186)."""
+
+  def test_mcp_pause_gate_entry_and_same_turn_chaining_blocked(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import handle_tools_call
+
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      for card in (
+          "20_plan_approved.md",
+          "45_review_approved.md",
+          "70_bot_triage.md",
+      ):
+        with open(os.path.join(state_dir, card), "w", encoding="utf-8") as f:
+          f.write("# Card\n")
+
+      # 1. Enter T75 from T70 -> writes gate_entry.json
+      enter_t75 = handle_tools_call(
+          301,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T70",
+              "nextTarget": "T75",
+              "workspaceDir": ws_dir,
+          },
+      )
+      self.assertFalse(enter_t75["result"].get("isError"))
+      gate_entry_path = os.path.join(state_dir, "gate_entry.json")
+      self.assertTrue(os.path.isfile(gate_entry_path))
+      with open(gate_entry_path, "r", encoding="utf-8") as f:
+        entry_data = json.load(f)
+      self.assertEqual(entry_data["gate"], "T75")
+      self.assertFalse(entry_data["humanTurnVerified"])
+
+      # 2. Immediately chain T75 -> T80 in the same turn -> BLOCKED (SCAR-PROC-102)
+      chain_t80 = handle_tools_call(
+          302,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T75",
+              "nextTarget": "T80",
+              "workspaceDir": ws_dir,
+              "evidence": {"humanLandingApproved": True},
+          },
+      )
+      self.assertTrue(chain_t80["result"].get("isError"))
+      self.assertIn(
+          "SCAR-PROC-102", chain_t80["result"]["content"][0]["text"]
+      )
+
+      # 3. Provide transcript with an intervening USER_INPUT step -> ALLOWED & clears gate_entry.json
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      with open(transcript_path, "w", encoding="utf-8") as f:
+        f.write(
+            json.dumps({
+                "step_index": 10,
+                "type": "PLANNER_RESPONSE",
+                "tool_calls": [{
+                    "name": "call_mcp_tool",
+                    "args": {
+                        "ToolName": "workflow_advance_target",
+                        "Arguments": {
+                            "currentTarget": "T70",
+                            "nextTarget": "T75",
+                        },
+                    },
+                }],
+            })
+            + "\n"
+        )
+        f.write(
+            json.dumps({
+                "step_index": 11,
+                "type": "USER_INPUT",
+                "content": "Approved. Merge it.",
+            })
+            + "\n"
+        )
+
+      ok_t80 = handle_tools_call(
+          303,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T75",
+              "nextTarget": "T80",
+              "workspaceDir": ws_dir,
+              "transcriptPath": transcript_path,
+              "evidence": {"humanLandingApproved": True},
+          },
+      )
+      self.assertFalse(ok_t80["result"].get("isError"))
+      self.assertFalse(os.path.exists(gate_entry_path))
+
+      # 4. Also verify T40 -> T45 followed immediately by T45 -> T50 is blocked
+      enter_t45 = handle_tools_call(
+          304,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T40",
+              "nextTarget": "T45",
+              "workspaceDir": ws_dir,
+              "evidence": {"blockersCount": 0},
+          },
+      )
+      self.assertFalse(enter_t45["result"].get("isError"))
+
+      chain_t50 = handle_tools_call(
+          305,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T45",
+              "nextTarget": "T50",
+              "workspaceDir": ws_dir,
+              "evidence": {"humanReviewApproved": True},
+          },
+      )
+      self.assertTrue(chain_t50["result"].get("isError"))
+      self.assertIn(
+          "SCAR-PROC-102", chain_t50["result"]["content"][0]["text"]
+      )
+
+      # 5. Also verify T15 -> T20 followed immediately by T20 -> T30 is blocked
+      enter_t20 = handle_tools_call(
+          306,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T15",
+              "nextTarget": "T20",
+              "workspaceDir": ws_dir,
+          },
+      )
+      self.assertFalse(enter_t20["result"].get("isError"))
+
+      chain_t30 = handle_tools_call(
+          307,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T20",
+              "nextTarget": "T30",
+              "workspaceDir": ws_dir,
+              "evidence": {"humanPlanApproved": True},
+          },
+      )
+      self.assertTrue(chain_t30["result"].get("isError"))
+      self.assertIn(
+          "SCAR-PROC-102", chain_t30["result"]["content"][0]["text"]
+      )
+
+  def test_mcp_declarative_recovery_transitions_and_gate_entry_cleanup(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import handle_tools_call
+
+    recovery_edges = [
+        ("T20", "T15"),
+        ("T30", "T15"),
+        ("T42", "T20"),
+        ("T42", "T15"),
+        ("T45", "T30"),
+        ("T50", "T30"),
+        ("T60", "T30"),
+        ("T60", "T40"),
+        ("T75", "T30"),
+        ("T75", "T40"),
+        ("T75", "T70"),
+        ("T80", "T30"),
+        ("T80", "T40"),
+        ("T80", "T60"),
+        ("T80", "T70"),
+    ]
+    for curr_t, rec_t in recovery_edges:
+      resp = handle_tools_call(
+          400,
+          "workflow_advance_target",
+          {"currentTarget": curr_t, "nextTarget": rec_t},
+      )
+      self.assertFalse(
+          resp["result"].get("isError"),
+          f"Expected recovery transition {curr_t} -> {rec_t} to succeed, got {resp}",
+      )
+
+    # Verify recovering out of a pause gate clears gate_entry.json
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "70_bot_triage.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# Triage\n")
+
+      handle_tools_call(
+          401,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T70",
+              "nextTarget": "T75",
+              "workspaceDir": ws_dir,
+          },
+      )
+      gate_entry_path = os.path.join(state_dir, "gate_entry.json")
+      self.assertTrue(os.path.isfile(gate_entry_path))
+
+      rec_resp = handle_tools_call(
+          402,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T75",
+              "nextTarget": "T30",
+              "workspaceDir": ws_dir,
+          },
+      )
+      self.assertFalse(rec_resp["result"].get("isError"))
+      self.assertFalse(os.path.exists(gate_entry_path))
+
+
 if __name__ == "__main__":
   run_test()
   TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
   TestGateEvidenceKeysEnumeration().test_gate_evidence_keys_schema_runtime_and_docs()
   TestMcpServerMultiDimensionalQueryScars().test_workflow_query_scars_multidimensional_filters()
+  TestMcpPauseGateTurnBoundary().test_mcp_pause_gate_entry_and_same_turn_chaining_blocked()
+  TestMcpPauseGateTurnBoundary().test_mcp_declarative_recovery_transitions_and_gate_entry_cleanup()
