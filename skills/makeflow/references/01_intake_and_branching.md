@@ -36,7 +36,7 @@ When the user provides a task description, issue number, or issue URL, run these
    - GitHub Feature (`#<number>` or `GH-<number>`): `feat/<number>-<slug>`, for example `feat/101-csv-export`. Ticket ID is `GH-<number>`.
    - General GitHub Issue (`#<number>` or `GH-<number>`): `ticket/<number>-<slug>`, for example `ticket/55-upgrade-deps`. Ticket ID is `GH-<number>`.
    - Jira or Linear Issue (`<PROJECT>-<NUMBER>`): `feat/<project>-<number>-<slug>` or `fix/<project>-<number>-<slug>`.
-   - Ad-hoc Chat Task / Pure Git Session (no external tracker): Determine next local count `N` from the highest `LOCAL-<N>` in `.workflow/history.json`. Use `feat/local-<N+1>-<slug>` or `fix/local-<N+1>-<slug>`. Ticket ID is `LOCAL-<N+1>`. Never use bare integers for local branches.
+   - Ad-hoc Chat Task / Pure Git Session (no external tracker): Allocate the next ID with `python3 scripts/local_tickets.py next-id`. Use `feat/local-<N>-<slug>` or `fix/local-<N>-<slug>`. Ticket ID is `LOCAL-<N>`. Never use bare integers for local branches.
 8. Format `<slug>` with lowercase letters, digits, and single hyphens (`[a-z0-9-]`), up to 40 characters.
 9. Write the consolidated ticket and comment details to `<workspace>/.workflow/state/10_ticket.md`.
 10. Update the terminal title to `{ticket_number} {project_name}: {issue_tag}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
@@ -78,9 +78,10 @@ Use these commands to inspect or clear ticket locks:
 
 ### Intake Blocker Detection and Operator Interview
 
-During Target 10 intake, Makeflow checks for blocking GitHub issues.
+During Target 10 intake, Makeflow checks for blocking GitHub issues and local tickets.
 A blocker is an unresolved upstream issue.
-Makeflow inspects `issueDependenciesSummary` and `blockedBy` nodes through the GitHub GraphQL API.
+For GitHub issues, Makeflow inspects `issueDependenciesSummary` and `blockedBy` nodes through the GitHub GraphQL API.
+For local tickets, Makeflow inspects the `blocked_by` list in `.workflow/tickets/<ID>.json`.
 
 If open blockers exist, intake halts with exit code 2 and emits reflex `INTAKE_DEPENDENCY_BLOCKED`.
 Before you launch the archaeology worker, interview the human operator with two choices:
@@ -98,11 +99,36 @@ Before you launch the archaeology worker, interview the human operator with two 
 
 When the user asks what to work on next, run these steps:
 
-1. Query open issues from the issue tracker, for example `gh issue list`.
-2. Exclude issues that already have an active branch or assignee.
+1. Query open issues from the tracker with `gh issue list` or `python3 scripts/local_tickets.py list`.
+2. Exclude issues that already have an active branch, lock, or assignee.
 3. Sort open items by priority label (`P0`, `P1`, `P2`, `P3`, then unlabeled).
 4. Print the candidate list in chat.
 5. If two or more candidates exist ($N \ge 2$), call `ask_question` so the user can pick one.
+
+### Local Ticket Store (`.workflow/tickets/`)
+
+In Pure Git mode or offline environments, store open tickets in `.workflow/tickets/LOCAL-<N>.json`.
+One JSON file per ticket avoids binary SQLite merge conflicts across work clones.
+
+Use `python3 scripts/local_tickets.py` to manage local tickets:
+
+1. To allocate the next collision-free ID across history, tickets, locks, and branches, run:
+   ```bash
+   python3 scripts/local_tickets.py next-id
+   ```
+2. To create a local ticket with priority and upstream blockers, run:
+   ```bash
+   python3 scripts/local_tickets.py create --title "<title>" --priority P1 --blocked-by LOCAL-1
+   ```
+3. To list open local tickets sorted by priority (`P0` through `P3`), run:
+   ```bash
+   python3 scripts/local_tickets.py list
+   ```
+4. To view or close a local ticket, run:
+   ```bash
+   python3 scripts/local_tickets.py view --ticket LOCAL-1
+   python3 scripts/local_tickets.py close --ticket LOCAL-1
+   ```
 
 ## 3. Live Readerboard (`99_next_action.md`)
 
