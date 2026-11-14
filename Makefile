@@ -256,8 +256,12 @@ test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat
 
 install: validate test
 	@if command -v agy >/dev/null 2>&1; then \
-		echo "Installing with agy plugin install . ..."; \
-		(cd "$(MKFILE_DIR)" && agy plugin install .); \
+		echo "Installing with agy plugin install..."; \
+		STAGE_DIR=$$(mktemp -d); \
+		trap 'rm -rf "$$STAGE_DIR"' EXIT; \
+		mkdir -p "$$STAGE_DIR/$(PLUGIN_NAME)"; \
+		tar -C "$(MKFILE_DIR)" --exclude='./.git' --exclude='./.tmp' --exclude='./.venv' --exclude='./.workflow/state' --exclude='./.workflow/archive' --exclude='./.workflow/config.json' --exclude='./.workflow/plan.md' --exclude='./.workflow/commit_msg.txt' -cf - . | tar -xf - -C "$$STAGE_DIR/$(PLUGIN_NAME)"; \
+		agy plugin install "$$STAGE_DIR/$(PLUGIN_NAME)"; \
 	else \
 		echo "Copying plugin to $(INSTALL_DIR)..."; \
 		rm -rf "$(INSTALL_DIR)"; \

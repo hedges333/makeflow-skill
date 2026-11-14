@@ -26,7 +26,9 @@ copy_plugin_tree() {
   tar -C "${src_dir}" \
     --exclude='./.git' \
     --exclude='./.tmp' \
+    --exclude='./.venv' \
     --exclude='./.workflow/state' \
+    --exclude='./.workflow/archive' \
     --exclude='./.workflow/config.json' \
     --exclude='./.workflow/plan.md' \
     --exclude='./.workflow/commit_msg.txt' \
@@ -45,8 +47,11 @@ if command -v agy >/dev/null 2>&1; then
       echo "Dry run passed. Skipping install."
       exit 0
     fi
-    echo "Installing plugin with 'agy plugin install .'..."
-    agy plugin install .
+    echo "Installing plugin with agy plugin install..."
+    STAGE_DIR=$(mktemp -d)
+    trap 'rm -rf "${STAGE_DIR}"' EXIT
+    copy_plugin_tree "." "${STAGE_DIR}/${PLUGIN_NAME}"
+    agy plugin install "${STAGE_DIR}/${PLUGIN_NAME}"
   else
     if [ "$DRY_RUN" = true ]; then
       echo "Dry run: will run agy plugin install ${REPO_URL}"

@@ -4,6 +4,7 @@
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1214,6 +1215,273 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
       # Consumer root Makefile must remain byte-for-byte untouched
       with open(consumer_mk, "rb") as f:
         self.assertEqual(f.read(), consumer_makefile_bytes)
+
+  def _setup_gh_182_install_fixture(self, base_dir: str, with_agy: bool):
+    """Creates a hermetic source repo, HOME, TMPDIR, and isolated PATH fixture."""
+    home_dir = os.path.join(base_dir, "home")
+    tmp_dir = os.path.join(base_dir, "tmp")
+    bin_dir = os.path.join(base_dir, "bin")
+    ext_dir = os.path.join(base_dir, "external_runtime")
+    src_dir = os.path.join(base_dir, "src_repo")
+    install_dir = os.path.join(
+        home_dir, ".gemini", "config", "plugins", "makeflow"
+    )
+    for d in (home_dir, tmp_dir, bin_dir, ext_dir, src_dir):
+      os.makedirs(d, exist_ok=True)
+
+    ext_python = os.path.join(ext_dir, "python3.13")
+    with open(ext_python, "w", encoding="utf-8") as f:
+      f.write("#!/bin/sh\nexit 0\n")
+    os.chmod(ext_python, 0o755)
+
+    files_to_create = {
+        "plugin.json": '{"name": "makeflow"}\n',
+        "skills/makeflow/SKILL.md": "# Makeflow Skill\n",
+        ".workflow/config.json.example": "{}\n",
+        ".git/HEAD": "ref: refs/heads/main\n",
+        ".tmp/scratch.txt": "scratch\n",
+        ".workflow/state/10_ticket.md": "# active ticket\n",
+        ".workflow/archive/GH-1/10_ticket.md": "# archived ticket\n",
+        ".workflow/config.json": '{"local": true}\n',
+        ".workflow/plan.md": "# local plan\n",
+        ".workflow/commit_msg.txt": "feat: local commit\n",
+    }
+    for rel_path, content in files_to_create.items():
+      full_path = os.path.join(src_dir, rel_path)
+      os.makedirs(os.path.dirname(full_path), exist_ok=True)
+      with open(full_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    venv_bin = os.path.join(src_dir, ".venv", "bin")
+    os.makedirs(venv_bin, exist_ok=True)
+    os.symlink(ext_python, os.path.join(venv_bin, "python"))
+
+    for tool in (
+        "sh",
+        "bash",
+        "tar",
+        "mkdir",
+        "rm",
+        "mktemp",
+        "true",
+        "make",
+        "cat",
+        "cp",
+        "dirname",
+        "basename",
+        "env",
+    ):
+      resolved = shutil.which(tool)
+      if resolved:
+        os.symlink(resolved, os.path.join(bin_dir, tool))
+
+    agy_log = os.path.join(base_dir, "agy_install_target.txt")
+    if with_agy:
+      agy_path = os.path.join(bin_dir, "agy")
+      mock_agy_code = f"""#!{sys.executable}
+import os
+import shutil
+import sys
+
+EXCLUDED = (
+    ".git",
+    ".tmp",
+    ".venv",
+    ".workflow/state",
+    ".workflow/archive",
+    ".workflow/config.json",
+    ".workflow/plan.md",
+    ".workflow/commit_msg.txt",
+)
+
+args = sys.argv[1:]
+if args[:2] == ["plugin", "validate"]:
+  sys.exit(0)
+if args[:2] == ["plugin", "install"]:
+  target = os.path.abspath(args[2])
+  target_real = os.path.realpath(target)
+  log_file = os.environ.get("AGY_INSTALL_TARGET_LOG", "")
+  if log_file:
+    with open(log_file, "w", encoding="utf-8") as lf:
+      lf.write(target)
+  for root, dirs, files in os.walk(target):
+    for entry in list(dirs) + list(files):
+      full = os.path.join(root, entry)
+      if os.path.islink(full):
+        resolved = os.path.realpath(full)
+        if os.path.commonpath([target_real, resolved]) != target_real:
+          sys.stderr.write(
+              f"Error: failed to copy plugin: symlink {{full}} points outside {{target}}, to {{resolved}}\\n"
+          )
+          sys.exit(1)
+  for rel in EXCLUDED:
+    candidate = os.path.join(target, rel)
+    if os.path.lexists(candidate):
+      sys.stderr.write(f"Error: excluded path present in staged tree: {{rel}}\\n")
+      sys.exit(1)
+  dest = os.path.join(
+      os.environ["HOME"], ".gemini", "config", "plugins", "makeflow"
+  )
+  if os.path.lexists(dest):
+    shutil.rmtree(dest)
+  os.makedirs(os.path.dirname(dest), exist_ok=True)
+  shutil.copytree(target, dest, symlinks=True)
+  sys.exit(0)
+sys.exit(1)
+"""
+      with open(agy_path, "w", encoding="utf-8") as f:
+        f.write(mock_agy_code)
+      os.chmod(agy_path, 0o755)
+
+    env = {
+        "HOME": home_dir,
+        "PATH": bin_dir,
+        "TMPDIR": tmp_dir,
+        "AGY_INSTALL_TARGET_LOG": agy_log,
+    }
+    return {
+        "home_dir": home_dir,
+        "tmp_dir": tmp_dir,
+        "bin_dir": bin_dir,
+        "src_dir": src_dir,
+        "install_dir": install_dir,
+        "agy_log": agy_log,
+        "env": env,
+    }
+
+  def _assert_gh_182_clean_install(
+      self, fixture: dict, expect_agy_staged: bool
+  ) -> None:
+    install_dir = fixture["install_dir"]
+    for included in (
+        "plugin.json",
+        "skills/makeflow/SKILL.md",
+        ".workflow/config.json.example",
+    ):
+      self.assertTrue(
+          os.path.isfile(os.path.join(install_dir, included)),
+          f"Expected installed file missing: {included}",
+      )
+    for excluded in (
+        ".git",
+        ".git/HEAD",
+        ".tmp",
+        ".tmp/scratch.txt",
+        ".venv",
+        ".venv/bin/python",
+        ".workflow/state",
+        ".workflow/state/10_ticket.md",
+        ".workflow/archive",
+        ".workflow/archive/GH-1/10_ticket.md",
+        ".workflow/config.json",
+        ".workflow/plan.md",
+        ".workflow/commit_msg.txt",
+    ):
+      self.assertFalse(
+          os.path.lexists(os.path.join(install_dir, excluded)),
+          f"Excluded path leaked into install_dir: {excluded}",
+      )
+    self.assertEqual(
+        os.listdir(fixture["tmp_dir"]),
+        [],
+        "Temporary staging directory was not cleaned up on exit",
+    )
+    if expect_agy_staged:
+      self.assertTrue(os.path.isfile(fixture["agy_log"]))
+      with open(fixture["agy_log"], "r", encoding="utf-8") as f:
+        staged_target = f.read().strip()
+      self.assertNotEqual(
+          os.path.realpath(staged_target),
+          os.path.realpath(fixture["src_dir"]),
+      )
+      self.assertEqual(os.path.basename(staged_target), "makeflow")
+      self.assertFalse(os.path.exists(staged_target))
+
+  def test_gh_182_makefile_install_with_agy_stages_clean_tree_excluding_venv_symlinks(
+      self,
+  ):
+    repo_makefile = os.path.join(_REPO_ROOT, "Makefile")
+    with tempfile.TemporaryDirectory() as base_dir:
+      fx = self._setup_gh_182_install_fixture(base_dir, with_agy=True)
+      proc = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              repo_makefile,
+              "install",
+              f"MKFILE_DIR={fx['src_dir']}",
+              f"INSTALL_DIR={fx['install_dir']}",
+              "PYTHON=true",
+          ],
+          cwd=fx["src_dir"],
+          env=fx["env"],
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(proc.returncode, 0, proc.stderr)
+      self._assert_gh_182_clean_install(fx, expect_agy_staged=True)
+
+  def test_gh_182_makefile_install_fallback_without_agy_excludes_venv_and_local_state(
+      self,
+  ):
+    repo_makefile = os.path.join(_REPO_ROOT, "Makefile")
+    with tempfile.TemporaryDirectory() as base_dir:
+      fx = self._setup_gh_182_install_fixture(base_dir, with_agy=False)
+      proc = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              repo_makefile,
+              "install",
+              f"MKFILE_DIR={fx['src_dir']}",
+              f"INSTALL_DIR={fx['install_dir']}",
+              "PYTHON=true",
+          ],
+          cwd=fx["src_dir"],
+          env=fx["env"],
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(proc.returncode, 0, proc.stderr)
+      self._assert_gh_182_clean_install(fx, expect_agy_staged=False)
+
+  def test_gh_182_install_sh_with_agy_stages_clean_tree_excluding_venv_symlinks(
+      self,
+  ):
+    install_sh = os.path.join(_REPO_ROOT, "install.sh")
+    with tempfile.TemporaryDirectory() as base_dir:
+      fx = self._setup_gh_182_install_fixture(base_dir, with_agy=True)
+      proc = subprocess.run(
+          ["bash", install_sh],
+          cwd=fx["src_dir"],
+          env=fx["env"],
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(proc.returncode, 0, proc.stderr)
+      self._assert_gh_182_clean_install(fx, expect_agy_staged=True)
+
+  def test_gh_182_install_sh_fallback_without_agy_excludes_venv_and_archive(
+      self,
+  ):
+    install_sh = os.path.join(_REPO_ROOT, "install.sh")
+    with tempfile.TemporaryDirectory() as base_dir:
+      fx = self._setup_gh_182_install_fixture(base_dir, with_agy=False)
+      proc = subprocess.run(
+          ["bash", install_sh],
+          cwd=fx["src_dir"],
+          env=fx["env"],
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(proc.returncode, 0, proc.stderr)
+      self._assert_gh_182_clean_install(fx, expect_agy_staged=False)
 
 
 class TestSkillContextReduction(unittest.TestCase):
