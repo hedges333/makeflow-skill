@@ -1991,5 +1991,26 @@
     "closes_issue": true,
     "tests_added": 2,
     "scars_earned": []
+  },
+  {
+    "id": "GH-186",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/186",
+    "title": "[BUG] Enforce transcript turn-boundary guard in pre_tool_guard.py and intercept call_mcp_tool in hooks.json (SCAR-PROC-102)",
+    "request": "Intercept call_mcp_tool in hooks.json, define declarative per-target configuration in default_config.json and lib/turn_boundary.py, enforce transcript turn-boundary and gate_entry.json checks in pre_tool_guard.py and mcp/server.py across all six pause gates and pause-gated commands while preserving post-Target-75 autonomous completion and recovery transitions, and add 13 hermetic unit tests.",
+    "branch": "fix/186-transcript-turn-boundary-guard",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "mcp",
+      "tests"
+    ],
+    "started_at": "2026-11-14T06:35:00Z",
+    "completed_at": "2026-11-14T08:23:00Z",
+    "commit_sha": "e3425acb1278fee77f196791dbfaf462009e3c91",
+    "pr_number": 189,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/189",
+    "closes_issue": true,
+    "tests_added": 13,
+    "scars_earned": []
   }
 ]
