@@ -1887,5 +1887,24 @@
     "closes_issue": true,
     "tests_added": 1,
     "scars_earned": []
+  },
+  {
+    "id": "GH-174",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/174",
+    "title": "[DOCS] Add idiomatic directory and module structure sections across all 21 polyglot language guides",
+    "request": "Add Idiomatic Directory and Module Structure sections covering Library and Domain Layer, Executable Entrypoints and Controllers, Test Suite Placement and Naming, and Structural Anti-Patterns to Flag at Target 15 across all 21 polyglot guides, with contract and 6 negative falsification tests in tests/test_cross_agent_compatibility.py.",
+    "branch": "feat/174-polyglot-directory-module-structure",
+    "subprojects": [
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T01:10:00Z",
+    "completed_at": "2026-11-14T02:39:38Z",
+    "commit_sha": "8ba819ed5e14813c4431b5b4ca0979016393f035",
+    "pr_number": 181,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/181",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
