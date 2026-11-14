@@ -33,6 +33,8 @@ Antigravity renders an interactive review panel for artifacts. Follow these rule
 4. If a gate has one approval action ($N = 1$), do not call `ask_question`. Print the full proposal in chat with `file://` links and stop tool calls. This rule covers Blocker Triage (Target 42), Review Approval (Target 45), Commit Approval (Target 50), Push Approval (Target 60), and Landing Approval (Target 75).
 5. Before you ask for a decision, print the full facts in the chat message.
 6. Add a `file://` markdown link for every file, diff, plan, or review card that you name.
+7. When you call `ask_question`, include the full markdown explanation and `file://` links in `content` on that same `PLANNER_RESPONSE` step.
+8. Alternatively, print the full details in chat first. Wait for the user to reply after reading them.
 
 ### 1.3 Ticket Disambiguation and Commit Protocol
 

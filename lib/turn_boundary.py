@@ -6,9 +6,12 @@ same autonomous turn that entered the pause gate without an intervening human
 USER_INPUT turn.
 """
 
+import io
 import json
 import os
 import time
+
+from lib.reflex import emit_reflex
 
 GATE_ENTRY_FILENAME = "gate_entry.json"
 
@@ -581,6 +584,55 @@ def evaluate_command_turn_boundary(cmd_gate, transcript_path, state_dir=None):
     )
 
   return True, ""
+
+
+def evaluate_ask_question_turn_boundary(transcript_path):
+  """Verifies that non-empty assistant content exists in the current turn before ask_question."""
+  if not transcript_path or not isinstance(transcript_path, str):
+    return True, ""
+  if not os.path.isfile(transcript_path):
+    return True, ""
+
+  steps = load_transcript_steps(transcript_path)
+  if not steps:
+    return True, ""
+
+  last_user_idx = -1
+  for idx, st in enumerate(steps):
+    if not isinstance(st, dict):
+      continue
+    if st.get("type") == "USER_INPUT" or st.get("source") == "USER_EXPLICIT":
+      last_user_idx = idx
+
+  turn_steps = steps[last_user_idx + 1 :] if last_user_idx != -1 else steps
+  for st in turn_steps:
+    if not isinstance(st, dict):
+      continue
+    if st.get("type") == "PLANNER_RESPONSE" or st.get("source") == "MODEL":
+      raw_content = _unwrap_json_val(st.get("content"))
+      if isinstance(raw_content, str) and raw_content.strip():
+        return True, ""
+
+  buf = io.StringIO()
+  emit_reflex(
+      stream=buf,
+      scar_id="SCAR-HCI-08",
+      violation_code="ASK_QUESTION_WITHOUT_CHAT_CONTEXT",
+      trigger=(
+          "ask_question was invoked in PreToolUse with no assistant markdown"
+          " content emitted since the latest USER_INPUT step."
+      ),
+      rejected=(
+          "Opening a blocking ask_question selector before presenting the"
+          " full context and file:// links in chat."
+      ),
+      reflex=(
+          "Include the full markdown explanation and clickable file:// links"
+          " in the content field of the same PLANNER_RESPONSE step that"
+          " calls ask_question, or print the details in chat first."
+      ),
+  )
+  return False, buf.getvalue().strip()
 
 
 def verify_mcp_gate_exit(
