@@ -91,7 +91,7 @@ Before you launch the archaeology worker, interview the human operator with two 
 
 2. **Option 2: Proceed with Archaeology Investigation**
    If you select Option 2, run intake with `ALLOW_BLOCKED=1` in the Makefile.
-   Alternatively, pass `--allow-blocked` to `workflow_gates.py intake`.
+   Alternatively, pass `--allow-blocked` to `scripts/workflow_gates.py intake`.
    Launch the archaeology worker to evaluate dependency coupling against the blocker.
 
 ### Mode B: Open Backlog Discovery

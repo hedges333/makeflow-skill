@@ -284,7 +284,7 @@ Each AI platform enforces the workflow with its native extension hooks and rule 
 
 | Platform | Enforcement Mechanism | Setup Instructions |
 | :--- | :--- | :--- |
-| Google Antigravity | Lifecycle hooks (`hooks.json`), MCP server, and `rules/AGENTS.md` | Run `agy plugin install https://github.com/hedges333/makeflow-skill`. |
+| Google Antigravity | Lifecycle hooks ([`./hooks.json`](./hooks.json)), MCP server, and `rules/AGENTS.md` | Run `agy plugin install https://github.com/hedges333/makeflow-skill`. |
 | Claude Code | Root [`CLAUDE.md`](./CLAUDE.md) instructions and MCP server | Register MCP with `claude mcp add makeflow -- python3 /path/to/mcp/server.py`. |
 | Cursor | [`.cursorrules`](./.cursorrules), [`.cursor/rules/makeflow.mdc`](./.cursor/rules/makeflow.mdc), and MCP | Enable the MCP server in Cursor Settings under Features and MCP. |
 | GitHub Copilot | [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) | Automatic in VS Code and GitHub Copilot Chat when present in the repository. |

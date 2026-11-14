@@ -10,6 +10,7 @@ Verifies the configuration files, manifests, and rules for:
 6. Hooks & MCP Declarations (hooks.json, mcp_config.json)
 """
 
+import glob
 import json
 import os
 import re
@@ -6065,6 +6066,306 @@ def validate_open_technical_english_specs():
   return errors
 
 
+TRACKED_CANONICAL_FILENAMES = (
+    "hooks.json",
+    "plugin.json",
+    "mcp_config.json",
+    "default_config.json",
+    "pre_tool_guard.py",
+    "workflow_gates.py",
+    "tdd_guard.py",
+    "emit_reflex.py",
+    "ast_scrub.py",
+    "workspace_mutex.py",
+    "terminal_title.py",
+    "session_start.py",
+    "sync_synthetic_scars.py",
+    "enrich_scars_index.py",
+    "validate_scar_candidate.py",
+    "shell_safety.py",
+    "commit_msg.py",
+    "base_script.py",
+    "scars_db.py",
+    "config.py",
+    "env_preflight.py",
+    "reflex.py",
+    "safe_copy.py",
+    "scar_candidate.py",
+    "signal_trap.py",
+    "static_check.py",
+    "server.py",
+)
+
+_BARE_TRACKED_FILENAME_RE = re.compile(
+    r"(?<![A-Za-z0-9_./-])("
+    + "|".join(re.escape(name) for name in TRACKED_CANONICAL_FILENAMES)
+    + r")\b"
+)
+
+_CANONICAL_PATH_MAP_REQUIRED_TOKENS = (
+    "./hooks.json",
+    "./plugin.json",
+    "./mcp_config.json",
+    "./default_config.json",
+    "mcp/server.py",
+    "scripts/pre_tool_guard.py",
+    "scripts/workflow_gates.py",
+    "lib/shell_safety.py",
+    "lib/config.py",
+    "lib/workflow_gates.py",
+    "rules/AGENTS.md",
+    "skills/makeflow/SKILL.md",
+    "hooks/",
+    "lib/pre_tool_guard.py",
+)
+
+
+def check_canonical_repo_paths_and_qualified_refs(
+    repo_files: dict[str, str],
+) -> list[str]:
+  """Validates canonical repo path map in rules/AGENTS.md and rejects bare filenames (GH-187)."""
+  errs: list[str] = []
+
+  agents_rel = "rules/AGENTS.md"
+  if agents_rel not in repo_files:
+    errs.append(f"Missing {agents_rel}")
+  else:
+    agents_text = repo_files[agents_rel]
+    heading = "### 1.12 Canonical Plugin and Repository Path Map"
+    if heading not in agents_text:
+      errs.append(f"{agents_rel} missing '{heading}' section")
+    else:
+      sec_1_12 = re.split(
+          r"\n#{2,3}\s+",
+          agents_text.split(heading, 1)[1],
+          maxsplit=1,
+      )[0]
+      for tok in _CANONICAL_PATH_MAP_REQUIRED_TOKENS:
+        if tok not in sec_1_12:
+          errs.append(
+              f"{agents_rel} Section 1.12 missing canonical path '{tok}'"
+          )
+      for absent_path in ("hooks/", "lib/pre_tool_guard.py"):
+        matching_lines = [
+            line for line in sec_1_12.splitlines() if absent_path in line
+        ]
+        if not any(
+            re.search(
+                r"(?i)\b(?:no|none|not exist|does not exist|do not exist)\b",
+                line,
+            )
+            for line in matching_lines
+        ):
+          errs.append(
+              f"{agents_rel} Section 1.12 must explicitly note that '{absent_path}' does not exist"
+          )
+
+  for rel_path, content in sorted(repo_files.items()):
+    for line_no, line in enumerate(content.splitlines(), start=1):
+      for match in _BARE_TRACKED_FILENAME_RE.finditer(line):
+        errs.append(
+            f"{rel_path}:{line_no}: bare/unqualified filename '{match.group(1)}' "
+            "must use canonical repository path"
+        )
+
+  readme_rel = "README.md"
+  if readme_rel in repo_files:
+    readme_text = repo_files[readme_rel]
+    if "(`hooks.json`)" in readme_text or "[`./hooks.json`](./hooks.json)" not in readme_text:
+      errs.append(
+          f"{readme_rel} must use qualified '[`./hooks.json`](./hooks.json)' instead of bare '(`hooks.json`)'"
+      )
+
+  return errs
+
+
+def validate_canonical_repo_paths_and_qualified_refs() -> list[str]:
+  """Validates canonical repo path map and qualified filename references across docs (GH-187)."""
+  errors: list[str] = []
+
+  static_doc_paths = [
+      "skills/makeflow/SKILL.md",
+      "rules/AGENTS.md",
+      "CLAUDE.md",
+      ".cursorrules",
+      ".cursor/rules/makeflow.mdc",
+      ".github/copilot-instructions.md",
+      "adapters/chatgpt/instructions.md",
+      "README.md",
+  ]
+  dynamic_globs = [
+      "skills/makeflow/references/*.md",
+      "skills/makeflow/references/scars/*.md",
+  ]
+
+  repo_files: dict[str, str] = {}
+  for rel in static_doc_paths:
+    fpath = repo_path(rel)
+    if not os.path.isfile(fpath):
+      errors.append(f"Missing {rel}")
+    else:
+      with open(fpath, "r", encoding="utf-8") as f:
+        repo_files[rel] = f.read()
+
+  for pattern in dynamic_globs:
+    matches = sorted(glob.glob(repo_path(pattern)))
+    if not matches:
+      errors.append(f"No markdown files matched '{pattern}'")
+    for abs_path in matches:
+      rel = os.path.relpath(abs_path, REPO_ROOT).replace(os.sep, "/")
+      with open(abs_path, "r", encoding="utf-8") as f:
+        repo_files[rel] = f.read()
+
+  errors.extend(check_canonical_repo_paths_and_qualified_refs(repo_files))
+
+  # Hermetic in-memory negative falsification checks (SCAR-TEST-11)
+  sample_files = {
+      "rules/AGENTS.md": (
+          "### 1.12 Canonical Plugin and Repository Path Map\n\n"
+          "1. Root manifests: `./hooks.json`, `./plugin.json`, `./mcp_config.json`, and `./default_config.json`.\n"
+          "2. MCP server: `./mcp/server.py`.\n"
+          "3. CLI wrappers: `scripts/pre_tool_guard.py` and `scripts/workflow_gates.py`.\n"
+          "4. Shared libraries: `lib/workflow_gates.py`, `lib/shell_safety.py`, and `lib/config.py`.\n"
+          "5. Rules and docs: `./rules/AGENTS.md` and `./skills/makeflow/SKILL.md`.\n"
+          "6. Non-existent paths: No `hooks/` directory or `lib/pre_tool_guard.py` file exists.\n"
+      ),
+      "skills/makeflow/SKILL.md": (
+          "Run `<plugin_root>/scripts/workflow_gates.py intake` and `.claude-plugin/plugin.json`.\n"
+      ),
+      "skills/makeflow/references/01_intake_and_branching.md": (
+          "Pass `--allow-blocked` to `scripts/workflow_gates.py intake`.\n"
+          "Unit tests live in `tests/test_workflow_gates.py` and `mcp/server.py`.\n"
+      ),
+      "skills/makeflow/references/03_tdd_and_code_quality.md": (
+          "The `scripts/pre_tool_guard.py` hook guards governance files.\n"
+      ),
+      "README.md": (
+          "| Google Antigravity | Lifecycle hooks ([`./hooks.json`](./hooks.json)) | Install |\n"
+      ),
+  }
+
+  baseline_errs = check_canonical_repo_paths_and_qualified_refs(sample_files)
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for GH-187: {baseline_errs}"
+    )
+
+  # 1) Missing Section 1.12 path map in rules/AGENTS.md
+  bad_missing_map = dict(sample_files)
+  bad_missing_map["rules/AGENTS.md"] = "# Rules without path map\n"
+  if not any(
+      "Canonical Plugin and Repository Path Map" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(bad_missing_map)
+  ):
+    errors.append(
+        "Negative falsification failed: missing path map in rules/AGENTS.md was not rejected"
+    )
+
+  # 2) Missing non-existent hooks/ or lib/pre_tool_guard.py note in rules/AGENTS.md
+  bad_no_absent_note = dict(sample_files)
+  bad_no_absent_note["rules/AGENTS.md"] = sample_files["rules/AGENTS.md"].replace(
+      "No `hooks/` directory or `lib/pre_tool_guard.py` file exists.",
+      "See `scripts/pre_tool_guard.py`.",
+  )
+  if not any(
+      "hooks/" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(bad_no_absent_note)
+  ):
+    errors.append(
+        "Negative falsification failed: omitted hooks/ non-existence note in rules/AGENTS.md was not rejected"
+    )
+
+  # 2b) Missing non-existence phrasing on lib/pre_tool_guard.py independently
+  bad_no_lib_guard_absent = dict(sample_files)
+  bad_no_lib_guard_absent["rules/AGENTS.md"] = sample_files[
+      "rules/AGENTS.md"
+  ].replace(
+      "No `hooks/` directory or `lib/pre_tool_guard.py` file exists.",
+      "No `hooks/` directory exists.\n7. See `lib/pre_tool_guard.py`.",
+  )
+  if not any(
+      "lib/pre_tool_guard.py" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(
+          bad_no_lib_guard_absent
+      )
+  ):
+    errors.append(
+        "Negative falsification failed: omitted lib/pre_tool_guard.py non-existence note in rules/AGENTS.md was not rejected"
+    )
+
+  # 2c) Omitting individual required tokens from Section 1.12 when heading exists
+  for omitted_tok in ("./default_config.json", "lib/config.py"):
+    bad_omitted_tok = dict(sample_files)
+    bad_omitted_tok["rules/AGENTS.md"] = sample_files["rules/AGENTS.md"].replace(
+        omitted_tok,
+        "./other_placeholder.txt",
+    )
+    if not any(
+        omitted_tok in e
+        for e in check_canonical_repo_paths_and_qualified_refs(bad_omitted_tok)
+    ):
+      errors.append(
+          f"Negative falsification failed: omitted Section 1.12 token '{omitted_tok}' was not rejected"
+      )
+
+  # 3) Injecting bare pre_tool_guard.py into a reference doc
+  bad_bare_guard = dict(sample_files)
+  bad_bare_guard["skills/makeflow/references/03_tdd_and_code_quality.md"] = (
+      "The `pre_tool_guard.py` hook guards governance files.\n"
+  )
+  if not any(
+      "03_tdd_and_code_quality.md" in e and "pre_tool_guard.py" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(bad_bare_guard)
+  ):
+    errors.append(
+        "Negative falsification failed: bare pre_tool_guard.py in reference doc was not rejected"
+    )
+
+  # 4) Injecting bare workflow_gates.py into a reference doc
+  bad_bare_gates = dict(sample_files)
+  bad_bare_gates["skills/makeflow/references/01_intake_and_branching.md"] = (
+      "Pass `--allow-blocked` to `workflow_gates.py intake`.\n"
+  )
+  if not any(
+      "01_intake_and_branching.md" in e and "workflow_gates.py" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(bad_bare_gates)
+  ):
+    errors.append(
+        "Negative falsification failed: bare workflow_gates.py in reference doc was not rejected"
+    )
+
+  # 4b) Injecting bare default_config.json into a reference manual
+  bad_bare_default_cfg = dict(sample_files)
+  bad_bare_default_cfg[
+      "skills/makeflow/references/13_configuration_and_user_preferences.md"
+  ] = "4. Canonical defaults in `default_config.json`.\n"
+  if not any(
+      "13_configuration_and_user_preferences.md" in e
+      and "default_config.json" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(
+          bad_bare_default_cfg
+      )
+  ):
+    errors.append(
+        "Negative falsification failed: bare default_config.json in reference manual was not rejected"
+    )
+
+  # 5) Bare hooks.json in README.md
+  bad_readme = dict(sample_files)
+  bad_readme["README.md"] = (
+      "| Google Antigravity | Lifecycle hooks (`hooks.json`) | Install |\n"
+  )
+  if not any(
+      "README.md" in e and "hooks.json" in e
+      for e in check_canonical_repo_paths_and_qualified_refs(bad_readme)
+  ):
+    errors.append(
+        "Negative falsification failed: bare hooks.json in README.md was not rejected"
+    )
+
+  return errors
+
+
 def validate():
   errors = []
 
@@ -7185,6 +7486,15 @@ def validate():
   if not scar_arch_08_errors:
     print(
         "✔ Polyglot layer separation and structural debt triage (GH-175, SCAR-ARCH-08)"
+        " verified."
+    )
+
+  # Canonical Repository Path Map and Qualified Filename Refs (GH-187)
+  canonical_path_errors = validate_canonical_repo_paths_and_qualified_refs()
+  errors.extend(canonical_path_errors)
+  if not canonical_path_errors:
+    print(
+        "✔ Canonical repository path map and qualified filename references (GH-187)"
         " verified."
     )
 

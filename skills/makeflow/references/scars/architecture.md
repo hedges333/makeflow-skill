@@ -24,7 +24,7 @@ This reference manual documents universal architecture and software design patte
 
 - **Wound**: Loading static negative rules into `SKILL.md` inflates every turn by thousands of tokens and dilutes model attention across active instructions.
 - **Trap**: Writing prose prohibitions in skill prompts for conditions that deterministic `Make` targets or Python gate scripts can detect at runtime.
-- **Permanent Reflex**: Synthesize `.workflow/state/Makefile` via `workflow_gates.py` and invoke `make -f .workflow/state/Makefile` gates paired with `emit_reflex.py` (`SCAR-ARCH-05`). Emit `[SCAR-ID: <CATEGORY>-<NUMBER>] <VIOLATION_CODE>` with `TRIGGER`, `REJECTED`, and `REFLEX` on `stderr` and exit with code `2`.
+- **Permanent Reflex**: Synthesize `.workflow/state/Makefile` via `scripts/workflow_gates.py` and invoke `make -f .workflow/state/Makefile` gates paired with `scripts/emit_reflex.py` (`SCAR-ARCH-05`). Emit `[SCAR-ID: <CATEGORY>-<NUMBER>] <VIOLATION_CODE>` with `TRIGGER`, `REJECTED`, and `REFLEX` on `stderr` and exit with code `2`.
 - **Socratic Probe**: Can a deterministic `Make` or Python gate trap this failure at runtime with exit code `2` instead of static `SKILL.md` prose?
 
 ### SCAR-ARCH-07: Anti-Speculative Defenses and Caller Grounding
