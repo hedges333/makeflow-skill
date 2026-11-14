@@ -1826,5 +1826,25 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-170",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/170",
+    "title": "[FEAT] Implement --help and subcommand usage output across Makeflow CLI helper scripts",
+    "request": "Enable -h/--help and subcommand usage output across all 12 Makeflow CLI helper scripts via HelpExit(exit_code=0) and _print_message buffering in BaseScript, migrate static_check.py, env_preflight.py, and signal_trap.py to BaseScript, and add 11 hermetic unit tests.",
+    "branch": "feat/170-cli-scripts-help-output",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-14T00:06:10Z",
+    "completed_at": "2026-11-14T00:53:27Z",
+    "commit_sha": "5bfa7f5",
+    "pr_number": 178,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/178",
+    "closes_issue": true,
+    "tests_added": 11,
+    "scars_earned": []
   }
 ]
