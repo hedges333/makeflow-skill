@@ -1926,5 +1926,28 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-175",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/175",
+    "title": "[FEAT] Codify SCAR-ARCH-08 and shift code structure review left across archaeology, planning, TDD, and critic",
+    "request": "Codify SCAR-ARCH-08 in architecture.md and 09_synthetic_scars_catalog.md, require Target 15 module layout audits and Target 20 layer role disclosures and messy-layout triage choices, align Target 30 tdd-worker, Target 40 adversarial-critic Pillar 3, and all 5 adapters, and add 8 negative falsification contract checks in tests/test_cross_agent_compatibility.py.",
+    "branch": "feat/175-codify-scar-arch-08-structure",
+    "subprojects": [
+      "skills/makeflow",
+      "agents",
+      "rules",
+      "tests"
+    ],
+    "started_at": "2026-11-14T03:35:46Z",
+    "completed_at": "2026-11-14T05:57:23Z",
+    "commit_sha": "e4baed15af99790769717075f7572578c329fcbe",
+    "pr_number": 184,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/184",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": [
+      "SCAR-ARCH-08: Polyglot Layer Separation and Structural Debt Triage"
+    ]
   }
 ]
