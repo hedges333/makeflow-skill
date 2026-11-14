@@ -6,11 +6,14 @@ and exit 2 when violated.
 """
 
 import argparse
+import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
-from typing import List, Optional
+import tempfile
+from typing import Any, Dict, List, Optional, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.commit_msg import validate_commit_message
@@ -37,6 +40,273 @@ _GH_CLOSE_RE = re.compile(
     r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\d+\b"
 )
 _BARE_ISSUE_RE = re.compile(r"(?:^|[\s(\[])#\d+\b")
+_MERGE_TREE_STAGE_RE = re.compile(
+    r"^  (base|our|their)\s+(\d+)\s+([0-9a-f]+)\s+(.+)$"
+)
+_MERGE_TREE_HEADER_RE = re.compile(
+    r"^(?:changed in both|added in both|removed in local|removed in remote|"
+    r"merged|added in local|added in remote|removed in both)$"
+)
+
+
+def _no_remote_sync_result() -> Dict[str, Any]:
+  return {
+      "status": "NO_REMOTE",
+      "upstream_ref": None,
+      "ahead_count": 0,
+      "behind_count": 0,
+      "has_conflicts": False,
+      "conflicting_files": [],
+      "working_tree_dirty": False,
+  }
+
+
+def _run_repo_git(
+    repo_root: str,
+    *git_args: str,
+    timeout: int = 10,
+    env: Optional[Dict[str, str]] = None,
+) -> subprocess.CompletedProcess:
+  try:
+    return subprocess.run(
+        ["git", *git_args],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=timeout,
+    )
+  except (subprocess.SubprocessError, OSError) as exc:
+    return subprocess.CompletedProcess(
+        args=["git", *git_args],
+        returncode=128,
+        stdout="",
+        stderr=str(exc),
+    )
+
+
+def _resolve_upstream_main_branch(repo_root: str) -> Optional[str]:
+  """Resolves the default upstream branch name ('main' or 'master') on origin."""
+  sym_proc = _run_repo_git(
+      repo_root, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"
+  )
+  if sym_proc.returncode == 0:
+    sym_ref = (sym_proc.stdout or "").strip()
+    if sym_ref.startswith("origin/"):
+      branch = sym_ref.split("/", 1)[1].strip()
+      if branch:
+        return branch
+
+  for candidate in ("main", "master"):
+    ver_proc = _run_repo_git(
+        repo_root, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{candidate}"
+    )
+    if ver_proc.returncode == 0:
+      return candidate
+  return None
+
+
+def _parse_merge_tree_conflicts(merge_tree_stdout: str) -> List[str]:
+  """Extracts sorted conflicting file paths from 3-way git merge-tree output."""
+  conflicts: List[str] = []
+  current_header = ""
+  current_paths: List[str] = []
+  current_stages: Dict[str, Tuple[str, str]] = {}
+  current_has_conflict_marker = False
+
+  def _flush_block() -> None:
+    if not current_header or not current_paths:
+      return
+    base_entry = current_stages.get("base")
+    our_entry = current_stages.get("our")
+    their_entry = current_stages.get("their")
+    is_delete_conflict = False
+    if current_header == "removed in remote":
+      is_delete_conflict = (
+          base_entry is None or our_entry is None or our_entry != base_entry
+      )
+    elif current_header == "removed in local":
+      is_delete_conflict = (
+          base_entry is None or their_entry is None or their_entry != base_entry
+      )
+    elif current_header == "added in both":
+      is_delete_conflict = (
+          our_entry is None or their_entry is None or our_entry != their_entry
+      )
+    if current_has_conflict_marker or is_delete_conflict:
+      for path in current_paths:
+        if path not in conflicts:
+          conflicts.append(path)
+
+  for line in (merge_tree_stdout or "").splitlines():
+    if _MERGE_TREE_HEADER_RE.match(line):
+      _flush_block()
+      current_header = line.strip()
+      current_paths = []
+      current_stages = {}
+      current_has_conflict_marker = False
+      continue
+
+    m_stage = _MERGE_TREE_STAGE_RE.match(line)
+    if m_stage:
+      stage_role = m_stage.group(1)
+      mode = m_stage.group(2)
+      sha = m_stage.group(3)
+      path = m_stage.group(4).strip()
+      current_stages[stage_role] = (mode, sha)
+      if path and path not in current_paths:
+        current_paths.append(path)
+      continue
+
+    if line.startswith("+<<<<<<<") or "Cannot merge binary files" in line:
+      current_has_conflict_marker = True
+
+  _flush_block()
+  return sorted(conflicts)
+
+
+def inspect_main_sync(repo_root: str) -> Dict[str, Any]:
+  """Inspects local upstream origin/main divergence and 3-way merge-tree conflicts without fetching.
+
+  Uses an ephemeral GIT_INDEX_FILE copy when unstaged or staged tracked changes
+  exist so .git/index, HEAD, and .workflow/state/approved_tree.txt are never mutated.
+  """
+  if not repo_root or not os.path.isdir(repo_root):
+    return _no_remote_sync_result()
+
+  origin_proc = _run_repo_git(repo_root, "remote", "get-url", "origin")
+  if origin_proc.returncode != 0 or not (origin_proc.stdout or "").strip():
+    return _no_remote_sync_result()
+
+  branch = _resolve_upstream_main_branch(repo_root)
+  if not branch:
+    return _no_remote_sync_result()
+
+  upstream_ref = f"origin/{branch}"
+  ver_upstream = _run_repo_git(
+      repo_root, "rev-parse", "--verify", "-q", f"refs/remotes/{upstream_ref}"
+  )
+  if ver_upstream.returncode != 0:
+    return _no_remote_sync_result()
+
+  ver_head = _run_repo_git(repo_root, "rev-parse", "--verify", "-q", "HEAD")
+  if ver_head.returncode != 0:
+    return _no_remote_sync_result()
+
+  status_proc = _run_repo_git(repo_root, "status", "--porcelain")
+  status_lines = [
+      ln for ln in (status_proc.stdout or "").splitlines() if ln.strip()
+  ]
+  working_tree_dirty = bool(status_lines)
+  has_tracked_changes = any(not ln.startswith("??") for ln in status_lines)
+
+  rev_proc = _run_repo_git(
+      repo_root, "rev-list", "--left-right", "--count", f"HEAD...{upstream_ref}"
+  )
+  ahead_count = 0
+  behind_count = 0
+  if rev_proc.returncode == 0:
+    parts = (rev_proc.stdout or "").strip().split()
+    if len(parts) == 2:
+      try:
+        ahead_count = int(parts[0])
+        behind_count = int(parts[1])
+      except ValueError:
+        ahead_count = 0
+        behind_count = 0
+
+  if behind_count == 0:
+    return {
+        "status": "UP_TO_DATE",
+        "upstream_ref": upstream_ref,
+        "ahead_count": ahead_count,
+        "behind_count": 0,
+        "has_conflicts": False,
+        "conflicting_files": [],
+        "working_tree_dirty": working_tree_dirty,
+    }
+
+  mb_proc = _run_repo_git(repo_root, "merge-base", "HEAD", upstream_ref)
+  merge_base = (mb_proc.stdout or "").strip() if mb_proc.returncode == 0 else ""
+  if not merge_base:
+    return {
+        "status": "BEHIND_CLEAN",
+        "upstream_ref": upstream_ref,
+        "ahead_count": ahead_count,
+        "behind_count": behind_count,
+        "has_conflicts": False,
+        "conflicting_files": [],
+        "working_tree_dirty": working_tree_dirty,
+    }
+
+  local_tree = "HEAD"
+  if has_tracked_changes:
+    git_dir_proc = _run_repo_git(repo_root, "rev-parse", "--git-dir")
+    git_dir_raw = (
+        (git_dir_proc.stdout or "").strip()
+        if git_dir_proc.returncode == 0
+        else ".git"
+    )
+    git_dir = (
+        git_dir_raw
+        if os.path.isabs(git_dir_raw)
+        else os.path.join(repo_root, git_dir_raw)
+    )
+    real_index = os.path.join(git_dir, "index")
+    try:
+      with tempfile.TemporaryDirectory() as tmp_idx_dir:
+        tmp_index = os.path.join(tmp_idx_dir, "index")
+        if os.path.isfile(real_index):
+          shutil.copyfile(real_index, tmp_index)
+        env = dict(os.environ)
+        env["GIT_INDEX_FILE"] = tmp_index
+        _run_repo_git(repo_root, "add", "-u", env=env)
+        wt_proc = _run_repo_git(repo_root, "write-tree", env=env)
+        wt_sha = (wt_proc.stdout or "").strip()
+        if wt_proc.returncode == 0 and wt_sha:
+          local_tree = wt_sha
+    except OSError:
+      local_tree = "HEAD"
+
+  mt_proc = _run_repo_git(
+      repo_root, "merge-tree", merge_base, local_tree, upstream_ref
+  )
+  conflicting_files = _parse_merge_tree_conflicts(mt_proc.stdout or "")
+  has_conflicts = bool(conflicting_files)
+  return {
+      "status": "CONFLICT" if has_conflicts else "BEHIND_CLEAN",
+      "upstream_ref": upstream_ref,
+      "ahead_count": ahead_count,
+      "behind_count": behind_count,
+      "has_conflicts": has_conflicts,
+      "conflicting_files": conflicting_files,
+      "working_tree_dirty": working_tree_dirty,
+  }
+
+
+def fetch_and_inspect_main_sync(repo_root: str) -> Dict[str, Any]:
+  """Fetches origin's default branch and inspects upstream divergence and 3-way merge conflicts."""
+  if not repo_root or not os.path.isdir(repo_root):
+    return _no_remote_sync_result()
+
+  origin_proc = _run_repo_git(repo_root, "remote", "get-url", "origin")
+  if origin_proc.returncode != 0 or not (origin_proc.stdout or "").strip():
+    return _no_remote_sync_result()
+
+  branch = _resolve_upstream_main_branch(repo_root)
+  if branch:
+    _run_repo_git(repo_root, "fetch", "-q", "origin", branch, timeout=10)
+  else:
+    for candidate in ("main", "master"):
+      fetch_proc = _run_repo_git(
+          repo_root, "fetch", "-q", "origin", candidate, timeout=10
+      )
+      if fetch_proc.returncode == 0:
+        break
+
+  return inspect_main_sync(repo_root)
 
 
 def generate_state_makefile(repo_root: str) -> str:
@@ -63,7 +333,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "CITE =\n"
       "export TICKET ALLOW_BLOCKED\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
-      ".PHONY: check-intake release-intake check-approved-tree check-commit-msg witness-red verify-green verify-citation ast-lint\n\n"
+      ".PHONY: check-intake release-intake check-approved-tree check-commit-msg check-main-sync witness-red verify-green verify-citation ast-lint\n\n"
       "check-intake:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),) $(if $(ALLOW_BLOCKED),--allow-blocked,)\n\n"
       "release-intake:\n"
@@ -72,6 +342,8 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
       "check-commit-msg:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg\n\n"
+      "check-main-sync:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} main-sync\n\n"
       "witness-red:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
       "verify-green:\n"
@@ -102,6 +374,8 @@ class WorkflowGatesScript(BaseScript):
     self.title: Optional[str] = None
     self.issue_tag: Optional[str] = None
     self.allow_blocked: bool = False
+    self.no_fetch: bool = False
+    self.fail_on_behind: bool = False
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -337,11 +611,38 @@ class WorkflowGatesScript(BaseScript):
         help="Emit output as JSON.",
     )
 
+    p_sync = subparsers.add_parser(
+        "main-sync",
+        help="Check upstream origin/main advancement and 3-way merge-tree conflicts.",
+        description="Fetch origin/main (unless --no-fetch is set) and check for upstream commits and 3-way merge conflicts.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . main-sync",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_sync.add_argument(
+        "--no-fetch",
+        action="store_true",
+        dest="no_fetch",
+        help="Inspect local remote-tracking ref without running git fetch.",
+    )
+    p_sync.add_argument(
+        "--fail-on-behind",
+        action="store_true",
+        dest="fail_on_behind",
+        help="Exit 2 with UPSTREAM_MAIN_BEHIND when origin/main is ahead even without conflicts.",
+    )
+    p_sync.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit output or Vector 4 Reflex errors as JSON.",
+    )
+
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
-          "intake, approved-tree, commit-msg, terminal-title, release-intake, or release-lock."
+          "intake, approved-tree, commit-msg, main-sync, terminal-title, "
+          "release-intake, or release-lock."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
@@ -354,6 +655,9 @@ class WorkflowGatesScript(BaseScript):
       self.max_bytes = ns.max_bytes
     elif ns.gate == "commit-msg":
       self.commit_msg_file = ns.commit_msg_file
+    elif ns.gate == "main-sync":
+      self.no_fetch = bool(getattr(ns, "no_fetch", False))
+      self.fail_on_behind = bool(getattr(ns, "fail_on_behind", False))
     elif ns.gate in ("terminal-title", "intake", "release-intake", "release-lock"):
       self.ticket = getattr(ns, "ticket", None)
       self.project = getattr(ns, "project", None)
@@ -899,6 +1203,65 @@ class WorkflowGatesScript(BaseScript):
     except (ImportError, OSError, ValueError):
       return 1
 
+  def _check_main_sync(self) -> int:
+    sync = (
+        inspect_main_sync(self.repo_root)
+        if self.no_fetch
+        else fetch_and_inspect_main_sync(self.repo_root)
+    )
+    status = sync.get("status", "NO_REMOTE")
+    upstream_ref = sync.get("upstream_ref") or "origin/main"
+    behind_count = sync.get("behind_count", 0)
+    conflicting_files = sync.get("conflicting_files") or []
+
+    if status == "CONFLICT":
+      files_str = ", ".join(conflicting_files) or "unknown files"
+      return self._fail(
+          scar_id="GIT-20",
+          code="UPSTREAM_MAIN_CONFLICT",
+          trigger=(
+              f"Branch conflicts with {upstream_ref} (behind by {behind_count} commit(s); "
+              f"conflicting files: {files_str})."
+          ),
+          rejected=(
+              "Advancing or pushing a branch with unresolved 3-way merge conflicts "
+              "against upstream main."
+          ),
+          reflex=(
+              "Stop tool calls without altering Git state (SCAR-GIT-25), report conflicting "
+              "files to the operator, and request approval to rebase onto origin/main and "
+              "re-run Target 40 review."
+          ),
+      )
+
+    if status == "BEHIND_CLEAN":
+      if self.fail_on_behind:
+        return self._fail(
+            scar_id="GIT-20",
+            code="UPSTREAM_MAIN_BEHIND",
+            trigger=(
+                f"Branch is behind {upstream_ref} by {behind_count} commit(s) "
+                "with 0 merge conflicts."
+            ),
+            rejected="Proceeding on a stale branch base when strict upstream sync is required.",
+            reflex=(
+                "Ask the human operator whether to rebase onto origin/main (SCAR-GIT-25) "
+                "before continuing."
+            ),
+        )
+      if self.as_json:
+        self.stdout.write(json.dumps(sync) + "\n")
+      else:
+        self.stdout.write(
+            f"MAIN_SYNC_NOTICE: Branch is behind {upstream_ref} by {behind_count} "
+            "commit(s) with 0 conflicts (BEHIND_CLEAN).\n"
+        )
+      return 0
+
+    if self.as_json:
+      self.stdout.write(json.dumps(sync) + "\n")
+    return 0
+
   def run(self) -> int:
     if self.gate == "init-makefile":
       return self._init_makefile()
@@ -912,6 +1275,8 @@ class WorkflowGatesScript(BaseScript):
       return self._check_approved_tree()
     if self.gate == "commit-msg":
       return self._check_commit_msg()
+    if self.gate == "main-sync":
+      return self._check_main_sync()
     if self.gate == "terminal-title":
       return self._gate_terminal_title()
     if self.gate in ("release-intake", "release-lock"):
