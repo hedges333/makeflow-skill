@@ -6771,7 +6771,7 @@ def validate():
     if "mkdir" not in sys_text or "FileExistsError" not in sys_text:
       errors.append(f"{system_spoke_rel} must document mkdir and FileExistsError for SCAR-SYS-08")
 
-  # 11c. Full Language Name Polyglot Scars (dart_flutter.md)
+  # 11c. Dart & Flutter Scars Migrated to SQLite Registry & 5-Stage workflow_query_scars Wiring (GH-192)
   dart_guide_rel = "skills/makeflow/references/polyglot/dart_flutter.md"
   dart_guide = repo_path(dart_guide_rel)
   if not os.path.exists(dart_guide):
@@ -6780,8 +6780,51 @@ def validate():
     with open(dart_guide) as f:
       dg_text = f.read()
     for d_scar in ("SCAR-LANG-DART-01", "SCAR-LANG-DART-02", "SCAR-LANG-DART-03", "SCAR-LANG-DART-04"):
-      if d_scar not in dg_text:
-        errors.append(f"{dart_guide_rel} must document full language name {d_scar}")
+      if d_scar in dg_text:
+        errors.append(f"{dart_guide_rel} must not contain inline {d_scar} (migrated to SQLite scars_registry.db)")
+    if "workflow_query_scars" not in dg_text:
+      errors.append(f"{dart_guide_rel} must direct agents to query Dart/Flutter scars via workflow_query_scars")
+
+  cat_09_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_09_path = repo_path(cat_09_rel)
+  if os.path.exists(cat_09_path):
+    with open(cat_09_path) as f:
+      cat_09_text = f.read()
+    for d_scar in ("SCAR-LANG-DART-01", "SCAR-LANG-DART-02", "SCAR-LANG-DART-03", "SCAR-LANG-DART-04"):
+      if d_scar in cat_09_text:
+        errors.append(f"{cat_09_rel} must not index {d_scar} in static Markdown routing table")
+
+  for scratch_doc_rel in (
+      "skills/makeflow/references/scars/tooling_and_hci.md",
+      "skills/makeflow/references/scars/git_and_shell.md",
+      "skills/makeflow/references/10_security_and_data_isolation.md",
+      "rules/AGENTS.md",
+  ):
+    scratch_doc_path = repo_path(scratch_doc_rel)
+    if os.path.exists(scratch_doc_path):
+      with open(scratch_doc_path) as f:
+        sd_text = f.read()
+      if "workflow_query_scars" not in sd_text:
+        errors.append(f"{scratch_doc_rel} must direct calling workflow_query_scars for temporary script language")
+
+  for stage_doc_rel in (
+      "skills/makeflow/SKILL.md",
+      "skills/makeflow/references/02_archaeology_and_planning.md",
+      "skills/makeflow/references/03_tdd_and_code_quality.md",
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+      "skills/makeflow/references/07_ci_and_bot_triage.md",
+      "skills/makeflow/references/08_subagent_orchestration.md",
+      "agents/archaeology-worker.md",
+      "agents/tdd-worker.md",
+      "agents/adversarial-critic.md",
+      "agents/triage-worker.md",
+  ):
+    stage_doc_path = repo_path(stage_doc_rel)
+    if os.path.exists(stage_doc_path):
+      with open(stage_doc_path) as f:
+        st_text = f.read()
+      if "workflow_query_scars" not in st_text:
+        errors.append(f"{stage_doc_rel} must wire workflow_query_scars into workflow stage execution")
 
   ref_03_rel = "skills/makeflow/references/03_tdd_and_code_quality.md"
   ref_03 = repo_path(ref_03_rel)

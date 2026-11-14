@@ -23,10 +23,21 @@ if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
 try:
-  from lib.scars_db import query_scars, resolve_scars_db_path
+  from lib.scars_db import (
+      load_session_scars,
+      partition_session_scars,
+      query_scars,
+      resolve_scars_db_path,
+      resolve_scars_db_paths,
+      save_session_scars,
+  )
 except ImportError:
   query_scars = None
   resolve_scars_db_path = None
+  resolve_scars_db_paths = None
+  load_session_scars = None
+  save_session_scars = None
+  partition_session_scars = None
 
 from lib.config import (
     _normalize_str_list,
@@ -883,6 +894,10 @@ def handle_tools_list(request_id):
                       "type": "string",
                       "description": "Optional explicit SQLite scars database path",
                   },
+                  "refreshLoaded": {
+                      "type": "boolean",
+                      "description": "Set true to re-emit full scar text even if already loaded in this session",
+                  },
               },
               "required": ["query"],
           },
@@ -1239,13 +1254,45 @@ def handle_tools_call(request_id, tool_name, arguments):
       )
 
     explicit_db = arguments.get("dbPath") or arguments.get("db_path")
-    db_path = resolve_scars_db_path(
-        db_path=explicit_db,
-        workspace_dir=ws,
-        package_root=_REPO_ROOT,
-    )
+    if explicit_db:
+      explicit_abs = os.path.abspath(os.path.expanduser(explicit_db))
+      if not os.path.isfile(explicit_abs):
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "status": "UNINITIALIZED",
+                        "message": (
+                            f"Scars database not found at '{explicit_abs}'. "
+                            "Bundled registry database is missing from skill package. "
+                            "Reinstall makeflow plugin or run 'make sync-scars' (maintainer) to generate."
+                        ),
+                        "scars": [],
+                    }, indent=2),
+                }]
+            },
+        }
+      db_paths = [explicit_abs]
+    else:
+      db_paths = (
+          resolve_scars_db_paths(
+              db_path=None,
+              workspace_dir=ws,
+              package_root=_REPO_ROOT,
+          )
+          if resolve_scars_db_paths is not None
+          else []
+      )
 
-    if not os.path.isfile(db_path):
+    if not db_paths:
+      fallback_path = resolve_scars_db_path(
+          db_path=explicit_db,
+          workspace_dir=ws,
+          package_root=_REPO_ROOT,
+      )
       return {
           "jsonrpc": "2.0",
           "id": request_id,
@@ -1255,7 +1302,7 @@ def handle_tools_call(request_id, tool_name, arguments):
                   "text": json.dumps({
                       "status": "UNINITIALIZED",
                       "message": (
-                          f"Scars database not found at '{db_path}'. "
+                          f"Scars database not found at '{fallback_path}'. "
                           "Bundled registry database is missing from skill package. "
                           "Reinstall makeflow plugin or run 'make sync-scars' (maintainer) to generate."
                       ),
@@ -1265,35 +1312,58 @@ def handle_tools_call(request_id, tool_name, arguments):
           },
       }
 
-    results = query_scars(
-        db_path=db_path,
+    has_explicit_ws = bool(
+        arguments.get("workspaceDir") or arguments.get("workspace_dir")
+    )
+    if ws and not explicit_db and (has_explicit_ws or not is_plugin_dir(ws)):
+      state_dir = os.path.join(ws, ".workflow", "state")
+    else:
+      state_dir = None
+    session_key = (
+        f"explicit:{os.path.abspath(explicit_db)}"
+        if explicit_db
+        else f"ws:{ws or ''}"
+    )
+    loaded_ids = (
+        load_session_scars(state_dir=state_dir, session_key=session_key)
+        if load_session_scars is not None
+        else set()
+    )
+    refresh_loaded = bool(
+        arguments.get("refreshLoaded") or arguments.get("refresh_loaded")
+    )
+
+    raw_results = query_scars(
+        db_path=db_paths,
         query=query,
         category=category,
         language=language,
-        limit=limit,
+        limit=max(1, limit) + len(loaded_ids),
         source=source,
         framework=framework,
         diagnostic_code=diagnostic_code,
         workflow_phase=workflow_phase,
     )
 
-    if not results:
-      is_empty = False
-      conn = None
-      try:
-        conn = sqlite3.connect(db_path)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM scars")
-        row = cur.fetchone()
-        if row and row[0] == 0:
-          is_empty = True
-      except sqlite3.Error:
-        is_empty = True
-      finally:
-        if conn:
-          conn.close()
+    if not raw_results:
+      all_empty = True
+      for p_db in db_paths:
+        conn = None
+        try:
+          conn = sqlite3.connect(p_db)
+          cur = conn.cursor()
+          cur.execute("SELECT COUNT(*) FROM scars")
+          row = cur.fetchone()
+          if row and row[0] > 0:
+            all_empty = False
+            break
+        except sqlite3.Error:
+          pass
+        finally:
+          if conn:
+            conn.close()
 
-      if is_empty:
+      if all_empty:
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -1303,7 +1373,7 @@ def handle_tools_call(request_id, tool_name, arguments):
                     "text": json.dumps({
                         "status": "EMPTY",
                         "message": (
-                            f"Scars database at '{db_path}' contains 0 scars. "
+                            f"Scars database at '{db_paths[0]}' contains 0 scars. "
                             "Bundled registry database is unpopulated. "
                             "Run 'make sync-scars' (maintainer) to rebuild."
                         ),
@@ -1313,6 +1383,21 @@ def handle_tools_call(request_id, tool_name, arguments):
             },
         }
 
+    if partition_session_scars is not None:
+      scars_out, already_loaded_out, updated_loaded = partition_session_scars(
+          raw_results,
+          loaded_ids,
+          limit=limit,
+          refresh_loaded=refresh_loaded,
+      )
+      if save_session_scars is not None:
+        save_session_scars(
+            updated_loaded, state_dir=state_dir, session_key=session_key
+        )
+    else:
+      scars_out = raw_results[: max(1, limit)]
+      already_loaded_out = []
+
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -1321,8 +1406,10 @@ def handle_tools_call(request_id, tool_name, arguments):
                 "type": "text",
                 "text": json.dumps({
                     "status": "OK",
-                    "totalResults": len(results),
-                    "scars": results,
+                    "totalResults": len(scars_out),
+                    "scars": scars_out,
+                    "alreadyLoaded": already_loaded_out,
+                    "searchedDatabases": db_paths,
                 }, indent=2),
             }]
         },

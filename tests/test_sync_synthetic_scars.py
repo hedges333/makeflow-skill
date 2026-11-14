@@ -380,6 +380,20 @@ class TestQueryScars(unittest.TestCase):
     script = SyncSyntheticScarsScript()
     with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload, etag='"etag-v1"')):
       script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        """
+        UPDATE scars
+        SET wound = raw_wound,
+            trap = raw_trap,
+            circuit_breaker = raw_circuit_breaker,
+            reflex = raw_reflex,
+            socratic_probe = 'Did you verify ' || id || '?'
+        """
+    )
+    conn.commit()
+    conn.close()
+    script.execute(args=["--db-path", self.db_path, "--enrich"], stdout=io.StringIO())
 
   def tearDown(self):
     self.tmp_dir.cleanup()
@@ -433,13 +447,14 @@ class TestQueryScars(unittest.TestCase):
             wound TEXT,
             trap TEXT,
             circuit_breaker TEXT,
-            reflex TEXT
+            reflex TEXT,
+            socratic_probe TEXT
         )
     """)
     for s in SAMPLE_SCARS:
       conn.execute(
           """
-          INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
           (
               s["id"],
@@ -454,6 +469,7 @@ class TestQueryScars(unittest.TestCase):
               s["trap"],
               s["circuitBreaker"],
               s["reflex"],
+              f"Did you verify {s['id']}?",
           ),
       )
     conn.commit()
@@ -578,11 +594,12 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
         INSERT INTO scars (
             id, title, category, category_slug, visibility,
             workflow_phases, applies_when, graduation_status,
-            wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
+            wound, trap, circuit_breaker, reflex, socratic_probe, source, original_id, raw_hash
         ) VALUES (
             'SCAR-LANG-PERL-001', 'Makeflow Perl Guidelines', 'Languages', 'languages', 'public',
             '["T30"]', 'Writing Perl scripts', 'graduated',
             'Makeflow Perl wound', 'Makeflow Perl trap', 'Makeflow breaker', 'Makeflow reflex',
+            'Did you follow Makeflow Perl guidelines?',
             'makeflow', NULL, 'mf_hash'
         )
     """)
@@ -612,6 +629,21 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
     with patch("urllib.request.urlopen", return_value=MockHTTPResponse(payload_bytes, etag='"etag-coll"')):
       code2 = script2.execute(args=["--db-path", self.db_path, "--force"], stdout=io.StringIO())
     self.assertEqual(code2, 0)
+
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        """
+        UPDATE scars
+        SET wound = COALESCE(wound, raw_wound),
+            trap = COALESCE(trap, raw_trap),
+            circuit_breaker = COALESCE(circuit_breaker, raw_circuit_breaker),
+            reflex = COALESCE(reflex, raw_reflex),
+            socratic_probe = COALESCE(socratic_probe, 'Did you verify ' || id || '?')
+        """
+    )
+    conn.commit()
+    conn.close()
+    script2.execute(args=["--db-path", self.db_path, "--enrich"], stdout=io.StringIO())
 
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
@@ -779,16 +811,18 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
         CREATE TABLE scars (
             id TEXT PRIMARY KEY, title TEXT, category TEXT, category_slug TEXT,
             visibility TEXT, workflow_phases TEXT, applies_when TEXT,
-            graduation_status TEXT, wound TEXT, trap TEXT, circuit_breaker TEXT, reflex TEXT
+            graduation_status TEXT, wound TEXT, trap TEXT, circuit_breaker TEXT,
+            reflex TEXT, socratic_probe TEXT
         )
     """)
     s = SAMPLE_SCARS[0]
     conn.execute(
-        "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             s["id"], s["title"], s["category"], s["categorySlug"], s["visibility"],
             json.dumps(s["workflowPhases"]), s["appliesWhen"], s["graduationStatus"],
             s["wound"], s["trap"], s["circuitBreaker"], s["reflex"],
+            "Did you inherit from BaseScript?",
         ),
     )
     conn.execute("""
@@ -2081,6 +2115,16 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     conn.execute(
         "UPDATE scars SET wound = 'Simple widget wound.' WHERE id = 'SCAR-FLUTTER-10'"
     )
+    conn.execute(
+        """
+        UPDATE scars
+        SET wound = COALESCE(wound, raw_wound),
+            trap = COALESCE(trap, raw_trap),
+            circuit_breaker = COALESCE(circuit_breaker, raw_circuit_breaker),
+            reflex = COALESCE(reflex, raw_reflex),
+            socratic_probe = COALESCE(socratic_probe, 'Did you verify ' || id || '?')
+        """
+    )
     conn.commit()
     conn.close()
     SyncSyntheticScarsScript().execute(
@@ -2205,7 +2249,7 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM scars")
     total_scars = cur.fetchone()[0]
-    self.assertEqual(total_scars, 595)
+    self.assertEqual(total_scars, 596)
 
     cur.execute("SELECT COUNT(*) FROM scars_fts")
     fts_scars = cur.fetchone()[0]
@@ -2251,8 +2295,369 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
       )
     conn.close()
 
+    # Unprocessed scars in bundled_db (e.g., SCAR-PROC-11 with socratic_probe=NULL) must never be returned by query_scars
+    proc11_results = query_scars(bundled_db, query="SCAR-PROC-11", limit=20)
+    self.assertTrue(all(r["id"] != "SCAR-PROC-11" for r in proc11_results))
+    all_queried = query_scars(bundled_db, query="SCAR", limit=1000)
+    self.assertGreater(len(all_queried), 200)
+    for q_row in all_queried:
+      for req_key in ("wound", "trap", "reflex", "socraticProbe"):
+        self.assertTrue(
+            bool(q_row.get(req_key) and str(q_row.get(req_key)).strip()),
+            f"{q_row['id']} returned by query_scars missing processed {req_key}",
+        )
+
     id_matches = query_scars(bundled_db, query="SCAR-ARCH-05", limit=5)
     self.assertTrue(any(m["id"] == "SCAR-ARCH-05" for m in id_matches))
+
+    dart_timer_matches = query_scars(
+        bundled_db, query="fakeAsync", language="dart", limit=5
+    )
+    self.assertTrue(
+        any(m["id"] == "SCAR-LANG-DART-01" for m in dart_timer_matches)
+    )
+
+    flutter_dispose_matches = query_scars(
+        bundled_db,
+        query="FocusNode TextEditingController",
+        language="dart",
+        limit=5,
+    )
+    self.assertTrue(
+        any(m["id"] == "SCAR-ARCH-21" for m in flutter_dispose_matches)
+    )
+
+
+class TestMultiPathStackingAndSessionLedger(unittest.TestCase):
+  """Tests 5-tier path stacking, processed-only filtering, and session scar ledger (GH-192)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.TemporaryDirectory()
+
+  def tearDown(self):
+    self.temp_dir.cleanup()
+
+  def _create_processed_db(self, db_path, rows):
+    script = SyncSyntheticScarsScript()
+    script.db_path = db_path
+    script._init_db_schema()
+    conn = script.conn
+    for r in rows:
+      conn.execute(
+          """
+          INSERT OR REPLACE INTO scars (
+              id, title, category, category_slug, visibility,
+              workflow_phases, applies_when, graduation_status,
+              raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+              wound, trap, circuit_breaker, reflex, socratic_probe,
+              source, original_id
+          ) VALUES (?, ?, ?, ?, 'public', ?, ?, 'graduated', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          """,
+          (
+              r["id"],
+              r.get("title", r["id"]),
+              r.get("category", "Architecture"),
+              r.get("category_slug", "architecture"),
+              json.dumps(r.get("workflow_phases", ["Target 30: tdd"])),
+              r.get("applies_when", "Testing stacked databases"),
+              r.get("raw_wound", "Raw wound."),
+              r.get("raw_trap", "Raw trap."),
+              r.get("raw_circuit_breaker", ""),
+              r.get("raw_reflex", "Raw reflex."),
+              r.get("raw_hash", "hash"),
+              r.get("wound"),
+              r.get("trap"),
+              r.get("circuit_breaker", ""),
+              r.get("reflex"),
+              r.get("socratic_probe"),
+              r.get("source", "upstream"),
+              r.get("original_id"),
+          ),
+      )
+    conn.commit()
+    script.cleanup(0)
+    SyncSyntheticScarsScript().execute(
+        args=["--db-path", db_path, "--enrich"], stdout=io.StringIO()
+    )
+
+  def test_resolve_scars_db_paths_five_tier_precedence(self):
+    from lib.scars_db import resolve_scars_db_paths
+
+    explicit_db = os.path.join(self.temp_dir.name, "tier1_explicit.db")
+    env_db = os.path.join(self.temp_dir.name, "tier2_env.db")
+    ws_dir = os.path.join(self.temp_dir.name, "workspace")
+    ws_cache_db = os.path.join(ws_dir, ".workflow", "cache", "scars_registry.db")
+    ws_root_db = os.path.join(ws_dir, ".workflow", "scars_registry.db")
+    xdg_dir = os.path.join(self.temp_dir.name, "xdg_cache")
+    user_db = os.path.join(xdg_dir, "makeflow", "scars_registry.db")
+    pkg_dir = os.path.join(self.temp_dir.name, "pkg")
+    bundled_db = os.path.join(
+        pkg_dir, "skills", "makeflow", "data", "scars_registry.db"
+    )
+
+    for p in (explicit_db, env_db, ws_cache_db, ws_root_db, user_db, bundled_db):
+      os.makedirs(os.path.dirname(p), exist_ok=True)
+      with open(p, "w", encoding="utf-8") as f:
+        f.write("")
+
+    with patch.dict(
+        os.environ,
+        {"MAKEFLOW_SCARS_DB": env_db, "XDG_CACHE_HOME": xdg_dir},
+        clear=False,
+    ):
+      paths = resolve_scars_db_paths(
+          db_path=explicit_db,
+          workspace_dir=ws_dir,
+          package_root=pkg_dir,
+      )
+
+    expected_order = [
+        os.path.abspath(explicit_db),
+        os.path.abspath(env_db),
+        os.path.abspath(ws_cache_db),
+        os.path.abspath(ws_root_db),
+        os.path.abspath(user_db),
+        os.path.abspath(bundled_db),
+    ]
+    subseq = [p for p in paths if p in expected_order]
+    self.assertEqual(subseq, expected_order)
+    self.assertEqual(len(paths), len(set(paths)))
+
+  def test_query_scars_excludes_unprocessed_scars_in_fts_and_fallback(self):
+    db_path = os.path.join(self.temp_dir.name, "processed_filter.db")
+    self._create_processed_db(
+        db_path,
+        [
+            {
+                "id": "SCAR-PROC-OK",
+                "title": "Processed Target Scar",
+                "wound": "Processed wound text.",
+                "trap": "Processed trap text.",
+                "reflex": "Processed reflex text.",
+                "socratic_probe": "Is this scar processed?",
+            },
+            {
+                "id": "SCAR-UNPROC-NULL-WOUND",
+                "title": "Unprocessed Null Wound Scar",
+                "raw_wound": "Raw untransformed wound Target.",
+                "wound": None,
+                "trap": "Processed trap.",
+                "reflex": "Processed reflex.",
+                "socratic_probe": "Has probe?",
+            },
+            {
+                "id": "SCAR-UNPROC-EMPTY-TRAP",
+                "title": "Unprocessed Empty Trap Scar",
+                "wound": "Processed wound.",
+                "trap": "   ",
+                "reflex": "Processed reflex.",
+                "socratic_probe": "Has probe?",
+            },
+            {
+                "id": "SCAR-UNPROC-NULL-PROBE",
+                "title": "Unprocessed Null Probe Scar",
+                "wound": "Processed wound.",
+                "trap": "Processed trap.",
+                "reflex": "Processed reflex.",
+                "socratic_probe": None,
+            },
+        ],
+    )
+
+    fts_results = query_scars(db_path, query="Scar", limit=10)
+    self.assertEqual([r["id"] for r in fts_results], ["SCAR-PROC-OK"])
+
+    # Drop scars_fts to exercise the LIKE fallback path as well
+    conn = sqlite3.connect(db_path)
+    conn.execute("DROP TABLE scars_fts")
+    conn.commit()
+    conn.close()
+
+    fallback_results = query_scars(db_path, query="Scar", limit=10)
+    self.assertEqual([r["id"] for r in fallback_results], ["SCAR-PROC-OK"])
+
+  def test_query_scars_stacks_multiple_databases_and_deduplicates_by_id_and_original_id(self):
+    ws_db = os.path.join(self.temp_dir.name, "ws_scars.db")
+    bundled_db = os.path.join(self.temp_dir.name, "bundled_scars.db")
+
+    self._create_processed_db(
+        ws_db,
+        [
+            {
+                "id": "SCAR-ARCH-05",
+                "title": "Workspace Override BaseScript",
+                "wound": "Workspace wound.",
+                "trap": "Workspace trap.",
+                "reflex": "Workspace reflex.",
+                "socratic_probe": "Did you use the workspace BaseScript?",
+            },
+            {
+                "id": "SCAR-LOCAL-01",
+                "title": "Workspace Local BaseScript Rule",
+                "wound": "Local wound.",
+                "trap": "Local trap.",
+                "reflex": "Local reflex.",
+                "socratic_probe": "Did you follow the local rule?",
+            },
+        ],
+    )
+
+    self._create_processed_db(
+        bundled_db,
+        [
+            {
+                "id": "SCAR-ARCH-05",
+                "title": "Bundled BaseScript",
+                "wound": "Bundled wound.",
+                "trap": "Bundled trap.",
+                "reflex": "Bundled reflex.",
+                "socratic_probe": "Did you use the bundled BaseScript?",
+            },
+            {
+                "id": "SCAR-MF-LOCAL-01",
+                "original_id": "SCAR-LOCAL-01",
+                "source": "makeflow",
+                "title": "Bundled Renamed Local BaseScript Rule",
+                "wound": "Bundled local wound.",
+                "trap": "Bundled local trap.",
+                "reflex": "Bundled local reflex.",
+                "socratic_probe": "Did you follow bundled local rule?",
+            },
+            {
+                "id": "SCAR-BUNDLED-99",
+                "title": "Bundled Extra BaseScript Rule",
+                "wound": "Extra wound.",
+                "trap": "Extra trap.",
+                "reflex": "Extra reflex.",
+                "socratic_probe": "Did you follow the extra rule?",
+            },
+        ],
+    )
+
+    stacked = query_scars([ws_db, bundled_db], query="BaseScript", limit=10)
+    ids = [r["id"] for r in stacked]
+    self.assertEqual(
+        ids, ["SCAR-ARCH-05", "SCAR-LOCAL-01", "SCAR-BUNDLED-99"]
+    )
+    self.assertEqual(stacked[0]["title"], "Workspace Override BaseScript")
+
+  def test_session_scar_ledger_load_save_partition_and_ticket_reset(self):
+    from lib.scars_db import (
+        detect_active_ticket_id,
+        format_loaded_scar_reminder,
+        load_session_scars,
+        partition_session_scars,
+        save_session_scars,
+    )
+
+    state_dir = os.path.join(self.temp_dir.name, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    ticket_card = os.path.join(state_dir, "10_ticket.md")
+    with open(ticket_card, "w", encoding="utf-8") as f:
+      f.write("# Ticket: GH-192\n\n- **Title**: Stack scar queries\n")
+
+    self.assertEqual(detect_active_ticket_id(state_dir), "GH-192")
+    self.assertEqual(load_session_scars(state_dir=state_dir), set())
+
+    sample_matches = [
+        {
+            "id": "SCAR-A",
+            "title": "First Scar",
+            "category": "ARCH",
+            "categorySlug": "arch",
+            "source": "upstream",
+            "originalId": None,
+            "original_id": None,
+            "wound": "Full wound A.",
+            "trap": "Full trap A.",
+            "circuitBreaker": "",
+            "reflex": "Full reflex A.",
+            "socraticProbe": "Probe A?",
+            "socratic_probe": "Probe A?",
+        },
+        {
+            "id": "SCAR-B",
+            "title": "Second Scar",
+            "category": "TEST",
+            "categorySlug": "test",
+            "source": "upstream",
+            "originalId": None,
+            "original_id": None,
+            "wound": "Full wound B.",
+            "trap": "Full trap B.",
+            "circuitBreaker": "",
+            "reflex": "Full reflex B.",
+            "socraticProbe": "Probe B?",
+            "socratic_probe": "Probe B?",
+        },
+        {
+            "id": "SCAR-C",
+            "title": "Third Scar",
+            "category": "SYS",
+            "categorySlug": "sys",
+            "source": "upstream",
+            "originalId": None,
+            "original_id": None,
+            "wound": "Full wound C.",
+            "trap": "Full trap C.",
+            "circuitBreaker": "",
+            "reflex": "Full reflex C.",
+            "socraticProbe": "Probe C?",
+            "socratic_probe": "Probe C?",
+        },
+    ]
+
+    # 1. First query loads SCAR-A and SCAR-B
+    scars_1, already_1, updated_1 = partition_session_scars(
+        sample_matches, set(), limit=2
+    )
+    self.assertEqual([s["id"] for s in scars_1], ["SCAR-A", "SCAR-B"])
+    self.assertEqual(already_1, [])
+    self.assertEqual(updated_1, {"SCAR-A", "SCAR-B"})
+    save_session_scars(updated_1, state_dir=state_dir)
+    self.assertEqual(
+        load_session_scars(state_dir=state_dir), {"SCAR-A", "SCAR-B"}
+    )
+
+    # 2. Second query skips SCAR-A & SCAR-B in primary scars, returns SCAR-C + compact reminders
+    scars_2, already_2, updated_2 = partition_session_scars(
+        sample_matches, load_session_scars(state_dir=state_dir), limit=2
+    )
+    self.assertEqual([s["id"] for s in scars_2], ["SCAR-C"])
+    self.assertIn("wound", scars_2[0])
+    self.assertEqual([r["id"] for r in already_2], ["SCAR-A", "SCAR-B"])
+    for rem in already_2:
+      self.assertTrue(rem.get("alreadyLoaded"))
+      self.assertIn("reminder", rem)
+      self.assertIn("socraticProbe", rem)
+      self.assertNotIn("wound", rem)
+      self.assertNotIn("trap", rem)
+      self.assertNotIn("reflex", rem)
+    save_session_scars(updated_2, state_dir=state_dir)
+
+    # 3. Third query when all matches are already loaded returns compact reminders in scars_out
+    scars_3, already_3, _ = partition_session_scars(
+        sample_matches[:2], load_session_scars(state_dir=state_dir), limit=2
+    )
+    self.assertEqual([s["id"] for s in scars_3], ["SCAR-A", "SCAR-B"])
+    self.assertTrue(all(s.get("alreadyLoaded") for s in scars_3))
+    self.assertEqual(len(already_3), 2)
+
+    # 4. refresh_loaded=True returns full scars again
+    scars_ref, already_ref, _ = partition_session_scars(
+        sample_matches[:2],
+        load_session_scars(state_dir=state_dir),
+        limit=2,
+        refresh_loaded=True,
+    )
+    self.assertEqual([s["id"] for s in scars_ref], ["SCAR-A", "SCAR-B"])
+    self.assertTrue(all("wound" in s for s in scars_ref))
+    self.assertEqual(already_ref, [])
+
+    # 5. Changing active ticket in 10_ticket.md resets loaded scars automatically
+    with open(ticket_card, "w", encoding="utf-8") as f:
+      f.write("# Ticket: GH-193\n")
+    self.assertEqual(load_session_scars(state_dir=state_dir), set())
 
 
 if __name__ == "__main__":

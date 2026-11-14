@@ -34,7 +34,7 @@ In single-agent environments without subagent tools (such as basic command-line 
 
 ### 1.3 Review Bot Triage Actions
 
-When review bots (such as Copilot, Gemini Code Assist, CodeRabbit, or SonarCloud) post comments, `triage-worker` classifies each finding into one of four actions:
+When review bots (such as Copilot, Gemini Code Assist, CodeRabbit, or SonarCloud) post comments or CI checks fail, `triage-worker` queries `workflow_query_scars` (`workflowPhase: "Target 70: ci-triage"`) for matching diagnostic codes and classifies each finding into one of four actions:
 - **`Accept`**: Real defect or security vulnerability that requires a code fix.
 - **`Defend`**: Incorrect bot claim, paired with a clear technical rebuttal.
 - **`Defer`**: Valid suggestion outside active ticket scope, logged for a future ticket.

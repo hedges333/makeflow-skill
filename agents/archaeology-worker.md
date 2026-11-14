@@ -33,5 +33,5 @@ You inspect repositories to gather facts before planning. You do not change file
    - `RETRACTED`: Accepted earlier, then proved false by new facts.
 6. If a subproject has no tests, include a smoke test template in your report.
 7. Classify the failure mechanism of the ticket (`SCAR-TEST-11`). Evaluate testing feasibility and execution burden balance within a fast execution budget (< 100 ms) using hermetic fixtures. Recommend testing depth in the receipt before planning.
-8. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`.
+8. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`, and query `workflow_query_scars` (`workflowPhase: "Target 15: archaeology"`) for detected languages and frameworks.
 9. Return the Archaeology Receipt to the supervisor agent.

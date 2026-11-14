@@ -104,7 +104,7 @@ Read `references/02` and `references/11` for discovery and 27-language scan rule
 1. Fork `archaeology-worker` using `agyModelTiers["archaeology-worker"]` (default `inherit`) to scan languages, test runners, sibling APIs, and database configuration.
 2. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
 3. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
-4. Classify failure mechanisms and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
+4. Classify failure mechanisms, query `workflow_query_scars` for detected languages and frameworks, and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
 5. Tag each claim with a Belnap truth state (a four-state fact label).
 6. Write `.workflow/state/15_archaeology_receipt.md` and advance to Target 20.
 
@@ -112,7 +112,7 @@ Read `references/02` and `references/11` for discovery and 27-language scan rule
 
 Read `references/02` for Socratic deliberation and plan disclosures.
 
-1. Evaluate Socratic deliberation questions on fail-fast loops, hermetic isolation, existing test edits, and scoped boundaries.
+1. Evaluate Socratic deliberation questions on fail-fast loops, hermetic isolation, existing test edits, and scoped boundaries, and query `workflow_query_scars` (`workflowPhase: "Target 20: plan"`).
 2. Write `.workflow/state/20_plan.md` with the Socratic Invariant Audit table, file paths, test commands, isolation facts, and burden balance (`SCAR-TEST-11`).
 3. Print the plan summary with a `file://` link and stop tool calls (`tool_calls: []`) for `human-plan-approval`.
 4. After human approval, write `.workflow/state/20_plan_approved.md` and advance to Target 30.
@@ -121,7 +121,7 @@ Read `references/02` for Socratic deliberation and plan disclosures.
 
 Read `references/03`, `references/04_testing_isolation.md`, and `references/14` for TDD, isolation, and design patterns.
 
-1. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`).
+1. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`) and query `workflow_query_scars` (`workflowPhase: "Target 30: tdd"`) for target languages, frameworks, and diagnostic codes.
 2. Red phase: Write failing tests first and witness a non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
 3. Green phase: Write minimal production code so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.
 4. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`), update docstrings, and advance to Target 40.
@@ -132,7 +132,7 @@ Read `references/04_six_pillars_adversarial_review.md` and `references/13`.
 
 1. Lock the Git Merkle tree (staged file hash) via `git add -A && git write-tree > .workflow/state/approved_tree.txt`.
 2. If `.workflow/config.json` specifies models or 'inherit', bypass the model picker prompt. When unconfigured in interactive IDEs, prompt the user to select a deep-reasoning model. Stop tool calls (`tool_calls: []`) to pause for model selection before critic dispatch.
-3. In Antigravity, fork `adversarial-critic` using `agyModelTiers["adversarial-critic"]` (default `inherit`) with explicit path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`), then write `40_critic_review.md`.
+3. In Antigravity, fork `adversarial-critic` using `agyModelTiers["adversarial-critic"]` (default `inherit`) with explicit path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) and `workflow_query_scars` (`workflowPhase: "Target 40: review"`), then write `40_critic_review.md`.
 4. At Target 42 (`BLOCKERS > 0`), print Blocker Digest and NBO summary with dispositions, then pause for `human-blocker-triage-approval`. After triage approval, return to Target 30.
 5. At Target 45 (`0 BLOCKERS`), run `make -f .workflow/state/Makefile check-approved-tree` and print the review with a `file://` link. Pause for `human-review-approval`, then write `45_review_approved.md`.
 
@@ -153,7 +153,7 @@ Read `references/07`, `references/09`, and `references/12` for triage and ledger
 
 1. At Target 70 in Pure Git Mode, run `make all`, write `70_bot_triage.md`, and advance to Target 75.
 2. In Antigravity, fork `triage-worker` using `agyModelTiers["triage-worker"]` (default `inherit`) and stop tool calls. In single-agent sessions, call MCP `workflow_poll_ci` with `maxWaitSeconds: 1`.
-3. Write `70_bot_triage.md`. If accepted bot findings require code edits, return to Target 30.
+3. Triage CI failures and bot findings using `workflow_query_scars` (`workflowPhase: "Target 70: ci-triage"`), and write `70_bot_triage.md`. If accepted bot findings require code edits, return to Target 30.
 4. At Target 75, print CI status and the 7-criteria policy table, then pause for `human-landing-approval`.
 5. At Target 80, run `gh pr merge <PR> --squash --delete-branch`, fast-forward `main`, and run `make -f .workflow/state/Makefile release-intake`. In Pure Git Mode, run `git merge --squash` on `main` instead.
 6. At Target 90, record merged scar IDs in `.workflow/history.json` and `.workflow/history.md` without editing core catalog files on `main`. In external projects, record project-local lessons in `.workflow/scars/`. If direct push is permitted, push `origin main`. Run `make -f .workflow/state/Makefile release-intake`. Clean `10_`..`80_` cards and `approved_tree.txt` per `state.completedCardAction` and mark `99_next_action.md` `COMPLETE`.

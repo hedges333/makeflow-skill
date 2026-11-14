@@ -22,8 +22,8 @@ This reference manual documents Git operations and shell execution scars (`SCAR-
 
 - **Wound**: An agent attempts complex multiline or quoted shell invocations (`bash -c "..."` or inline pipes), leading to syntax errors, unescaped variable expansion, or corrupted arguments.
 - **Trap**: Trying to escape quote layers inline inside shell command strings, or relying on `chmod +x` file execution permissions on `noexec` mounts.
-- **Permanent Reflex**: If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the script path to the runtime interpreter command (`dart /path/to/script.dart` or `python3 /path/to/script.py`). Prefer Dart when available, falling back to Python. Explicit interpreter invocation bypasses `noexec` mount restrictions and eliminates reliance on `chmod +x` executable file permissions.
-- **Socratic Probe**: Does this command involve fragile nested quotes that need a temporary script file? Will invoking the runtime interpreter bypass `noexec` restrictions and avoid `chmod +x` permission issues?
+- **Permanent Reflex**: If shell commands require complex string escaping or nested quotes, write the script in a temporary directory. Pass the script path to the runtime interpreter command (`dart /path/to/script.dart` or `python3 /path/to/script.py`). Prefer Dart when available, falling back to Python. Before writing the script, call `workflow_query_scars` for the selected language (`dart` or `python`). Explicit interpreter invocation bypasses `noexec` mount restrictions and eliminates reliance on `chmod +x` executable file permissions.
+- **Socratic Probe**: Does this command involve fragile nested quotes that need a temporary script file? Did you call `workflow_query_scars` for the selected temporary script language, and will invoking the runtime interpreter bypass `noexec` and `chmod +x` issues?
 
 ### SCAR-SH-03: Shell Redirection and Comment Stripping
 

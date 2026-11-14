@@ -20,8 +20,8 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 
 - **Wound**: Inline shell scripts with nested quoting fail or corrupt strings, and Python scratch scripts fail on missing packages or virtual environment restrictions.
 - **Trap**: Defaulting blindly to inline multiline Python commands with complex shell escapes instead of checking for installed Dart or using script files.
-- **Permanent Reflex**: If Dart is installed and the language is not specified, prefer Dart over Python for scratch scripts. If Dart is not installed, use Python without attempting to install Dart. If shell commands require complex string escaping, write the script to a file in a temporary directory.
-- **Socratic Probe**: Will long inline scripts run directly in a shell risk string escape defects or environment conflicts? If Dart is installed, would a temporary Dart script run more reliably without virtual environment overhead? If Dart is not available, would a temporary script on the filesystem be more reliable?
+- **Permanent Reflex**: If Dart is installed and the language is not specified, prefer Dart over Python for scratch scripts. If Dart is not installed, use Python without attempting to install Dart. If shell commands require complex string escaping, write the script to a file in a temporary directory. Before writing the temporary script, call `workflow_query_scars` for the selected language (`dart` or `python`).
+- **Socratic Probe**: Will long inline scripts run directly in a shell risk string escape defects or environment conflicts? Did you call `workflow_query_scars` for the selected temporary script language (`dart` or `python`) before writing the script?
 
 ### SCAR-TOOL-13: Single State Writer Isolation
 

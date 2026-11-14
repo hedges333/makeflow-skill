@@ -116,7 +116,63 @@ class TestEmitReflexScript(unittest.TestCase):
     self.assertIn("Packing static negative prose into SKILL.md.", rendered)
     self.assertIn("REFLEX (ACTION):", rendered)
     self.assertIn("Move detailed target prose into references/.", rendered)
+    self.assertIn("SOCRATIC PROBE:", rendered)
+    self.assertIn("?", rendered)
     self.assertEqual(lines[-1], "=" * 80)
+
+  def test_emit_reflex_includes_socratic_probe_for_all_core_gate_scars(self):
+    from lib.reflex import emit_reflex, resolve_core_scar_probe
+
+    core_gate_scar_ids = [
+        "PROC-99",
+        "PROC-102",
+        "PROC-124",
+        "TEST-08",
+        "TEST-10",
+        "TEST-12",
+        "AST-01",
+        "GIT-20",
+        "GIT-23",
+        "GIT-24",
+        "GIT-25",
+        "SYS-08",
+        "DB-09",
+        "SEC-01",
+        "ARCH-06",
+        "ARCH-08",
+    ]
+    for scar_id in core_gate_scar_ids:
+      probe = resolve_core_scar_probe(scar_id, repo_root=_REPO_ROOT)
+      self.assertTrue(
+          probe.strip().endswith("?"),
+          f"Expected non-empty Socratic Probe ending with '?' for {scar_id}, got: {probe!r}",
+      )
+
+    err_txt = io.StringIO()
+    emit_reflex(
+        scar_id="TEST-12",
+        code="RED_RECEIPT_MISSING",
+        trigger="Missing receipt.",
+        rejected="Fake red phase.",
+        reflex="Run witness-red.",
+        output_json=False,
+        stream=err_txt,
+    )
+    self.assertIn("SOCRATIC PROBE:", err_txt.getvalue())
+
+    out_json = io.StringIO()
+    emit_reflex(
+        scar_id="TEST-12",
+        code="RED_RECEIPT_MISSING",
+        trigger="Missing receipt.",
+        rejected="Fake red phase.",
+        reflex="Run witness-red.",
+        output_json=True,
+        stream=out_json,
+    )
+    payload = json.loads(out_json.getvalue())
+    self.assertIn("socratic_probe", payload)
+    self.assertTrue(payload["socratic_probe"].endswith("?"))
 
   def test_scar_id_normalization_avoids_duplicate_prefix(self):
     for raw_id in ("PROC-99", "SCAR-PROC-99", "SCAR-SCAR-PROC-99"):
@@ -790,6 +846,11 @@ class TestWorkflowGatesScript(unittest.TestCase):
       receipt_path = os.path.join(state_dir, "30_tdd_receipt.json")
       with open(receipt_path, "w", encoding="utf-8") as f:
         f.write(json.dumps({"ticket": "GH-171", "red_exit": 1}))
+      loaded_scars_path = os.path.join(state_dir, "loaded_scars.json")
+      with open(loaded_scars_path, "w", encoding="utf-8") as f:
+        f.write(
+            json.dumps({"ticketId": "GH-171", "loadedIds": ["SCAR-ARCH-05"]})
+        )
 
       err_blocked = io.StringIO()
       code_blocked = WorkflowGatesScript().execute(
@@ -819,6 +880,7 @@ class TestWorkflowGatesScript(unittest.TestCase):
       )
       self.assertEqual(code_release, 0, err_release.getvalue())
       self.assertFalse(os.path.exists(receipt_path))
+      self.assertFalse(os.path.exists(loaded_scars_path))
 
       err_unblocked = io.StringIO()
       code_unblocked = WorkflowGatesScript().execute(
@@ -851,6 +913,12 @@ class TestWorkflowGatesScript(unittest.TestCase):
       # 1. Explicit --ticket GH-171
       with open(receipt_path, "w", encoding="utf-8") as f:
         f.write(receipt_payload)
+      loaded_scars_path = os.path.join(state_dir, "loaded_scars.json")
+      loaded_scars_payload = json.dumps(
+          {"ticketId": "GH-171", "loadedIds": ["SCAR-ARCH-05"]}, indent=2
+      )
+      with open(loaded_scars_path, "w", encoding="utf-8") as f:
+        f.write(loaded_scars_payload)
 
       err_rel = io.StringIO()
       code_rel = WorkflowGatesScript().execute(
@@ -868,12 +936,19 @@ class TestWorkflowGatesScript(unittest.TestCase):
       )
       self.assertEqual(code_rel, 0, err_rel.getvalue())
       self.assertFalse(os.path.exists(receipt_path))
+      self.assertFalse(os.path.exists(loaded_scars_path))
       archived_path = os.path.join(
           cfg_dir, "archive", "GH-171", "30_tdd_receipt.json"
       )
       self.assertTrue(os.path.isfile(archived_path))
       with open(archived_path, "r", encoding="utf-8") as f:
         self.assertEqual(f.read(), receipt_payload)
+      archived_loaded_path = os.path.join(
+          cfg_dir, "archive", "GH-171", "loaded_scars.json"
+      )
+      self.assertTrue(os.path.isfile(archived_loaded_path))
+      with open(archived_loaded_path, "r", encoding="utf-8") as f:
+        self.assertEqual(f.read(), loaded_scars_payload)
 
       err_intake = io.StringIO()
       code_intake = WorkflowGatesScript().execute(

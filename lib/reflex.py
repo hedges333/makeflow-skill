@@ -6,14 +6,20 @@ without inflating static SKILL.md context.
 """
 
 import argparse
+import glob
 import json
-from typing import List, Optional, TextIO, Tuple
+import os
+import re
+import sys
+from typing import Dict, List, Optional, TextIO, Tuple
 
 from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
 
 REFLEX_EXIT_CODE = 2
 _HEAVY_BORDER = "=" * 80
 _LIGHT_BORDER = "-" * 80
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CORE_SCAR_PROBE_CACHE: Dict[str, str] = {}
 
 
 def normalize_scar_id(raw_scar_id: str) -> Tuple[str, str]:
@@ -26,44 +32,105 @@ def normalize_scar_id(raw_scar_id: str) -> Tuple[str, str]:
   return f"SCAR-{cleaned}", cleaned
 
 
+def resolve_core_scar_probe(
+    scar_id: str, repo_root: Optional[str] = None
+) -> str:
+  """Resolves the Socratic Probe for a core scar from skills/makeflow/references/scars/*.md."""
+  try:
+    full_id, _ = normalize_scar_id(scar_id)
+  except ReflexArgumentError:
+    return ""
+
+  root = os.path.abspath(repo_root or _REPO_ROOT)
+  cache_key = f"{root}:{full_id}"
+  if cache_key in _CORE_SCAR_PROBE_CACHE:
+    return _CORE_SCAR_PROBE_CACHE[cache_key]
+
+  scars_dir = os.path.join(root, "skills", "makeflow", "references", "scars")
+  header_pat = re.compile(
+      rf"^###\s+{re.escape(full_id)}\b", re.IGNORECASE | re.MULTILINE
+  )
+  probe_pat = re.compile(
+      r"^-\s+\*\*Socratic Probe\*\*:\s*(.+)$", re.MULTILINE
+  )
+
+  for md_path in sorted(glob.glob(os.path.join(scars_dir, "*.md"))):
+    try:
+      with open(md_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    except OSError:
+      continue
+    m_hdr = header_pat.search(text)
+    if not m_hdr:
+      continue
+    rest = text[m_hdr.end() :]
+    next_hdr = re.search(r"^###\s+SCAR-", rest, re.MULTILINE)
+    section = rest[: next_hdr.start()] if next_hdr else rest
+    m_probe = probe_pat.search(section)
+    if m_probe:
+      probe_val = m_probe.group(1).strip()
+      _CORE_SCAR_PROBE_CACHE[cache_key] = probe_val
+      return probe_val
+
+  _CORE_SCAR_PROBE_CACHE[cache_key] = ""
+  return ""
+
+
 def emit_reflex(
-    stderr: TextIO,
-    scar_id: str,
-    violation_code: str,
-    trigger: str,
-    rejected: str,
-    reflex: str,
+    stderr: Optional[TextIO] = None,
+    scar_id: str = "",
+    violation_code: str = "",
+    trigger: str = "",
+    rejected: str = "",
+    reflex: str = "",
     as_json: bool = False,
+    *,
+    code: Optional[str] = None,
+    socratic_probe: Optional[str] = None,
+    output_json: Optional[bool] = None,
+    stream: Optional[TextIO] = None,
 ) -> int:
   """Writes a formatted Vector 4 Reflex block or JSON payload to stderr."""
+  target_stream = stream if stream is not None else (stderr or sys.stderr)
+  use_json = output_json if output_json is not None else as_json
   full_id, short_id = normalize_scar_id(scar_id)
-  code = violation_code.strip()
+  v_code = (code if code is not None else violation_code).strip()
   trig = trigger.strip()
   trap = rejected.strip()
   action = reflex.strip()
+  resolved_probe = (
+      socratic_probe.strip()
+      if socratic_probe and socratic_probe.strip()
+      else resolve_core_scar_probe(full_id)
+  )
 
-  if as_json:
+  if use_json:
     payload = {
         "scar_id": full_id,
         "short_id": short_id,
-        "violation_code": code,
+        "violation_code": v_code,
         "trigger": trig,
         "rejected": trap,
         "reflex": action,
+        "socratic_probe": resolved_probe,
         "exit_code": REFLEX_EXIT_CODE,
     }
-    stderr.write(json.dumps(payload) + "\n")
+    target_stream.write(json.dumps(payload) + "\n")
   else:
+    probe_line = (
+        f"SOCRATIC PROBE:  {resolved_probe}\n" if resolved_probe else ""
+    )
     block = (
         f"{_HEAVY_BORDER}\n"
-        f"[SCAR-ID: {short_id}] {code}\n"
+        f"[SCAR-ID: {short_id}] {v_code}\n"
         f"{_LIGHT_BORDER}\n"
         f"TRIGGER (THIS):  {trig}\n"
         f"REJECTED (TRAP): {trap}\n"
         f"REFLEX (ACTION): {action}\n"
+        f"{probe_line}"
         f"{_HEAVY_BORDER}\n"
     )
-    stderr.write(block)
+    target_stream.write(block)
   return REFLEX_EXIT_CODE
 
 

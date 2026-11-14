@@ -32,12 +32,10 @@ void main() {
 
 ## 4. Dart and Flutter Failure Vaccines
 
-Follow four reliability rules when editing Dart or Flutter code:
+Dart and Flutter failure vaccines live in the SQLite synthetic scars registry (`skills/makeflow/data/scars_registry.db`):
 
-1. `SCAR-LANG-DART-01` (Async Timers): Wrap timer and microtask tests in `fakeAsync`, or pump widget frames explicitly.
-2. `SCAR-LANG-DART-02` (Completer Guard): Make sure that `!completer.isCompleted` holds before calling `completer.complete()` in callbacks.
-3. `SCAR-LANG-DART-03` (Cascade AST Nodes): Inspect Dart AST nodes for cascade expressions before reading member offsets.
-4. `SCAR-LANG-DART-04` (Widget Lifecycle Disposal): Cancel streams, timers, controllers, and focus nodes inside `dispose()`.
+1. Call `workflow_query_scars` with `language: "dart"` or `framework: "flutter"` before planning, implementing, or reviewing Dart and Flutter changes.
+2. Query specific topics such as `fakeAsync`, `Completer`, `cascade`, `dispose`, `FocusNode`, or `TextEditingController` to retrieve active reflexes and Socratic probes.
 
 ## 5. One-Off Scratch Scripts and Automation Utilities
 
@@ -45,8 +43,9 @@ Follow these rules for temporary scripts (`SCAR-TOOL-07`):
 
 1. For one-off scripts and automation tasks where the language is not specified, prefer Dart over Python if Dart is installed.
 2. If Dart is not installed, use Python. Never attempt to install Dart.
-3. Run standalone scripts directly with `dart <script_path>` without virtual environments.
-4. Use core libraries (`dart:io`, `dart:convert`, `dart:async`) for file operations, JSON parsing, and process execution without external dependencies.
+3. Before writing a temporary script, call `workflow_query_scars` with `language: "dart"` (or `language: "python"`) to load language failure vaccines.
+4. Run standalone scripts directly with `dart <script_path>` without virtual environments.
+5. Use core libraries (`dart:io`, `dart:convert`, `dart:async`) for file operations, JSON parsing, and process execution without external dependencies.
 
 ## Idiomatic Directory and Module Structure
 

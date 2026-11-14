@@ -75,7 +75,7 @@ Synthetic Scars use a two-tier storage and discovery lifecycle:
 6. At Target 90, record only merged scar IDs in `.workflow/history.json` and `.workflow/history.md`.
 7. Inside `makeflow-skill`, record incidental session lessons in ticket notes for a future feature request ticket.
 8. Inside external user projects, offer to record project-specific lessons in `.workflow/scars/local.md` at Target 90.
-9. During Target 15, Target 20, Target 30, and Target 40, inspect both `skills/makeflow/references/scars/` and `.workflow/scars/`.
+9. During Target 15, Target 20, Target 30, Target 40, and Target 70, inspect both `skills/makeflow/references/scars/` and `.workflow/scars/`, and query stacked SQLite registries via `workflow_query_scars`.
 
 ### 1.7 Full Discussion and Comment Thread Ingestion at Intake (SCAR-PROC-107)
 
@@ -175,7 +175,7 @@ Apply these rules for scratch scripts and automation utilities:
 1. For one-off scripts and automation tasks where the language is not specified, prefer Dart over Python if Dart is installed.
 2. If Dart is not installed, use Python.
 3. Never attempt to install Dart.
-4. If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the script path to the runtime interpreter command (`dart` or `python3`) under `SCAR-SH-01`.
+4. If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the script path to the runtime interpreter command (`dart` or `python3`) under `SCAR-SH-01`. Before writing the temporary script, call `workflow_query_scars` for the selected language (`dart` or `python`).
 5. Encapsulate CLI script logic in `BaseScript` Template Method subclasses under `SCAR-ARCH-05`. Place shared library modules in `lib/` without shebang headers. Keep thin CLI wrappers (`sys.exit(ScriptClass().execute())`) in `scripts/` without cross-script imports. Put unit tests in `tests/`.
 
 ## 4. Simple English Documentation Rules
