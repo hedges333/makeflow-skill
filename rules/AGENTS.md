@@ -130,6 +130,18 @@ When inspecting or triaging information sources:
    - Count total rows first before reading detailed content.
    - Proceed without limits.
 
+### 1.12 Canonical Plugin and Repository Path Map
+
+When you reference plugin files, use these repository paths:
+
+1. Root manifests: `./hooks.json`, `./plugin.json`, `./mcp_config.json`, and `./default_config.json` live at the repository root.
+2. MCP server: `./mcp/server.py` implements the workflow MCP server.
+3. CLI entrypoints: `./scripts/*.py` holds executable entrypoints including `scripts/pre_tool_guard.py`, `scripts/workflow_gates.py`, `scripts/tdd_guard.py`, `scripts/emit_reflex.py`, and `scripts/session_start.py`.
+4. Shared libraries: `./lib/*.py` holds shared logic including `lib/workflow_gates.py`, `lib/shell_safety.py`, and `lib/config.py`.
+5. Hook delegation: `scripts/pre_tool_guard.py` delegates shell and config checks to `lib/shell_safety.py` and `lib/config.py`.
+6. Rules and skill docs: `./rules/AGENTS.md` holds plugin rules, and `./skills/makeflow/SKILL.md` indexes manuals in `skills/makeflow/references/`.
+7. Non-existent paths: No `hooks/` directory or `lib/pre_tool_guard.py` file exists in this repository.
+
 ## 2. Production Data Protection Rules
 
 Never connect tests or agent commands to live systems.

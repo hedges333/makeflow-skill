@@ -25,7 +25,7 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `MAKEFILE_WORKFLOW_CI_POLL_INTERVAL` for continuous integration polling interval in seconds (default 30).
    - `MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION` for completed state card action (`unlink` or `archive`, default `unlink`).
    - `MAKEFLOW_DISABLE_TERMINAL_TITLE` set to `1` or `true` to disable automatic terminal tab title updates.
-4. Canonical defaults in `default_config.json` (packaged at repository root). Single-item user overrides in `.workflow/config.json` deep-merge recursively into defaults without dropping unset default fields:
+4. Canonical defaults in `./default_config.json` (packaged at repository root). Single-item user overrides in `.workflow/config.json` deep-merge recursively into defaults without dropping unset default fields:
    - `adversarial-critic`: `inherit`
    - `archaeology-worker`: `inherit`
    - `tdd-worker`: `inherit`
