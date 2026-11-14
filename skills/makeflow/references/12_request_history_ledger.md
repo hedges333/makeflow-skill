@@ -9,7 +9,7 @@ Chat sessions end, but the repository remains. The Request History Ledger record
 1. Every ticket completed through the Makefile Workflow.
 2. Branch names, commit hashes, pull request links, and added test counts.
 3. Synthetic Scars (process rules learned from past failures) earned during each task. The `scars_earned` list records merged core scar IDs and project-local `.workflow/scars/` entries. Never make unreviewed core catalog edits on `main` at Target 90.
-4. Next local task numbers when creating branches for ad-hoc chat requests.
+4. Completed local task numbers alongside `.workflow/tickets/LOCAL-<N>.json` for collision-free ID allocation.
 
 ## 2. File Locations and Formats
 
@@ -108,10 +108,11 @@ Run these steps during Target 90 after a pull request merges:
 2. Read `.workflow/history.json`, or start with `[]` when the file is new.
 3. Append the completed ticket object to `.workflow/history.json`.
 4. Add a matching summary row to `.workflow/history.md`.
-5. Commit the updated ledger files when the project tracks `.workflow/history.*` in Git: `git commit -m "docs(history): record <id>"`.
-6. If direct push to `main` is permitted, push the ledger commit with `git push origin main`.
-7. Archive or clean up completed state cards and `approved_tree.txt` per `state.completedCardAction`:
+5. If the ticket is a local ticket, run `python3 scripts/local_tickets.py close --ticket <id>`.
+6. Commit the updated ledger files when the project tracks `.workflow/history.*` in Git: `git commit -m "docs(history): record <id>"`.
+7. If direct push to `main` is permitted, push the ledger commit with `git push origin main`.
+8. Archive or clean up completed state cards and `approved_tree.txt` per `state.completedCardAction`:
    - If `state.completedCardAction` is `unlink` (default), remove intermediate cards `10_` through `80_` and `approved_tree.txt` from `.workflow/state/`.
    - If `state.completedCardAction` is `archive`, move intermediate cards `10_` through `80_` and `approved_tree.txt` to `.workflow/archive/<ticket-id>/`.
-8. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
-9. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.
+9. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
+10. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.

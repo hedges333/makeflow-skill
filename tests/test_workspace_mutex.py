@@ -838,6 +838,32 @@ class TestWorkspaceMutex(unittest.TestCase):
 
     self.assertEqual(exit_code, 0)
 
+  def test_check_dependencies_local_ticket_open_and_closed_blockers(self):
+    """TestCase 28: check_dependencies resolves local blocked_by tickets via LocalTicketStore."""
+    from lib.local_tickets import LocalTicketStore
+
+    store = LocalTicketStore(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    store.create_ticket(title="Base parser", ticket_id="LOCAL-15")
+    store.create_ticket(
+        title="CLI command",
+        blocked_by=["LOCAL-15"],
+        ticket_id="LOCAL-16",
+    )
+
+    mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+    res_open = mutex.check_dependencies("LOCAL-16", hosting_mode="PURE_GIT")
+    self.assertTrue(res_open["blocked"])
+    self.assertEqual(res_open["blocking_count"], 1)
+    self.assertEqual(res_open["open_blockers"][0]["number"], "LOCAL-15")
+    self.assertEqual(res_open["open_blockers"][0]["title"], "Base parser")
+    self.assertEqual(res_open["hosting_mode"], "PURE_GIT")
+
+    store.close_ticket("LOCAL-15")
+    res_closed = mutex.check_dependencies("LOCAL-16", hosting_mode="PURE_GIT")
+    self.assertFalse(res_closed["blocked"])
+    self.assertEqual(res_closed["blocking_count"], 0)
+    self.assertEqual(res_closed["open_blockers"], [])
+
 
 if __name__ == "__main__":
   unittest.main()

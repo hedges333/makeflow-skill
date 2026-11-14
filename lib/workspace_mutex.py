@@ -387,11 +387,16 @@ class WorkspaceMutex:
   ) -> Dict[str, Any]:
     """Check if a ticket is blocked by open upstream issues."""
     mode = hosting_mode.upper()
-    if mode != "GITHUB":
+    clean_ticket = (ticket_id or "").strip().upper()
+    if mode != "GITHUB" or clean_ticket.startswith("LOCAL-"):
+      from lib.local_tickets import LocalTicketStore
+
+      store = LocalTicketStore(repo_root=self.repo_root, lock_dir=self.lock_dir)
+      local_dep = store.check_local_dependencies(ticket_id)
       return {
-          "blocked": False,
-          "blocking_count": 0,
-          "open_blockers": [],
+          "blocked": bool(local_dep.get("blocked", False)),
+          "blocking_count": int(local_dep.get("blocking_count", 0)),
+          "open_blockers": list(local_dep.get("open_blockers", [])),
           "hosting_mode": hosting_mode,
       }
 
