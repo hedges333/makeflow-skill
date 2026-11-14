@@ -17,7 +17,7 @@ import re
 import subprocess
 from typing import List, Optional, Set
 
-from lib.base_script import BaseScript
+from lib.base_script import BaseScript, SilentArgumentParser
 from lib.reflex import REFLEX_EXIT_CODE, emit_reflex
 
 SCAR_ID = "SCAR-AST-01"
@@ -491,9 +491,15 @@ class AstScrubScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = argparse.ArgumentParser(
+    parser = SilentArgumentParser(
         prog="ast_scrub.py",
         description="Structural AST scrubber gate (SCAR-AST-01, GH-56).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/ast_scrub.py --src-dir lib --strict\n"
+            "  python3 scripts/ast_scrub.py --files lib/base_script.py --strict"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--src-dir", default=None, help="Source directory to scan.")
     parser.add_argument(

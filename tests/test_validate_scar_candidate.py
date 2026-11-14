@@ -381,6 +381,46 @@ class TestScarCandidateCLI(unittest.TestCase):
       self.assertEqual(code, 2)
       self.assertIn("failed to parse json", err.getvalue().lower())
 
+  def test_help_output_exits_0_and_writes_usage_to_stdout(self):
+    """Test that --help and -h return exit code 0 and write usage to stdout without touching stderr."""
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    try:
+      sys.stdout = None
+      sys.stderr = None
+      for flag in ("--help", "-h"):
+        out = io.StringIO()
+        err = io.StringIO()
+        script = ScarCandidateTestScript()
+        code = script.execute([flag], stdout=out, stderr=err)
+        self.assertEqual(code, 0)
+        self.assertEqual(err.getvalue(), "")
+        self.assertIn("usage: validate_scar_candidate.py", out.getvalue())
+        self.assertIn("--candidate", out.getvalue())
+        self.assertIn("--json", out.getvalue())
+    finally:
+      sys.stdout = orig_stdout
+      sys.stderr = orig_stderr
+
+  def test_candidate_named_flag_exits_0(self):
+    """Test that --candidate <file> option works alongside positional candidate_file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      cand_path = os.path.join(tmpdir, "candidate.json")
+      db_path = os.path.join(tmpdir, "scars.db")
+      with open(cand_path, "w", encoding="utf-8") as f:
+        json.dump(_make_valid_candidate(), f)
+
+      out = io.StringIO()
+      err = io.StringIO()
+      script = ScarCandidateTestScript()
+      code = script.execute(
+          ["--candidate", cand_path, "--db-path", db_path],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 0)
+      self.assertEqual(err.getvalue(), "")
+      self.assertIn("passed", out.getvalue().lower())
+
   def test_cli_argument_errors_exit_2(self):
     """Test that missing arguments or invalid flags return exit code 2."""
     out = io.StringIO()

@@ -5,6 +5,7 @@ that exit 0 when invariants hold or emit a structured Vector 4 Reflex on stderr
 and exit 2 when violated.
 """
 
+import argparse
 import os
 import re
 import shlex
@@ -104,56 +105,237 @@ class WorkflowGatesScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = SilentArgumentParser(prog="workflow_gates.py", add_help=False)
-    parser.add_argument("--repo-root", default=_DEFAULT_REPO_ROOT)
-    parser.add_argument("--lock-dir", default=None)
-    parser.add_argument("--json", action="store_true", dest="as_json")
+    parser = SilentArgumentParser(
+        prog="workflow_gates.py",
+        description="Deterministic Makefile workflow gate checks emitting Vector 4 Reflexes (SCAR-ARCH-06).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/workflow_gates.py init-makefile\n"
+            "  python3 scripts/workflow_gates.py intake --ticket GH-170\n"
+            "  python3 scripts/workflow_gates.py approved-tree\n"
+            "  python3 scripts/workflow_gates.py commit-msg --file .workflow/state/50_commit_msg.txt"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=_DEFAULT_REPO_ROOT,
+        help="Repository root directory to check.",
+    )
+    parser.add_argument(
+        "--lock-dir",
+        default=None,
+        help="Optional directory for multi-workspace mutual exclusion locks.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit Vector 4 Reflex errors as JSON.",
+    )
 
     subparsers = parser.add_subparsers(
-        dest="gate", parser_class=SilentArgumentParser
+        dest="gate",
+        parser_class=SilentArgumentParser,
+        help="Workflow gate subcommand to execute.",
     )
 
-    p_init = subparsers.add_parser("init-makefile", add_help=False)
-    p_init.add_argument("--json", action="store_true", dest="sub_json")
+    p_init = subparsers.add_parser(
+        "init-makefile",
+        help="Synthesize .workflow/state/Makefile for the target workspace.",
+        description="Synthesize deterministic .workflow/state/Makefile gate targets for the workspace.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . init-makefile",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_init.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_files = subparsers.add_parser("plugin-files", add_help=False)
-    p_files.add_argument("--json", action="store_true", dest="sub_json")
+    p_files = subparsers.add_parser(
+        "plugin-files",
+        help="Verify all required Makeflow plugin manifests and core skill files exist.",
+        description="Verify that required plugin manifests, hooks, MCP config, and SKILL.md exist.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py plugin-files",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_files.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_budget = subparsers.add_parser("skill-budget", add_help=False)
+    p_budget = subparsers.add_parser(
+        "skill-budget",
+        help="Verify skills/makeflow/SKILL.md stays within the context byte budget.",
+        description="Check that skills/makeflow/SKILL.md does not exceed the byte budget ceiling.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py skill-budget --max-bytes 24576",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     p_budget.add_argument(
-        "--max-bytes", type=int, default=DEFAULT_SKILL_MAX_BYTES
+        "--max-bytes",
+        type=int,
+        default=DEFAULT_SKILL_MAX_BYTES,
+        help="Maximum allowed size in bytes for SKILL.md (default 24576).",
     )
-    p_budget.add_argument("--json", action="store_true", dest="sub_json")
+    p_budget.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_intake = subparsers.add_parser("intake", add_help=False)
-    p_intake.add_argument("--ticket", default=None)
-    p_intake.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
-    p_intake.add_argument("--allow-blocked", action="store_true", dest="allow_blocked")
-    p_intake.add_argument("--json", action="store_true", dest="sub_json")
+    p_intake = subparsers.add_parser(
+        "intake",
+        help="Run Target 10 intake hygiene, git exclude, and ticket collision checks.",
+        description="Verify clean git status, .git/info/exclude rules, and multi-workspace ticket lock at Target 10.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py intake --ticket GH-170",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_intake.add_argument(
+        "--ticket",
+        default=None,
+        help="Ticket identifier to acquire and check (for example GH-170 or LOCAL-1).",
+    )
+    p_intake.add_argument(
+        "--lock-dir",
+        default=None,
+        dest="sub_lock_dir",
+        help="Directory for workspace mutual exclusion locks.",
+    )
+    p_intake.add_argument(
+        "--allow-blocked",
+        action="store_true",
+        dest="allow_blocked",
+        help="Allow intake even when upstream blocking issues are open.",
+    )
+    p_intake.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_rel = subparsers.add_parser("release-intake", add_help=False)
-    p_rel.add_argument("--ticket", default=None)
-    p_rel.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
-    p_rel.add_argument("--json", action="store_true", dest="sub_json")
+    p_rel = subparsers.add_parser(
+        "release-intake",
+        help="Release active ticket lock and reset terminal title upon completion.",
+        description="Release the workspace mutex lock for the active ticket and reset the terminal title.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py release-intake --ticket GH-170",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_rel.add_argument(
+        "--ticket",
+        default=None,
+        help="Ticket identifier whose lock should be released.",
+    )
+    p_rel.add_argument(
+        "--lock-dir",
+        default=None,
+        dest="sub_lock_dir",
+        help="Directory for workspace mutual exclusion locks.",
+    )
+    p_rel.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_rel_lock = subparsers.add_parser("release-lock", add_help=False)
-    p_rel_lock.add_argument("--ticket", default=None)
-    p_rel_lock.add_argument("--lock-dir", default=None, dest="sub_lock_dir")
-    p_rel_lock.add_argument("--json", action="store_true", dest="sub_json")
+    p_rel_lock = subparsers.add_parser(
+        "release-lock",
+        help="Alias for release-intake to release active ticket and workspace locks.",
+        description="Alias for release-intake to release active ticket and workspace locks.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py release-lock --ticket GH-170",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_rel_lock.add_argument(
+        "--ticket",
+        default=None,
+        help="Ticket identifier whose lock should be released.",
+    )
+    p_rel_lock.add_argument(
+        "--lock-dir",
+        default=None,
+        dest="sub_lock_dir",
+        help="Directory for workspace mutual exclusion locks.",
+    )
+    p_rel_lock.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_tree = subparsers.add_parser("approved-tree", add_help=False)
-    p_tree.add_argument("--json", action="store_true", dest="sub_json")
+    p_tree = subparsers.add_parser(
+        "approved-tree",
+        help="Verify staged git write-tree matches .workflow/state/approved_tree.txt.",
+        description="Verify that the current git index matches the locked Merkle tree hash from Target 40.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py approved-tree",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_tree.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_msg = subparsers.add_parser("commit-msg", add_help=False)
-    p_msg.add_argument("--file", dest="commit_msg_file", default=None)
-    p_msg.add_argument("--json", action="store_true", dest="sub_json")
+    p_msg = subparsers.add_parser(
+        "commit-msg",
+        help="Validate .workflow/state/50_commit_msg.txt against Conventional Commits 1.0.0.",
+        description="Validate the prepared commit message file for Target 50 against Conventional Commits and trailer rules.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py commit-msg --file .workflow/state/50_commit_msg.txt",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_msg.add_argument(
+        "--file",
+        dest="commit_msg_file",
+        default=None,
+        help="Path to commit message file (defaults to .workflow/state/50_commit_msg.txt).",
+    )
+    p_msg.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit errors as JSON.",
+    )
 
-    p_title = subparsers.add_parser("terminal-title", add_help=False)
-    p_title.add_argument("--ticket", default=None)
-    p_title.add_argument("--project", default=None)
-    p_title.add_argument("--title", default=None)
-    p_title.add_argument("--issue-tag", default=None)
-    p_title.add_argument("--json", action="store_true", dest="sub_json")
+    p_title = subparsers.add_parser(
+        "terminal-title",
+        help="Update the interactive terminal title for the active ticket and project.",
+        description="Detect terminal capability and set the terminal window title for the active ticket.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py terminal-title --ticket GH-170",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_title.add_argument(
+        "--ticket",
+        default=None,
+        help="Ticket ID to display in the terminal title.",
+    )
+    p_title.add_argument(
+        "--project",
+        default=None,
+        help="Project name to display in the terminal title.",
+    )
+    p_title.add_argument(
+        "--title",
+        default=None,
+        help="Explicit full terminal title string override.",
+    )
+    p_title.add_argument(
+        "--issue-tag",
+        default=None,
+        help="Short issue description tag for the terminal title.",
+    )
+    p_title.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit output as JSON.",
+    )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:

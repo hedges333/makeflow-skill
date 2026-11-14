@@ -5,6 +5,7 @@ local session registry tracking, stale process ID recovery, and remote branch/is
 conflict checks.
 """
 
+import argparse
 from datetime import datetime, timezone
 import errno
 import hashlib
@@ -531,51 +532,219 @@ class WorkspaceMutexScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = SilentArgumentParser(prog="workspace_mutex.py", add_help=False)
-    parser.add_argument("--repo-root", default=_DEFAULT_REPO_ROOT)
-    parser.add_argument("--lock-dir", default=None)
-    parser.add_argument("--json", action="store_true", dest="as_json")
-
-    subparsers = parser.add_subparsers(
-        dest="subcommand", parser_class=SilentArgumentParser
+    parser = SilentArgumentParser(
+        prog="workspace_mutex.py",
+        description="Multi-workspace ticket mutual exclusion and collision detection (SCAR-SYS-08).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/workspace_mutex.py acquire --ticket GH-170 --json\n"
+            "  python3 scripts/workspace_mutex.py status --ticket GH-170\n"
+            "  python3 scripts/workspace_mutex.py release --ticket GH-170"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=_DEFAULT_REPO_ROOT,
+        help="Repository root directory.",
+    )
+    parser.add_argument(
+        "--lock-dir",
+        default=None,
+        help="Directory for workspace mutual exclusion locks (defaults to ~/.workflow/locks).",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit output as JSON.",
     )
 
-    p_acq = subparsers.add_parser("acquire", add_help=False)
-    p_acq.add_argument("--ticket", required=True)
-    p_acq.add_argument("--branch", default=None)
-    p_acq.add_argument("--pid", type=int, default=None)
-    p_acq.add_argument("--repo-root", default=None)
-    p_acq.add_argument("--lock-dir", default=None)
-    p_acq.add_argument("--json", action="store_true", dest="sub_json")
+    subparsers = parser.add_subparsers(
+        dest="subcommand",
+        parser_class=SilentArgumentParser,
+        help="Workspace mutex subcommand to execute.",
+    )
 
-    p_rel = subparsers.add_parser("release", add_help=False)
-    p_rel.add_argument("--ticket", required=True)
-    p_rel.add_argument("--repo-root", default=None)
-    p_rel.add_argument("--lock-dir", default=None)
-    p_rel.add_argument("--json", action="store_true", dest="sub_json")
+    p_acq = subparsers.add_parser(
+        "acquire",
+        help="Acquire an atomic directory lock for a ticket.",
+        description="Acquire an atomic directory lock for a ticket in the current workspace.",
+        epilog="Example:\n  python3 scripts/workspace_mutex.py acquire --ticket GH-170 --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_acq.add_argument(
+        "--ticket",
+        required=True,
+        help="Ticket identifier to lock (for example GH-170 or LOCAL-1).",
+    )
+    p_acq.add_argument(
+        "--branch",
+        default=None,
+        help="Optional Git branch name associated with the session.",
+    )
+    p_acq.add_argument(
+        "--pid",
+        type=int,
+        default=None,
+        help="Optional process ID owning the session (defaults to current PID).",
+    )
+    p_acq.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_acq.add_argument(
+        "--lock-dir",
+        default=None,
+        help="Directory for workspace mutual exclusion locks.",
+    )
+    p_acq.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit lock acquisition result as JSON.",
+    )
 
-    p_stat = subparsers.add_parser("status", add_help=False)
-    p_stat.add_argument("--ticket", required=True)
-    p_stat.add_argument("--repo-root", default=None)
-    p_stat.add_argument("--lock-dir", default=None)
-    p_stat.add_argument("--json", action="store_true", dest="sub_json")
+    p_rel = subparsers.add_parser(
+        "release",
+        help="Release the atomic directory lock for a ticket.",
+        description="Release the atomic directory lock and session metadata for a ticket.",
+        epilog="Example:\n  python3 scripts/workspace_mutex.py release --ticket GH-170",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_rel.add_argument(
+        "--ticket",
+        required=True,
+        help="Ticket identifier to unlock.",
+    )
+    p_rel.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_rel.add_argument(
+        "--lock-dir",
+        default=None,
+        help="Directory for workspace mutual exclusion locks.",
+    )
+    p_rel.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit release result as JSON.",
+    )
 
-    p_rem = subparsers.add_parser("check-remote", add_help=False)
-    p_rem.add_argument("--ticket", required=True)
-    p_rem.add_argument("--mode", default="GITHUB")
-    p_rem.add_argument("--repo-root", default=None)
-    p_rem.add_argument("--json", action="store_true", dest="sub_json")
+    p_stat = subparsers.add_parser(
+        "status",
+        help="Inspect lock status and session metadata for a ticket.",
+        description="Check whether a ticket is currently locked and whether the owning PID is alive.",
+        epilog="Example:\n  python3 scripts/workspace_mutex.py status --ticket GH-170 --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_stat.add_argument(
+        "--ticket",
+        required=True,
+        help="Ticket identifier to inspect.",
+    )
+    p_stat.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_stat.add_argument(
+        "--lock-dir",
+        default=None,
+        help="Directory for workspace mutual exclusion locks.",
+    )
+    p_stat.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit status output as JSON.",
+    )
 
-    p_dep = subparsers.add_parser("check-dependencies", add_help=False)
-    p_dep.add_argument("--ticket", required=True)
-    p_dep.add_argument("--mode", default="GITHUB")
-    p_dep.add_argument("--repo-root", default=None)
-    p_dep.add_argument("--json", action="store_true", dest="sub_json")
+    p_rem = subparsers.add_parser(
+        "check-remote",
+        help="Check remote issue tracker or Git origin for concurrent work on a ticket.",
+        description="Check GitHub assignees/labels or remote Git branches for concurrent activity on a ticket.",
+        epilog="Example:\n  python3 scripts/workspace_mutex.py check-remote --ticket GH-170 --mode GITHUB",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_rem.add_argument(
+        "--ticket",
+        required=True,
+        help="Ticket identifier to check.",
+    )
+    p_rem.add_argument(
+        "--mode",
+        default="GITHUB",
+        help="Hosting mode: GITHUB or PURE_GIT (default GITHUB).",
+    )
+    p_rem.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_rem.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit remote check result as JSON.",
+    )
 
-    p_claim = subparsers.add_parser("claim-issue", add_help=False)
-    p_claim.add_argument("--ticket", required=True)
-    p_claim.add_argument("--repo-root", default=None)
-    p_claim.add_argument("--json", action="store_true", dest="sub_json")
+    p_dep = subparsers.add_parser(
+        "check-dependencies",
+        help="Check whether a ticket is blocked by open upstream issues.",
+        description="Query GitHub GraphQL issue dependencies to check for open blocking issues.",
+        epilog="Example:\n  python3 scripts/workspace_mutex.py check-dependencies --ticket GH-170 --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_dep.add_argument(
+        "--ticket",
+        required=True,
+        help="Ticket identifier to check.",
+    )
+    p_dep.add_argument(
+        "--mode",
+        default="GITHUB",
+        help="Hosting mode: GITHUB or PURE_GIT (default GITHUB).",
+    )
+    p_dep.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_dep.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit dependency check result as JSON.",
+    )
+
+    p_claim = subparsers.add_parser(
+        "claim-issue",
+        help="Claim a GitHub issue by assigning @me and adding the in-progress label.",
+        description="Assign @me and add the in-progress label to the remote GitHub issue.",
+        epilog="Example:\n  python3 scripts/workspace_mutex.py claim-issue --ticket GH-170",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_claim.add_argument(
+        "--ticket",
+        required=True,
+        help="Ticket identifier to claim.",
+    )
+    p_claim.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository root directory.",
+    )
+    p_claim.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit claim result as JSON.",
+    )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.subcommand:

@@ -10,6 +10,7 @@ if _REPO_ROOT not in sys.path:
 
 from lib.static_check import (  # noqa: E402
     REPO_ROOT,
+    StaticCheckScript,
     collect_python_files,
     find_linter,
     main,
@@ -19,6 +20,7 @@ from lib.static_check import (  # noqa: E402
 
 __all__ = [
     "REPO_ROOT",
+    "StaticCheckScript",
     "collect_python_files",
     "find_linter",
     "main",
@@ -27,4 +29,4 @@ __all__ = [
 ]
 
 if __name__ == "__main__":
-  main()
+  sys.exit(StaticCheckScript().execute())

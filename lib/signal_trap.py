@@ -15,6 +15,8 @@ import time
 from types import FrameType
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
+from lib.base_script import BaseScript, SilentArgumentParser
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_SIGNALS: Tuple[int, ...] = (signal.SIGTERM, signal.SIGINT)
@@ -324,53 +326,83 @@ class SignalTrap:
     self.restore()
 
 
+class SignalTrapScript(BaseScript):
+  """CLI runner for POSIX Signal Trap Worker (SCAR-SYS-07, SCAR-SYS-08, SCAR-ARCH-05)."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self.lockfile: Optional[str] = None
+    self.lock_dir: Optional[str] = None
+    self.ready_file: Optional[str] = None
+
+  def parse_args(self, args: Optional[List[str]] = None) -> None:
+    super().parse_args(args)
+    parser = SilentArgumentParser(
+        prog="signal_trap.py",
+        description="POSIX Signal Trap Worker (SCAR-SYS-07, SCAR-SYS-08)",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/signal_trap.py --lock-dir /tmp/work.lock.d --ready-file /tmp/work.ready\n"
+            "  python3 scripts/signal_trap.py --lockfile /tmp/work.lock --ready-file /tmp/work.ready"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--lockfile",
+        default=None,
+        help="Path to lockfile to create and protect with SignalTrap.",
+    )
+    parser.add_argument(
+        "--lock-dir",
+        default=None,
+        help="Path to lock directory to create and protect with SignalTrap.",
+    )
+    parser.add_argument(
+        "--ready-file",
+        default=None,
+        help="Path to sentinel file to create when signal trap is active.",
+    )
+    parsed = parser.parse_args(self.raw_args)
+    self.lockfile = parsed.lockfile
+    self.lock_dir = parsed.lock_dir
+    self.ready_file = parsed.ready_file
+
+  def run(self) -> int:
+    with SignalTrap() as trap:
+      if self.lockfile:
+        lock_path = os.path.abspath(self.lockfile)
+        lock_dir = os.path.dirname(lock_path)
+        if lock_dir:
+          os.makedirs(lock_dir, exist_ok=True)
+        with open(lock_path, "w", encoding="utf-8") as f:
+          f.write(str(os.getpid()))
+        trap.register_lockfile(lock_path)
+
+      if self.lock_dir:
+        dir_path = os.path.abspath(self.lock_dir)
+        parent_dir = os.path.dirname(dir_path)
+        if parent_dir:
+          os.makedirs(parent_dir, exist_ok=True)
+        os.mkdir(dir_path)
+        trap.register_lock_dir(dir_path)
+
+      if self.ready_file:
+        ready_path = os.path.abspath(self.ready_file)
+        ready_dir = os.path.dirname(ready_path)
+        if ready_dir:
+          os.makedirs(ready_dir, exist_ok=True)
+        with open(ready_path, "w", encoding="utf-8") as f:
+          f.write("READY")
+
+      # Keep worker alive until signal arrives
+      while True:
+        time.sleep(0.1)
+
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
   """Run signal_trap demo worker CLI for testing and process management."""
-  parser = argparse.ArgumentParser(
-      description="POSIX Signal Trap Worker (SCAR-SYS-07, SCAR-SYS-08)"
+  return SignalTrapScript().execute(
+      args=list(argv) if argv is not None else None
   )
-  parser.add_argument(
-      "--lockfile",
-      help="Path to lockfile to create and protect with SignalTrap",
-  )
-  parser.add_argument(
-      "--lock-dir",
-      help="Path to lock directory to create and protect with SignalTrap",
-  )
-  parser.add_argument(
-      "--ready-file",
-      help="Path to sentinel file to create when signal trap is active",
-  )
-  args = parser.parse_args(argv)
-
-  with SignalTrap() as trap:
-    if args.lockfile:
-      lock_path = os.path.abspath(args.lockfile)
-      lock_dir = os.path.dirname(lock_path)
-      if lock_dir:
-        os.makedirs(lock_dir, exist_ok=True)
-      with open(lock_path, "w", encoding="utf-8") as f:
-        f.write(str(os.getpid()))
-      trap.register_lockfile(lock_path)
-
-    if args.lock_dir:
-      dir_path = os.path.abspath(args.lock_dir)
-      parent_dir = os.path.dirname(dir_path)
-      if parent_dir:
-        os.makedirs(parent_dir, exist_ok=True)
-      os.mkdir(dir_path)
-      trap.register_lock_dir(dir_path)
-
-    if args.ready_file:
-      ready_path = os.path.abspath(args.ready_file)
-      ready_dir = os.path.dirname(ready_path)
-      if ready_dir:
-        os.makedirs(ready_dir, exist_ok=True)
-      with open(ready_path, "w", encoding="utf-8") as f:
-        f.write("READY")
-
-    # Keep worker alive until signal arrives
-    while True:
-      time.sleep(0.1)
-
-  return 0

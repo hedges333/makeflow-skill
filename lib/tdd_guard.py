@@ -294,39 +294,134 @@ class TddGuardScript(BaseScript):
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
-    parser = SilentArgumentParser(prog="tdd_guard.py", add_help=False)
-    parser.add_argument("--repo-root", default=_DEFAULT_REPO_ROOT)
-    parser.add_argument("--receipt", default=None)
-    parser.add_argument("--json", action="store_true", dest="as_json")
-    parser.add_argument(
-        "--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS
+    parser = SilentArgumentParser(
+        prog="tdd_guard.py",
+        description="Cryptographically anchored TDD Red-to-Green guard (SCAR-TEST-12).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/tdd_guard.py witness-red --test-dir tests --cmd 'python3 -m unittest -v -f tests/test_x.py'\n"
+            "  python3 scripts/tdd_guard.py verify-green\n"
+            "  python3 scripts/tdd_guard.py verify-citation --cite lib/foo.py:10-25"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--cite", action="append", default=[], dest="root_cites"
+        "--repo-root",
+        default=_DEFAULT_REPO_ROOT,
+        help="Repository root directory.",
     )
     parser.add_argument(
-        "--allow-head-move", action="store_true", dest="root_allow_head_move"
+        "--receipt",
+        default=None,
+        help="Path to TDD receipt JSON file (defaults to .workflow/state/30_tdd_receipt.json).",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit Vector 4 Reflex errors as JSON.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="Timeout in seconds for test command execution (default 120).",
+    )
+    parser.add_argument(
+        "--cite",
+        action="append",
+        default=[],
+        dest="root_cites",
+        help="File and line-range citation (<file>:<start>-<end>) for verify-citation.",
+    )
+    parser.add_argument(
+        "--allow-head-move",
+        action="store_true",
+        dest="root_allow_head_move",
+        help="Allow Git HEAD SHA to differ from the witnessed Red-phase HEAD.",
     )
 
     subparsers = parser.add_subparsers(
-        dest="subcommand", parser_class=SilentArgumentParser
+        dest="subcommand",
+        parser_class=SilentArgumentParser,
+        help="TDD guard subcommand to execute.",
     )
 
+    sub_descriptions = {
+        "witness-red": (
+            "Witness a failing test run (exit != 0) and seal .workflow/state/30_tdd_receipt.json.",
+            "Example:\n  python3 scripts/tdd_guard.py witness-red --test-dir tests --cmd 'python3 -m unittest -v -f tests/test_x.py'",
+        ),
+        "verify-green": (
+            "Verify test tree integrity and replay the sealed test command expecting exit 0.",
+            "Example:\n  python3 scripts/tdd_guard.py verify-green",
+        ),
+        "verify-citation": (
+            "Verify that cited file and line ranges exist and match non-empty lines.",
+            "Example:\n  python3 scripts/tdd_guard.py verify-citation --cite lib/base_script.py:1-30",
+        ),
+    }
+
     for sub_name in ("witness-red", "verify-green", "verify-citation"):
-      sub = subparsers.add_parser(sub_name, add_help=False)
-      sub.add_argument("--repo-root", default=argparse.SUPPRESS)
-      sub.add_argument("--receipt", default=argparse.SUPPRESS)
-      sub.add_argument(
-          "--json", action="store_true", default=argparse.SUPPRESS, dest="sub_json"
+      sub_desc, sub_epilog = sub_descriptions[sub_name]
+      sub = subparsers.add_parser(
+          sub_name,
+          help=sub_desc,
+          description=sub_desc,
+          epilog=sub_epilog,
+          formatter_class=argparse.RawDescriptionHelpFormatter,
       )
-      sub.add_argument("--timeout", type=float, default=argparse.SUPPRESS)
-      sub.add_argument("--test-dir", default=None)
-      sub.add_argument("--cmd", default=None)
-      sub.add_argument("--make-env", action="store_true", dest="make_env")
+      sub.add_argument(
+          "--repo-root",
+          default=argparse.SUPPRESS,
+          help="Repository root directory.",
+      )
+      sub.add_argument(
+          "--receipt",
+          default=argparse.SUPPRESS,
+          help="Path to TDD receipt JSON file.",
+      )
+      sub.add_argument(
+          "--json",
+          action="store_true",
+          default=argparse.SUPPRESS,
+          dest="sub_json",
+          help="Emit Vector 4 Reflex errors as JSON.",
+      )
+      sub.add_argument(
+          "--timeout",
+          type=float,
+          default=argparse.SUPPRESS,
+          help="Timeout in seconds for test command execution.",
+      )
+      sub.add_argument(
+          "--test-dir",
+          default=None,
+          help="Dedicated test subdirectory inside the repository root.",
+      )
+      sub.add_argument(
+          "--cmd",
+          default=None,
+          help="Targeted test command to run.",
+      )
+      sub.add_argument(
+          "--make-env",
+          action="store_true",
+          dest="make_env",
+          help="Read TEST_DIR, TEST_CMD, ALLOW_HEAD_MOVE, and CITE from environment variables.",
+      )
       if sub_name in ("verify-green", "verify-citation"):
-        sub.add_argument("--allow-head-move", action="store_true")
         sub.add_argument(
-            "--cite", action="append", default=[], dest="cite_args"
+            "--allow-head-move",
+            action="store_true",
+            help="Allow Git HEAD SHA to differ from the witnessed Red-phase HEAD.",
+        )
+        sub.add_argument(
+            "--cite",
+            action="append",
+            default=[],
+            dest="cite_args",
+            help="File and line-range citation (<file>:<start>-<end>).",
         )
 
     ns = parser.parse_args(self.raw_args)

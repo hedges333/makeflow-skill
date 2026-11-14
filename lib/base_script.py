@@ -22,7 +22,13 @@ Usage:
 
 import argparse
 import sys
-from typing import List, NoReturn, Optional, TextIO
+from typing import Any, List, NoReturn, Optional, TextIO
+
+
+class HelpExit(Exception):
+  """Raised when CLI argument parser exits with status 0 after formatting help text."""
+
+  exit_code = 0
 
 
 class ReflexArgumentError(Exception):
@@ -32,19 +38,29 @@ class ReflexArgumentError(Exception):
 
 
 class SilentArgumentParser(argparse.ArgumentParser):
-  """ArgumentParser subclass that raises ReflexArgumentError instead of SystemExit."""
+  """ArgumentParser subclass that raises HelpExit or ReflexArgumentError instead of SystemExit."""
+
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
+    super().__init__(*args, **kwargs)
+    self._printed_messages: List[str] = []
 
   def _print_message(
       self, message: str, file: Optional[TextIO] = None
   ) -> None:
-    pass
+    if message:
+      self._printed_messages.append(message)
 
   def error(self, message: str) -> NoReturn:
+    self._printed_messages.clear()
     raise ReflexArgumentError(message)
 
   def exit(self, status: int = 0, message: Optional[str] = None) -> NoReturn:
+    buffered = "".join(self._printed_messages)
+    self._printed_messages.clear()
+    if status == 0:
+      raise HelpExit(buffered + (message or ""))
     raise ReflexArgumentError(
-        message or f"Argument parser exited with status {status}"
+        message or buffered or f"Argument parser exited with status {status}"
     )
 
 
@@ -113,6 +129,16 @@ class BaseScript:
       self.setup()
       run_result = self.run()
       exit_code = 0 if run_result is None else int(run_result)
+    except HelpExit as exc:
+      exit_code = 0
+      help_text = str(exc)
+      if help_text:
+        try:
+          self.stdout.write(
+              help_text if help_text.endswith("\n") else f"{help_text}\n"
+          )
+        except Exception:  # pylint: disable=broad-except
+          pass
     except Exception as exc:  # pylint: disable=broad-except
       raw_code = getattr(exc, "exit_code", 1)
       try:

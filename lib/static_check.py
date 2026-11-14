@@ -4,12 +4,16 @@ Discovers structural syntax errors and undefined symbols before test execution.
 Uses ruff or flake8 if available. Falls back to Python standard library AST.
 """
 
+import argparse
 import ast
 import os
 import py_compile
 import shutil
 import subprocess
 import sys
+from typing import List, Optional, Sequence, TextIO
+
+from lib.base_script import BaseScript, SilentArgumentParser
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -62,11 +66,17 @@ def collect_python_files(targets):
   return sorted(files)
 
 
-def run_ast_fallback(targets):
+def run_ast_fallback(
+    targets,
+    stdout: Optional[TextIO] = None,
+    stderr: Optional[TextIO] = None,
+):
   """Run fallback static check with standard library ast and py_compile."""
+  out_stream = stdout if stdout is not None else sys.stdout
+  err_stream = stderr if stderr is not None else sys.stderr
   files = collect_python_files(targets)
   if not files:
-    print("Pre-flight static check: No Python files found to inspect.")
+    out_stream.write("Pre-flight static check: No Python files found to inspect.\n")
     return 0
 
   errors = []
@@ -85,25 +95,35 @@ def run_ast_fallback(targets):
       errors.append(f"{rel_path}: Error: {err}")
 
   if errors:
-    print(f"❌ Pre-flight static check found {len(errors)} error(s):", file=sys.stderr)
+    err_stream.write(
+        f"❌ Pre-flight static check found {len(errors)} error(s):\n"
+    )
     for err in errors:
-      print(f"  {err}", file=sys.stderr)
+      err_stream.write(f"  {err}\n")
     return 1
 
-  print(
-      f"✔ Pre-flight static check PASSED (using standard library AST, scanned {len(files)} files)."
+  out_stream.write(
+      f"✔ Pre-flight static check PASSED (using standard library AST, scanned {len(files)} files).\n"
   )
   return 0
 
 
-def run_external_linter(tool_name, tool_path, targets):
+def run_external_linter(
+    tool_name,
+    tool_path,
+    targets,
+    stdout: Optional[TextIO] = None,
+    stderr: Optional[TextIO] = None,
+):
   """Run structural static check with ruff or flake8."""
+  out_stream = stdout if stdout is not None else sys.stdout
+  err_stream = stderr if stderr is not None else sys.stderr
   if tool_name == "ruff":
     cmd = [tool_path, "check", *targets, "--select=E9,F63,F7,F82"]
   elif tool_name == "flake8":
     cmd = [tool_path, *targets, "--select=E9,F63,F7,F82"]
   else:
-    return run_ast_fallback(targets)
+    return run_ast_fallback(targets, stdout=out_stream, stderr=err_stream)
 
   proc = subprocess.run(
       cmd,
@@ -113,33 +133,66 @@ def run_external_linter(tool_name, tool_path, targets):
   )
 
   if proc.returncode != 0:
-    print(
-        f"❌ Pre-flight static check failed ({tool_name}):",
-        file=sys.stderr,
+    err_stream.write(
+        f"❌ Pre-flight static check failed ({tool_name}):\n"
     )
     if proc.stdout:
-      print(proc.stdout.strip(), file=sys.stderr)
+      err_stream.write(f"{proc.stdout.strip()}\n")
     if proc.stderr:
-      print(proc.stderr.strip(), file=sys.stderr)
+      err_stream.write(f"{proc.stderr.strip()}\n")
     return proc.returncode
 
-  print(f"✔ Pre-flight static check PASSED (using {tool_name}).")
+  out_stream.write(
+      f"✔ Pre-flight static check PASSED (using {tool_name}).\n"
+  )
   return 0
 
 
-def main():
+class StaticCheckScript(BaseScript):
+  """CLI runner for pre-flight structural static analysis (SCAR-TEST-10, SCAR-ARCH-05)."""
+
+  def __init__(self) -> None:
+    super().__init__()
+    self.targets: List[str] = []
+
+  def parse_args(self, args: Optional[List[str]] = None) -> None:
+    super().parse_args(args)
+    parser = SilentArgumentParser(
+        prog="static_check.py",
+        description="Pre-flight structural static analysis runner (SCAR-TEST-10).",
+        epilog=(
+            "Examples:\n"
+            "  python3 scripts/static_check.py\n"
+            "  python3 scripts/static_check.py lib/base_script.py tests/test_base_script.py"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "targets",
+        nargs="*",
+        help="Python files or directories to check (defaults to lib, scripts, mcp, tests).",
+    )
+    parsed = parser.parse_args(self.raw_args)
+    self.targets = list(parsed.targets or [])
+
+  def run(self) -> int:
+    targets = list(self.targets)
+    if not targets:
+      default_dirs = ["lib", "scripts", "mcp", "tests"]
+      targets = [
+          d for d in default_dirs if os.path.exists(os.path.join(REPO_ROOT, d))
+      ]
+
+    tool_name, tool_path = find_linter()
+    if tool_name and tool_path:
+      return run_external_linter(
+          tool_name, tool_path, targets, stdout=self.stdout, stderr=self.stderr
+      )
+    return run_ast_fallback(targets, stdout=self.stdout, stderr=self.stderr)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
   """Main entry point for static checker."""
-  targets = sys.argv[1:]
-  if not targets:
-    default_dirs = ["lib", "scripts", "mcp", "tests"]
-    targets = [
-        d for d in default_dirs if os.path.exists(os.path.join(REPO_ROOT, d))
-    ]
-
-  tool_name, tool_path = find_linter()
-  if tool_name and tool_path:
-    code = run_external_linter(tool_name, tool_path, targets)
-  else:
-    code = run_ast_fallback(targets)
-
-  sys.exit(code)
+  return StaticCheckScript().execute(
+      args=list(argv) if argv is not None else None
+  )
