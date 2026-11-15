@@ -21,8 +21,8 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `MAKEFILE_WORKFLOW_PROD_DBS` for comma-separated live database names to block.
    - `MAKEFILE_WORKFLOW_TEST_DBS` for comma-separated safe test database names to allow.
    - `MAKEFILE_WORKFLOW_PROD_HOSTS` for comma-separated live database hosts to block.
-   - `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS` for continuous integration quiet window in seconds (default 180).
-   - `MAKEFILE_WORKFLOW_CI_POLL_INTERVAL` for continuous integration polling interval in seconds (default 30).
+   - `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS` for continuous integration quiet window in seconds (default 180). Set this variable to `0` to disable the post-CI quiescence wait.
+   - `MAKEFILE_WORKFLOW_CI_POLL_INTERVAL` for continuous integration polling interval in seconds (default 30). Use an integer of `1` or higher.
    - `MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION` for completed state card action (`unlink` or `archive`, default `unlink`).
    - `MAKEFLOW_DISABLE_TERMINAL_TITLE` set to `1` or `true` to disable automatic terminal tab title updates.
 4. Canonical defaults in `./default_config.json` (packaged at repository root). Single-item user overrides in `.workflow/config.json` deep-merge recursively into defaults without dropping unset default fields:
@@ -31,8 +31,8 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `tdd-worker`: `inherit`
    - `triage-worker`: `inherit`
    - `synthetic-scar-importer`: `inherit`
-   - `ci.quiescenceSeconds`: `180`
-   - `ci.pollIntervalSeconds`: `30`
+   - `ci.quiescenceSeconds`: `180`. Set to `0` to disable the post-CI quiescence wait.
+   - `ci.pollIntervalSeconds`: `30`. Use `1` or higher.
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
    - Database guard: blocks standalone `prod` and `production` names automatically.
 

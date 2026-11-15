@@ -10,6 +10,7 @@ Checks JSON-RPC 2.0 communication over standard input/output:
 6. workflow_get_state and workflow_get_config with workspaceDir
 """
 
+import datetime
 import json
 import os
 import shutil
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -3302,6 +3304,356 @@ class TestMcpDynamicVersionAndTarget90Parity(unittest.TestCase):
         payload_feat = json.loads(resp_feat["result"]["content"][0]["text"])
         self.assertTrue(payload_feat["safe"], msg=cmd)
         self.assertIn("Target 50 Commit Gate", payload_feat["reason"], msg=cmd)
+
+
+class TestMcpCiQuiescenceZeroAndValidation(unittest.TestCase):
+  """Regression tests for ci.quiescenceSeconds=0 and CI arg validation in MCP server (GH-217)."""
+
+  def _clean_env(self, home_dir, **extra):
+    env = dict(os.environ)
+    env["HOME"] = home_dir
+    for key in (
+        "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS",
+        "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL",
+        "MAKEFILE_WORKFLOW_WORKSPACE",
+    ):
+      env.pop(key, None)
+    env.update(extra)
+    return env
+
+  def _call_mcp_tools(self, cwd, env, calls):
+    proc = subprocess.Popen(
+        [sys.executable, SERVER_SCRIPT],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        text=True,
+    )
+    try:
+      send_rpc(
+          proc,
+          {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+      )
+      responses = []
+      for req_id, (tool_name, arguments) in enumerate(calls, start=2):
+        responses.append(
+            send_rpc(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments,
+                    },
+                },
+            )
+        )
+      return responses
+    finally:
+      proc.kill()
+      proc.wait()
+      for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe is not None:
+          pipe.close()
+
+  def test_workflow_get_config_quiescence_zero_and_env_override_stdio(self):
+    """Tests stdio workflow_get_config with JSON 0 and env override '0' (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      wf_dir = os.path.join(ws_dir, ".workflow")
+      os.makedirs(wf_dir)
+      cfg_path = os.path.join(wf_dir, "config.json")
+
+      # 1. JSON quiescenceSeconds=0
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"quiescenceSeconds": 0}}, f)
+      [resp_json] = self._call_mcp_tools(
+          ws_dir,
+          self._clean_env(fake_home),
+          [("workflow_get_config", {"workspaceDir": ws_dir})],
+      )
+      cfg_json = json.loads(resp_json["result"]["content"][0]["text"])
+      self.assertIs(type(cfg_json["ci"]["quiescenceSeconds"]), int)
+      self.assertEqual(cfg_json["ci"]["quiescenceSeconds"], 0)
+      self.assertEqual(cfg_json["ci"]["pollIntervalSeconds"], 30)
+
+      # 2. Env MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0" overrides JSON 120
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"quiescenceSeconds": 120}}, f)
+      [resp_env] = self._call_mcp_tools(
+          ws_dir,
+          self._clean_env(
+              fake_home, MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0"
+          ),
+          [("workflow_get_config", {"workspaceDir": ws_dir})],
+      )
+      cfg_env = json.loads(resp_env["result"]["content"][0]["text"])
+      self.assertIs(type(cfg_env["ci"]["quiescenceSeconds"]), int)
+      self.assertEqual(cfg_env["ci"]["quiescenceSeconds"], 0)
+      self.assertIn(
+          "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0",
+          cfg_env["envOverrides"],
+      )
+
+  def test_workflow_get_config_sanitizes_invalid_ci_fields_stdio(self):
+    """Tests stdio workflow_get_config sanitizes invalid JSON and env CI values (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      wf_dir = os.path.join(ws_dir, ".workflow")
+      os.makedirs(wf_dir)
+      cfg_path = os.path.join(wf_dir, "config.json")
+
+      invalid_payloads = (
+          {"ci": {"quiescenceSeconds": True}},
+          {"ci": {"quiescenceSeconds": False}},
+          {"ci": {"quiescenceSeconds": -5}},
+          {"ci": {"quiescenceSeconds": "bad"}},
+          {"ci": {"pollIntervalSeconds": 0}},
+          {"ci": None},
+      )
+      for payload in invalid_payloads:
+        with open(cfg_path, "w", encoding="utf-8") as f:
+          json.dump(payload, f)
+        [resp] = self._call_mcp_tools(
+            ws_dir,
+            self._clean_env(fake_home),
+            [("workflow_get_config", {"workspaceDir": ws_dir})],
+        )
+        cfg = json.loads(resp["result"]["content"][0]["text"])
+        self.assertIs(type(cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(cfg["ci"]["quiescenceSeconds"], 180)
+        self.assertIs(type(cfg["ci"]["pollIntervalSeconds"]), int)
+        self.assertEqual(cfg["ci"]["pollIntervalSeconds"], 30)
+
+      # "ci": null + env quiescence=0 + invalid env pollInterval=0
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": None}, f)
+      [resp_null_env] = self._call_mcp_tools(
+          ws_dir,
+          self._clean_env(
+              fake_home,
+              MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0",
+              MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="0",
+          ),
+          [("workflow_get_config", {"workspaceDir": ws_dir})],
+      )
+      cfg_null_env = json.loads(resp_null_env["result"]["content"][0]["text"])
+      self.assertIs(type(cfg_null_env["ci"]["quiescenceSeconds"]), int)
+      self.assertEqual(cfg_null_env["ci"]["quiescenceSeconds"], 0)
+      self.assertEqual(cfg_null_env["ci"]["pollIntervalSeconds"], 30)
+      self.assertIn(
+          "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0",
+          cfg_null_env["envOverrides"],
+      )
+      self.assertNotIn(
+          "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL=0",
+          cfg_null_env["envOverrides"],
+      )
+
+      # Valid JSON pollIntervalSeconds=15 preserved when env pollInterval="0"
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"pollIntervalSeconds": 15}}, f)
+      [resp_preserve] = self._call_mcp_tools(
+          ws_dir,
+          self._clean_env(fake_home, MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="0"),
+          [("workflow_get_config", {"workspaceDir": ws_dir})],
+      )
+      cfg_preserve = json.loads(resp_preserve["result"]["content"][0]["text"])
+      self.assertEqual(cfg_preserve["ci"]["pollIntervalSeconds"], 15)
+      self.assertEqual(cfg_preserve["envOverrides"], [])
+
+  def test_workflow_poll_ci_validates_explicit_arguments_stdio(self):
+    """Tests stdio workflow_poll_ci rejects invalid quiescenceSeconds and pollIntervalSeconds (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      calls = []
+      for bad_q in (-1, True, False, "bad"):
+        calls.append((
+            "workflow_poll_ci",
+            {
+                "prNumber": 0,
+                "workspaceDir": ws_dir,
+                "quiescenceSeconds": bad_q,
+            },
+        ))
+      for bad_p in (0, -1, False, True, "bad"):
+        calls.append((
+            "workflow_poll_ci",
+            {
+                "prNumber": 0,
+                "workspaceDir": ws_dir,
+                "pollIntervalSeconds": bad_p,
+            },
+        ))
+      calls.append((
+          "workflow_poll_ci",
+          {
+              "prNumber": 0,
+              "workspaceDir": ws_dir,
+              "quiescenceSeconds": 0,
+          },
+      ))
+
+      responses = self._call_mcp_tools(ws_dir, self._clean_env(fake_home), calls)
+      invalid_count = len(responses) - 1
+      for idx in range(invalid_count):
+        self.assertIs(
+            responses[idx]["result"].get("isError"),
+            True,
+            f"Expected isError=True for call {calls[idx]}",
+        )
+      valid_resp = responses[-1]
+      self.assertFalse(valid_resp["result"].get("isError"))
+      valid_payload = json.loads(valid_resp["result"]["content"][0]["text"])
+      self.assertEqual(valid_payload["mode"], "pure_git")
+
+  def test_poll_ci_status_quiescence_zero_returns_without_sleeping(self):
+    """Tests poll_ci_status returns SUCCESS on poll 1 without sleeping when quiescenceSeconds=0 (GH-217)."""
+    from mcp.server import poll_ci_status
+
+    completed_iso = "2026-11-15T12:00:00Z"
+    base_ts = datetime.datetime(
+        2026, 11, 15, 12, 0, 0, tzinfo=datetime.timezone.utc
+    ).timestamp()
+    mock_data_clean = {
+        "statusCheckRollup": [{
+            "name": "ci",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "completedAt": completed_iso,
+        }],
+        "comments": [],
+        "reviews": [],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+    }
+
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      wf_dir = os.path.join(ws_dir, ".workflow")
+      os.makedirs(wf_dir)
+      cfg_path = os.path.join(wf_dir, "config.json")
+
+      scenarios = (
+          ({"ci": {"quiescenceSeconds": 0}}, {}, None),
+          (
+              {"ci": {"quiescenceSeconds": 120}},
+              {"MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS": "0"},
+              None,
+          ),
+          ({"ci": {"quiescenceSeconds": 120}}, {}, 0),
+      )
+
+      for cfg_payload, env_extra, explicit_q in scenarios:
+        with open(cfg_path, "w", encoding="utf-8") as f:
+          json.dump(cfg_payload, f)
+        now = [base_ts]
+
+        def advance_past_timeout(_sec, clock=now):
+          clock[0] += 601
+
+        with mock.patch.dict(
+            os.environ, self._clean_env(fake_home, **env_extra), clear=True
+        ):
+          with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+              "subprocess.run"
+          ) as mock_run, mock.patch(
+              "time.time", side_effect=lambda clock=now: clock[0]
+          ), mock.patch(
+              "time.sleep", side_effect=advance_past_timeout
+          ) as mock_sleep:
+            mock_run.return_value = mock.MagicMock(
+                stdout=json.dumps(mock_data_clean), stderr="", returncode=0
+            )
+            res = poll_ci_status(
+                pr_number=123,
+                ws=ws_dir,
+                quiescence_sec=explicit_q,
+                max_wait_sec=600,
+                hosting_mode="github",
+            )
+            self.assertEqual(res["ciStatus"], "SUCCESS")
+            self.assertIs(res["quiescenceSatisfied"], True)
+            self.assertIs(res["readyToLand"], True)
+            self.assertEqual(mock_run.call_count, 1)
+            mock_sleep.assert_not_called()
+
+  def test_poll_ci_status_sanitizes_invalid_poll_interval_in_memory(self):
+    """Tests direct poll_ci_status sanitizes invalid poll_interval_sec (0, -1, True) to config value (GH-217)."""
+    from mcp.server import poll_ci_status
+
+    base_ts = datetime.datetime(
+        2026, 11, 15, 12, 0, 0, tzinfo=datetime.timezone.utc
+    ).timestamp()
+    in_progress_data = {
+        "statusCheckRollup": [{"name": "ci", "status": "IN_PROGRESS"}],
+        "comments": [],
+        "reviews": [],
+    }
+    completed_data = {
+        "statusCheckRollup": [{
+            "name": "ci",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "completedAt": "2026-11-15T12:00:15Z",
+        }],
+        "comments": [],
+        "reviews": [],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+    }
+
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      wf_dir = os.path.join(ws_dir, ".workflow")
+      os.makedirs(wf_dir)
+      with open(
+          os.path.join(wf_dir, "config.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump(
+            {"ci": {"pollIntervalSeconds": 15, "quiescenceSeconds": 0}}, f
+        )
+
+      for bad_poll in (0, -1, True):
+        now = [base_ts]
+        sleep_calls = []
+
+        def fake_sleep(sec, clock=now, calls=sleep_calls):
+          if isinstance(sec, (int, float)) and sec < 0:
+            raise ValueError("sleep length must be non-negative")
+          calls.append((type(sec), sec))
+          clock[0] += max(sec, 1)
+          if len(calls) > 2:
+            clock[0] += 1000
+
+        with mock.patch.dict(
+            os.environ, self._clean_env(fake_home), clear=True
+        ):
+          with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+              "subprocess.run",
+              side_effect=[
+                  mock.MagicMock(
+                      stdout=json.dumps(in_progress_data), stderr="", returncode=0
+                  ),
+                  mock.MagicMock(
+                      stdout=json.dumps(completed_data), stderr="", returncode=0
+                  ),
+              ],
+          ), mock.patch(
+              "time.time", side_effect=lambda clock=now: clock[0]
+          ), mock.patch(
+              "time.sleep", side_effect=fake_sleep
+          ):
+            res = poll_ci_status(
+                pr_number=123,
+                ws=ws_dir,
+                poll_interval_sec=bad_poll,
+                max_wait_sec=600,
+                hosting_mode="github",
+            )
+            self.assertEqual(sleep_calls, [(int, 15)])
+            self.assertEqual(res["ciStatus"], "SUCCESS")
+            self.assertIs(res["quiescenceSatisfied"], True)
+            self.assertIs(res["readyToLand"], True)
 
 
 if __name__ == "__main__":
