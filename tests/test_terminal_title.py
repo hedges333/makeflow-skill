@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic unit tests for terminal title detection and setting (GH-103)."""
 
+import importlib
 import io
 import json
 import os
@@ -16,6 +17,7 @@ for _p in (_REPO_ROOT, _SCRIPTS_DIR):
   if _p not in sys.path:
     sys.path.insert(0, _p)
 
+from lib import terminal_title
 from lib.base_script import BaseScript
 from lib.terminal_title import (
     TerminalTitleScript,
@@ -256,47 +258,68 @@ class TestProjectAndTicketDetection(unittest.TestCase):
   def test_format_terminal_title(self):
     self.assertEqual(
         format_terminal_title("GH-103", "makeflow-skill"),
-        "GH-103 makeflow-skill",
+        "makeflow-skill/: GH-103",
     )
     self.assertEqual(
         format_terminal_title("LOCAL-42", "engine"),
-        "LOCAL-42 engine",
+        "engine/: LOCAL-42",
     )
     self.assertEqual(format_terminal_title("GH-103", ""), "GH-103")
-    self.assertEqual(format_terminal_title("", "engine"), "engine")
+    self.assertEqual(format_terminal_title("", "engine"), "engine/")
     self.assertEqual(format_terminal_title("", ""), "")
 
   def test_format_terminal_title_with_issue_tag(self):
     self.assertEqual(
         format_terminal_title(
+            "GH-1234",
+            "makeflow-skill-dir3",
+            "Add frobnosticator to reticulator subnodule",
+        ),
+        "makeflow-skill-dir3/: GH-1234 Add frobnosticator to reticulator subnodule",
+    )
+    self.assertEqual(
+        format_terminal_title(
             "GH-113", "makeflow-skill", "enhance terminal title"
         ),
-        "GH-113 makeflow-skill: enhance terminal title",
+        "makeflow-skill/: GH-113 enhance terminal title",
     )
     self.assertEqual(
         format_terminal_title("LOCAL-42", "engine", "offline mode"),
-        "LOCAL-42 engine: offline mode",
+        "engine/: LOCAL-42 offline mode",
     )
     self.assertEqual(
         format_terminal_title("", "engine", "offline mode"),
-        "engine: offline mode",
+        "engine/: offline mode",
     )
     self.assertEqual(
         format_terminal_title("GH-113", "", "enhance terminal title"),
-        "GH-113: enhance terminal title",
+        "GH-113 enhance terminal title",
     )
     self.assertEqual(
         format_terminal_title("", "", "enhance terminal title"),
         "enhance terminal title",
     )
+    # Trailing slashes and root path normalization when dir_name passed directly
+    self.assertEqual(
+        format_terminal_title("GH-103", "foo/", "bar"),
+        "foo/: GH-103 bar",
+    )
+    self.assertEqual(
+        format_terminal_title("GH-103", "/", "bar"),
+        "GH-103 bar",
+    )
+    self.assertEqual(
+        format_terminal_title("", "foo/", ""),
+        "foo/",
+    )
     # Backwards compatibility with None and empty issue_tag
     self.assertEqual(
         format_terminal_title("GH-113", "makeflow-skill", None),
-        "GH-113 makeflow-skill",
+        "makeflow-skill/: GH-113",
     )
     self.assertEqual(
         format_terminal_title("GH-113", "makeflow-skill", ""),
-        "GH-113 makeflow-skill",
+        "makeflow-skill/: GH-113",
     )
 
   def test_issue_tag_preserves_full_title(self):
@@ -304,9 +327,9 @@ class TestProjectAndTicketDetection(unittest.TestCase):
         "Fix authentication timeout on redirect and retry when session expires after idle period"  # 87 chars
     )
     result = format_terminal_title("GH-42", "backend", long_tag)
-    tag_part = result.split(": ", 1)[1]
+    tag_part = result.split(": GH-42 ", 1)[1]
     self.assertEqual(tag_part, long_tag)
-    self.assertEqual(result, f"GH-42 backend: {long_tag}")
+    self.assertEqual(result, f"backend/: GH-42 {long_tag}")
 
   def test_detect_issue_tag_preserves_full_title_from_state_cards(self):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
@@ -436,6 +459,103 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     self.assertEqual(name, "")
 
 
+class TestDirectoryNameDetection(unittest.TestCase):
+  """Tests for bare unqualified directory name extraction (GH-224)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.mkdtemp(prefix="makeflow_dir_test_")
+
+  def tearDown(self):
+    shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+  def test_detect_directory_name_gh224_ignores_git_remote_and_manifests(self):
+    """GH-224: detect_directory_name ignores plugin.json, package.json, and git remote."""
+    repo_dir = os.path.join(self.temp_dir, "makeflow-skill-dir3")
+    os.makedirs(os.path.join(repo_dir, ".git"), exist_ok=True)
+    with open(
+        os.path.join(repo_dir, ".git", "config"), "w", encoding="utf-8"
+    ) as f:
+      f.write('[remote "origin"]\n\turl = git@github.com:org/other-repo.git\n')
+    with open(
+        os.path.join(repo_dir, "plugin.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"name": "manifest-project"}, f)
+    with open(
+        os.path.join(repo_dir, "package.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"name": "npm-package"}, f)
+
+    self.assertEqual(
+        detect_project_name(repo_root=repo_dir, git_remote_url=""),
+        "manifest-project",
+    )
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root=repo_dir),
+        "makeflow-skill-dir3",
+    )
+
+  def test_detect_directory_name_gh224_normalizes_trailing_slashes_and_root(
+      self,
+  ):
+    """GH-224: trailing slashes are stripped and filesystem root returns empty string."""
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root="/tmp/work/my-repo/"),
+        "my-repo",
+    )
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root="/tmp/work/my-repo///"),
+        "my-repo",
+    )
+    self.assertEqual(terminal_title.detect_directory_name(repo_root="/"), "")
+
+  def test_detect_directory_name_gh224_rejects_temporary_directories(self):
+    """GH-224: temporary directory paths return empty string."""
+    temp_dir = tempfile.mkdtemp(prefix="tmp")
+    try:
+      self.assertEqual(
+          terminal_title.detect_directory_name(repo_root=temp_dir), ""
+      )
+    finally:
+      shutil.rmtree(temp_dir, ignore_errors=True)
+
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root="/tmp/tmpabcdef1"), ""
+    )
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root="/tmp/tmp_99887766"), ""
+    )
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root="/var/tmp/tmp1a2b3c4d"),
+        "",
+    )
+
+  def test_detect_directory_name_gh224_sanitizes_control_characters(self):
+    """GH-224 / SCAR-SEC-01: control characters and escapes are stripped from dir name."""
+    self.assertEqual(
+        terminal_title.detect_directory_name(
+            repo_root="/tmp/work/evil\x07dir\x1b[31m"
+        ),
+        "evildir[31m",
+    )
+    self.assertEqual(
+        terminal_title.detect_directory_name(
+            repo_root="/tmp/work/my\r\nrepo\t"
+        ),
+        "my repo",
+    )
+    self.assertEqual(
+        terminal_title.detect_directory_name(repo_root="/tmp/work/\x07\x1b"), ""
+    )
+
+  def test_scripts_terminal_title_gh224_exports_detect_directory_name(self):
+    """GH-224: scripts/terminal_title.py exports detect_directory_name and detect_project_name."""
+    cli_mod = importlib.import_module("scripts.terminal_title")
+    self.assertIn("detect_directory_name", cli_mod.__all__)
+    self.assertIn("detect_project_name", cli_mod.__all__)
+    self.assertTrue(callable(getattr(cli_mod, "detect_directory_name", None)))
+    self.assertTrue(callable(getattr(cli_mod, "detect_project_name", None)))
+
+
 class TestSetTerminalTitle(unittest.TestCase):
   """Tests for set_terminal_title integration function."""
 
@@ -443,33 +563,33 @@ class TestSetTerminalTitle(unittest.TestCase):
     stream = MockTtyStream()
     ok, applied = set_terminal_title(
         ticket_id="GH-103",
-        project_name="makeflow-skill",
+        dir_name="makeflow-skill",
         stream=stream,
         env={"TERM": "xterm-256color"},
     )
     self.assertTrue(ok)
-    self.assertEqual(applied, "GH-103 makeflow-skill")
-    self.assertEqual(stream.getvalue(), "\033]0;GH-103 makeflow-skill\007")
+    self.assertEqual(applied, "makeflow-skill/: GH-103")
+    self.assertEqual(stream.getvalue(), "\033]0;makeflow-skill/: GH-103\007")
 
   def test_successful_title_set_on_tmux(self):
     stream = MockTtyStream()
     ok, applied = set_terminal_title(
         ticket_id="LOCAL-77",
-        project_name="core-service",
+        dir_name="core-service",
         stream=stream,
         env={"TERM": "screen-256color", "TMUX": "/tmp/tmux/1,0,0"},
     )
     self.assertTrue(ok)
-    self.assertEqual(applied, "LOCAL-77 core-service")
+    self.assertEqual(applied, "core-service/: LOCAL-77")
     self.assertEqual(
-        stream.getvalue(), "\033Ptmux;\033\033]0;LOCAL-77 core-service\007\033\\"
+        stream.getvalue(), "\033Ptmux;\033\033]0;core-service/: LOCAL-77\007\033\\"
     )
 
   def test_no_output_when_capability_is_false(self):
     stream = MockNonTtyStream()
     ok, applied = set_terminal_title(
         ticket_id="GH-103",
-        project_name="makeflow-skill",
+        dir_name="makeflow-skill",
         stream=stream,
         env={"TERM": "xterm-256color"},
     )
@@ -503,28 +623,105 @@ class TestSetTerminalTitle(unittest.TestCase):
     finally:
       shutil.rmtree(temp_dir, ignore_errors=True)
 
+  def test_set_terminal_title_gh224_rejects_explicit_temp_dir_name(self):
+    """GH-224: set_terminal_title rejects temporary directory patterns in dir_name."""
+    stream = MockTtyStream()
+    for kwargs in (
+        {"dir_name": "tmpa1b2c3d4"},
+        {"dir_name": "tmpa1b2c3d4", "ticket_id": "GH-103"},
+    ):
+      ok, applied = set_terminal_title(
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+          **kwargs,
+      )
+      self.assertFalse(ok)
+      self.assertEqual(applied, "")
+      self.assertEqual(stream.getvalue(), "")
+
   def test_set_terminal_title_with_issue_tag(self):
     stream = MockTtyStream()
     ok, applied = set_terminal_title(
         ticket_id="GH-113",
-        project_name="makeflow-skill",
+        dir_name="makeflow-skill",
         issue_tag="enhance terminal title",
         stream=stream,
         env={"TERM": "xterm-256color"},
     )
     self.assertTrue(ok)
-    self.assertEqual(applied, "GH-113 makeflow-skill: enhance terminal title")
+    self.assertEqual(applied, "makeflow-skill/: GH-113 enhance terminal title")
     self.assertEqual(
         stream.getvalue(),
-        "\033]0;GH-113 makeflow-skill: enhance terminal title\007",
+        "\033]0;makeflow-skill/: GH-113 enhance terminal title\007",
     )
+
+  def test_set_terminal_title_gh224_canonical_example(self):
+    """GH-224: auto-detects bare directory name and ignores plugin.json."""
+    temp_parent = tempfile.mkdtemp(prefix="makeflow_gh224_test_")
+    try:
+      repo_dir = os.path.join(temp_parent, "makeflow-skill-dir3")
+      state_dir = os.path.join(repo_dir, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      with open(
+          os.path.join(repo_dir, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow"}, f)
+      with open(
+          os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write(
+            "# Ticket Intake: GH-1234\n\n"
+            "- Ticket: [GH-1234: [FEAT] Add frobnosticator to reticulator subnodule](https://example.com)\n"
+        )
+
+      stream = MockTtyStream()
+      ok, applied = set_terminal_title(
+          repo_root=repo_dir,
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+      )
+      expected = (
+          "makeflow-skill-dir3/: GH-1234 Add frobnosticator to reticulator subnodule"
+      )
+      self.assertTrue(ok)
+      self.assertEqual(applied, expected)
+      self.assertEqual(stream.getvalue(), f"\033]0;{expected}\007")
+    finally:
+      shutil.rmtree(temp_parent, ignore_errors=True)
+
+  def test_set_terminal_title_gh224_rejects_project_name_kwarg(self):
+    """GH-224: project_name parameter is removed from set_terminal_title."""
+    stream = MockTtyStream()
+    with self.assertRaises(TypeError):
+      set_terminal_title(
+          ticket_id="GH-103",
+          project_name="makeflow-skill",
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+      )
+
+  def test_set_terminal_title_gh224_preserves_issue_tag_guard(self):
+    """GH-224 / SCAR-TEST-24: preserves `if i_tag is None and ticket_id is None:` guard."""
+    stream = MockTtyStream()
+    with patch(
+        "lib.terminal_title.detect_issue_tag", return_value="auto tag"
+    ) as mock_detect_tag:
+      ok, applied = set_terminal_title(
+          ticket_id="GH-103",
+          dir_name="makeflow-skill",
+          stream=stream,
+          env={"TERM": "xterm-256color"},
+      )
+      self.assertTrue(ok)
+      self.assertEqual(applied, "makeflow-skill/: GH-103")
+      mock_detect_tag.assert_not_called()
 
   def test_set_terminal_title_catches_oserror_and_unicode_encode_error(self):
     stream = MockTtyStream()
     with patch.object(stream, "write", side_effect=OSError("Disk/TTY write error")):
       ok, applied = set_terminal_title(
           ticket_id="GH-130",
-          project_name="makeflow-skill",
+          dir_name="makeflow-skill",
           stream=stream,
           env={"TERM": "xterm-256color"},
       )
@@ -538,7 +735,7 @@ class TestSetTerminalTitle(unittest.TestCase):
     ):
       ok, applied = set_terminal_title(
           ticket_id="GH-130",
-          project_name="makeflow-skill",
+          dir_name="makeflow-skill",
           stream=stream,
           env={"TERM": "xterm-256color"},
       )
@@ -551,7 +748,7 @@ class TestSetTerminalTitle(unittest.TestCase):
       with self.assertRaises(TypeError):
         set_terminal_title(
             ticket_id="GH-130",
-            project_name="makeflow-skill",
+            dir_name="makeflow-skill",
             stream=stream,
             env={"TERM": "xterm-256color"},
         )
@@ -562,7 +759,7 @@ class TestSetTerminalTitle(unittest.TestCase):
       with self.assertRaises(RuntimeError):
         set_terminal_title(
             ticket_id="GH-130",
-            project_name="makeflow-skill",
+            dir_name="makeflow-skill",
             stream=stream,
             env={"TERM": "xterm-256color"},
         )
@@ -608,7 +805,7 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
             "info",
             "--ticket",
             "GH-103",
-            "--project",
+            "--directory",
             "makeflow-skill",
             "--json",
         ],
@@ -618,9 +815,34 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     self.assertEqual(exit_code, 0)
     data = json.loads(out.getvalue())
     self.assertEqual(data["ticket_id"], "GH-103")
-    self.assertEqual(data["project_name"], "makeflow-skill")
-    self.assertEqual(data["title"], "GH-103 makeflow-skill")
+    self.assertEqual(data["directory_name"], "makeflow-skill")
+    self.assertNotIn("project_name", data)
+    self.assertEqual(data["title"], "makeflow-skill/: GH-103")
     self.assertTrue(data["can_change"])
+
+  def test_info_command_plaintext_gh224_outputs_directory_label(self):
+    """GH-224: info plaintext output uses 'Directory:' instead of 'Project:'."""
+    script = TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    script.stdout = out
+    script.stderr = err
+    exit_code = script.execute(
+        [
+            "info",
+            "--ticket",
+            "GH-103",
+            "--directory",
+            "makeflow-skill",
+        ],
+        env_override={"TERM": "xterm-256color"},
+        mock_tty=True,
+    )
+    self.assertEqual(exit_code, 0)
+    output = out.getvalue()
+    self.assertIn("Directory: makeflow-skill\n", output)
+    self.assertIn("Title: makeflow-skill/: GH-103\n", output)
+    self.assertNotIn("Project:", output)
 
   def test_set_command_updates_title(self):
     script = TerminalTitleScript()
@@ -633,14 +855,14 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
             "set",
             "--ticket",
             "LOCAL-999",
-            "--project",
+            "--directory",
             "super-tool",
         ],
         env_override={"TERM": "xterm-256color"},
         mock_tty=True,
     )
     self.assertEqual(exit_code, 0)
-    self.assertIn("\033]0;LOCAL-999 super-tool\007", err.getvalue())
+    self.assertIn("\033]0;super-tool/: LOCAL-999\007", err.getvalue())
 
   def test_info_command_with_issue_tag(self):
     script = TerminalTitleScript()
@@ -653,7 +875,7 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
             "info",
             "--ticket",
             "GH-113",
-            "--project",
+            "--directory",
             "makeflow-skill",
             "--issue-tag",
             "enhance terminal title",
@@ -665,10 +887,11 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     self.assertEqual(exit_code, 0)
     data = json.loads(out.getvalue())
     self.assertEqual(data["ticket_id"], "GH-113")
-    self.assertEqual(data["project_name"], "makeflow-skill")
+    self.assertEqual(data["directory_name"], "makeflow-skill")
+    self.assertNotIn("project_name", data)
     self.assertEqual(data["issue_tag"], "enhance terminal title")
     self.assertEqual(
-        data["title"], "GH-113 makeflow-skill: enhance terminal title"
+        data["title"], "makeflow-skill/: GH-113 enhance terminal title"
     )
 
   def test_set_command_with_issue_tag(self):
@@ -682,7 +905,7 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
             "set",
             "--ticket",
             "GH-113",
-            "--project",
+            "--directory",
             "makeflow-skill",
             "--issue-tag",
             "enhance terminal title",
@@ -692,11 +915,11 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     )
     self.assertEqual(exit_code, 0)
     self.assertIn(
-        "\033]0;GH-113 makeflow-skill: enhance terminal title\007",
+        "\033]0;makeflow-skill/: GH-113 enhance terminal title\007",
         err.getvalue(),
     )
 
-  def test_reset_command_restores_project_title(self):
+  def test_reset_command_restores_directory_title(self):
     script = TerminalTitleScript()
     out = io.StringIO()
     err = io.StringIO()
@@ -705,16 +928,26 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     exit_code = script.execute(
         [
             "reset",
-            "--project",
+            "--directory",
             "makeflow-skill",
         ],
         env_override={"TERM": "xterm-256color"},
         mock_tty=True,
     )
     self.assertEqual(exit_code, 0)
-    self.assertIn("\033]0;makeflow-skill\007", err.getvalue())
+    self.assertIn("\033]0;makeflow-skill/\007", err.getvalue())
 
-  def test_reset_command_rejects_temporary_project_title(self):
+  def test_reset_command_gh224_auto_detects_directory_and_ignores_plugin_json(
+      self,
+  ):
+    """GH-224: reset uses directory basename with trailing slash and ignores plugin.json."""
+    repo_dir = os.path.join(self.temp_dir, "my-dir-repo")
+    os.makedirs(repo_dir, exist_ok=True)
+    with open(
+        os.path.join(repo_dir, "plugin.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"name": "manifest-proj"}, f)
+
     script = TerminalTitleScript()
     out = io.StringIO()
     err = io.StringIO()
@@ -723,7 +956,30 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     exit_code = script.execute(
         [
             "reset",
-            "--project",
+            "--repo-root",
+            repo_dir,
+            "--json",
+        ],
+        env_override={"TERM": "xterm-256color"},
+        mock_tty=True,
+    )
+    self.assertEqual(exit_code, 0)
+    data = json.loads(out.getvalue())
+    self.assertTrue(data["success"])
+    self.assertEqual(data["title"], "my-dir-repo/")
+    self.assertIn("\033]0;my-dir-repo/\007", err.getvalue())
+    self.assertNotIn("manifest-proj", err.getvalue())
+
+  def test_reset_command_rejects_temporary_directory_title(self):
+    script = TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    script.stdout = out
+    script.stderr = err
+    exit_code = script.execute(
+        [
+            "reset",
+            "--directory",
             "tmpa1b2c3d4",
         ],
         env_override={"TERM": "xterm-256color"},
@@ -731,6 +987,20 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
     )
     self.assertEqual(exit_code, 0)
     self.assertEqual(err.getvalue(), "")
+
+  def test_legacy_project_flag_rejected_gh224(self):
+    """GH-224: --project flag is replaced by --directory on TerminalTitleScript."""
+    for subcmd in ("info", "set", "reset"):
+      with self.subTest(subcmd=subcmd):
+        script = TerminalTitleScript()
+        out = io.StringIO()
+        err = io.StringIO()
+        exit_code = script.execute(
+            [subcmd, "--project", "makeflow-skill"],
+            stdout=out,
+            stderr=err,
+        )
+        self.assertEqual(exit_code, 1)
 
 
 class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
@@ -748,7 +1018,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
               "terminal-title",
               "--ticket",
               "GH-103",
-              "--project",
+              "--directory",
               "makeflow-skill",
               "--json",
           ],
@@ -757,7 +1027,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
       )
     self.assertEqual(exit_code, 0)
     data = json.loads(out.getvalue())
-    self.assertEqual(data["title"], "GH-103 makeflow-skill")
+    self.assertEqual(data["title"], "makeflow-skill/: GH-103")
     self.assertTrue(data["success"])
 
   def test_workflow_gates_forwards_issue_tag(self):
@@ -772,7 +1042,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
               "terminal-title",
               "--ticket",
               "GH-113",
-              "--project",
+              "--directory",
               "makeflow-skill",
               "--issue-tag",
               "enhance terminal title",
@@ -784,7 +1054,7 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
     self.assertEqual(exit_code, 0)
     data = json.loads(out.getvalue())
     self.assertEqual(
-        data["title"], "GH-113 makeflow-skill: enhance terminal title"
+        data["title"], "makeflow-skill/: GH-113 enhance terminal title"
     )
     self.assertTrue(data["success"])
 
@@ -796,7 +1066,9 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
     err = MockTtyStream()
     temp_dir = tempfile.mkdtemp(prefix="makeflow_release_test_")
     try:
-      manifest = os.path.join(temp_dir, "plugin.json")
+      repo_dir = os.path.join(temp_dir, "restored-dir")
+      os.makedirs(repo_dir, exist_ok=True)
+      manifest = os.path.join(repo_dir, "plugin.json")
       with open(manifest, "w", encoding="utf-8") as f:
         json.dump({"name": "restored-project"}, f)
 
@@ -804,15 +1076,16 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
         exit_code = script.execute(
             [
                 "--repo-root",
-                temp_dir,
+                repo_dir,
                 "release-intake",
             ],
             stdout=out,
             stderr=err,
         )
       self.assertEqual(exit_code, 0)
-      # Must set terminal title to restored-project
-      self.assertIn("\033]0;restored-project\007", err.getvalue())
+      # Must ignore plugin.json and restore terminal title to restored-dir/
+      self.assertIn("\033]0;restored-dir/\007", err.getvalue())
+      self.assertNotIn("restored-project", err.getvalue())
     finally:
       shutil.rmtree(temp_dir, ignore_errors=True)
 

@@ -370,7 +370,7 @@ class WorkflowGatesScript(BaseScript):
     self.max_bytes: int = DEFAULT_SKILL_MAX_BYTES
     self.commit_msg_file: Optional[str] = None
     self.ticket: Optional[str] = None
-    self.project: Optional[str] = None
+    self.directory: Optional[str] = None
     self.title: Optional[str] = None
     self.issue_tag: Optional[str] = None
     self.allow_blocked: bool = False
@@ -579,7 +579,7 @@ class WorkflowGatesScript(BaseScript):
 
     p_title = subparsers.add_parser(
         "terminal-title",
-        help="Update the interactive terminal title for the active ticket and project.",
+        help="Update the interactive terminal title for the active ticket and directory.",
         description="Detect terminal capability and set the terminal window title for the active ticket.",
         epilog="Example:\n  python3 scripts/workflow_gates.py terminal-title --ticket GH-170",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -590,9 +590,9 @@ class WorkflowGatesScript(BaseScript):
         help="Ticket ID to display in the terminal title.",
     )
     p_title.add_argument(
-        "--project",
+        "--directory",
         default=None,
-        help="Project name to display in the terminal title.",
+        help="Directory name to display in the terminal title.",
     )
     p_title.add_argument(
         "--title",
@@ -660,7 +660,7 @@ class WorkflowGatesScript(BaseScript):
       self.fail_on_behind = bool(getattr(ns, "fail_on_behind", False))
     elif ns.gate in ("terminal-title", "intake", "release-intake", "release-lock"):
       self.ticket = getattr(ns, "ticket", None)
-      self.project = getattr(ns, "project", None)
+      self.directory = getattr(ns, "directory", None)
       self.title = getattr(ns, "title", None)
       self.issue_tag = getattr(ns, "issue_tag", None)
       self.allow_blocked = bool(getattr(ns, "allow_blocked", False))
@@ -950,16 +950,23 @@ class WorkflowGatesScript(BaseScript):
 
     try:
       from lib.terminal_title import (
-          detect_project_name,
+          detect_directory_name,
+          format_terminal_title,
           is_temporary_directory_name,
           set_terminal_title,
       )
-      proj = self.project or detect_project_name(repo_root=self.repo_root)
-      if proj and not is_temporary_directory_name(proj):
-        stream_to_use = getattr(self, "stderr", None)
-        set_terminal_title(
-            title=proj, repo_root=self.repo_root, stream=stream_to_use
-        )
+      dir_name = (
+          self.directory
+          if self.directory is not None
+          else detect_directory_name(repo_root=self.repo_root)
+      )
+      if dir_name and not is_temporary_directory_name(dir_name):
+        restored_title = format_terminal_title("", dir_name)
+        if restored_title:
+          stream_to_use = getattr(self, "stderr", None)
+          set_terminal_title(
+              title=restored_title, repo_root=self.repo_root, stream=stream_to_use
+          )
     except (ImportError, OSError):
       pass
     return 0
@@ -1187,8 +1194,8 @@ class WorkflowGatesScript(BaseScript):
       sub_args = ["set", "--repo-root", self.repo_root]
       if self.ticket:
         sub_args.extend(["--ticket", self.ticket])
-      if self.project:
-        sub_args.extend(["--project", self.project])
+      if self.directory is not None:
+        sub_args.extend(["--directory", self.directory])
       if self.title:
         sub_args.extend(["--title", self.title])
       if self.issue_tag:

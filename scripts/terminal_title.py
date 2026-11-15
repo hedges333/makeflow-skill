@@ -11,6 +11,7 @@ if _REPO_ROOT not in sys.path:
 from lib.terminal_title import (  # noqa: E402
     StreamProxy,
     TerminalTitleScript,
+    detect_directory_name,
     detect_issue_tag,
     detect_project_name,
     detect_terminal_capability,
@@ -25,6 +26,7 @@ from lib.terminal_title import (  # noqa: E402
 __all__ = [
     "StreamProxy",
     "TerminalTitleScript",
+    "detect_directory_name",
     "detect_issue_tag",
     "detect_project_name",
     "detect_terminal_capability",
