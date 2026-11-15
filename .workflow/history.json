@@ -2165,5 +2165,24 @@
     "closes_issue": true,
     "tests_added": 14,
     "scars_earned": []
+  },
+  {
+    "id": "GH-210",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/210",
+    "title": "[BUG] Fix makeflow MCP server lazy-load 'invalid request' disconnect and workflow_query_scars schema",
+    "request": "Eliminate stdout JSON-RPC responses with null request IDs, normalize stringified JSON object arguments in call_mcp_tool, support dual-era MCP protocol negotiation (2026-07-28 stateless server/discover and _meta validation alongside 2024-11-05 to 2025-11-25 initialize), remove query from workflow_query_scars required schema fields, name lib/scars_db.py in missing-engine errors, and add 7 hermetic unit and stdio wire tests.",
+    "branch": "fix/210-mcp-lazy-load-and-scars-schema",
+    "subprojects": [
+      "mcp",
+      "tests"
+    ],
+    "started_at": "2026-11-15T08:35:41Z",
+    "completed_at": "2026-11-15T10:01:30Z",
+    "commit_sha": "2ac67dae7972693b65a9f58395ce405d2ee52194",
+    "pr_number": 214,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/214",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
