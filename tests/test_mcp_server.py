@@ -1806,6 +1806,147 @@ class TestMcpServerMultiDimensionalQueryScars(unittest.TestCase):
       self.assertEqual(filter_only_data["scars"][0]["id"], "SCAR-RIV-01")
 
 
+class TestMcpServerOntologyAndMfTarget(unittest.TestCase):
+  """Tests GH-193 mfTarget MCP schema/filter and ssId/ssTargets/mfTargets fields."""
+
+  def test_workflow_query_scars_mf_target_and_ss_id_fields(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+    from mcp.server import handle_tools_call, handle_tools_list
+
+    tools_resp = handle_tools_list(1)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    q_props = tools["workflow_query_scars"]["inputSchema"]["properties"]
+    self.assertIn("mfTarget", q_props)
+    self.assertEqual(q_props["mfTarget"]["type"], "integer")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_ontology.db")
+      script = SyncSyntheticScarsScript()
+      script.db_path = db_path
+      script._init_db_schema()
+      cur = script.conn.cursor()
+      cur.execute(
+          """
+          INSERT INTO scars (
+              id, ss_id, title, category, category_slug, visibility,
+              workflow_phases, ss_targets, mf_targets, applies_when,
+              graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+              raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
+              socratic_probe, source, original_id
+          ) VALUES (
+              'SCAR-LANG-DART-ARCH-0005',
+              'SCAR-ARCH-05',
+              'Layer Boundary Guard',
+              'ARCH',
+              'arch',
+              'public',
+              '["Target 15: archaeology", "Target 20: plan", "Target 30: tdd", "Target 40: review"]',
+              '["Target 3", "Target 4"]',
+              '[15, 20, 30, 40]',
+              'Writing Dart architecture boundaries',
+              'graduated',
+              'Raw wound.',
+              'Raw trap.',
+              'If boundary breaks, stop.',
+              'Check imports in Dart.',
+              'hash-arch-0005',
+              'Simple wound.',
+              'Simple trap.',
+              'If boundary breaks, stop.',
+              'Check imports in Dart.',
+              'Did you check the boundary?',
+              'upstream',
+              NULL
+          )
+          """
+      )
+      cur.execute(
+          """
+          INSERT INTO scars (
+              id, ss_id, title, category, category_slug, visibility,
+              workflow_phases, ss_targets, mf_targets, applies_when,
+              graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+              raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
+              socratic_probe, source, original_id
+          ) VALUES (
+              'SCAR-LANG-PYTHON-STATE-0002',
+              'SCAR-RIV-02',
+              'Isolated State Mutation Guard',
+              'STATE',
+              'state',
+              'public',
+              '["Target 20: plan", "Target 30: tdd"]',
+              '["Target 2", "Target 3"]',
+              '[20, 30]',
+              'Managing Python state stores',
+              'graduated',
+              'Raw wound.',
+              'Raw trap.',
+              'If state mutates, stop.',
+              'Keep state pure in Python.',
+              'hash-state-0002',
+              'Simple wound.',
+              'Simple trap.',
+              'If state mutates, stop.',
+              'Keep state pure in Python.',
+              'Did you keep state pure?',
+              'upstream',
+              NULL
+          )
+          """
+      )
+      script.conn.commit()
+      script.conn.close()
+
+      enrich_scars_database(db_path)
+
+      resp_t15 = handle_tools_call(
+          301,
+          "workflow_query_scars",
+          {"query": "", "mfTarget": 15, "dbPath": db_path},
+      )
+      data_t15 = json.loads(resp_t15["result"]["content"][0]["text"])
+      self.assertEqual(data_t15["totalResults"], 1)
+      scar_t15 = data_t15["scars"][0]
+      self.assertEqual(scar_t15["id"], "SCAR-LANG-DART-ARCH-0005")
+      self.assertEqual(scar_t15["ssId"], "SCAR-ARCH-05")
+      self.assertEqual(scar_t15["ssTargets"], ["Target 3", "Target 4"])
+      self.assertEqual(scar_t15["mfTargets"], [15, 20, 30, 40])
+
+      resp_t20 = handle_tools_call(
+          302,
+          "workflow_query_scars",
+          {
+              "query": "",
+              "mfTarget": 20,
+              "limit": 5,
+              "refreshLoaded": True,
+              "dbPath": db_path,
+          },
+      )
+      data_t20 = json.loads(resp_t20["result"]["content"][0]["text"])
+      self.assertEqual(data_t20["totalResults"], 2)
+
+      resp_ssid = handle_tools_call(
+          303,
+          "workflow_query_scars",
+          {"query": "SCAR-ARCH-05", "refreshLoaded": True, "dbPath": db_path},
+      )
+      data_ssid = json.loads(resp_ssid["result"]["content"][0]["text"])
+      self.assertEqual(data_ssid["totalResults"], 1)
+      self.assertEqual(data_ssid["scars"][0]["id"], "SCAR-LANG-DART-ARCH-0005")
+
+      resp_t75 = handle_tools_call(
+          304,
+          "workflow_query_scars",
+          {"query": "", "mfTarget": 75, "dbPath": db_path},
+      )
+      data_t75 = json.loads(resp_t75["result"]["content"][0]["text"])
+      self.assertEqual(data_t75["totalResults"], 0)
+
+
 class TestMcpPauseGateTurnBoundary(unittest.TestCase):
   """Tests server-side pause-gate entry recording and same-turn chaining block (GH-186)."""
 
@@ -2353,6 +2494,7 @@ if __name__ == "__main__":
   TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
   TestGateEvidenceKeysEnumeration().test_gate_evidence_keys_schema_runtime_and_docs()
   TestMcpServerMultiDimensionalQueryScars().test_workflow_query_scars_multidimensional_filters()
+  TestMcpServerOntologyAndMfTarget().test_workflow_query_scars_mf_target_and_ss_id_fields()
   TestMcpPauseGateTurnBoundary().test_mcp_pause_gate_entry_and_same_turn_chaining_blocked()
   TestMcpPauseGateTurnBoundary().test_mcp_declarative_recovery_transitions_and_gate_entry_cleanup()
   TestMcpMainSyncTransitions().test_mcp_main_sync_behind_clean_and_conflict_transitions()

@@ -401,13 +401,15 @@ class TestQueryScars(unittest.TestCase):
   def test_fts5_keyword_search(self):
     results = query_scars(self.db_path, query="BaseScript")
     self.assertGreaterEqual(len(results), 1)
-    self.assertEqual(results[0]["id"], "SCAR-ARCH-05")
+    self.assertEqual(results[0]["id"], "SCAR-LANG-PYTHON-ARCH-0005")
+    self.assertEqual(results[0]["ssId"], "SCAR-ARCH-05")
     self.assertIn("Template Method", results[0]["title"])
 
   def test_category_filter(self):
     results = query_scars(self.db_path, query="isolation", category="Testing")
     self.assertEqual(len(results), 1)
-    self.assertEqual(results[0]["id"], "SCAR-TEST-08")
+    self.assertEqual(results[0]["id"], "SCAR-TEST-0008")
+    self.assertEqual(results[0]["ssId"], "SCAR-TEST-08")
 
     # Mismatched category should return empty
     empty_results = query_scars(self.db_path, query="isolation", category="Architecture")
@@ -416,7 +418,8 @@ class TestQueryScars(unittest.TestCase):
   def test_language_filter(self):
     results = query_scars(self.db_path, query="strict", language="python")
     self.assertEqual(len(results), 1)
-    self.assertEqual(results[0]["id"], "SCAR-LANG-01")
+    self.assertEqual(results[0]["id"], "SCAR-LANG-PYTHON-AST-0001")
+    self.assertEqual(results[0]["ssId"], "SCAR-LANG-01")
 
   def test_limit_enforcement(self):
     results = query_scars(self.db_path, query="test", limit=1)
@@ -539,11 +542,15 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
     self.assertIn("source", col_names)
     self.assertIn("original_id", col_names)
     self.assertIn("raw_hash", col_names)
+    self.assertIn("ss_id", col_names)
+    self.assertIn("ss_targets", col_names)
+    self.assertIn("mf_targets", col_names)
 
     cur.execute("PRAGMA table_info(scars_fts)")
     fts_cols = [r[1] for r in cur.fetchall()]
     self.assertIn("source", fts_cols)
     self.assertIn("original_id", fts_cols)
+    self.assertIn("ss_id", fts_cols)
     conn.close()
 
   def test_delta_sync_skips_unchanged_rows(self):
@@ -556,14 +563,15 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
     # Verify raw_hash was computed
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
-    cur.execute("SELECT id, raw_hash FROM scars")
+    cur.execute("SELECT id, ss_id, raw_hash FROM scars")
     rows = cur.fetchall()
-    for scar_id, raw_hash in rows:
+    for scar_id, ss_id, raw_hash in rows:
       self.assertIsNotNone(raw_hash)
       self.assertEqual(len(raw_hash), 32)
+      self.assertIsNotNone(ss_id)
 
     # Inject canary into SCAR-ARCH-05 while leaving raw_hash unchanged
-    cur.execute("UPDATE scars SET wound = 'Canary wound' WHERE id = 'SCAR-ARCH-05'")
+    cur.execute("UPDATE scars SET wound = 'Canary wound' WHERE ss_id = 'SCAR-ARCH-05'")
     conn.commit()
     conn.close()
 
@@ -575,7 +583,7 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
 
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
-    cur.execute("SELECT wound FROM scars WHERE id = 'SCAR-ARCH-05'")
+    cur.execute("SELECT wound FROM scars WHERE ss_id = 'SCAR-ARCH-05'")
     wound = cur.fetchone()[0]
     conn.close()
     self.assertEqual(wound, "Canary wound")
@@ -648,28 +656,38 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
 
-    # Verify upstream scar is inserted with source='upstream' and original id
-    cur.execute("SELECT id, source, original_id, title FROM scars WHERE id = 'SCAR-LANG-PERL-001'")
+    # Verify upstream scar receives canonical 4-digit id and preserves ss_id
+    cur.execute(
+        "SELECT id, ss_id, source, original_id, title"
+        " FROM scars WHERE ss_id = 'SCAR-LANG-PERL-001'"
+    )
     up_row = cur.fetchone()
     self.assertIsNotNone(up_row)
-    self.assertEqual(up_row[1], "upstream")
-    self.assertIsNone(up_row[2])
-    self.assertEqual(up_row[3], "Upstream Perl Scars")
+    self.assertEqual(up_row[0], "SCAR-LANG-PERL-ARCH-0001")
+    self.assertEqual(up_row[1], "SCAR-LANG-PERL-001")
+    self.assertEqual(up_row[2], "upstream")
+    self.assertIsNone(up_row[3])
+    self.assertEqual(up_row[4], "Upstream Perl Scars")
 
-    # Verify makeflow scar is renamed with source='makeflow' and original_id='SCAR-LANG-PERL-001'
-    cur.execute("SELECT id, source, original_id, title FROM scars WHERE id = 'SCAR-MF-LANG-PERL-001'")
+    # Verify Makeflow scar keeps its exact id (no SCAR-MF-* mutation) and has ss_id=NULL
+    cur.execute(
+        "SELECT id, ss_id, source, original_id, title"
+        " FROM scars WHERE id = 'SCAR-LANG-PERL-001'"
+    )
     mf_row = cur.fetchone()
     self.assertIsNotNone(mf_row)
-    self.assertEqual(mf_row[1], "makeflow")
-    self.assertEqual(mf_row[2], "SCAR-LANG-PERL-001")
-    self.assertEqual(mf_row[3], "Makeflow Perl Guidelines")
+    self.assertIsNone(mf_row[1])
+    self.assertEqual(mf_row[2], "makeflow")
+    self.assertIsNone(mf_row[3])
+    self.assertEqual(mf_row[4], "Makeflow Perl Guidelines")
 
     # Verify both are searchable in FTS5
     up_search = query_scars(self.db_path, query="Upstream")
-    self.assertTrue(any(r["id"] == "SCAR-LANG-PERL-001" for r in up_search))
+    self.assertTrue(any(r["id"] == "SCAR-LANG-PERL-ARCH-0001" for r in up_search))
+    self.assertTrue(any(r["ssId"] == "SCAR-LANG-PERL-001" for r in up_search))
 
     mf_search = query_scars(self.db_path, query="Guidelines")
-    self.assertTrue(any(r["id"] == "SCAR-MF-LANG-PERL-001" for r in mf_search))
+    self.assertTrue(any(r["id"] == "SCAR-LANG-PERL-001" for r in mf_search))
     conn.close()
 
   def test_query_scars_source_filter_and_fields(self):
@@ -682,19 +700,21 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
     for r in results:
       self.assertIn("source", r)
       self.assertIn("originalId", r)
+      self.assertIn("ssId", r)
 
     # Filter by source='makeflow'
     mf_only = query_scars(self.db_path, query="Perl", source="makeflow")
     self.assertTrue(len(mf_only) >= 1)
     self.assertTrue(all(r["source"] == "makeflow" for r in mf_only))
-    self.assertEqual(mf_only[0]["id"], "SCAR-MF-LANG-PERL-001")
-    self.assertEqual(mf_only[0]["originalId"], "SCAR-LANG-PERL-001")
+    self.assertEqual(mf_only[0]["id"], "SCAR-LANG-PERL-001")
+    self.assertIsNone(mf_only[0]["ssId"])
 
     # Filter by source='upstream'
     up_only = query_scars(self.db_path, query="Perl", source="upstream")
     self.assertTrue(len(up_only) >= 1)
     self.assertTrue(all(r["source"] == "upstream" for r in up_only))
-    self.assertEqual(up_only[0]["id"], "SCAR-LANG-PERL-001")
+    self.assertEqual(up_only[0]["id"], "SCAR-LANG-PERL-ARCH-0001")
+    self.assertEqual(up_only[0]["ssId"], "SCAR-LANG-PERL-001")
 
   def test_sync_never_deletes_makeflow_scars(self):
     payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
@@ -742,16 +762,16 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
       script.execute(args=["--db-path", self.db_path], stdout=io.StringIO())
 
     conn = sqlite3.connect(self.db_path)
-    # Insert both SCAR-MF-LANG-PERL-001 and a distinct SCAR-LANG-PERL-001 with source='makeflow'
+    # Insert Makeflow rows owning legacy and canonical Perl IDs without ss_id
     conn.execute("""
         INSERT INTO scars (
             id, title, category, category_slug, visibility,
             workflow_phases, applies_when, graduation_status,
             wound, trap, circuit_breaker, reflex, source, original_id, raw_hash
         ) VALUES (
-            'SCAR-MF-LANG-PERL-001', 'First Makeflow Perl Rule', 'Polyglot', 'polyglot', 'public',
+            'SCAR-LANG-PERL-ARCH-0001', 'First Makeflow Perl Rule', 'ARCH', 'arch', 'public',
             '["T30"]', 'Perl', 'graduated', 'First wound', 'First trap', 'NOOO', 'First reflex',
-            'makeflow', 'SCAR-LANG-PERL-001', 'hash_mf_1'
+            'makeflow', NULL, 'hash_mf_1'
         )
     """)
     conn.execute("""
@@ -790,15 +810,21 @@ class TestMultiSourceDeltaSync(unittest.TestCase):
 
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
-    cur.execute("SELECT id, title, source FROM scars WHERE id LIKE '%PERL-001%' ORDER BY id")
+    cur.execute("SELECT id, ss_id, title, source FROM scars WHERE id LIKE '%PERL%' ORDER BY id")
     rows = cur.fetchall()
-    ids = {r[0]: (r[1], r[2]) for r in rows}
-    self.assertIn("SCAR-LANG-PERL-001", ids)
-    self.assertEqual(ids["SCAR-LANG-PERL-001"], ("Upstream Perl Rule", "upstream"))
-    self.assertIn("SCAR-MF-LANG-PERL-001", ids)
-    self.assertEqual(ids["SCAR-MF-LANG-PERL-001"], ("First Makeflow Perl Rule", "makeflow"))
-    self.assertIn("SCAR-MF-LANG-PERL-001-2", ids)
-    self.assertEqual(ids["SCAR-MF-LANG-PERL-001-2"], ("Second Makeflow Perl Rule", "makeflow"))
+    by_id = {r[0]: (r[1], r[2], r[3]) for r in rows}
+    self.assertEqual(
+        by_id.get("SCAR-LANG-PERL-ARCH-0001"),
+        (None, "First Makeflow Perl Rule", "makeflow"),
+    )
+    self.assertEqual(
+        by_id.get("SCAR-LANG-PERL-001"),
+        (None, "Second Makeflow Perl Rule", "makeflow"),
+    )
+    self.assertEqual(
+        by_id.get("SCAR-LANG-PERL-ARCH-0002"),
+        ("SCAR-LANG-PERL-001", "Upstream Perl Rule", "upstream"),
+    )
     conn.close()
 
   def test_schema_upgrade_rebuilds_fts5_before_304(self):
@@ -979,37 +1005,40 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
     cur.execute(
-        "SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,"
-        " wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-MATH-01'"
+        "SELECT id, ss_id, raw_wound, raw_trap, raw_circuit_breaker,"
+        " raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,"
+        " socratic_probe FROM scars WHERE ss_id = 'SCAR-MATH-01'"
     )
     row_math = cur.fetchone()
-    self.assertEqual(row_math[0], "Lost inline $x_i + y_i = z_i$ formula.")
+    self.assertEqual(row_math[0], "SCAR-LANG-PYTHON-ARCH-0001")
+    self.assertEqual(row_math[1], "SCAR-MATH-01")
+    self.assertEqual(row_math[2], "Lost inline $x_i + y_i = z_i$ formula.")
     self.assertEqual(
-        row_math[1], "Stripping LaTeX $$\\sum_{i=1}^n x_i$$ during rewrite."
+        row_math[3], "Stripping LaTeX $$\\sum_{i=1}^n x_i$$ during rewrite."
     )
-    self.assertEqual(row_math[2], "Verify spans before commit.")
+    self.assertEqual(row_math[4], "Verify spans before commit.")
     self.assertEqual(
-        row_math[3], "Preserve `$VAR` and ```python\nprint(1)\n``` blocks."
+        row_math[5], "Preserve `$VAR` and ```python\nprint(1)\n``` blocks."
     )
-    self.assertTrue(row_math[4])
-    self.assertIsNone(row_math[5])
-    self.assertIsNone(row_math[6])
+    self.assertTrue(row_math[6])
     self.assertIsNone(row_math[7])
     self.assertIsNone(row_math[8])
     self.assertIsNone(row_math[9])
+    self.assertIsNone(row_math[10])
+    self.assertIsNone(row_math[11])
 
     cur.execute(
-        "SELECT raw_circuit_breaker, circuit_breaker, wound, trap, reflex,"
-        " socratic_probe FROM scars WHERE id = 'SCAR-NOCB-01'"
+        "SELECT id, raw_circuit_breaker, circuit_breaker, wound, trap, reflex,"
+        " socratic_probe FROM scars WHERE ss_id = 'SCAR-NOCB-01'"
     )
     row_nocb = cur.fetchone()
-    self.assertEqual(row_nocb[0], "")
+    self.assertEqual(row_nocb[0], "SCAR-TEST-0001")
     self.assertEqual(row_nocb[1], "")
-    self.assertIsNone(row_nocb[2])
+    self.assertEqual(row_nocb[2], "")
     self.assertIsNone(row_nocb[3])
     self.assertIsNone(row_nocb[4])
     self.assertIsNone(row_nocb[5])
+    self.assertIsNone(row_nocb[6])
 
     # Status command also reports pending count
     out_status = io.StringIO()
@@ -1023,10 +1052,10 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
         out_status.getvalue(),
     )
 
-    # Populate Simple English fields for SCAR-MATH-01
+    # Populate Simple English fields for SCAR-MATH-01 (via ss_id)
     cur.execute(
         "UPDATE scars SET wound = ?, trap = ?, circuit_breaker = ?, reflex = ?,"
-        " socratic_probe = ? WHERE id = 'SCAR-MATH-01'",
+        " socratic_probe = ? WHERE ss_id = 'SCAR-MATH-01'",
         (
             "Simple wound with $x_i + y_i = z_i$ preserved.",
             "Simple trap with $$\\sum_{i=1}^n x_i$$ preserved.",
@@ -1055,7 +1084,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
 
     cur.execute(
         "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-MATH-01'"
+        " FROM scars WHERE ss_id = 'SCAR-MATH-01'"
     )
     preserved = cur.fetchone()
     self.assertEqual(
@@ -1084,7 +1113,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
 
     cur.execute(
         "SELECT raw_reflex, wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-MATH-01'"
+        " FROM scars WHERE ss_id = 'SCAR-MATH-01'"
     )
     reset_row = cur.fetchone()
     self.assertEqual(
@@ -1097,11 +1126,24 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     self.assertIsNone(reset_row[4])
     self.assertIsNone(reset_row[5])
 
-    # Populate all four Simple English fields for both rows -> 0 pending -> notice omitted
+    # Populate only the 4 Simple English fields first (socratic_probe still NULL -> NBO-2 still pending)
     cur.execute(
         "UPDATE scars SET wound = 'Simple wound.', trap = 'Simple trap.',"
         " circuit_breaker = 'Simple breaker.', reflex = 'Simple reflex.'"
     )
+    conn.commit()
+    out_missing_probe = io.StringIO()
+    code_missing_probe = SyncSyntheticScarsScript().execute(
+        args=["--db-path", self.db_path, "--status"], stdout=out_missing_probe
+    )
+    self.assertEqual(code_missing_probe, 0)
+    self.assertIn(
+        "Pending Simple English transformations: 2 scar(s).",
+        out_missing_probe.getvalue(),
+    )
+
+    # Now populate socratic_probe too -> 0 pending -> notice omitted
+    cur.execute("UPDATE scars SET socratic_probe = 'Did you verify this?'")
     conn.commit()
     conn.close()
     out_zero = io.StringIO()
@@ -1217,7 +1259,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     # Pre-populate wound directly so we can verify --apply-transformed only updates NULL fields
     conn = sqlite3.connect(self.db_path)
     conn.execute(
-        "UPDATE scars SET wound = ? WHERE id = 'SCAR-PIPE-01'",
+        "UPDATE scars SET wound = ? WHERE ss_id = 'SCAR-PIPE-01'",
         ("Existing Simple English wound with $k = 1$.",),
     )
     conn.commit()
@@ -1235,12 +1277,13 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     )
     exported = json.loads(out_exp.getvalue())
     self.assertEqual(len(exported), 1)
-    self.assertEqual(exported[0]["id"], "SCAR-PIPE-01")
+    self.assertEqual(exported[0]["id"], "SCAR-LANG-BASH-ARCH-0001")
+    self.assertEqual(exported[0]["ss_id"], "SCAR-PIPE-01")
     self.assertNotIn("wound", exported[0]["null_fields"])
     for nf in ("trap", "circuit_breaker", "reflex", "socratic_probe"):
       self.assertIn(nf, exported[0]["null_fields"])
 
-    # 2. --apply-transformed merges only into NULL fields and keeps existing non-null wound
+    # 2. --apply-transformed merges only into NULL fields and keeps existing non-null wound (resolves ss_id)
     apply_path = os.path.join(self.temp_dir.name, "transformed.json")
     with open(apply_path, "w", encoding="utf-8") as f:
       json.dump(
@@ -1274,6 +1317,8 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     # Verify query_scars returns Simple English fields and socraticProbe, keeping existing wound
     results = query_scars(self.db_path, query="Simple trap")
     self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["id"], "SCAR-LANG-BASH-ARCH-0001")
+    self.assertEqual(results[0]["ssId"], "SCAR-PIPE-01")
     self.assertEqual(
         results[0]["wound"], "Existing Simple English wound with $k = 1$."
     )
@@ -1300,7 +1345,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     # Corrupt the transformed wound in SQLite (drop $k = 1$) -> --verify-transformed exits 1
     conn = sqlite3.connect(self.db_path)
     conn.execute(
-        "UPDATE scars SET wound = 'Corrupted wound missing formula.' WHERE id = 'SCAR-PIPE-01'"
+        "UPDATE scars SET wound = 'Corrupted wound missing formula.' WHERE ss_id = 'SCAR-PIPE-01'"
     )
     conn.commit()
     conn.close()
@@ -1360,7 +1405,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     # Set an existing socratic_probe on SCAR-MATH-01 in SQLite
     conn = sqlite3.connect(self.db_path)
     conn.execute(
-        "UPDATE scars SET socratic_probe = ? WHERE id = 'SCAR-MATH-01'",
+        "UPDATE scars SET socratic_probe = ? WHERE ss_id = 'SCAR-MATH-01'",
         ("Existing Socratic question?",),
     )
     conn.commit()
@@ -1401,7 +1446,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     cur = conn.cursor()
     cur.execute(
         "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-MATH-01'"
+        " FROM scars WHERE ss_id = 'SCAR-MATH-01'"
     )
     row = cur.fetchone()
     conn.close()
@@ -1448,7 +1493,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     cur = conn.cursor()
     cur.execute(
         "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-MATH-01'"
+        " FROM scars WHERE ss_id = 'SCAR-MATH-01'"
     )
     row_math = cur.fetchone()
     self.assertEqual(row_math[0], "Revised wound with $x_i + y_i = z_i$ intact.")
@@ -1456,7 +1501,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
 
     cur.execute(
         "SELECT wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-NOCB-01'"
+        " FROM scars WHERE ss_id = 'SCAR-NOCB-01'"
     )
     row_nocb = cur.fetchone()
     conn.close()
@@ -1469,7 +1514,8 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
     # Searchable via FTS5 query_scars
     results = query_scars(self.db_path, query="Revised wound")
     self.assertEqual(len(results), 1)
-    self.assertEqual(results[0]["id"], "SCAR-MATH-01")
+    self.assertEqual(results[0]["id"], "SCAR-LANG-PYTHON-ARCH-0001")
+    self.assertEqual(results[0]["ssId"], "SCAR-MATH-01")
     self.assertEqual(results[0]["socraticProbe"], "Existing Socratic question?")
 
   def test_import_simple_english_rejects_invalid_and_rolls_back(self):
@@ -1610,7 +1656,7 @@ class TestSimpleEnglishTransformationWorkflow(unittest.TestCase):
 
     conn = sqlite3.connect(self.db_path)
     cur = conn.cursor()
-    cur.execute("SELECT wound FROM scars WHERE id = 'SCAR-MATH-01'")
+    cur.execute("SELECT wound FROM scars WHERE ss_id = 'SCAR-MATH-01'")
     self.assertIsNone(cur.fetchone()[0])
     conn.close()
 
@@ -1994,16 +2040,18 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
             languages = NULL,
             frameworks = NULL,
             diagnostic_codes = NULL
-        WHERE id = 'SCAR-RIV-01'
+        WHERE ss_id = 'SCAR-RIV-01'
         """
     )
     conn.commit()
     cur = conn.cursor()
     cur.execute(
-        "SELECT raw_hash, wound, trap, circuit_breaker, reflex, socratic_probe"
-        " FROM scars WHERE id = 'SCAR-RIV-01'"
+        "SELECT id, raw_hash, wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE ss_id = 'SCAR-RIV-01'"
     )
     before_row = cur.fetchone()
+    self.assertEqual(before_row[0], "SCAR-LANG-DART-RIV-0001")
+    before_row = before_row[1:]
     conn.close()
 
     out_enr = io.StringIO()
@@ -2044,7 +2092,7 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     cur.execute(
         "SELECT raw_hash, wound, trap, circuit_breaker, reflex,"
         " socratic_probe, keywords, languages, frameworks, diagnostic_codes,"
-        " workflow_phases FROM scars WHERE id = 'SCAR-RIV-01'"
+        " workflow_phases FROM scars WHERE ss_id = 'SCAR-RIV-01'"
     )
     after_row = cur.fetchone()
     conn.close()
@@ -2113,7 +2161,7 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
 
     conn = sqlite3.connect(self.db_path)
     conn.execute(
-        "UPDATE scars SET wound = 'Simple widget wound.' WHERE id = 'SCAR-FLUTTER-10'"
+        "UPDATE scars SET wound = 'Simple widget wound.' WHERE ss_id = 'SCAR-FLUTTER-10'"
     )
     conn.execute(
         """
@@ -2134,7 +2182,8 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     # 1. Search by enriched keyword ('reentrancy') that was simplified out of in-use wound
     reent_res = query_scars(self.db_path, query="reentrancy")
     self.assertEqual(len(reent_res), 1)
-    self.assertEqual(reent_res[0]["id"], "SCAR-FLUTTER-10")
+    self.assertEqual(reent_res[0]["id"], "SCAR-LANG-DART-FLUTTER-0010")
+    self.assertEqual(reent_res[0]["ssId"], "SCAR-FLUTTER-10")
     for expected_field in (
         "keywords",
         "languages",
@@ -2143,45 +2192,48 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
         "diagnostic_codes",
         "workflowPhases",
         "workflow_phases",
+        "ssId",
+        "ssTargets",
+        "mfTargets",
     ):
       self.assertIn(expected_field, reent_res[0])
 
     # 2. Filter by framework
     fw_res = query_scars(self.db_path, query="", framework="riverpod")
     self.assertEqual(len(fw_res), 1)
-    self.assertEqual(fw_res[0]["id"], "SCAR-FLUTTER-10")
+    self.assertEqual(fw_res[0]["id"], "SCAR-LANG-DART-FLUTTER-0010")
 
     fw_py = query_scars(self.db_path, query="Worker", framework="fastapi")
     self.assertEqual(len(fw_py), 1)
-    self.assertEqual(fw_py[0]["id"], "SCAR-PY-20")
+    self.assertEqual(fw_py[0]["id"], "SCAR-LANG-PYTHON-SYS-0020")
 
     # 3. Filter by diagnostic_code
     diag_res = query_scars(self.db_path, query="", diagnostic_code="SIGTERM")
     self.assertEqual(len(diag_res), 1)
-    self.assertEqual(diag_res[0]["id"], "SCAR-PY-20")
+    self.assertEqual(diag_res[0]["id"], "SCAR-LANG-PYTHON-SYS-0020")
 
     diag_dart = query_scars(
         self.db_path, query="Completer", diagnostic_code="UNDEFINED_GETTER"
     )
     self.assertEqual(len(diag_dart), 1)
-    self.assertEqual(diag_dart[0]["id"], "SCAR-FLUTTER-10")
+    self.assertEqual(diag_dart[0]["id"], "SCAR-LANG-DART-FLUTTER-0010")
 
     # 4. Filter by workflow_phase
     wp_plan = query_scars(
         self.db_path, query="", workflow_phase="Target 20: plan"
     )
     self.assertEqual(len(wp_plan), 1)
-    self.assertEqual(wp_plan[0]["id"], "SCAR-FLUTTER-10")
+    self.assertEqual(wp_plan[0]["id"], "SCAR-LANG-DART-FLUTTER-0010")
 
     wp_rev = query_scars(
         self.db_path, query="", workflow_phase="Target 40: review"
     )
     self.assertEqual(len(wp_rev), 1)
-    self.assertEqual(wp_rev[0]["id"], "SCAR-PY-20")
+    self.assertEqual(wp_rev[0]["id"], "SCAR-LANG-PYTHON-SYS-0020")
 
     wp_short = query_scars(self.db_path, query="", workflow_phase="T40")
     self.assertEqual(len(wp_short), 1)
-    self.assertEqual(wp_short[0]["id"], "SCAR-PY-20")
+    self.assertEqual(wp_short[0]["id"], "SCAR-LANG-PYTHON-SYS-0020")
 
     # 4b. Negative boundary assertions (BLOCKER-1)
     self.assertEqual(
@@ -2217,7 +2269,7 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
         [],
     )
 
-    # 5. CLI flags --framework, --diagnostic-code, --workflow-phase
+    # 5. CLI flags --framework, --diagnostic-code, --workflow-phase, --mf-target
     out_cli = io.StringIO()
     code_cli = SyncSyntheticScarsScript().execute(
         args=[
@@ -2231,15 +2283,20 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
             "EADDRINUSE",
             "--workflow-phase",
             "Target 30: tdd",
+            "--mf-target",
+            "30",
         ],
         stdout=out_cli,
     )
     self.assertEqual(code_cli, 0)
     cli_data = json.loads(out_cli.getvalue())
     self.assertEqual(len(cli_data), 1)
-    self.assertEqual(cli_data[0]["id"], "SCAR-PY-20")
+    self.assertEqual(cli_data[0]["id"], "SCAR-LANG-PYTHON-SYS-0020")
 
   def test_bundled_scars_registry_db_is_enriched_and_indexed(self):
+    from lib.scar_ontology import DOMAIN_CATEGORY_ONTOLOGY
+    import re
+
     bundled_db = os.path.join(
         _REPO_ROOT, "skills", "makeflow", "data", "scars_registry.db"
     )
@@ -2260,18 +2317,40 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     )
     fts_sql = cur.fetchone()[0]
     self.assertNotIn("id unindexed", fts_sql.lower())
+    self.assertIn("ss_id", fts_sql.lower())
 
+    self.assertEqual(len(DOMAIN_CATEGORY_ONTOLOGY), 68)
+    canonical_id_re = re.compile(r"^SCAR-(?:LANG-[A-Z0-9]+-)?[A-Z0-9]+-\d{4}$")
     cur.execute(
-        "SELECT id, keywords, languages, frameworks, diagnostic_codes,"
-        " workflow_phases FROM scars"
+        "SELECT id, ss_id, source, category, keywords, languages, frameworks,"
+        " diagnostic_codes, workflow_phases, ss_targets, mf_targets, original_id FROM scars"
     )
+    distinct_categories = set()
+    by_ss_id = {}
+    by_id = {}
     for row in cur.fetchall():
       scar_id = row[0]
-      keywords = json.loads(row[1] or "null")
-      languages = json.loads(row[2] or "null")
-      frameworks = json.loads(row[3] or "null")
-      diag_codes = json.loads(row[4] or "null")
-      phases = json.loads(row[5] or "null")
+      ss_id = row[1]
+      source = row[2]
+      category = row[3]
+      distinct_categories.add(category)
+      if ss_id:
+        by_ss_id[ss_id] = (scar_id, category, row[11])
+      by_id[scar_id] = (ss_id, category, row[11], source)
+      self.assertRegex(scar_id, canonical_id_re)
+      self.assertIn(category, DOMAIN_CATEGORY_ONTOLOGY)
+      if source == "makeflow":
+        self.assertIsNone(ss_id)
+      else:
+        self.assertTrue(bool(ss_id))
+
+      keywords = json.loads(row[4] or "null")
+      languages = json.loads(row[5] or "null")
+      frameworks = json.loads(row[6] or "null")
+      diag_codes = json.loads(row[7] or "null")
+      phases = json.loads(row[8] or "null")
+      ss_targets = json.loads(row[9] or "null")
+      mf_targets = json.loads(row[10] or "null")
 
       self.assertIsInstance(keywords, list, f"{scar_id} keywords not a list")
       self.assertGreaterEqual(
@@ -2293,11 +2372,34 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
       self.assertGreaterEqual(
           len(phases), 1, f"{scar_id} workflow_phases must be non-empty"
       )
+      self.assertIsInstance(
+          ss_targets, list, f"{scar_id} ss_targets must be a JSON list"
+      )
+      self.assertIsInstance(
+          mf_targets, list, f"{scar_id} mf_targets must be a JSON list"
+      )
+      self.assertGreaterEqual(len(mf_targets), 1)
     conn.close()
+
+    # 1-to-1 upstream domain preservation checks across the 59+ categories
+    self.assertGreaterEqual(len(distinct_categories), 59)
+    self.assertEqual(by_ss_id["SCAR-RIV-01"][1], "RIV")
+    self.assertEqual(by_ss_id["SCAR-FLUTTER-01"][1], "FLUTTER")
+    self.assertEqual(by_ss_id["SCAR-BLOC-01"][1], "BLOC")
+    self.assertEqual(by_ss_id["SCAR-A2UI-01"][1], "A2UI")
+    self.assertEqual(by_ss_id["SCAR-OTEL-01"][1], "OTEL")
+    self.assertEqual(by_ss_id["SCAR-PUB-08"][:2], ("SCAR-PUB-0008", "PUB"))
+    self.assertIn("SCAR-LANG-DART-ASYNC-0001", by_id)
+    self.assertEqual(by_id["SCAR-LANG-DART-ASYNC-0001"][2], "SCAR-LANG-DART-01")
 
     # Unprocessed scars in bundled_db (e.g., SCAR-PROC-11 with socratic_probe=NULL) must never be returned by query_scars
     proc11_results = query_scars(bundled_db, query="SCAR-PROC-11", limit=20)
-    self.assertTrue(all(r["id"] != "SCAR-PROC-11" for r in proc11_results))
+    self.assertTrue(
+        all(
+            r.get("ssId") != "SCAR-PROC-11" and r["id"] != "SCAR-PROC-11"
+            for r in proc11_results
+        )
+    )
     all_queried = query_scars(bundled_db, query="SCAR", limit=1000)
     self.assertGreater(len(all_queried), 200)
     for q_row in all_queried:
@@ -2308,13 +2410,33 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
         )
 
     id_matches = query_scars(bundled_db, query="SCAR-ARCH-05", limit=5)
-    self.assertTrue(any(m["id"] == "SCAR-ARCH-05" for m in id_matches))
+    self.assertTrue(
+        any(
+            m.get("ssId") == "SCAR-ARCH-05"
+            and m["id"] == "SCAR-LANG-DART-ARCH-0005"
+            for m in id_matches
+        )
+    )
 
     dart_timer_matches = query_scars(
         bundled_db, query="fakeAsync", language="dart", limit=5
     )
     self.assertTrue(
-        any(m["id"] == "SCAR-LANG-DART-01" for m in dart_timer_matches)
+        any(
+            m["id"] == "SCAR-LANG-DART-ASYNC-0001"
+            and m.get("ssId") is None
+            and m.get("originalId") == "SCAR-LANG-DART-01"
+            for m in dart_timer_matches
+        )
+    )
+    orig_id_matches = query_scars(
+        bundled_db, query="SCAR-LANG-DART-01", limit=5
+    )
+    self.assertTrue(
+        any(
+            m["id"] == "SCAR-LANG-DART-ASYNC-0001"
+            for m in orig_id_matches
+        )
     )
 
     flutter_dispose_matches = query_scars(
@@ -2324,7 +2446,11 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
         limit=5,
     )
     self.assertTrue(
-        any(m["id"] == "SCAR-ARCH-21" for m in flutter_dispose_matches)
+        any(
+            m.get("ssId") == "SCAR-ARCH-21"
+            and m["id"] == "SCAR-LANG-DART-ARCH-0021"
+            for m in flutter_dispose_matches
+        )
     )
 
 
@@ -2658,6 +2784,1141 @@ class TestMultiPathStackingAndSessionLedger(unittest.TestCase):
     with open(ticket_card, "w", encoding="utf-8") as f:
       f.write("# Ticket: GH-193\n")
     self.assertEqual(load_session_scars(state_dir=state_dir), set())
+
+
+class TestScarOntologyAndTargets(unittest.TestCase):
+  """Tests canonical ontology mapping, language detection, 4-digit IDs, and shift-left targets (GH-193)."""
+
+  def test_ontology_covers_all_60_upstream_categories(self):
+    from lib.scar_ontology import (
+        CATEGORY_SYNONYM_MAP,
+        DOMAIN_CATEGORY_ONTOLOGY,
+        UPSTREAM_CATEGORY_MAP,
+        normalize_domain_category,
+        resolve_category_filter_tokens,
+    )
+
+    self.assertIn("WEB", DOMAIN_CATEGORY_ONTOLOGY)
+    self.assertEqual(len(DOMAIN_CATEGORY_ONTOLOGY), 68)
+    for code, desc in DOMAIN_CATEGORY_ONTOLOGY.items():
+      self.assertTrue(code.isupper() and code.isalnum())
+      self.assertTrue(bool(desc.strip()))
+
+    upstream_db_categories = (
+        "A2UI", "API", "ARCH", "AST", "ASYNC", "AUTH", "BLOC", "BUILD", "CI",
+        "COLLAB", "CONC", "CRAFT", "DATA", "DEP", "DIAG", "DIFF", "DIR", "DOC",
+        "ERR", "FAIL", "FLUTTER", "GENUI", "GEOM", "GIT", "GOV", "HCI", "HOOK",
+        "INTEROP", "INV", "LANG", "META", "METRIC", "MIXIN", "NAV", "OBS",
+        "OTEL", "PEDAGOGY", "PERF", "PROC", "PUB", "REFACTOR", "REGEX", "REVIEW",
+        "RIV", "SCRIPT", "SEC", "SKILL", "SSR", "STATE", "STORAGE", "SYNTAX",
+        "TEST", "TIME", "TMPL", "TOOL", "TYPE", "UI", "VERIF", "WEB", "WIRE",
+    )
+    self.assertEqual(len(upstream_db_categories), 60)
+    for raw_cat in upstream_db_categories:
+      if raw_cat != "LANG":
+        self.assertIn(raw_cat, DOMAIN_CATEGORY_ONTOLOGY)
+        self.assertEqual(UPSTREAM_CATEGORY_MAP[raw_cat], raw_cat)
+        self.assertEqual(normalize_domain_category(raw_cat), raw_cat)
+      else:
+        self.assertIn(raw_cat, UPSTREAM_CATEGORY_MAP)
+        self.assertIn(UPSTREAM_CATEGORY_MAP[raw_cat], DOMAIN_CATEGORY_ONTOLOGY)
+      norm = normalize_domain_category(raw_cat)
+      self.assertIn(norm, DOMAIN_CATEGORY_ONTOLOGY)
+
+    # All 59 non-LANG upstream codes preserve 1-to-1; Makeflow's 9 core codes preserve 1-to-1
+    for preserved in (
+        "FLUTTER", "BLOC", "RIV", "A2UI", "OTEL", "PUB", "REGEX", "SSR",
+        "HOOK", "SCRIPT", "INV", "CRAFT", "DIAG", "FAIL", "GEOM", "METRIC",
+        "NAV", "SKILL", "SYNTAX", "TIME", "TMPL", "VERIF",
+        "A11Y", "DB", "ENV", "I18N", "MATH", "NET", "SCHEMA", "SH", "SYS",
+    ):
+      self.assertEqual(normalize_domain_category(preserved), preserved)
+
+    # Bare language tags and unknown categories infer canonical domain (or SCAR prefix)
+    self.assertEqual(
+        normalize_domain_category("LANG", title="Python AST Scrubber Strict Formatting"),
+        "AST",
+    )
+    self.assertEqual(
+        normalize_domain_category("LANG", title="Async Timers fakeAsync"),
+        "ASYNC",
+    )
+    self.assertEqual(
+        normalize_domain_category("DART", title="Generic variance in TypeScript"),
+        "TYPE",
+    )
+    self.assertEqual(
+        normalize_domain_category("POLYGLOT", title="Hermetic fixture isolation in tests"),
+        "TEST",
+    )
+    self.assertEqual(
+        normalize_domain_category("RUST", title="Cargo.lock dependency pinning"),
+        "DEP",
+    )
+    self.assertEqual(
+        normalize_domain_category("PERL", title="Perl scripting conventions"),
+        "ARCH",
+    )
+    self.assertEqual(
+        normalize_domain_category("", scar_id="SCAR-FLUTTER-02", title="Anything"),
+        "FLUTTER",
+    )
+    self.assertEqual(
+        normalize_domain_category("UNKNOWN_CUSTOM", title="Async cancellation"),
+        "ASYNC",
+    )
+
+    # Human prose aliases normalize to canonical codes
+    for prose, expected_code in (
+        ("Architecture", "ARCH"),
+        ("Testing", "TEST"),
+        ("Process", "PROC"),
+        ("Security", "SEC"),
+        ("Database", "DB"),
+        ("System", "SYS"),
+        ("Environment", "ENV"),
+        ("Documentation", "DOC"),
+        ("Tooling", "TOOL"),
+    ):
+      self.assertEqual(normalize_domain_category(prose), expected_code)
+
+    # Category synonym tokens match prose aliases cleanly with zero cross-domain bleeding
+    self.assertNotIn("STATE", CATEGORY_SYNONYM_MAP.get("RIV", ()))
+    self.assertNotIn("RIV", CATEGORY_SYNONYM_MAP.get("STATE", ()))
+    self.assertNotIn("UI", resolve_category_filter_tokens("FLUTTER"))
+    self.assertNotIn("STATE", resolve_category_filter_tokens("RIV"))
+    self.assertIn("TEST", resolve_category_filter_tokens("TESTING"))
+    self.assertIn("TESTING", resolve_category_filter_tokens("TEST"))
+
+  def test_language_rules_and_canonical_four_digit_ids(self):
+    from lib.scar_ontology import compute_canonical_scar_id, select_primary_language
+    from lib.scars_db import extract_scar_metadata
+
+    # SCAR-PUB-08 social scar stays universal (not mislabeled 'dart')
+    pub_meta = extract_scar_metadata(
+        {
+            "id": "SCAR-PUB-08",
+            "title": "Public launch communication trap",
+            "category": "PUB",
+            "applies_when": "Announcing libraries on public forums",
+            "wound": "Premature hype triggers backlash.",
+            "trap": "Posting unfinished demos.",
+            "circuit_breaker": "Verify docs first.",
+            "reflex": "Wait until tests pass.",
+        }
+    )
+    self.assertEqual(pub_meta["languages"], ["universal"])
+
+    # SQLite in Python app should add framework 'sqlite' without false 'sql' language
+    sqlite_meta = extract_scar_metadata(
+        {
+            "id": "SCAR-STORAGE-02",
+            "title": "FastAPI SQLite checkpointing",
+            "category": "STORAGE",
+            "applies_when": "Using SQLite files inside Python FastAPI services",
+            "wound": "SQLite WAL left unclosed.",
+            "trap": "Dropping handle.",
+            "circuit_breaker": "Close connection cleanly.",
+            "reflex": "Close Python sqlite3 handle cleanly.",
+        }
+    )
+    self.assertEqual(sqlite_meta["languages"], ["python"])
+    self.assertIn("sqlite", sqlite_meta["frameworks"])
+
+    # Framework detection for A2UI, GenUI, OpenTelemetry
+    fw_meta = extract_scar_metadata(
+        {
+            "id": "SCAR-A2UI-01",
+            "title": "A2UI GenUI schema with OpenTelemetry",
+            "category": "A2UI",
+            "applies_when": "Tracing GenUI widgets via OpenTelemetry spans",
+            "wound": "Missing OTEL trace.",
+            "trap": "Broken A2UI tree.",
+            "circuit_breaker": "",
+            "reflex": "Validate GenUI catalog.",
+        }
+    )
+    for fw in ("a2ui", "genui", "opentelemetry"):
+      self.assertIn(fw, fw_meta["frameworks"])
+
+    # Language precedence + incidental helper stripping + 4-digit deterministic index
+    self.assertEqual(select_primary_language(["dart", "bash"], "ARCH"), "dart")
+    self.assertEqual(select_primary_language(["python", "sql"], "DB"), "python")
+    self.assertIsNone(select_primary_language(["dart", "c"], "WEB"))
+    self.assertIsNone(select_primary_language(["universal"], "TEST"))
+
+    reserved = set()
+    self.assertEqual(
+        compute_canonical_scar_id("SCAR-ARCH-05", "ARCH", ["dart"], reserved),
+        "SCAR-LANG-DART-ARCH-0005",
+    )
+    self.assertEqual(
+        compute_canonical_scar_id("SCAR-ARCH-05", "ARCH", ["dart"], reserved),
+        "SCAR-LANG-DART-ARCH-0001",
+    )
+    self.assertEqual(
+        compute_canonical_scar_id("SCAR-PUB-08", "PUB", ["universal"], reserved),
+        "SCAR-PUB-0008",
+    )
+    self.assertEqual(
+        compute_canonical_scar_id("SCAR-CI-02", "CI", ["dart", "bash"], reserved),
+        "SCAR-LANG-DART-CI-0002",
+    )
+    self.assertEqual(
+        compute_canonical_scar_id("SCAR-WEB-03", "WEB", ["dart", "c"], reserved),
+        "SCAR-WEB-0003",
+    )
+
+  def test_parse_upstream_targets_and_shift_left_never_right(self):
+    from lib.scar_ontology import (
+        compute_makeflow_targets,
+        parse_upstream_targets,
+        shift_left_targets,
+    )
+
+    self.assertEqual(
+        parse_upstream_targets(["Target 0", "Target 4a", "4b", "4c", "7a", "7b", "Step 15"]),
+        [10, 40, 42, 45, 70, 75, 90],
+    )
+    self.assertEqual(
+        parse_upstream_targets(["Step 4 (Plan)", "Step 6 (TDD)", "Step 14"]),
+        [20, 30, 75],
+    )
+
+    # BLOCKER-2: Explicit unrecognized Target/Step numbers do NOT fall back to substrings
+    self.assertEqual(parse_upstream_targets(["Target 99: review"]), [])
+    self.assertEqual(parse_upstream_targets(["Target 99: plan"]), [])
+    self.assertEqual(parse_upstream_targets(["Target 99: nonexistent"]), [])
+    self.assertEqual(parse_upstream_targets(["Step 9: Review commit diff"]), [40])
+    # Word-boundary fallback rejects partial substrings and false positives
+    self.assertEqual(
+        parse_upstream_targets(["explanation", "uncommitted", "emergency", "unfinished", "nonexistent phase"]),
+        [],
+    )
+    self.assertEqual(parse_upstream_targets(["plan", "review"]), [20, 40])
+
+    # ARCH/DATA/SEC/DOC/PUB/INV/SKILL at 30 or 40 promote left to 15, 20, 30
+    arch_targets, arch_labels = compute_makeflow_targets(["Target 4"], "ARCH")
+    self.assertEqual(arch_targets, [15, 20, 30, 40])
+    self.assertIn("Target 15: archaeology", arch_labels)
+    self.assertIn("Target 20: plan", arch_labels)
+    self.assertEqual(shift_left_targets([40], "PUB"), [15, 20, 30, 40])
+    self.assertEqual(shift_left_targets([40], "INV"), [15, 20, 30, 40])
+    self.assertEqual(shift_left_targets([30], "PUB"), [15, 20, 30])
+    self.assertEqual(shift_left_targets([40], "SKILL"), [15, 20, 30, 40])
+
+    # UI/FLUTTER/TEST/STATE/RIV/BLOC/BUILD only at 40 promote left to 20, 30, 40
+    self.assertEqual(shift_left_targets([40], "UI"), [20, 30, 40])
+    self.assertEqual(shift_left_targets([40], "FLUTTER"), [20, 30, 40])
+    self.assertEqual(shift_left_targets([40], "RIV"), [20, 30, 40])
+    self.assertEqual(shift_left_targets([40], "BLOC"), [20, 30, 40])
+    self.assertEqual(shift_left_targets([40], "VERIF"), [20, 30, 40])
+    self.assertEqual(shift_left_targets([40], "TEST"), [20, 30, 40])
+    # ERR/SYS/OTEL/HOOK only at 40 promote left to 30, 40
+    self.assertEqual(shift_left_targets([40], "ERR"), [30, 40])
+    self.assertEqual(shift_left_targets([40], "OTEL"), [30, 40])
+    self.assertEqual(shift_left_targets([40], "HOOK"), [30, 40])
+    # NEVER shift right to add 40 when absent
+    self.assertEqual(shift_left_targets([30], "ARCH"), [15, 20, 30])
+    self.assertEqual(shift_left_targets([20, 30], "UI"), [20, 30])
+    self.assertNotIn(40, shift_left_targets([20, 30], "STATE"))
+    self.assertNotIn(40, shift_left_targets([20, 30], "RIV"))
+
+
+class TestSchemaRebuildSsIdAndMigration(unittest.TestCase):
+  """Tests id NOT NULL table rebuild, ss_id indexing, stacked dedup, and lossless migration (GH-193)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.TemporaryDirectory()
+    self.db_path = os.path.join(self.temp_dir.name, "scars_rebuild.db")
+
+  def tearDown(self):
+    self.temp_dir.cleanup()
+
+  def test_legacy_nullable_id_rebuilt_not_null_and_ss_id_partial_unique_index(self):
+    conn = sqlite3.connect(self.db_path)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE scars (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            category TEXT,
+            category_slug TEXT,
+            visibility TEXT,
+            workflow_phases TEXT,
+            applies_when TEXT,
+            graduation_status TEXT,
+            raw_wound TEXT,
+            raw_trap TEXT,
+            raw_circuit_breaker TEXT,
+            raw_reflex TEXT,
+            raw_hash TEXT,
+            wound TEXT,
+            trap TEXT,
+            circuit_breaker TEXT,
+            reflex TEXT,
+            socratic_probe TEXT,
+            source TEXT DEFAULT 'upstream',
+            original_id TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO scars (
+            id, title, category, category_slug, visibility, workflow_phases,
+            applies_when, graduation_status, raw_wound, raw_trap,
+            raw_circuit_breaker, raw_reflex, raw_hash, wound, trap,
+            circuit_breaker, reflex, socratic_probe, source, original_id
+        ) VALUES (
+            'SCAR-ARCH-05', 'Architecture Boundary', 'ARCH', 'arch', 'public',
+            '["Target 4"]', 'Writing Python layers', 'graduated',
+            'Raw wound.', 'Raw trap.', 'If bad, stop.', 'Keep Python layers clean.',
+            'h1', 'Simple wound.', 'Simple trap.', 'If bad, stop.',
+            'Keep Python layers clean.', 'Did you separate layers cleanly?',
+            'upstream', NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    script = SyncSyntheticScarsScript()
+    script.db_path = self.db_path
+    script._init_db_schema()
+    conn = script.conn
+
+    info = {r[1]: r for r in conn.execute("PRAGMA table_info(scars)").fetchall()}
+    self.assertEqual(info["id"][3], 1, "id column must be NOT NULL after rebuild")
+    for col in ("ss_id", "ss_targets", "mf_targets"):
+      self.assertIn(col, info)
+
+    row = conn.execute(
+        "SELECT id, wound, socratic_probe FROM scars WHERE id = 'SCAR-ARCH-05'"
+    ).fetchone()
+    self.assertEqual(row, ("SCAR-ARCH-05", "Simple wound.", "Did you separate layers cleanly?"))
+
+    # Partial unique index permits multiple NULL ss_id values but blocks duplicate non-null ss_id
+    conn.execute(
+        "INSERT INTO scars (id, ss_id, title, wound, trap, reflex, socratic_probe) VALUES ('M1', NULL, 'M1', 'W.', 'T.', 'R.', 'Q?')"
+    )
+    conn.execute(
+        "INSERT INTO scars (id, ss_id, title, wound, trap, reflex, socratic_probe) VALUES ('M2', NULL, 'M2', 'W.', 'T.', 'R.', 'Q?')"
+    )
+    conn.execute(
+        "INSERT INTO scars (id, ss_id, title, wound, trap, reflex, socratic_probe) VALUES ('U1', 'UP-1', 'U1', 'W.', 'T.', 'R.', 'Q?')"
+    )
+    with self.assertRaises(sqlite3.IntegrityError):
+      conn.execute(
+          "INSERT INTO scars (id, ss_id, title, wound, trap, reflex, socratic_probe) VALUES ('U2', 'UP-1', 'U2', 'W.', 'T.', 'R.', 'Q?')"
+      )
+    conn.commit()
+    script.cleanup(0)
+
+  def test_ss_id_fts_and_like_fallback_plus_stacked_deduplication(self):
+    ws_db = os.path.join(self.temp_dir.name, "ws_stack.db")
+    bundled_db = os.path.join(self.temp_dir.name, "bundled_stack.db")
+
+    for path, rows in (
+        (
+            ws_db,
+            [
+                (
+                    "SCAR-LANG-PYTHON-ARCH-0005",
+                    "SCAR-ARCH-05",
+                    "Workspace Override Architecture",
+                    "ARCH",
+                    "arch",
+                    '["Target 15: archaeology", "Target 30: tdd"]',
+                    '["Target 3"]',
+                    "[15, 20, 30]",
+                    "Workspace wound text.",
+                    "Workspace trap text.",
+                    "",
+                    "Workspace reflex text.",
+                    "Did workspace rule run?",
+                    "upstream",
+                    None,
+                )
+            ],
+        ),
+        (
+            bundled_db,
+            [
+                (
+                    "SCAR-ARCH-05",
+                    "SCAR-ARCH-05",
+                    "Bundled Architecture",
+                    "ARCH",
+                    "arch",
+                    '["Target 40: review"]',
+                    '["Target 4"]',
+                    "[40]",
+                    "Bundled wound text.",
+                    "Bundled trap text.",
+                    "",
+                    "Bundled reflex text.",
+                    "Did bundled rule run?",
+                    "upstream",
+                    None,
+                ),
+                (
+                    "SCAR-LANG-DART-RIV-0002",
+                    "SCAR-RIV-02",
+                    "Riverpod State Check",
+                    "RIV",
+                    "riv",
+                    '["Target 20: plan", "Target 30: tdd"]',
+                    '["Target 2", "Target 3"]',
+                    "[20, 30]",
+                    "State wound text.",
+                    "State trap text.",
+                    "",
+                    "State reflex text.",
+                    "Did you isolate state?",
+                    "upstream",
+                    None,
+                ),
+            ],
+        ),
+    ):
+      s = SyncSyntheticScarsScript()
+      s.db_path = path
+      s._init_db_schema()
+      for r in rows:
+        s.conn.execute(
+            """
+            INSERT INTO scars (
+                id, ss_id, title, category, category_slug, visibility,
+                workflow_phases, ss_targets, mf_targets, applies_when,
+                graduation_status, wound, trap, circuit_breaker, reflex,
+                socratic_probe, source, original_id
+            ) VALUES (?, ?, ?, ?, ?, 'public', ?, ?, ?, 'Testing', 'graduated', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            r,
+        )
+      s.conn.commit()
+      s.cleanup(0)
+      SyncSyntheticScarsScript().execute(
+          args=["--db-path", path, "--enrich"], stdout=io.StringIO()
+      )
+
+    # ss_targets must stay preserved verbatim across re-enrichment
+    conn_ws = sqlite3.connect(ws_db)
+    self.assertEqual(
+        json.loads(
+            conn_ws.execute(
+                "SELECT ss_targets FROM scars WHERE id = 'SCAR-LANG-PYTHON-ARCH-0005'"
+            ).fetchone()[0]
+        ),
+        ["Target 3"],
+    )
+    conn_ws.close()
+
+    # Stacked dedup across id / ss_id prefers workspace DB copy
+    stacked = query_scars([ws_db, bundled_db], query="SCAR-ARCH-05", limit=10)
+    self.assertEqual(len(stacked), 1)
+    self.assertEqual(stacked[0]["id"], "SCAR-LANG-PYTHON-ARCH-0005")
+    self.assertEqual(stacked[0]["ssId"], "SCAR-ARCH-05")
+
+    # 1-to-1 domain filtering + mf_target integer filtering (no cross-domain bleed)
+    by_alias = query_scars(bundled_db, query="", category="RIV", mf_target=20)
+    self.assertEqual([r["id"] for r in by_alias], ["SCAR-LANG-DART-RIV-0002"])
+    self.assertEqual(query_scars(bundled_db, query="", category="STATE"), [])
+
+    # Drop scars_fts to verify ss_id LIKE fallback search
+    conn_b = sqlite3.connect(bundled_db)
+    conn_b.execute("DROP TABLE scars_fts")
+    conn_b.commit()
+    conn_b.close()
+    fallback_res = query_scars(bundled_db, query="SCAR-RIV-02", limit=5)
+    self.assertEqual([r["id"] for r in fallback_res], ["SCAR-LANG-DART-RIV-0002"])
+
+  def test_stacked_dedup_disjoint_makeflow_and_upstream_namespaces(self):
+    ws_db = os.path.join(self.temp_dir.name, "ws_disjoint.db")
+    bundled_db = os.path.join(self.temp_dir.name, "bundled_disjoint.db")
+
+    for path, rows in (
+        (
+            ws_db,
+            [
+                (
+                    "SCAR-ARCH-05",
+                    None,
+                    "Makeflow Architecture Rule",
+                    "ARCH",
+                    "arch",
+                    '["Target 20: plan"]',
+                    '["Target 20: plan"]',
+                    "[20]",
+                    "Makeflow architectural boundary.",
+                    "Tight coupling trap.",
+                    "",
+                    "Keep layers separate.",
+                    "Did you isolate the boundary?",
+                    "makeflow",
+                    None,
+                )
+            ],
+        ),
+        (
+            bundled_db,
+            [
+                (
+                    "SCAR-LANG-DART-ARCH-0005",
+                    "SCAR-ARCH-05",
+                    "Upstream Dart Architecture Rule",
+                    "ARCH",
+                    "arch",
+                    '["Target 30: tdd"]',
+                    '["Target 3"]',
+                    "[15, 20, 30]",
+                    "Upstream architectural boundary.",
+                    "Circular import trap.",
+                    "",
+                    "Use one-way imports in Dart.",
+                    "Did you check imports?",
+                    "upstream",
+                    None,
+                )
+            ],
+        ),
+    ):
+      s = SyncSyntheticScarsScript()
+      s.db_path = path
+      s._init_db_schema()
+      for r in rows:
+        s.conn.execute(
+            """
+            INSERT INTO scars (
+                id, ss_id, title, category, category_slug, visibility,
+                workflow_phases, ss_targets, mf_targets, applies_when,
+                graduation_status, wound, trap, circuit_breaker, reflex,
+                socratic_probe, source, original_id
+            ) VALUES (?, ?, ?, ?, ?, 'public', ?, ?, ?, 'Testing', 'graduated', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            r,
+        )
+      s.conn.commit()
+      s.cleanup(0)
+      SyncSyntheticScarsScript().execute(
+          args=["--db-path", path, "--enrich"], stdout=io.StringIO()
+      )
+
+    # Disjoint namespaces: Makeflow id SCAR-ARCH-05 NEVER suppresses upstream ss_id SCAR-ARCH-05
+    coexist = query_scars([ws_db, bundled_db], query="SCAR-ARCH-05", limit=10)
+    self.assertEqual(len(coexist), 2)
+    self.assertEqual(
+        {r["id"] for r in coexist},
+        {"SCAR-ARCH-05", "SCAR-LANG-DART-ARCH-0005"},
+    )
+
+  def test_migrate_scars_ontology_lossless_cli_and_verify(self):
+    from lib.scars_db import migrate_scars_ontology
+
+    conn = sqlite3.connect(self.db_path)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE scars (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            category TEXT,
+            category_slug TEXT,
+            visibility TEXT,
+            workflow_phases TEXT,
+            applies_when TEXT,
+            graduation_status TEXT,
+            raw_wound TEXT,
+            raw_trap TEXT,
+            raw_circuit_breaker TEXT,
+            raw_reflex TEXT,
+            raw_hash TEXT,
+            wound TEXT,
+            trap TEXT,
+            circuit_breaker TEXT,
+            reflex TEXT,
+            socratic_probe TEXT,
+            source TEXT DEFAULT 'upstream',
+            original_id TEXT
+        )
+        """
+    )
+    rows = [
+        (
+            "SCAR-RIV-01",
+            "Riverpod AsyncNotifier Guard",
+            "RIV",
+            "riv",
+            "public",
+            '["Target 4"]',
+            "Using Flutter Riverpod AsyncNotifier",
+            "graduated",
+            "Raw wound with $x = 1$.",
+            "Raw trap.",
+            "Stop now.",
+            "Check `!isDisposed` in Dart.",
+            "h1",
+            "Simple wound with $x = 1$.",
+            "Simple trap.",
+            "Stop now.",
+            "Check disposal in Dart.",
+            "Did you check disposal?",
+            "upstream",
+            None,
+        ),
+        (
+            "SCAR-PUB-08",
+            "Public launch restraint",
+            "PUB",
+            "pub",
+            "public",
+            '["Target 3"]',
+            "Announcing projects publicly",
+            "graduated",
+            "Raw communication wound.",
+            "Raw trap.",
+            "",
+            "Wait until verified.",
+            "h2",
+            None,
+            None,
+            "",
+            None,
+            None,
+            "upstream",
+            None,
+        ),
+        (
+            "SCAR-LANG-DART-01",
+            "Async Timers fakeAsync",
+            "LANG",
+            "lang",
+            "public",
+            '["Target 3"]',
+            "Testing Dart async timers",
+            "graduated",
+            "Raw timer wound.",
+            "Raw trap.",
+            "",
+            "Use `fakeAsync` in Dart.",
+            "h3",
+            "Simple timer wound.",
+            "Simple timer trap.",
+            "",
+            "Use `fakeAsync` in Dart.",
+            "Did you pump the microtask queue?",
+            "makeflow",
+            None,
+        ),
+    ]
+    for row in rows:
+      conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+    conn.commit()
+    conn.close()
+
+    out = io.StringIO()
+    err = io.StringIO()
+    code = SyncSyntheticScarsScript().execute(
+        args=["--db-path", self.db_path, "--migrate-ontology"],
+        stdout=out,
+        stderr=err,
+    )
+    self.assertEqual(code, 0, err.getvalue())
+
+    conn = sqlite3.connect(self.db_path)
+    migrated = {
+        r[0]: r[1:]
+        for r in conn.execute(
+            "SELECT id, ss_id, category, ss_targets, mf_targets, wound, socratic_probe, source, original_id FROM scars"
+        ).fetchall()
+    }
+    conn.close()
+
+    self.assertIn("SCAR-LANG-DART-RIV-0001", migrated)
+    riv = migrated["SCAR-LANG-DART-RIV-0001"]
+    self.assertEqual(riv[0], "SCAR-RIV-01")
+    self.assertEqual(riv[1], "RIV")
+    self.assertEqual(json.loads(riv[2]), ["Target 4"])
+    self.assertEqual(json.loads(riv[3]), [20, 30, 40])
+    self.assertEqual(riv[4], "Simple wound with $x = 1$.")
+    self.assertEqual(riv[5], "Did you check disposal?")
+
+    self.assertIn("SCAR-PUB-0008", migrated)
+    self.assertEqual(migrated["SCAR-PUB-0008"][0], "SCAR-PUB-08")
+    self.assertEqual(migrated["SCAR-PUB-0008"][1], "PUB")
+
+    self.assertIn("SCAR-LANG-DART-ASYNC-0001", migrated)
+    self.assertIsNone(migrated["SCAR-LANG-DART-ASYNC-0001"][0])
+    self.assertEqual(migrated["SCAR-LANG-DART-ASYNC-0001"][6], "makeflow")
+    # NBO-1: renamed Makeflow scar records original_id for backward lookup
+    self.assertEqual(migrated["SCAR-LANG-DART-ASYNC-0001"][7], "SCAR-LANG-DART-01")
+    by_orig = query_scars(self.db_path, query="SCAR-LANG-DART-01", limit=5)
+    self.assertEqual([r["id"] for r in by_orig], ["SCAR-LANG-DART-ASYNC-0001"])
+
+    # --verify-transformed exits 0 on preserved transformed rows
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=["--db-path", self.db_path, "--verify-transformed"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ),
+        0,
+    )
+    # Re-running migrate_scars_ontology is idempotent
+    second = migrate_scars_ontology(self.db_path)
+    self.assertEqual(second["migrated_scars"], 3)
+
+  def test_sync_preserves_transformed_fields_over_pre_gh193_db_with_matching_raw_hash(self):
+    item = {
+        "id": "SCAR-RIV-01",
+        "title": "Riverpod AsyncNotifier Guard",
+        "category": "RIV",
+        "categorySlug": "riv",
+        "visibility": "public",
+        "workflowPhases": ["Target 4"],
+        "appliesWhen": "Using Flutter Riverpod AsyncNotifier",
+        "graduationStatus": "graduated",
+        "wound": "Raw riverpod disposal wound with $x = 1$.",
+        "trap": "Raw riverpod trap.",
+        "circuitBreaker": "If disposed, stop.",
+        "reflex": "Check `!isDisposed` in Dart.",
+    }
+    raw_hash = hashlib.md5(
+        json.dumps(item, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+    conn = sqlite3.connect(self.db_path)
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        """
+        CREATE TABLE scars (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            category TEXT,
+            category_slug TEXT,
+            visibility TEXT,
+            workflow_phases TEXT,
+            applies_when TEXT,
+            graduation_status TEXT,
+            raw_wound TEXT,
+            raw_trap TEXT,
+            raw_circuit_breaker TEXT,
+            raw_reflex TEXT,
+            raw_hash TEXT,
+            wound TEXT,
+            trap TEXT,
+            circuit_breaker TEXT,
+            reflex TEXT,
+            socratic_probe TEXT,
+            source TEXT DEFAULT 'upstream',
+            original_id TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO scars VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upstream', NULL
+        )
+        """,
+        (
+            "SCAR-RIV-01",
+            item["title"],
+            "RIV",
+            "riv",
+            "public",
+            '["Target 4"]',
+            item["appliesWhen"],
+            "graduated",
+            item["wound"],
+            item["trap"],
+            item["circuitBreaker"],
+            item["reflex"],
+            raw_hash,
+            "Simple pre-GH-193 wound with $x = 1$.",
+            "Simple pre-GH-193 trap.",
+            "If disposed, stop.",
+            "Check `disposed` in Dart.",
+            "Did you guard disposed state before updating?",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    payload = json.dumps({"scars": [item]}).encode("utf-8")
+    out = io.StringIO()
+    err = io.StringIO()
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-pre-gh193"'),
+    ):
+      code = SyncSyntheticScarsScript().execute(
+          args=["--db-path", self.db_path], stdout=out, stderr=err
+      )
+    self.assertEqual(code, 0, err.getvalue())
+    self.assertNotIn("Pending Simple English transformations", out.getvalue())
+
+    conn = sqlite3.connect(self.db_path)
+    row = conn.execute(
+        "SELECT id, ss_id, category, ss_targets, mf_targets,"
+        " wound, trap, circuit_breaker, reflex, socratic_probe"
+        " FROM scars WHERE ss_id = 'SCAR-RIV-01'"
+    ).fetchone()
+    conn.close()
+    self.assertIsNotNone(row)
+    self.assertEqual(row[0], "SCAR-LANG-DART-RIV-0001")
+    self.assertEqual(row[1], "SCAR-RIV-01")
+    self.assertEqual(row[2], "RIV")
+    self.assertEqual(json.loads(row[3]), ["Target 4"])
+    self.assertEqual(json.loads(row[4]), [20, 30, 40])
+    # BLOCKER-1: Pre-existing Simple English & Socratic Probe columns preserved byte-for-byte
+    self.assertEqual(row[5], "Simple pre-GH-193 wound with $x = 1$.")
+    self.assertEqual(row[6], "Simple pre-GH-193 trap.")
+    self.assertEqual(row[7], "If disposed, stop.")
+    self.assertEqual(row[8], "Check `disposed` in Dart.")
+    self.assertEqual(row[9], "Did you guard disposed state before updating?")
+
+
+class TestUnifiedBatchSyncAgyCli(unittest.TestCase):
+  """Tests unified --batch-size / --no-fetch agy CLI batch transformation (GH-193)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.TemporaryDirectory()
+    self.db_path = os.path.join(self.temp_dir.name, "batch_scars.db")
+
+  def tearDown(self):
+    self.temp_dir.cleanup()
+
+  def _make_agy_result(self, payload: dict):
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.stdout = json.dumps({"structured_output": payload})
+    mock_proc.stderr = ""
+    return mock_proc
+
+  def test_fetch_plus_batch_size_runs_two_agy_passes_and_validates(self):
+    scars_input = [
+        {
+            "id": "SCAR-ARCH-05",
+            "title": "Python Architecture Guard",
+            "category": "Architecture",
+            "categorySlug": "architecture",
+            "visibility": "public",
+            "workflowPhases": ["Target 4"],
+            "appliesWhen": "Organizing modules in Python",
+            "graduationStatus": "graduated",
+            "wound": "Mixed layers cause $O(n^2)$ regressions.",
+            "trap": "Importing entrypoints inside library code.",
+            "circuitBreaker": "If a library imports a script, stop.",
+            "reflex": "Check ```bash\nmake test-static\n``` first.",
+        }
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    seen_calls = []
+
+    def fake_run(cmd, **kwargs):
+      seen_calls.append((cmd, kwargs))
+      prompt = cmd[-1]
+      if "Simple English" in prompt or "raw_wound" in prompt:
+        return self._make_agy_result(
+            {
+                "wound": "Mixed layers cause $O(n^2)$ slowdowns.",
+                "trap": "Library code imports entrypoint scripts.",
+                "circuit_breaker": "If a library imports scripts, stop.",
+                "reflex": "Run ```bash\nmake test-static\n``` first.",
+            }
+        )
+      return self._make_agy_result(
+          {"socratic_probe": "Did you check layer imports before editing?"}
+      )
+
+    out = io.StringIO()
+    err = io.StringIO()
+    with (
+        patch(
+            "urllib.request.urlopen",
+            return_value=MockHTTPResponse(payload, etag='"etag-batch-1"'),
+        ),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+      code = SyncSyntheticScarsScript().execute(
+          args=[
+              "--db-path",
+              self.db_path,
+              "--batch-size",
+              "2",
+              "--agy-bin",
+              "agy",
+              "--model",
+              "test-model",
+          ],
+          stdout=out,
+          stderr=err,
+      )
+    self.assertEqual(code, 0, err.getvalue())
+    self.assertEqual(len(seen_calls), 2)
+    for cmd, kwargs in seen_calls:
+      self.assertFalse(kwargs.get("shell", False))
+      self.assertIn("--print", cmd)
+      self.assertIn("--output-format", cmd)
+      self.assertIn("--json-schema", cmd)
+      self.assertIn("--disable-slash-commands", cmd)
+      self.assertIn("--model", cmd)
+
+    pass1_prompt = seen_calls[0][0][-1]
+    pass2_prompt = seen_calls[1][0][-1]
+    self.assertIn("Simple English", pass1_prompt)
+    self.assertIn("<untrusted_upstream_scar>", pass1_prompt)
+    self.assertIn("</untrusted_upstream_scar>", pass1_prompt)
+    self.assertIn("passive", pass1_prompt.lower())
+    self.assertIn("kinetic", pass2_prompt.lower())
+    self.assertIn("<untrusted_upstream_scar>", pass2_prompt)
+    self.assertIn("</untrusted_upstream_scar>", pass2_prompt)
+
+    self.assertEqual(
+        SyncSyntheticScarsScript().execute(
+            args=["--db-path", self.db_path, "--verify-transformed"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ),
+        0,
+    )
+    results = query_scars(self.db_path, query="SCAR-ARCH-05", limit=5)
+    self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["id"], "SCAR-LANG-PYTHON-ARCH-0005")
+    self.assertEqual(
+        results[0]["socraticProbe"],
+        "Did you check layer imports before editing?",
+    )
+
+  def test_304_continues_batch_and_no_fetch_fills_missing_socratic_probe_only(self):
+    scars_input = [
+        {
+            "id": "SCAR-TEST-01",
+            "title": "Partial Scar Missing Probe",
+            "category": "Testing",
+            "categorySlug": "testing",
+            "visibility": "public",
+            "workflowPhases": ["Target 3"],
+            "appliesWhen": "Writing unit tests",
+            "graduationStatus": "graduated",
+            "wound": "Raw wound one.",
+            "trap": "Raw trap one.",
+            "circuitBreaker": "",
+            "reflex": "Raw reflex one.",
+        },
+        {
+            "id": "SCAR-TEST-02",
+            "title": "Empty Scar Needing Both Passes",
+            "category": "Testing",
+            "categorySlug": "testing",
+            "visibility": "public",
+            "workflowPhases": ["Target 3"],
+            "appliesWhen": "Writing integration tests",
+            "graduationStatus": "graduated",
+            "wound": "Raw wound two.",
+            "trap": "Raw trap two.",
+            "circuitBreaker": "",
+            "reflex": "Raw reflex two.",
+        },
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-304"'),
+    ):
+      self.assertEqual(
+          SyncSyntheticScarsScript().execute(
+              args=["--db-path", self.db_path], stdout=io.StringIO()
+          ),
+          0,
+      )
+
+    # Populate Simple English fields for SCAR-TEST-01 only, leaving socratic_probe NULL
+    conn = sqlite3.connect(self.db_path)
+    conn.execute(
+        """
+        UPDATE scars
+        SET wound = 'Existing wound preserved.',
+            trap = 'Existing trap preserved.',
+            circuit_breaker = '',
+            reflex = 'Existing reflex preserved.'
+        WHERE ss_id = 'SCAR-TEST-01'
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    # HTTP 304 + --batch-size 1 runs ONLY Pass 2 for SCAR-TEST-01 and preserves wound
+    http_304 = urllib.error.HTTPError(
+        url="https://syntheticscars.org/registry.json",
+        code=304,
+        msg="Not Modified",
+        hdrs={},
+        fp=None,
+    )
+    calls_304 = []
+
+    def fake_304(cmd, **kwargs):
+      calls_304.append(cmd[-1])
+      return self._make_agy_result({"socratic_probe": "Did tests run first?"})
+
+    with (
+        patch("urllib.request.urlopen", side_effect=http_304),
+        patch("subprocess.run", side_effect=fake_304),
+    ):
+      code_304 = SyncSyntheticScarsScript().execute(
+          args=["--db-path", self.db_path, "--batch-size", "1"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+    self.assertEqual(code_304, 0)
+    self.assertEqual(len(calls_304), 1)
+
+    conn = sqlite3.connect(self.db_path)
+    row1 = conn.execute(
+        "SELECT wound, socratic_probe FROM scars WHERE ss_id = 'SCAR-TEST-01'"
+    ).fetchone()
+    conn.close()
+    self.assertEqual(row1, ("Existing wound preserved.", "Did tests run first?"))
+
+    # --no-fetch --batch-size 1 skips HTTP completely and transforms SCAR-TEST-02
+    def fake_nofetch(cmd, **kwargs):
+      prompt = cmd[-1]
+      if "raw_wound" in prompt:
+        return self._make_agy_result(
+            {
+                "wound": "Simple wound two.",
+                "trap": "Simple trap two.",
+                "circuit_breaker": "",
+                "reflex": "Simple reflex two.",
+            }
+        )
+      return self._make_agy_result({"socratic_probe": "Did you isolate DB?"})
+
+    with (
+        patch("urllib.request.urlopen", side_effect=AssertionError("Must not fetch")),
+        patch("subprocess.run", side_effect=fake_nofetch),
+    ):
+      code_nf = SyncSyntheticScarsScript().execute(
+          args=["--db-path", self.db_path, "--no-fetch", "--batch-size", "1"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+    self.assertEqual(code_nf, 0)
+    self.assertEqual(len(query_scars(self.db_path, query="Simple wound two")), 1)
+
+  def test_batch_retry_feedback_and_per_scar_commit_safety(self):
+    scars_input = [
+        {
+            "id": "SCAR-TEST-01",
+            "title": "Retry Success Scar",
+            "category": "Testing",
+            "categorySlug": "testing",
+            "visibility": "public",
+            "workflowPhases": ["Target 3"],
+            "appliesWhen": "Testing retry feedback",
+            "graduationStatus": "graduated",
+            "wound": "Raw wound with $k = 1$.",
+            "trap": "Raw trap.",
+            "circuitBreaker": "",
+            "reflex": "Raw reflex.",
+        },
+        {
+            "id": "SCAR-TEST-02",
+            "title": "Always Failing Scar",
+            "category": "Testing",
+            "categorySlug": "testing",
+            "visibility": "public",
+            "workflowPhases": ["Target 3"],
+            "appliesWhen": "Testing failure rollback",
+            "graduationStatus": "graduated",
+            "wound": "Raw wound two.",
+            "trap": "Raw trap two.",
+            "circuitBreaker": "",
+            "reflex": "Raw reflex two.",
+        },
+    ]
+    payload = json.dumps(scars_input).encode("utf-8")
+    with patch(
+        "urllib.request.urlopen",
+        return_value=MockHTTPResponse(payload, etag='"etag-retry"'),
+    ):
+      self.assertEqual(
+          SyncSyntheticScarsScript().execute(
+              args=["--db-path", self.db_path], stdout=io.StringIO()
+          ),
+          0,
+      )
+
+    prompts_seen = []
+    attempt_counts = {"p1_1": 0, "p2_1": 0}
+
+    def fake_retry(cmd, **kwargs):
+      prompt = cmd[-1]
+      prompts_seen.append(prompt)
+      if "SCAR-TEST-0001" in prompt and "raw_wound" in prompt:
+        attempt_counts["p1_1"] += 1
+        if attempt_counts["p1_1"] == 1:
+          return self._make_agy_result(
+              {
+                  "wound": "Bad semicolon; missing math.",
+                  "trap": "Simple trap.",
+                  "circuit_breaker": "",
+                  "reflex": "Simple reflex.",
+              }
+          )
+        return self._make_agy_result(
+            {
+                "wound": "Simple wound with $k = 1$.",
+                "trap": "Simple trap.",
+                "circuit_breaker": "",
+                "reflex": "Simple reflex.",
+            }
+        )
+      if "SCAR-TEST-0001" in prompt:
+        attempt_counts["p2_1"] += 1
+        if attempt_counts["p2_1"] == 1:
+          return self._make_agy_result({"socratic_probe": "Missing question mark."})
+        return self._make_agy_result({"socratic_probe": "Did you preserve $k = 1$?"})
+      # Second scar always fails Pass 1 validation
+      return self._make_agy_result(
+          {
+              "wound": "Bad semicolon; fails.",
+              "trap": "T.",
+              "circuit_breaker": "",
+              "reflex": "R.",
+          }
+      )
+
+    out = io.StringIO()
+    err = io.StringIO()
+    with patch("subprocess.run", side_effect=fake_retry):
+      code = SyncSyntheticScarsScript().execute(
+          args=[
+              "--db-path",
+              self.db_path,
+              "--no-fetch",
+              "--batch-size",
+              "2",
+              "--max-retries",
+              "1",
+          ],
+          stdout=out,
+          stderr=err,
+      )
+    self.assertEqual(code, 1)
+    self.assertTrue(any("semicolon" in p or "inline_math" in p for p in prompts_seen))
+    self.assertTrue(any("?" in p for p in prompts_seen))
+
+    # First scar must remain committed despite second scar failing
+    committed = query_scars(self.db_path, query="SCAR-TEST-01", limit=5)
+    self.assertEqual(len(committed), 1)
+    self.assertEqual(committed[0]["id"], "SCAR-TEST-0001")
+    uncommitted = query_scars(self.db_path, query="SCAR-TEST-02", limit=5)
+    self.assertEqual(uncommitted, [])
 
 
 if __name__ == "__main__":

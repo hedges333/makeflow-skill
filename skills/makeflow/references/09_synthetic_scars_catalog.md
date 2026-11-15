@@ -31,10 +31,11 @@ references/
 ```
 
 ### Numbering Rules
-1. **Category-Scoped Sequencing**: Scars are ordered monotonically within each category spoke file.
-2. **End-of-Sequence Appending**: When adding a new scar, assign the next sequential integer and append it to the end of the appropriate category file.
-3. **Full Language Names**: Language-specific failure vaccines use full uppercase language names: `SCAR-LANG-<FULL_LANGUAGE>-<NN>`.
-4. **Four-Part Anatomy & Optional Circuit Breaker**: Every scar in a spoke file must record:
+1. **Category-Scoped Sequencing**: Scars follow sequential numbering inside each category spoke file and inside the bundled SQLite registry.
+2. **Canonical SQLite Scar IDs**: Single-language SQLite scars use `SCAR-LANG-<FULL_LANGUAGE_NAME>-<DOMAIN_CATEGORY>-<NNNN>`. Universal or multi-language scars use `SCAR-<DOMAIN_CATEGORY>-<NNNN>`.
+3. **End-of-Sequence Appending**: When you add a Tier 1 scar, assign the next sequential integer at the file end.
+4. **Upstream Separation**: SQLite stores raw upstream IDs in nullable `ss_id` with a partial unique index. Makeflow keeps its own primary key in `id`. When migration renames a Makeflow scar, Makeflow records the prior key in `original_id`.
+5. **Four-Part Anatomy & Optional Circuit Breaker**: Every scar in a spoke file must record:
    - **Wound**: The exact bug, data loss, or broken build that happened.
    - **Trap**: The false assumption or shortcut that caused the failure.
    - **Permanent Reflex**: The mandatory rule that prevents recurrence.
@@ -149,25 +150,51 @@ Query them on demand with `workflow_query_scars` using `language` and `framework
 ## 4. Multi-Dimensional SQLite Registry and FTS5 Search
 
 The bundled SQLite database (`skills/makeflow/data/scars_registry.db`) stores all scars with an FTS5 (full-text search) virtual index.
-The `scars_fts` table indexes `id`, `original_id`, `keywords`, `languages`, `frameworks`, `diagnostic_codes`, and `workflow_phases` directly.
+The `scars_fts` table indexes `id`, `ss_id`, `original_id`, `keywords`, `languages`, `frameworks`, `diagnostic_codes`, and `workflow_phases` directly.
 
 ### 4.1 Multi-Dimensional Query Filters
 
 Use `workflow_query_scars` or `scripts/sync_synthetic_scars.py` to filter scars by multiple dimensions:
 
-1. `query` (`--query`): Search by exact scar ID (`SCAR-ARCH-05`), ID prefix (`SCAR-ARCH`), or technical keywords.
-2. `category` (`--category`): Filter by category name or slug (for example `Testing` or `architecture`).
+1. `query` (`--query`): Search by canonical `id`, upstream `ss_id`, `original_id`, or technical keywords.
+2. `category` (`--category`): Filter by canonical domain code (for example `UI`, `RIV`, `ARCH`), prose name, or language tag.
 3. `language` (`--language`): Filter by normalized language (for example `dart`, `python`, `rust`, `go`, or `universal`).
-4. `framework` (`--framework`): Filter by framework or library (for example `flutter`, `riverpod`, `bloc`, `pytest`, or `sqlite`).
+4. `framework` (`--framework`): Filter by framework or library (for example `flutter`, `riverpod`, `bloc`, `a2ui`, `genui`, `opentelemetry`, or `sqlite`).
 5. `diagnosticCode` (`--diagnostic-code`): Filter by compiler, signal, or runtime code (for example `StateError`, `UNDEFINED_GETTER`, or `SIGTERM`).
-6. `workflowPhase` (`--workflow-phase`): Filter by canonical target phase (for example `Target 20: plan` or `Target 30: tdd`).
+6. `workflowPhase` (`--workflow-phase`): Filter by canonical target phase label (for example `Target 20: plan` or `Target 30: tdd`).
+7. `mfTarget` (`--mf-target`): Filter by integer Makeflow target binding stored in `mf_targets` (for example `15`, `20`, `30`, or `40`).
 
-### 4.2 Metadata Enrichment Command
+### 4.2 Reference Ontology
 
-If you import or synchronize new scars, run the metadata enrichment script to update the FTS5 index:
+Every scar in `skills/makeflow/data/scars_registry.db` maps to one of 68 canonical domain codes (59 upstream codes plus 9 Makeflow codes):
+
+| Group | Domain Codes |
+| :--- | :--- |
+| Architecture, Layout & Reuse | `ARCH`, `DIR`, `API`, `DEP`, `PUB`, `REFACTOR`, `INTEROP`, `MIXIN`, `INV` |
+| Types, Syntax & Execution | `TYPE`, `AST`, `REGEX`, `SYNTAX`, `TMPL`, `ASYNC`, `CONC`, `STATE`, `BLOC`, `RIV`, `ERR`, `FAIL`, `PERF`, `MATH`, `GEOM` |
+| Data, Wire & Persistence | `DATA`, `SCHEMA`, `DB`, `STORAGE`, `WIRE`, `NET` |
+| UI & Content | `UI`, `FLUTTER`, `NAV`, `GENUI`, `A2UI`, `HCI`, `A11Y`, `I18N`, `DOC`, `SKILL`, `WEB`, `SSR` |
+| Verification, Security & Operations | `TEST`, `VERIF`, `SEC`, `AUTH`, `SYS`, `ENV`, `TIME`, `SH`, `SCRIPT`, `BUILD`, `CI`, `OBS`, `OTEL`, `DIAG`, `GIT`, `HOOK`, `TOOL` |
+| Workflow & Governance | `PROC`, `METRIC`, `GOV`, `REVIEW`, `DIFF`, `COLLAB`, `META`, `CRAFT`, `PEDAGOGY` |
+
+### 4.3 Upstream Ecosystem Normalization and Shift-Left Targets
+
+Makeflow preserves raw upstream phase labels in `ss_targets`. Shift-left target binding adds earlier Makeflow targets (`15`, `20`, `30`) in `mf_targets` so agents load design scars early. Shift-left binding never shifts right to add `40`.
+
+| Upstream Input Category | Canonical Domain Code | Normalization Rule |
+| :--- | :--- | :--- |
+| All 59 `syntheticscars.org` domain codes (`FLUTTER`, `RIV`, `BLOC`, `A2UI`, `OTEL`, `PUB`, `SSR`, `HOOK`, `SCRIPT`, `INV`, `REGEX`, etc.) | Same Code (1-to-1) | Preserve upstream domain codes verbatim while populating `frameworks`. |
+| Makeflow Tier 1 codes (`A11Y`, `DB`, `ENV`, `I18N`, `MATH`, `NET`, `SCHEMA`, `SH`, `SYS`) | Same Code (1-to-1) | Preserve Makeflow domain codes verbatim across SQLite and markdown spokes. |
+| Bare language tags (`LANG`, `LANGUAGES`, `POLYGLOT`, `DART`, `PYTHON`, etc.) | Inferred Domain | Infer `AST`, `ASYNC`, `TYPE`, `DEP`, `TEST`, or fallback `ARCH` from content. |
+| Human prose names (`Architecture`, `Testing`, `Process`, `Security`, `Database`, `System`, `Environment`, `Documentation`, `Tooling`) | Canonical 68-Code Key | Map human prose names to `ARCH`, `TEST`, `PROC`, `SEC`, `DB`, `SYS`, `ENV`, `DOC`, `TOOL`. |
+| Empty or unknown category | Prefix or Inferred Domain | Read valid `^SCAR-([A-Z0-9]+)-\d+$` prefix first, or infer from content. |
+
+### 4.4 Registry Sync, Migration, and Batch Transformation
+
+If you import or synchronize upstream scars, run one command to sync and transform pending rows with `agy --print`:
 
 ```bash
-python3 scripts/enrich_scars_index.py --db-path skills/makeflow/data/scars_registry.db
+python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --batch-size 10
 ```
 
-You can also run `make enrich-scars` or `python3 scripts/sync_synthetic_scars.py --enrich`.
+Pass `--no-fetch` to transform existing incomplete rows offline. Run `--migrate-ontology` or `make migrate-scars-ontology` to upgrade legacy SQLite schemas losslessly. Run `make enrich-scars` or `python3 scripts/sync_synthetic_scars.py --enrich` to refresh metadata and `scars_fts`.

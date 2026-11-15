@@ -11,7 +11,7 @@ PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry enrich-scars test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry enrich-scars migrate-scars-ontology test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -28,6 +28,7 @@ help:
 	@echo "  make test-scar-candidate - Test synthetic scar candidate validator (GH-146)"
 	@echo "  make sync-scars         - Sync public synthetic scars registry into bundled package database"
 	@echo "  make enrich-scars       - Enrich multi-dimensional metadata and rebuild FTS5 index"
+	@echo "  make migrate-scars-ontology - Deterministically migrate bundled scars DB to canonical ontology"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
 	@echo "  make test-base-script   - Test BaseScript execution lifecycle (SCAR-ARCH-05)"
@@ -138,13 +139,17 @@ test-sync-scars:
 sync-scars:
 	@echo "Syncing public synthetic scars registry into bundled package database..."
 	@mkdir -p "$(REPO_ROOT)/skills/makeflow/data"
-	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"
+	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(BATCH_SIZE), --batch-size $(BATCH_SIZE),)$(if $(NO_FETCH), --no-fetch,)
 
 sync-scars-registry: sync-scars
 
 enrich-scars:
 	@echo "Enriching multi-dimensional metadata in bundled scars database..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/enrich_scars_index.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"
+
+migrate-scars-ontology:
+	@echo "Migrating bundled scars database to canonical scar ID ontology..."
+	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db" --migrate-ontology
 
 test-scar-candidate:
 	@echo "Testing synthetic scar candidate validator..."

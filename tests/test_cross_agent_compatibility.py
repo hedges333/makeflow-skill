@@ -6695,6 +6695,24 @@ def validate():
       errors.append(f"{ref_09_rel} must reference Socratic Probe")
     if "Socratic Reflex Protocol" not in r09_text:
       errors.append(f"{ref_09_rel} must document Socratic Reflex Protocol")
+    for required_doc_term in (
+        "Reference Ontology",
+        "Upstream Ecosystem Normalization",
+        "68",
+        "ss_id",
+        "original_id",
+        "mf_targets",
+        "--batch-size",
+    ):
+      if required_doc_term not in r09_text:
+        errors.append(
+            f"{ref_09_rel} must document GH-193 term '{required_doc_term}'"
+        )
+    import re as _re
+    if not _re.search(r"scars_fts[^\n.]*ss_id", r09_text):
+      errors.append(
+          f"{ref_09_rel} must include 'ss_id' in the scars_fts indexed columns list"
+      )
 
   # 11b. Hub-and-Spoke Category Files (references/scars/)
   scars_dir_rel = "skills/makeflow/references/scars"
