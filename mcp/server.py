@@ -883,6 +883,10 @@ def handle_tools_list(request_id):
                       "type": "string",
                       "description": "Optional workflow phase filter (e.g. 'Target 30: tdd', 'T30')",
                   },
+                  "mfTarget": {
+                      "type": "integer",
+                      "description": "Optional integer Makeflow workflow target filter (e.g. 15, 20, 30, 40)",
+                  },
                   "limit": {
                       "type": "integer",
                       "description": "Maximum number of scars to return (default 3)",
@@ -1313,16 +1317,37 @@ def handle_tools_call(request_id, tool_name, arguments):
     workflow_phase = arguments.get("workflowPhase") or arguments.get(
         "workflow_phase"
     )
-    if not query and not any(
-        val
-        for val in (
-            category,
-            language,
-            source,
-            framework,
-            diagnostic_code,
-            workflow_phase,
+    mf_target_raw = arguments.get("mfTarget")
+    if mf_target_raw is None:
+      mf_target_raw = arguments.get("mf_target")
+    mf_target = None
+    if mf_target_raw is not None and mf_target_raw != "":
+      if isinstance(mf_target_raw, bool):
+        return _error_result(
+            request_id,
+            f"Invalid 'mfTarget' argument '{mf_target_raw}'. Provide an integer workflow target (e.g. 15, 20, 30).",
         )
+      try:
+        mf_target = int(mf_target_raw)
+      except (ValueError, TypeError):
+        return _error_result(
+            request_id,
+            f"Invalid 'mfTarget' argument '{mf_target_raw}'. Provide an integer workflow target (e.g. 15, 20, 30).",
+        )
+    if (
+        not query
+        and not any(
+            val
+            for val in (
+                category,
+                language,
+                source,
+                framework,
+                diagnostic_code,
+                workflow_phase,
+            )
+        )
+        and mf_target is None
     ):
       return _error_result(
           request_id,
@@ -1431,6 +1456,7 @@ def handle_tools_call(request_id, tool_name, arguments):
         framework=framework,
         diagnostic_code=diagnostic_code,
         workflow_phase=workflow_phase,
+        mf_target=mf_target,
     )
 
     if not raw_results:

@@ -28,6 +28,7 @@ from lib.scar_candidate import (
     ValidateScarCandidateScript,
     count_words_in_sentence,
     split_into_sentences,
+    validate_socratic_probe,
 )
 
 
@@ -554,6 +555,98 @@ class TestScarCandidateCLI(unittest.TestCase):
         0.10,
         f"Validation of 10 candidates took {elapsed:.4f}s (budget: 0.10s)",
     )
+
+  def test_sqlite_fallback_resolves_by_ss_id(self):
+    """Test resolving raw fields from SQLite when candidate specifies ss_id."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "test_scars_ss_id.db")
+      conn = sqlite3.connect(db_path)
+      cur = conn.cursor()
+      cur.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT NOT NULL PRIMARY KEY,
+              ss_id TEXT,
+              raw_wound TEXT,
+              raw_trap TEXT,
+              raw_circuit_breaker TEXT,
+              raw_reflex TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT
+          )
+          """
+      )
+      cur.execute(
+          """
+          INSERT INTO scars (
+              id, ss_id, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex
+          ) VALUES (?, ?, ?, ?, ?, ?)
+          """,
+          (
+              "SCAR-LANG-SQL-DB-0001",
+              "SCAR-SQL-01",
+              "Raw wound with formula $x = 1$.",
+              "Raw trap text.",
+              "Stop if error occurs.",
+              "Run ```bash\nmake test\n``` now.",
+          ),
+      )
+      conn.commit()
+      conn.close()
+
+      cand_path = os.path.join(tmpdir, "candidate_ss_id.json")
+      candidate = {
+          "id": "SCAR-SQL-01",
+          "wound": "Transformed wound with formula $x = 1$.",
+          "trap": "Transformed trap text.",
+          "circuit_breaker": "Stop if error occurs.",
+          "reflex": "Run ```bash\nmake test\n``` now.",
+          "socratic_probe": "Did you run the test before editing?",
+      }
+      with open(cand_path, "w", encoding="utf-8") as f:
+        json.dump(candidate, f)
+
+      out = io.StringIO()
+      err = io.StringIO()
+      script = ScarCandidateTestScript()
+      code = script.execute(
+          [cand_path, "--db-path", db_path], stdout=out, stderr=err
+      )
+      self.assertEqual(code, 0, f"Expected 0, got {code}. err: {err.getvalue()}")
+
+  def test_validate_socratic_probe_helper(self):
+    """Test standalone validate_socratic_probe() rules."""
+    self.assertEqual(
+        validate_socratic_probe(
+            "Did you inspect `$ENV_VAR` and $x = 1$ before editing?"
+        ),
+        [],
+    )
+    errs_empty = validate_socratic_probe("")
+    self.assertTrue(any("socratic_probe" in e for e in errs_empty))
+
+    errs_no_q = validate_socratic_probe("Check the schema first.")
+    self.assertTrue(any("?" in e for e in errs_no_q))
+
+    errs_contraction = validate_socratic_probe("Don't you test first?")
+    self.assertTrue(any("contraction" in e.lower() for e in errs_contraction))
+
+    errs_semi = validate_socratic_probe(
+        "Did you check the formula; did it pass?"
+    )
+    self.assertTrue(any("semicolon" in e.lower() for e in errs_semi))
+
+    errs_long = validate_socratic_probe(
+        "Did you check every single generated helper file and migration table "
+        "in the temporary directory before running the commit verification step?"
+    )
+    self.assertTrue(any("20" in e for e in errs_long))
+
+    errs_many = validate_socratic_probe("One? Two? Three? Four?")
+    self.assertTrue(any("maximum is 3" in e for e in errs_many))
 
 
 if __name__ == "__main__":

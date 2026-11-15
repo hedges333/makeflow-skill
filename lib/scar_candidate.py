@@ -73,6 +73,16 @@ def split_into_sentences(text: str) -> List[str]:
   return [s.strip() for s in raw_sentences if s.strip()]
 
 
+_CONTRACTION_RE = re.compile(
+    r"\b(?:don't|doesn't|didn't|won't|can't|isn't|aren't|wasn't|weren't|"
+    r"haven't|hasn't|hadn't|wouldn't|shouldn't|couldn't|mustn't|"
+    r"i'm|you're|we're|they're|i've|you've|we've|they've|"
+    r"i'll|you'll|we'll|they'll|i'd|you'd|we'd|they'd|"
+    r"it's|that's|there's|here's|what's|who's|let's)\b",
+    re.IGNORECASE,
+)
+
+
 def count_words_in_sentence(sentence: str) -> int:
   """Counts words in a sentence by splitting on whitespace and stripping punctuation."""
   words: List[str] = []
@@ -81,6 +91,67 @@ def count_words_in_sentence(sentence: str) -> int:
     if cleaned:
       words.append(cleaned)
   return len(words)
+
+
+def _check_socratic_probe_questions(probe_str: str, scar_id: str) -> List[str]:
+  """Validate Socratic probe ending, question count, and 20-word limit."""
+  errors: List[str] = []
+  if not probe_str.endswith("?"):
+    errors.append(
+        f"Scar '{scar_id}' field 'socratic_probe' must end with '?'."
+    )
+  sentences = split_into_sentences(probe_str)
+  if len(sentences) > 3:
+    errors.append(
+        f"Scar '{scar_id}' field 'socratic_probe' has {len(sentences)} question sentences "
+        f"(maximum is 3)."
+    )
+  for idx, sentence in enumerate(sentences, start=1):
+    if not sentence.endswith("?"):
+      errors.append(
+          f"Scar '{scar_id}' field 'socratic_probe' sentence {idx} must end with '?': '{sentence}'."
+      )
+    wcount = count_words_in_sentence(sentence)
+    if wcount > 20:
+      errors.append(
+          f"Scar '{scar_id}' field 'socratic_probe' sentence {idx} exceeds word limit "
+          f"({wcount} > 20 words): '{sentence}'."
+      )
+  return errors
+
+
+def validate_socratic_probe(
+    probe: Any, scar_id: str = "<probe>"
+) -> List[str]:
+  """Validate a standalone ``socratic_probe`` against Pass 2 rules.
+
+  Args:
+    probe: Candidate ``socratic_probe`` value.
+    scar_id: Optional scar identifier for diagnostic messages.
+
+  Returns:
+    List of validation error strings (empty when valid).
+  """
+  if not isinstance(probe, str) or not probe.strip():
+    return [f"Scar '{scar_id}' field 'socratic_probe' must be a non-empty string."]
+
+  probe_str = probe.strip()
+  errors: List[str] = []
+  prose_only = _strip_protected_and_inline_code(probe_str)
+  if ";" in prose_only:
+    errors.append(
+        f"Scar '{scar_id}' field 'socratic_probe' contains forbidden semicolon ';' in prose."
+    )
+  if "\u2014" in prose_only:
+    errors.append(
+        f"Scar '{scar_id}' field 'socratic_probe' contains forbidden em-dash '—' in prose."
+    )
+  if _CONTRACTION_RE.search(prose_only):
+    errors.append(
+        f"Scar '{scar_id}' field 'socratic_probe' contains forbidden contraction in prose."
+    )
+  errors.extend(_check_socratic_probe_questions(probe_str, scar_id))
+  return errors
 
 
 class ScarCandidateValidator:
@@ -198,28 +269,9 @@ class ScarCandidateValidator:
     # Socratic probe questions: <= 20 words per question sentence, ending in ?, up to 3 questions
     probe_val = candidate.get("socratic_probe")
     if isinstance(probe_val, str) and probe_val.strip():
-      probe_str = probe_val.strip()
-      if not probe_str.endswith("?"):
-        errors.append(
-            f"Scar '{scar_id}' field 'socratic_probe' must end with '?'."
-        )
-      sentences = split_into_sentences(probe_str)
-      if len(sentences) > 3:
-        errors.append(
-            f"Scar '{scar_id}' field 'socratic_probe' has {len(sentences)} question sentences "
-            f"(maximum is 3)."
-        )
-      for idx, sentence in enumerate(sentences, start=1):
-        if not sentence.endswith("?"):
-          errors.append(
-              f"Scar '{scar_id}' field 'socratic_probe' sentence {idx} must end with '?': '{sentence}'."
-          )
-        wcount = count_words_in_sentence(sentence)
-        if wcount > 20:
-          errors.append(
-              f"Scar '{scar_id}' field 'socratic_probe' sentence {idx} exceeds word limit "
-              f"({wcount} > 20 words): '{sentence}'."
-          )
+      errors.extend(
+          _check_socratic_probe_questions(probe_val.strip(), scar_id)
+      )
 
     return errors
 
@@ -289,15 +341,30 @@ class ScarCandidateTestScript(BaseScript):
     try:
       conn = sqlite3.connect(db_path)
       cur = conn.cursor()
-      cur.execute(
-          """
-          SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
-                  wound, trap, circuit_breaker, reflex
-          FROM scars
-          WHERE id = ?
-          """,
-          (scar_id,),
-      )
+      cols = {
+          row_info[1]
+          for row_info in cur.execute("PRAGMA table_info(scars)").fetchall()
+      }
+      if "ss_id" in cols:
+        cur.execute(
+            """
+            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+                    wound, trap, circuit_breaker, reflex
+            FROM scars
+            WHERE id = ? OR ss_id = ?
+            """,
+            (scar_id, scar_id),
+        )
+      else:
+        cur.execute(
+            """
+            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+                    wound, trap, circuit_breaker, reflex
+            FROM scars
+            WHERE id = ?
+            """,
+            (scar_id,),
+        )
       row = cur.fetchone()
       if not row:
         return None

@@ -18,6 +18,15 @@ import urllib.error
 import urllib.request
 
 from lib.base_script import BaseScript, SilentArgumentParser
+from lib.scar_ontology import (
+    DOMAIN_CATEGORY_ONTOLOGY,
+    UPSTREAM_CATEGORY_MAP,
+    compute_canonical_scar_id,
+    compute_makeflow_targets,
+    normalize_domain_category,
+    parse_upstream_targets,
+    resolve_category_filter_tokens,
+)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REGISTRY_URL = "https://syntheticscars.org/registry.json"
@@ -249,6 +258,8 @@ def format_loaded_scar_reminder(scar: Dict[str, Any]) -> Dict[str, Any]:
   probe = str(scar.get("socraticProbe") or scar.get("socratic_probe") or "")
   return {
       "id": scar_id,
+      "ssId": scar.get("ssId") if "ssId" in scar else scar.get("ss_id"),
+      "ss_id": scar.get("ss_id") if "ss_id" in scar else scar.get("ssId"),
       "title": title,
       "category": scar.get("category", ""),
       "categorySlug": scar.get("categorySlug", ""),
@@ -257,6 +268,10 @@ def format_loaded_scar_reminder(scar: Dict[str, Any]) -> Dict[str, Any]:
       "original_id": scar.get("original_id"),
       "workflowPhases": scar.get("workflowPhases", []),
       "workflow_phases": scar.get("workflow_phases", []),
+      "ssTargets": scar.get("ssTargets", []),
+      "ss_targets": scar.get("ss_targets", []),
+      "mfTargets": scar.get("mfTargets", []),
+      "mf_targets": scar.get("mf_targets", []),
       "keywords": scar.get("keywords", []),
       "languages": scar.get("languages", []),
       "frameworks": scar.get("frameworks", []),
@@ -528,7 +543,7 @@ _LANGUAGE_RULES = (
     (
         "dart",
         re.compile(
-            r"(?:\bdart\b|\bflutter\b|\briverpod\b|\bbloc\b|\bcubit\b|\bBlocSignal\b|\bCubitSignal\b|\bStreamController\b|\bpubspec\b|\bCompleter\b|\bWidgetTester\b|\bStatefulWidget\b|\bStatelessWidget\b|\bBuildContext\b|\bfakeAsync\b|\bAsyncNotifier\b|\bStateNotifier\b|\bChangeNotifier\b|\bValueNotifier\b|\.dart\b|```dart\b|SCAR-(?:LANG-DART|FLUTTER|BLOC|RIV|PUB))",
+            r"(?:\bdart\b|\bflutter\b|\briverpod\b|\bbloc\b|\bcubit\b|\bBlocSignal\b|\bCubitSignal\b|\bStreamController\b|\bpubspec\b|\bpana\b|\bCompleter\b|\bWidgetTester\b|\bStatefulWidget\b|\bStatelessWidget\b|\bBuildContext\b|\bfakeAsync\b|\bAsyncNotifier\b|\bStateNotifier\b|\bChangeNotifier\b|\bValueNotifier\b|\.dart\b|```dart\b|SCAR-(?:LANG-DART|FLUTTER|BLOC|RIV))",
             re.IGNORECASE,
         ),
     ),
@@ -591,7 +606,7 @@ _LANGUAGE_RULES = (
     (
         "sql",
         re.compile(
-            r"(?:\bsqlite3?\b|\bpostgresql\b|\bpostgres\b|\bmysql\b|\bmariadb\b|\bfts5\b|\bCREATE\s+TABLE\b|\bALTER\s+TABLE\b|```sql\b|SCAR-DB-)",
+            r"(?:\bsql\b|\bfts5\b|\bPRAGMA\b|\bCREATE\s+TABLE\b|\bALTER\s+TABLE\b|```sql\b)",
             re.IGNORECASE,
         ),
     ),
@@ -731,7 +746,8 @@ _FRAMEWORK_RULES = (
     ),
     ("redux", re.compile(r"\bredux\b", re.IGNORECASE)),
     ("swiftui", re.compile(r"\bswiftui\b", re.IGNORECASE)),
-    ("a2ui", re.compile(r"(?:\ba2ui\b|\bgenui\b|SCAR-A2UI|SCAR-GENUI)", re.IGNORECASE)),
+    ("a2ui", re.compile(r"(?:\ba2ui\b|SCAR-A2UI)", re.IGNORECASE)),
+    ("genui", re.compile(r"(?:\bgenui\b|SCAR-GENUI)", re.IGNORECASE)),
     (
         "opentelemetry",
         re.compile(r"(?:\bopentelemetry\b|\botel\b|SCAR-OTEL)", re.IGNORECASE),
@@ -797,54 +813,84 @@ _STOPWORDS = {
 }
 
 
+def _default_targets_for_domain(domain: str) -> List[int]:
+  """Return default Makeflow integer targets when raw phases are empty."""
+  norm_domain = str(domain or "").strip().upper()
+  if norm_domain in {
+      "ARCH",
+      "DIR",
+      "API",
+      "DEP",
+      "REFACTOR",
+      "INTEROP",
+      "MIXIN",
+      "DATA",
+      "SCHEMA",
+      "DB",
+      "STORAGE",
+      "WIRE",
+      "SEC",
+      "AUTH",
+      "DOC",
+      "DIFF",
+  }:
+    return [15, 20, 30]
+  if norm_domain in {"REVIEW", "GOV", "PEDAGOGY", "META", "COLLAB"}:
+    return [40]
+  if norm_domain == "GIT":
+    return [50, 60]
+  if norm_domain == "CI":
+    return [70]
+  return [20, 30]
+
+
 def _normalize_workflow_phases(
     raw_phases: List[str],
     category: str = "",
     applies_when: str = "",
     title: str = "",
     default_fallback: bool = True,
+    domain: Optional[str] = None,
 ) -> List[str]:
   """Normalizes workflow phase strings to canonical Target 10..90 labels."""
-  matched = set()
-  joined = " | ".join(str(p) for p in raw_phases if str(p).strip())
+  resolved_domain = domain or normalize_domain_category(
+      category, title=title, applies_when=applies_when
+  )
+  parsed_ints = parse_upstream_targets(raw_phases)
 
-  for canonical, pattern in _PHASE_PATTERNS:
-    if pattern.search(joined):
-      matched.add(canonical)
+  if not default_fallback:
+    from lib.scar_ontology import TARGET_INT_TO_PHASE_LABEL
 
-  # Check bare shorthand numbers like "2, 3, 4a"
-  if re.search(r"(?:^|[\s,\[\"]+)(?:2)(?:[\s,\]\"]+|$)", joined):
-    matched.add("Target 20: plan")
-  if re.search(r"(?:^|[\s,\[\"]+)(?:3)(?:[\s,\]\"]+|$)", joined):
-    matched.add("Target 30: tdd")
+    return [
+        TARGET_INT_TO_PHASE_LABEL[t]
+        for t in parsed_ints
+        if t in TARGET_INT_TO_PHASE_LABEL
+    ]
 
-  if not matched:
+  fallback_ints: Optional[List[int]] = None
+  if not parsed_ints:
+    context_matched = set()
     context = f"{category} {applies_when} {title}"
     for canonical, pattern in _PHASE_PATTERNS:
       if pattern.search(context):
-        matched.add(canonical)
-
-  if not matched and default_fallback:
-    cat_upper = (category or "").strip().upper()
-    if cat_upper in {"ARCH", "API", "DATA", "DEP", "STORAGE", "WIRE", "SCHEMA"}:
-      matched.update(
-          ("Target 20: plan", "Target 30: tdd", "Target 40: review")
-      )
-    elif cat_upper in {"REVIEW", "GOV", "PEDAGOGY", "META"}:
-      matched.add("Target 40: review")
-    elif cat_upper in {"GIT"}:
-      matched.update(("Target 50: commit", "Target 60: push"))
-    elif cat_upper in {"CI"}:
-      matched.add("Target 70: ci-triage")
+        context_matched.add(canonical)
+    if context_matched:
+      fallback_ints = parse_upstream_targets(list(context_matched))
     else:
-      matched.update(("Target 30: tdd", "Target 40: review"))
+      fallback_ints = _default_targets_for_domain(resolved_domain)
 
-  return [p for p in _CANONICAL_PHASE_ORDER if p in matched]
+  _, labels = compute_makeflow_targets(
+      raw_phases if parsed_ints else fallback_ints,
+      domain=resolved_domain,
+      fallback_phases=fallback_ints,
+  )
+  return labels
 
 
-def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, List[str]]:
-  """Deterministically extracts keywords, languages, frameworks, diagnostic_codes, and workflow_phases."""
+def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, Any]:
+  """Deterministically extracts keywords, languages, frameworks, diagnostic_codes, workflow_phases, and mf_targets."""
   scar_id = str(scar_row.get("id") or "").strip()
+  ss_id = str(scar_row.get("ss_id") or scar_row.get("ssId") or "").strip()
   orig_id = str(
       scar_row.get("original_id") or scar_row.get("originalId") or ""
   ).strip()
@@ -857,15 +903,35 @@ def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, List[str]]:
       scar_row.get("applies_when") or scar_row.get("appliesWhen") or ""
   ).strip()
 
+  ss_targets_val = (
+      scar_row.get("ss_targets")
+      if "ss_targets" in scar_row
+      else scar_row.get("ssTargets")
+  )
   raw_phases_val = (
       scar_row.get("workflow_phases")
       if "workflow_phases" in scar_row
       else scar_row.get("workflowPhases")
   )
-  raw_phases_list = _parse_json_list(raw_phases_val)
+  raw_phases_list = (
+      _parse_json_list(ss_targets_val)
+      if ss_targets_val is not None
+      else _parse_json_list(raw_phases_val)
+  )
+
+  raw_wound_val = str(
+      scar_row.get("raw_wound") or scar_row.get("wound") or ""
+  )
+  raw_trap_val = str(
+      scar_row.get("raw_trap") or scar_row.get("trap") or ""
+  )
+  raw_reflex_val = str(
+      scar_row.get("raw_reflex") or scar_row.get("reflex") or ""
+  )
 
   text_fields = (
       scar_id,
+      ss_id,
       orig_id,
       title,
       category,
@@ -918,6 +984,8 @@ def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, List[str]]:
 
   if scar_id:
     _add_kw(scar_id)
+  if ss_id:
+    _add_kw(ss_id)
   if orig_id:
     _add_kw(orig_id)
   if cat_slug:
@@ -968,13 +1036,26 @@ def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, List[str]]:
     if token not in _NON_DIAG_UPPER and not token.startswith("SCAR_"):
       _add_diag(token)
 
-  # 5. Normalize workflow phases
-  workflow_phases = _normalize_workflow_phases(
-      raw_phases_list,
-      category=category or cat_slug,
-      applies_when=applies_when,
+  # 5. Normalize domain category, Makeflow integer targets, and workflow phases
+  domain = normalize_domain_category(
+      category or cat_slug,
+      scar_id=ss_id or scar_id,
       title=title,
+      applies_when=applies_when,
+      wound=raw_wound_val,
+      trap=raw_trap_val,
+      reflex=raw_reflex_val,
   )
+  parsed_ints = parse_upstream_targets(raw_phases_list)
+  if parsed_ints:
+    mf_targets, workflow_phases = compute_makeflow_targets(
+        raw_phases_list, domain=domain
+    )
+  else:
+    fallback_ints = _default_targets_for_domain(domain)
+    mf_targets, workflow_phases = compute_makeflow_targets(
+        fallback_ints, domain=domain, fallback_phases=fallback_ints
+    )
 
   return {
       "keywords": keywords,
@@ -982,6 +1063,8 @@ def extract_scar_metadata(scar_row: Dict[str, Any]) -> Dict[str, List[str]]:
       "frameworks": frameworks,
       "diagnostic_codes": diag_codes,
       "workflow_phases": workflow_phases,
+      "mf_targets": mf_targets,
+      "domain_category": domain,
   }
 
 
@@ -995,6 +1078,7 @@ def _query_single_scars_db(
     framework: Optional[str] = None,
     diagnostic_code: Optional[str] = None,
     workflow_phase: Optional[str] = None,
+    mf_target: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
   """Queries a single SQLite scars database for processed scars only."""
   if not db_path or not os.path.isfile(db_path):
@@ -1024,6 +1108,9 @@ def _query_single_scars_db(
     has_languages = "languages" in cols
     has_frameworks = "frameworks" in cols
     has_diag_codes = "diagnostic_codes" in cols
+    has_ss_id = "ss_id" in cols
+    has_ss_targets = "ss_targets" in cols
+    has_mf_targets = "mf_targets" in cols
 
     wound_expr = "s.wound"
     trap_expr = "s.trap"
@@ -1041,13 +1128,17 @@ def _query_single_scars_db(
     diag_codes_col = (
         "s.diagnostic_codes" if has_diag_codes else "'[]' AS diagnostic_codes"
     )
+    ss_id_col = "s.ss_id" if has_ss_id else "NULL AS ss_id"
+    ss_targets_col = "s.ss_targets" if has_ss_targets else "'[]' AS ss_targets"
+    mf_targets_col = "s.mf_targets" if has_mf_targets else "'[]' AS mf_targets"
 
     select_fields = (
         "s.id, s.title, s.category, s.category_slug, s.visibility,"
         f" s.workflow_phases, s.applies_when, s.graduation_status, {wound_expr},"
         f" {trap_expr}, {cb_expr}, {reflex_expr}, {probe_expr},"
         f" {source_col}, {orig_id_col}, {raw_hash_col},"
-        f" {keywords_col}, {languages_col}, {frameworks_col}, {diag_codes_col} "
+        f" {keywords_col}, {languages_col}, {frameworks_col}, {diag_codes_col},"
+        f" {ss_id_col}, {ss_targets_col}, {mf_targets_col} "
     )
 
     def _append_filters(base_sql: str, params_list: List[Any]) -> Optional[str]:
@@ -1066,8 +1157,19 @@ def _query_single_scars_db(
           return None
 
       if category and category.strip():
-        sql_out += "AND (LOWER(s.category) = LOWER(?) OR LOWER(s.category_slug) = LOWER(?)) "
-        params_list.extend([category.strip(), category.strip()])
+        cat_tokens = resolve_category_filter_tokens(category.strip())
+        if cat_tokens:
+          placeholders = ", ".join(["?"] * len(cat_tokens))
+          lowered_tokens = [tok.lower() for tok in cat_tokens]
+          sql_out += (
+              f"AND (LOWER(s.category) IN ({placeholders}) "
+              f"OR LOWER(s.category_slug) IN ({placeholders})) "
+          )
+          params_list.extend(lowered_tokens)
+          params_list.extend(lowered_tokens)
+        else:
+          sql_out += "AND (LOWER(s.category) = LOWER(?) OR LOWER(s.category_slug) = LOWER(?)) "
+          params_list.extend([category.strip(), category.strip()])
 
       if language and language.strip():
         lang_clean = language.strip().lower()
@@ -1152,6 +1254,30 @@ def _query_single_scars_db(
           sql_out += "AND LOWER(COALESCE(s.workflow_phases, '')) LIKE ? "
           params_list.append(wp_substr)
 
+      if mf_target is not None:
+        target_int = int(mf_target)
+        if has_mf_targets:
+          sql_out += (
+              "AND (',' || REPLACE(REPLACE(REPLACE(COALESCE(s.mf_targets, ''),"
+              " ' ', ''), '[', ''), ']', '') || ',') LIKE ? "
+          )
+          params_list.append(f"%,{target_int},%")
+        else:
+          from lib.scar_ontology import TARGET_INT_TO_PHASE_LABEL
+
+          phase_label = TARGET_INT_TO_PHASE_LABEL.get(target_int)
+          if phase_label:
+            sql_out += (
+                "AND (LOWER(COALESCE(s.workflow_phases, '')) LIKE ? "
+                "OR LOWER(COALESCE(s.workflow_phases, '')) LIKE ?) "
+            )
+            params_list.extend(
+                [f"%{phase_label.lower()}%", f"%t{target_int}%"]
+            )
+          else:
+            sql_out += "AND LOWER(COALESCE(s.workflow_phases, '')) LIKE ? "
+            params_list.append(f"%{target_int}%")
+
       return sql_out
 
     has_fts = False
@@ -1195,7 +1321,7 @@ def _query_single_scars_db(
     query_tokens = [
         tok.strip().lower() for tok in query_str.split() if tok.strip()
     ]
-    has_any_filter = any(
+    has_any_filter = mf_target is not None or any(
         bool(f and str(f).strip())
         for f in (
             category,
@@ -1229,6 +1355,12 @@ def _query_single_scars_db(
             pattern,
             pattern,
         ]
+        if has_ss_id:
+          clause += " OR LOWER(COALESCE(s.ss_id, '')) LIKE ?"
+          tok_params.append(pattern)
+        if has_orig_id:
+          clause += " OR LOWER(COALESCE(s.original_id, '')) LIKE ?"
+          tok_params.append(pattern)
         if has_keywords:
           clause += " OR LOWER(COALESCE(s.keywords, '')) LIKE ?"
           tok_params.append(pattern)
@@ -1277,11 +1409,12 @@ def query_scars(
     framework: Optional[str] = None,
     diagnostic_code: Optional[str] = None,
     workflow_phase: Optional[str] = None,
+    mf_target: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
   """Queries one or more stacked SQLite scars databases in precedence order.
 
   Returns only processed scars (non-empty wound, trap, reflex, socratic_probe)
-  and deduplicates across databases by id and original_id.
+  and deduplicates across databases by id, ss_id, and original_id.
   """
   if not db_path:
     return []
@@ -1292,38 +1425,53 @@ def query_scars(
 
   eff_limit = max(1, limit)
   combined: List[Dict[str, Any]] = []
-  seen_from_prior_dbs: Set[str] = set()
+  seen_makeflow_keys: Set[str] = set()
+  seen_upstream_keys: Set[str] = set()
+  seen_legacy_upstream_ids: Set[str] = set()
 
   for single_path in paths:
     if not os.path.isfile(single_path):
       continue
+    prior_seen_count = len(seen_makeflow_keys) + len(seen_upstream_keys)
     db_matches = _query_single_scars_db(
         db_path=single_path,
         query=query,
         category=category,
         language=language,
-        limit=eff_limit + len(seen_from_prior_dbs) + 5,
+        limit=eff_limit + prior_seen_count + 5,
         source=source,
         framework=framework,
         diagnostic_code=diagnostic_code,
         workflow_phase=workflow_phase,
+        mf_target=mf_target,
     )
-    current_db_ids: Set[str] = set()
+    current_makeflow_ids: Set[str] = set()
+    current_upstream_ids: Set[str] = set()
+    current_legacy_upstream_ids: Set[str] = set()
     for row in db_matches:
       scar_id = str(row.get("id") or "")
+      ss_id = str(row.get("ssId") or row.get("ss_id") or "")
       orig_id = str(row.get("originalId") or row.get("original_id") or "")
-      if scar_id in seen_from_prior_dbs or (
-          orig_id and orig_id in seen_from_prior_dbs
-      ):
-        continue
-      if scar_id:
-        current_db_ids.add(scar_id)
-      if orig_id:
-        current_db_ids.add(orig_id)
+      row_source = str(row.get("source") or "upstream").strip().lower()
+      if row_source == "makeflow":
+        candidate_keys = [k for k in (scar_id, orig_id) if k]
+        blocked_keys = seen_makeflow_keys | seen_legacy_upstream_ids
+        if any(k in blocked_keys for k in candidate_keys):
+          continue
+        current_makeflow_ids.update(candidate_keys)
+      else:
+        candidate_keys = [k for k in (scar_id, ss_id, orig_id) if k]
+        if any(k in seen_upstream_keys for k in candidate_keys):
+          continue
+        current_upstream_ids.update(candidate_keys)
+        if not ss_id and scar_id:
+          current_legacy_upstream_ids.add(scar_id)
       combined.append(row)
       if len(combined) >= eff_limit:
         return combined
-    seen_from_prior_dbs.update(current_db_ids)
+    seen_makeflow_keys.update(current_makeflow_ids)
+    seen_upstream_keys.update(current_upstream_ids)
+    seen_legacy_upstream_ids.update(current_legacy_upstream_ids)
 
   return combined
 
@@ -1340,15 +1488,30 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
   languages = _parse_json_list(row[17]) if len(row) > 17 else []
   frameworks = _parse_json_list(row[18]) if len(row) > 18 else []
   diag_codes = _parse_json_list(row[19]) if len(row) > 19 else []
+  ss_id = row[20] if len(row) > 20 and row[20] is not None else None
+  ss_targets = _parse_json_list(row[21]) if len(row) > 21 else []
+  mf_targets_raw = _parse_json_list(row[22]) if len(row) > 22 else []
+  mf_targets: List[int] = []
+  for item in mf_targets_raw:
+    try:
+      mf_targets.append(int(item))
+    except (TypeError, ValueError):
+      continue
 
   return {
       "id": row[0],
+      "ssId": ss_id,
+      "ss_id": ss_id,
       "title": row[1],
       "category": row[2],
       "categorySlug": row[3],
       "visibility": row[4],
       "workflowPhases": phases,
       "workflow_phases": phases,
+      "ssTargets": ss_targets,
+      "ss_targets": ss_targets,
+      "mfTargets": mf_targets,
+      "mf_targets": mf_targets,
       "appliesWhen": row[6],
       "graduationStatus": row[7],
       "wound": row[8],
@@ -1519,49 +1682,47 @@ def _enrich_scars_cursor(
     scar_ids: Optional[Sequence[str]] = None,
 ) -> int:
   """Populates metadata columns in scars table for all or specified scar IDs."""
+  base_cols = (
+      "id, ss_id, title, category, category_slug, workflow_phases,"
+      " ss_targets, applies_when, raw_wound, raw_trap, raw_circuit_breaker,"
+      " raw_reflex, wound, trap, circuit_breaker, reflex, socratic_probe,"
+      " original_id"
+  )
   if scar_ids is not None:
     if not scar_ids:
       return 0
     placeholders = ", ".join(["?"] * len(scar_ids))
     cur.execute(
-        f"""
-        SELECT id, title, category, category_slug, workflow_phases, applies_when,
-               raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
-               wound, trap, circuit_breaker, reflex, socratic_probe, original_id
-        FROM scars
-        WHERE id IN ({placeholders})
-        """,
+        f"SELECT {base_cols} FROM scars WHERE id IN ({placeholders})",
         tuple(scar_ids),
     )
   else:
-    cur.execute(
-        """
-        SELECT id, title, category, category_slug, workflow_phases, applies_when,
-               raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
-               wound, trap, circuit_breaker, reflex, socratic_probe, original_id
-        FROM scars
-        """
-    )
+    cur.execute(f"SELECT {base_cols} FROM scars")
   rows = cur.fetchall()
   enriched_count = 0
   for r in rows:
+    raw_ss_targets = r[6]
+    if raw_ss_targets is None:
+      raw_ss_targets = r[5]
     scar_row = {
         "id": r[0],
-        "title": r[1],
-        "category": r[2],
-        "category_slug": r[3],
-        "workflow_phases": r[4],
-        "applies_when": r[5],
-        "raw_wound": r[6],
-        "raw_trap": r[7],
-        "raw_circuit_breaker": r[8],
-        "raw_reflex": r[9],
-        "wound": r[10],
-        "trap": r[11],
-        "circuit_breaker": r[12],
-        "reflex": r[13],
-        "socratic_probe": r[14],
-        "original_id": r[15],
+        "ss_id": r[1],
+        "title": r[2],
+        "category": r[3],
+        "category_slug": r[4],
+        "workflow_phases": r[5],
+        "ss_targets": raw_ss_targets,
+        "applies_when": r[7],
+        "raw_wound": r[8],
+        "raw_trap": r[9],
+        "raw_circuit_breaker": r[10],
+        "raw_reflex": r[11],
+        "wound": r[12],
+        "trap": r[13],
+        "circuit_breaker": r[14],
+        "reflex": r[15],
+        "socratic_probe": r[16],
+        "original_id": r[17],
     }
     meta = extract_scar_metadata(scar_row)
     cur.execute(
@@ -1571,7 +1732,9 @@ def _enrich_scars_cursor(
             languages = ?,
             frameworks = ?,
             diagnostic_codes = ?,
-            workflow_phases = ?
+            workflow_phases = ?,
+            ss_targets = ?,
+            mf_targets = ?
         WHERE id = ?
         """,
         (
@@ -1580,11 +1743,188 @@ def _enrich_scars_cursor(
             json.dumps(meta["frameworks"]),
             json.dumps(meta["diagnostic_codes"]),
             json.dumps(meta["workflow_phases"]),
+            raw_ss_targets,
+            json.dumps(meta["mf_targets"]),
             r[0],
         ),
     )
     enriched_count += 1
   return enriched_count
+
+
+def migrate_scars_ontology(db_path: str) -> Dict[str, Any]:
+  """Losslessly migrate an existing SQLite scars registry to canonical ontology IDs and targets.
+
+  Preserves ``wound``, ``trap``, ``circuit_breaker``, ``reflex``, ``socratic_probe``,
+  and all ``raw_*`` fields byte-for-byte while assigning ``ss_id``, canonical
+  4-digit ``id``, normalized ``category``, ``ss_targets``, and shift-left
+  ``mf_targets``.
+  """
+  resolved_path = resolve_scars_db_path(db_path=db_path)
+  if not os.path.isfile(resolved_path):
+    return {
+        "db_path": resolved_path,
+        "migrated_scars": 0,
+        "total_scars": 0,
+    }
+
+  sync_helper = SyncSyntheticScarsScript()
+  sync_helper.db_path = resolved_path
+  try:
+    sync_helper._init_db_schema()
+    conn = sync_helper.conn
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, ss_id, title, category, category_slug, visibility,
+               workflow_phases, ss_targets, mf_targets, applies_when,
+               graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+               raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
+               socratic_probe, source, original_id
+        FROM scars
+        ORDER BY CASE WHEN LOWER(COALESCE(source, 'upstream')) = 'makeflow' THEN 0 ELSE 1 END,
+                 COALESCE(ss_id, id) ASC,
+                 id ASC
+        """
+    )
+    existing_rows = cur.fetchall()
+    reserved_ids: Set[str] = set()
+    migrated_records: List[Tuple[Any, ...]] = []
+
+    for r in existing_rows:
+      old_id = r[0]
+      existing_ss_id = r[1]
+      title = r[2]
+      old_cat = r[3]
+      old_cat_slug = r[4]
+      visibility = r[5]
+      old_phases = r[6]
+      existing_ss_targets = r[7]
+      applies_when = r[9]
+      grad_status = r[10]
+      raw_wound = r[11]
+      raw_trap = r[12]
+      raw_cb = r[13]
+      raw_reflex = r[14]
+      raw_hash = r[15]
+      wound = r[16]
+      trap = r[17]
+      cb = r[18]
+      reflex = r[19]
+      socratic_probe = r[20]
+      source = (r[21] or "upstream").strip()
+      orig_id = r[22]
+
+      new_ss_id: Optional[str] = existing_ss_id
+      if source.lower() == "makeflow":
+        new_ss_id = None
+      elif not new_ss_id:
+        new_ss_id = old_id
+
+      preserved_ss_targets = (
+          existing_ss_targets if existing_ss_targets is not None else old_phases
+      )
+      seed_id = new_ss_id or old_id
+      meta = extract_scar_metadata(
+          {
+              "id": seed_id,
+              "ss_id": new_ss_id,
+              "original_id": orig_id,
+              "title": title,
+              "category": old_cat,
+              "category_slug": old_cat_slug,
+              "workflow_phases": old_phases,
+              "ss_targets": preserved_ss_targets,
+              "applies_when": applies_when,
+              "raw_wound": raw_wound,
+              "raw_trap": raw_trap,
+              "raw_circuit_breaker": raw_cb,
+              "raw_reflex": raw_reflex,
+              "wound": wound,
+              "trap": trap,
+              "circuit_breaker": cb,
+              "reflex": reflex,
+              "socratic_probe": socratic_probe,
+          }
+      )
+      domain = meta["domain_category"]
+      canonical_id = compute_canonical_scar_id(
+          raw_id=seed_id,
+          domain=domain,
+          languages=meta["languages"],
+          reserved_ids=reserved_ids,
+      )
+      if source.lower() == "makeflow" and canonical_id != old_id and not orig_id:
+        orig_id = old_id
+      migrated_records.append(
+          (
+              canonical_id,
+              new_ss_id,
+              title,
+              domain,
+              domain.lower(),
+              visibility,
+              json.dumps(meta["workflow_phases"]),
+              preserved_ss_targets,
+              json.dumps(meta["mf_targets"]),
+              applies_when,
+              grad_status,
+              raw_wound,
+              raw_trap,
+              raw_cb,
+              raw_reflex,
+              raw_hash,
+              wound,
+              trap,
+              cb,
+              reflex,
+              socratic_probe,
+              source,
+              orig_id,
+              json.dumps(meta["keywords"]),
+              json.dumps(meta["languages"]),
+              json.dumps(meta["frameworks"]),
+              json.dumps(meta["diagnostic_codes"]),
+          )
+      )
+
+    cur.execute("BEGIN TRANSACTION")
+    cur.execute("DELETE FROM scars")
+    cur.executemany(
+        """
+        INSERT INTO scars (
+            id, ss_id, title, category, category_slug, visibility,
+            workflow_phases, ss_targets, mf_targets, applies_when,
+            graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+            raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
+            socratic_probe, source, original_id, keywords, languages,
+            frameworks, diagnostic_codes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        migrated_records,
+    )
+    if sync_helper.has_fts5:
+      sync_helper._populate_fts(cur)
+    cur.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('total_scars', ?)",
+        (str(len(migrated_records)),),
+    )
+    conn.commit()
+    file_size = (
+        os.path.getsize(resolved_path) if os.path.isfile(resolved_path) else 0
+    )
+    cur.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('db_size_bytes', ?)",
+        (str(file_size),),
+    )
+    conn.commit()
+    return {
+        "db_path": resolved_path,
+        "migrated_scars": len(migrated_records),
+        "total_scars": len(migrated_records),
+    }
+  finally:
+    sync_helper.cleanup(0)
 
 
 def enrich_scars_database(db_path: str) -> Dict[str, Any]:
@@ -1720,6 +2060,37 @@ class EnrichScarsIndexScript(BaseScript):
     return 0
 
 
+_SCARS_COLUMN_DEFS = (
+    ("id", "TEXT NOT NULL PRIMARY KEY"),
+    ("ss_id", "TEXT"),
+    ("title", "TEXT"),
+    ("category", "TEXT"),
+    ("category_slug", "TEXT"),
+    ("visibility", "TEXT"),
+    ("workflow_phases", "TEXT"),
+    ("ss_targets", "TEXT"),
+    ("mf_targets", "TEXT"),
+    ("applies_when", "TEXT"),
+    ("graduation_status", "TEXT"),
+    ("raw_wound", "TEXT"),
+    ("raw_trap", "TEXT"),
+    ("raw_circuit_breaker", "TEXT"),
+    ("raw_reflex", "TEXT"),
+    ("raw_hash", "TEXT"),
+    ("wound", "TEXT"),
+    ("trap", "TEXT"),
+    ("circuit_breaker", "TEXT"),
+    ("reflex", "TEXT"),
+    ("socratic_probe", "TEXT"),
+    ("source", "TEXT DEFAULT 'upstream'"),
+    ("original_id", "TEXT"),
+    ("keywords", "TEXT"),
+    ("languages", "TEXT"),
+    ("frameworks", "TEXT"),
+    ("diagnostic_codes", "TEXT"),
+)
+
+
 class SyncSyntheticScarsScript(BaseScript):
   """Template Method script synchronizing and querying synthetic scars."""
 
@@ -1737,12 +2108,19 @@ class SyncSyntheticScarsScript(BaseScript):
     self.framework: Optional[str] = None
     self.diagnostic_code: Optional[str] = None
     self.workflow_phase: Optional[str] = None
+    self.mf_target: Optional[int] = None
     self.limit: int = 3
     self.export_pending: Optional[int] = None
     self.apply_transformed: Optional[str] = None
     self.import_simple_english: Optional[str] = None
     self.verify_transformed: bool = False
     self.enrich: bool = False
+    self.migrate_ontology: bool = False
+    self.batch_size: int = 0
+    self.no_fetch: bool = False
+    self.agy_bin: str = "agy"
+    self.model: Optional[str] = None
+    self.max_retries: int = 2
     self.has_fts5: bool = False
     self.conn: Optional[sqlite3.Connection] = None
 
@@ -1822,6 +2200,13 @@ class SyncSyntheticScarsScript(BaseScript):
         help="Workflow phase filter for query (for example 'Target 30: tdd', 'T30').",
     )
     parser.add_argument(
+        "--mf-target",
+        dest="mf_target",
+        type=int,
+        default=None,
+        help="Integer Makeflow target filter (for example 15, 20, 30, 40).",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=3,
@@ -1860,6 +2245,43 @@ class SyncSyntheticScarsScript(BaseScript):
         action="store_true",
         help="Enrich multi-dimensional metadata and rebuild FTS5 index.",
     )
+    parser.add_argument(
+        "--migrate-ontology",
+        dest="migrate_ontology",
+        action="store_true",
+        help="Losslessly migrate scars database to canonical domain IDs and targets.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        dest="batch_size",
+        type=int,
+        default=0,
+        help="Transform up to N incomplete scars via non-interactive agy --print.",
+    )
+    parser.add_argument(
+        "--no-fetch",
+        dest="no_fetch",
+        action="store_true",
+        help="Skip HTTP fetch and run --batch-size directly on local SQLite rows.",
+    )
+    parser.add_argument(
+        "--agy-bin",
+        dest="agy_bin",
+        default="agy",
+        help="Path or binary name for agy CLI (default 'agy').",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Optional model override passed to agy --model.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        dest="max_retries",
+        type=int,
+        default=2,
+        help="Maximum retry attempts per agy pass on validation failure (default 2).",
+    )
 
     parsed = parser.parse_args(self.raw_args)
     self.url = parsed.url
@@ -1873,12 +2295,19 @@ class SyncSyntheticScarsScript(BaseScript):
     self.framework = parsed.framework
     self.diagnostic_code = parsed.diagnostic_code
     self.workflow_phase = parsed.workflow_phase
+    self.mf_target = parsed.mf_target
     self.limit = parsed.limit
     self.export_pending = parsed.export_pending
     self.apply_transformed = parsed.apply_transformed
     self.import_simple_english = parsed.import_simple_english
     self.verify_transformed = parsed.verify_transformed
     self.enrich = parsed.enrich
+    self.migrate_ontology = parsed.migrate_ontology
+    self.batch_size = max(0, int(parsed.batch_size or 0))
+    self.no_fetch = parsed.no_fetch
+    self.agy_bin = parsed.agy_bin
+    self.model = parsed.model
+    self.max_retries = max(0, int(parsed.max_retries if parsed.max_retries is not None else 2))
     self.db_path = resolve_scars_db_path(
         db_path=parsed.db_path,
         agent=self.agent,
@@ -1895,13 +2324,14 @@ class SyncSyntheticScarsScript(BaseScript):
     cur.execute(
         """
         INSERT INTO scars_fts (
-            id, title, category, applies_when,
+            id, ss_id, title, category, applies_when,
             wound, trap, reflex, socratic_probe,
             keywords, languages, frameworks, diagnostic_codes, workflow_phases,
             source, original_id
         )
         SELECT
             id,
+            COALESCE(ss_id, ''),
             title,
             category,
             applies_when,
@@ -1921,6 +2351,26 @@ class SyncSyntheticScarsScript(BaseScript):
     )
     cur.execute("INSERT INTO scars_fts(scars_fts) VALUES('optimize')")
 
+  def _rebuild_scars_not_null_table(
+      self, cur: sqlite3.Cursor, existing_cols: Set[str]
+  ) -> None:
+    """Atomically rebuild scars table so id has NOT NULL constraint."""
+    col_defs_sql = ",\n            ".join(
+        f"{col_name} {col_def}" for col_name, col_def in _SCARS_COLUMN_DEFS
+    )
+    cur.execute("DROP TABLE IF EXISTS scars__rebuild_tmp")
+    cur.execute(f"CREATE TABLE scars__rebuild_tmp (\n            {col_defs_sql}\n        )")
+    copy_cols = [
+        col_name for col_name, _ in _SCARS_COLUMN_DEFS if col_name in existing_cols
+    ]
+    copy_cols_sql = ", ".join(copy_cols)
+    cur.execute(
+        f"INSERT INTO scars__rebuild_tmp ({copy_cols_sql}) "
+        f"SELECT {copy_cols_sql} FROM scars WHERE id IS NOT NULL AND TRIM(id) != ''"
+    )
+    cur.execute("DROP TABLE scars")
+    cur.execute("ALTER TABLE scars__rebuild_tmp RENAME TO scars")
+
   def _init_db_schema(self) -> None:
     """Initializes tables and probes FTS5 virtual table support."""
     if not self.conn:
@@ -1933,58 +2383,34 @@ class SyncSyntheticScarsScript(BaseScript):
             value TEXT
         )
     """)
-    cur.execute("""
+    col_defs_sql = ",\n            ".join(
+        f"{col_name} {col_def}" for col_name, col_def in _SCARS_COLUMN_DEFS
+    )
+    cur.execute(f"""
         CREATE TABLE IF NOT EXISTS scars (
-            id TEXT PRIMARY KEY,
-            title TEXT,
-            category TEXT,
-            category_slug TEXT,
-            visibility TEXT,
-            workflow_phases TEXT,
-            applies_when TEXT,
-            graduation_status TEXT,
-            raw_wound TEXT,
-            raw_trap TEXT,
-            raw_circuit_breaker TEXT,
-            raw_reflex TEXT,
-            raw_hash TEXT,
-            wound TEXT,
-            trap TEXT,
-            circuit_breaker TEXT,
-            reflex TEXT,
-            socratic_probe TEXT,
-            source TEXT DEFAULT 'upstream',
-            original_id TEXT,
-            keywords TEXT,
-            languages TEXT,
-            frameworks TEXT,
-            diagnostic_codes TEXT
+            {col_defs_sql}
         )
     """)
 
-    # Migrate columns if scars table already existed without new columns
+    # Rebuild legacy scars table if id lacks NOT NULL constraint
     cur.execute("PRAGMA table_info(scars)")
-    existing_cols = {r[1] for r in cur.fetchall()}
-    for col_name, col_def in (
-        ("raw_wound", "TEXT"),
-        ("raw_trap", "TEXT"),
-        ("raw_circuit_breaker", "TEXT"),
-        ("raw_reflex", "TEXT"),
-        ("raw_hash", "TEXT"),
-        ("wound", "TEXT"),
-        ("trap", "TEXT"),
-        ("circuit_breaker", "TEXT"),
-        ("reflex", "TEXT"),
-        ("socratic_probe", "TEXT"),
-        ("source", "TEXT DEFAULT 'upstream'"),
-        ("original_id", "TEXT"),
-        ("keywords", "TEXT"),
-        ("languages", "TEXT"),
-        ("frameworks", "TEXT"),
-        ("diagnostic_codes", "TEXT"),
-    ):
+    table_info = cur.fetchall()
+    existing_cols = {r[1] for r in table_info}
+    id_info = next((r for r in table_info if r[1] == "id"), None)
+    if id_info is not None and int(id_info[3] or 0) == 0:
+      self._rebuild_scars_not_null_table(cur, existing_cols)
+      cur.execute("PRAGMA table_info(scars)")
+      existing_cols = {r[1] for r in cur.fetchall()}
+
+    # Migrate columns if scars table already existed without new columns
+    for col_name, col_def in _SCARS_COLUMN_DEFS[1:]:
       if col_name not in existing_cols:
         cur.execute(f"ALTER TABLE scars ADD COLUMN {col_name} {col_def}")
+
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_scars_ss_id "
+        "ON scars(ss_id) WHERE ss_id IS NOT NULL"
+    )
 
     cur.execute(
         """
@@ -2009,6 +2435,7 @@ class SyncSyntheticScarsScript(BaseScript):
         fts_cols = {r[1] for r in cur.fetchall()}
         required_fts_cols = {
             "id",
+            "ss_id",
             "title",
             "category",
             "applies_when",
@@ -2034,6 +2461,7 @@ class SyncSyntheticScarsScript(BaseScript):
       cur.execute("""
           CREATE VIRTUAL TABLE IF NOT EXISTS scars_fts USING fts5(
               id,
+              ss_id,
               title,
               category,
               applies_when,
@@ -2071,10 +2499,11 @@ class SyncSyntheticScarsScript(BaseScript):
     cur.execute(
         """
         SELECT COUNT(*) FROM scars
-        WHERE wound IS NULL
-           OR trap IS NULL
+        WHERE wound IS NULL OR TRIM(wound) = ''
+           OR trap IS NULL OR TRIM(trap) = ''
            OR circuit_breaker IS NULL
-           OR reflex IS NULL
+           OR reflex IS NULL OR TRIM(reflex) = ''
+           OR socratic_probe IS NULL OR TRIM(socratic_probe) = ''
         """
     )
     row = cur.fetchone()
@@ -2133,7 +2562,7 @@ class SyncSyntheticScarsScript(BaseScript):
     limit_val = max(1, int(self.export_pending or 1))
     cur.execute(
         """
-        SELECT id, title, category, applies_when,
+        SELECT id, ss_id, title, category, applies_when,
                raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
                wound, trap, circuit_breaker, reflex, socratic_probe
         FROM scars
@@ -2151,19 +2580,20 @@ class SyncSyntheticScarsScript(BaseScript):
     for r in rows:
       row_dict = {
           "id": r[0],
-          "title": r[1],
-          "category": r[2],
-          "applies_when": r[3],
-          "raw_wound": r[4] or "",
-          "raw_trap": r[5] or "",
-          "raw_circuit_breaker": r[6] or "",
-          "raw_reflex": r[7] or "",
-          "raw_hash": r[8] or "",
-          "wound": r[9],
-          "trap": r[10],
-          "circuit_breaker": r[11],
-          "reflex": r[12],
-          "socratic_probe": r[13],
+          "ss_id": r[1],
+          "title": r[2],
+          "category": r[3],
+          "applies_when": r[4],
+          "raw_wound": r[5] or "",
+          "raw_trap": r[6] or "",
+          "raw_circuit_breaker": r[7] or "",
+          "raw_reflex": r[8] or "",
+          "raw_hash": r[9] or "",
+          "wound": r[10],
+          "trap": r[11],
+          "circuit_breaker": r[12],
+          "reflex": r[13],
+          "socratic_probe": r[14],
       }
       row_dict["null_fields"] = [
           col
@@ -2212,12 +2642,12 @@ class SyncSyntheticScarsScript(BaseScript):
         scar_id = str(item["id"])
         cur.execute(
             """
-            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+            SELECT id, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
                    wound, trap, circuit_breaker, reflex, socratic_probe
             FROM scars
-            WHERE id = ?
+            WHERE id = ? OR ss_id = ?
             """,
-            (scar_id,),
+            (scar_id, scar_id),
         )
         row = cur.fetchone()
         if not row:
@@ -2225,20 +2655,21 @@ class SyncSyntheticScarsScript(BaseScript):
           self.stderr.write(f"Error: Scar '{scar_id}' not found in database.\n")
           return 1
 
+        resolved_pk = row[0]
         raw_row = {
-            "raw_wound": row[0] if row[0] is not None else (row[4] or ""),
-            "raw_trap": row[1] if row[1] is not None else (row[5] or ""),
+            "raw_wound": row[1] if row[1] is not None else (row[5] or ""),
+            "raw_trap": row[2] if row[2] is not None else (row[6] or ""),
             "raw_circuit_breaker": (
-                row[2] if row[2] is not None else (row[6] or "")
+                row[3] if row[3] is not None else (row[7] or "")
             ),
-            "raw_reflex": row[3] if row[3] is not None else (row[7] or ""),
+            "raw_reflex": row[4] if row[4] is not None else (row[8] or ""),
         }
         existing_in_use = {
-            "wound": row[4],
-            "trap": row[5],
-            "circuit_breaker": row[6],
-            "reflex": row[7],
-            "socratic_probe": row[8],
+            "wound": row[5],
+            "trap": row[6],
+            "circuit_breaker": row[7],
+            "reflex": row[8],
+            "socratic_probe": row[9],
         }
         merged: Dict[str, Any] = {}
         for col in (
@@ -2276,10 +2707,10 @@ class SyncSyntheticScarsScript(BaseScript):
                 merged["circuit_breaker"],
                 merged["reflex"],
                 merged["socratic_probe"],
-                scar_id,
+                resolved_pk,
             ),
         )
-        updated_ids.append(scar_id)
+        updated_ids.append(resolved_pk)
 
       _enrich_scars_cursor(cur, scar_ids=updated_ids)
       if self.has_fts5:
@@ -2343,12 +2774,12 @@ class SyncSyntheticScarsScript(BaseScript):
 
         cur.execute(
             """
-            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
+            SELECT id, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
                    wound, trap, circuit_breaker, reflex
             FROM scars
-            WHERE id = ?
+            WHERE id = ? OR ss_id = ?
             """,
-            (scar_id,),
+            (scar_id, scar_id),
         )
         row = cur.fetchone()
         if not row:
@@ -2356,13 +2787,14 @@ class SyncSyntheticScarsScript(BaseScript):
           self.stderr.write(f"Error: Scar '{scar_id}' not found in database.\n")
           return 1
 
+        resolved_pk = row[0]
         raw_row = {
-            "raw_wound": row[0] if row[0] is not None else (row[4] or ""),
-            "raw_trap": row[1] if row[1] is not None else (row[5] or ""),
+            "raw_wound": row[1] if row[1] is not None else (row[5] or ""),
+            "raw_trap": row[2] if row[2] is not None else (row[6] or ""),
             "raw_circuit_breaker": (
-                row[2] if row[2] is not None else (row[6] or "")
+                row[3] if row[3] is not None else (row[7] or "")
             ),
-            "raw_reflex": row[3] if row[3] is not None else (row[7] or ""),
+            "raw_reflex": row[4] if row[4] is not None else (row[8] or ""),
         }
         cb_val = item.get("circuit_breaker")
         if cb_val is None:
@@ -2393,10 +2825,10 @@ class SyncSyntheticScarsScript(BaseScript):
                 candidate["trap"],
                 candidate["circuit_breaker"],
                 candidate["reflex"],
-                scar_id,
+                resolved_pk,
             ),
         )
-        updated_ids.append(scar_id)
+        updated_ids.append(resolved_pk)
 
       _enrich_scars_cursor(cur, scar_ids=updated_ids)
       if self.has_fts5:
@@ -2487,7 +2919,54 @@ class SyncSyntheticScarsScript(BaseScript):
       )
       return 0
 
-    has_filter = any(
+    if self.migrate_ontology:
+      summary = migrate_scars_ontology(self.db_path)
+      self.stdout.write(
+          f"Migrated {summary['migrated_scars']} scar(s) in '{summary['db_path']}'.\n"
+      )
+      return 0
+
+    if self.batch_size > 0:
+      if not self.no_fetch:
+        sync_exit = self._sync_scars()
+        if sync_exit != 0:
+          return sync_exit
+      else:
+        self._init_db_schema()
+      from lib.scar_batch import run_agy_scar_batch
+
+      batch_summary = run_agy_scar_batch(
+          conn=self.conn,
+          batch_size=self.batch_size,
+          enrich_cursor_fn=_enrich_scars_cursor,
+          populate_fts_fn=(
+              self._populate_fts if self.has_fts5 else (lambda _cur: None)
+          ),
+          agy_bin=self.agy_bin,
+          model=self.model,
+          max_retries=self.max_retries,
+          stdout=self.stdout,
+          stderr=self.stderr,
+      )
+      if batch_summary["processed"] > 0:
+        file_size = (
+            os.path.getsize(self.db_path)
+            if os.path.isfile(self.db_path)
+            else 0
+        )
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('db_size_bytes', ?)",
+            (str(file_size),),
+        )
+        self.conn.commit()
+      self.stdout.write(
+          f"Batch summary: processed={batch_summary['processed']}, "
+          f"failed={batch_summary['failed']}, selected={batch_summary['selected']}.\n"
+      )
+      return 1 if batch_summary["failed"] > 0 else 0
+
+    has_filter = self.mf_target is not None or any(
         val is not None
         for val in (
             self.category,
@@ -2509,6 +2988,7 @@ class SyncSyntheticScarsScript(BaseScript):
           framework=self.framework,
           diagnostic_code=self.diagnostic_code,
           workflow_phase=self.workflow_phase,
+          mf_target=self.mf_target,
       )
       self.stdout.write(json.dumps(matches, indent=2) + "\n")
       return 0
@@ -2580,133 +3060,111 @@ class SyncSyntheticScarsScript(BaseScript):
       # Query existing scars
       cur.execute(
           """
-          SELECT id, title,
+          SELECT id, ss_id, title,
                  COALESCE(wound, raw_wound),
                  COALESCE(trap, raw_trap),
                  COALESCE(reflex, raw_reflex),
-                 raw_hash, source, original_id
+                 raw_hash, source, original_id,
+                 ss_targets, mf_targets,
+                 wound, trap, circuit_breaker, reflex, socratic_probe
           FROM scars
           """
       )
-      existing_rows = {
-          r[0]: {
-              "id": r[0],
-              "title": r[1],
-              "wound": r[2],
-              "trap": r[3],
-              "reflex": r[4],
-              "raw_hash": r[5],
-              "source": r[6] or "upstream",
-              "original_id": r[7],
-          }
-          for r in cur.fetchall()
-      }
+      existing_upstream: Dict[str, Dict[str, Any]] = {}
+      reserved_ids: Set[str] = set()
+      for r in cur.fetchall():
+        src = (r[7] or "upstream").strip()
+        row_info = {
+            "id": r[0],
+            "ss_id": r[1],
+            "title": r[2],
+            "wound": r[3],
+            "trap": r[4],
+            "reflex": r[5],
+            "raw_hash": r[6],
+            "source": src,
+            "original_id": r[8],
+            "ss_targets": r[9],
+            "mf_targets": r[10],
+            "in_use_wound": r[11],
+            "in_use_trap": r[12],
+            "in_use_circuit_breaker": r[13],
+            "in_use_reflex": r[14],
+            "in_use_socratic_probe": r[15],
+        }
+        if src.lower() == "makeflow":
+          reserved_ids.add(r[0])
+        else:
+          ss_key = r[1] or r[0]
+          existing_upstream[ss_key] = row_info
 
-      incoming_upstream_ids = set()
+      incoming_by_ss_id: Dict[str, Tuple[Dict[str, Any], str]] = {}
+      for item in scars_list:
+        raw_upstream_id = str(item.get("id") or "").strip()
+        if not raw_upstream_id:
+          continue
+        item_hash = hashlib.md5(
+            json.dumps(item, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        incoming_by_ss_id[raw_upstream_id] = (item, item_hash)
+
       modified = False
 
-      # First pass: collision reconciliation with Makeflow scars
-      for item in scars_list:
-        scar_id = item.get("id")
-        if not scar_id:
-          continue
-        incoming_upstream_ids.add(scar_id)
-
-        raw_hash = hashlib.md5(
-            json.dumps(item, sort_keys=True).encode("utf-8")
-        ).hexdigest()
-
-        if scar_id in existing_rows and existing_rows[scar_id]["source"] == "makeflow":
-          mf_row = existing_rows[scar_id]
-          content_matches = False
-          if mf_row.get("raw_hash") and mf_row["raw_hash"] == raw_hash:
-            content_matches = True
-          elif (
-              mf_row.get("title") == item.get("title")
-              and mf_row.get("wound") == item.get("wound")
-              and mf_row.get("trap") == item.get("trap")
-              and mf_row.get("reflex") == item.get("reflex")
-          ):
-            content_matches = True
-
-          if content_matches:
-            # Keep upstream scar, remove Makeflow duplicate
-            cur.execute(
-                "DELETE FROM scars WHERE id = ? AND source = 'makeflow'",
-                (scar_id,),
-            )
-            del existing_rows[scar_id]
-            modified = True
-          else:
-            # Rename Makeflow scar safely without primary key collision
-            suffix = scar_id[5:] if scar_id.startswith("SCAR-") else scar_id
-            base_mf_id = f"SCAR-MF-{suffix}"
-            new_mf_id = base_mf_id
-            if new_mf_id in existing_rows:
-              existing_mf = existing_rows[new_mf_id]
-              if (
-                  existing_mf.get("title") == mf_row.get("title")
-                  and existing_mf.get("wound") == mf_row.get("wound")
-              ):
-                cur.execute(
-                    "DELETE FROM scars WHERE id = ? AND source = 'makeflow'",
-                    (scar_id,),
-                )
-                del existing_rows[scar_id]
-                modified = True
-                continue
-              counter = 2
-              while f"{base_mf_id}-{counter}" in existing_rows:
-                counter += 1
-              new_mf_id = f"{base_mf_id}-{counter}"
-
-            cur.execute(
-                "UPDATE scars SET id = ?, original_id = ? WHERE id = ? AND source = 'makeflow'",
-                (new_mf_id, scar_id, scar_id),
-            )
-            mf_row["id"] = new_mf_id
-            mf_row["original_id"] = scar_id
-            existing_rows[new_mf_id] = mf_row
-            del existing_rows[scar_id]
-            modified = True
-
-      # Second pass: delete upstream rows that are no longer in upstream list
-      for eid, erow in list(existing_rows.items()):
-        if erow.get("source") == "upstream" and eid not in incoming_upstream_ids:
-          cur.execute("DELETE FROM scars WHERE id = ? AND source = 'upstream'", (eid,))
-          del existing_rows[eid]
+      # First pass: remove upstream rows no longer present upstream (Makeflow rows are never deleted)
+      for ss_key, erow in list(existing_upstream.items()):
+        if ss_key not in incoming_by_ss_id:
+          cur.execute(
+              "DELETE FROM scars WHERE id = ? AND COALESCE(source, 'upstream') != 'makeflow'",
+              (erow["id"],),
+          )
+          del existing_upstream[ss_key]
           modified = True
 
-      # Third pass: delta sync incoming upstream scars
-      inserted_or_updated = 0
-      for item in scars_list:
-        scar_id = item.get("id")
-        if not scar_id:
-          continue
-
-        raw_hash = hashlib.md5(
-            json.dumps(item, sort_keys=True).encode("utf-8")
-        ).hexdigest()
-
-        existing_row = existing_rows.get(scar_id)
+      # Second pass: pre-reserve IDs for unchanged already-migrated upstream rows
+      unchanged_ss_keys: Set[str] = set()
+      for ss_key, (item, item_hash) in incoming_by_ss_id.items():
+        existing_row = existing_upstream.get(ss_key)
         if (
             existing_row
-            and existing_row.get("source") == "upstream"
-            and existing_row.get("raw_hash") == raw_hash
+            and existing_row.get("raw_hash") == item_hash
+            and existing_row.get("ss_id") == ss_key
+            and existing_row.get("ss_targets") is not None
+            and existing_row.get("mf_targets") is not None
         ):
-          # Skip table rewrite for unchanged row (preserves Simple English in-use fields)
+          unchanged_ss_keys.add(ss_key)
+          reserved_ids.add(existing_row["id"])
+
+      # Third pass: delta sync incoming upstream scars with canonical ID + ontology normalization
+      inserted_or_updated = 0
+      for item in scars_list:
+        raw_upstream_id = str(item.get("id") or "").strip()
+        if not raw_upstream_id:
+          continue
+        if raw_upstream_id in unchanged_ss_keys:
           continue
 
+        raw_hash = incoming_by_ss_id[raw_upstream_id][1]
+        existing_row = existing_upstream.get(raw_upstream_id)
+        if existing_row:
+          cur.execute(
+              "DELETE FROM scars WHERE id = ? AND COALESCE(source, 'upstream') != 'makeflow'",
+              (existing_row["id"],),
+          )
+
         title = item.get("title", "")
-        category = item.get("category", "")
-        cat_slug = item.get("categorySlug") or item.get("category_slug", "")
+        raw_category = item.get("category", "")
+        raw_cat_slug = item.get("categorySlug") or item.get("category_slug", "")
         visibility = item.get("visibility", "public")
 
-        phases_raw = item.get("workflowPhases") or item.get("workflow_phases", [])
+        phases_raw = item.get("workflowPhases")
+        if phases_raw is None:
+          phases_raw = item.get("workflow_phases", [])
         if isinstance(phases_raw, list):
-          phases_json = json.dumps(phases_raw)
+          ss_targets_json = json.dumps(phases_raw)
+        elif phases_raw is None:
+          ss_targets_json = "[]"
         else:
-          phases_json = json.dumps([str(phases_raw)])
+          ss_targets_json = json.dumps([str(phases_raw)])
 
         applies_when = item.get("appliesWhen") or item.get("applies_when", "")
         grad_status = item.get("graduationStatus") or item.get("graduation_status", "")
@@ -2716,41 +3174,80 @@ class SyncSyntheticScarsScript(BaseScript):
             item.get("circuitBreaker") or item.get("circuit_breaker", "") or ""
         )
         raw_reflex = str(item.get("reflex", "") or "")
-        in_use_breaker: Optional[str] = None if raw_breaker.strip() else ""
+
+        preserve_transformed = bool(
+            existing_row and existing_row.get("raw_hash") == raw_hash
+        )
+        if preserve_transformed:
+          in_use_wound: Optional[str] = existing_row.get("in_use_wound")
+          in_use_trap: Optional[str] = existing_row.get("in_use_trap")
+          existing_cb = existing_row.get("in_use_circuit_breaker")
+          in_use_breaker: Optional[str] = (
+              existing_cb
+              if existing_cb is not None
+              else (None if raw_breaker.strip() else "")
+          )
+          in_use_reflex: Optional[str] = existing_row.get("in_use_reflex")
+          in_use_probe: Optional[str] = existing_row.get("in_use_socratic_probe")
+          orig_id_val: Optional[str] = existing_row.get("original_id")
+        else:
+          in_use_wound = None
+          in_use_trap = None
+          in_use_breaker = None if raw_breaker.strip() else ""
+          in_use_reflex = None
+          in_use_probe = None
+          orig_id_val = None
 
         meta = extract_scar_metadata(
             {
-                "id": scar_id,
+                "id": raw_upstream_id,
+                "ss_id": raw_upstream_id,
                 "title": title,
-                "category": category,
-                "category_slug": cat_slug,
-                "workflow_phases": phases_json,
+                "category": raw_category,
+                "category_slug": raw_cat_slug,
+                "workflow_phases": ss_targets_json,
+                "ss_targets": ss_targets_json,
                 "applies_when": applies_when,
                 "raw_wound": raw_wound,
                 "raw_trap": raw_trap,
                 "raw_circuit_breaker": raw_breaker,
                 "raw_reflex": raw_reflex,
+                "wound": in_use_wound,
+                "trap": in_use_trap,
+                "circuit_breaker": in_use_breaker,
+                "reflex": in_use_reflex,
+                "socratic_probe": in_use_probe,
             }
+        )
+        domain = meta["domain_category"]
+        canonical_id = compute_canonical_scar_id(
+            raw_id=raw_upstream_id,
+            domain=domain,
+            languages=meta["languages"],
+            reserved_ids=reserved_ids,
         )
 
         cur.execute(
             """
             INSERT OR REPLACE INTO scars (
-                id, title, category, category_slug, visibility,
-                workflow_phases, applies_when, graduation_status,
+                id, ss_id, title, category, category_slug, visibility,
+                workflow_phases, ss_targets, mf_targets, applies_when, graduation_status,
                 raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
                 wound, trap, circuit_breaker, reflex, socratic_probe,
                 source, original_id,
                 keywords, languages, frameworks, diagnostic_codes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 'upstream', NULL, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'upstream', ?, ?, ?, ?, ?)
         """,
             (
-                scar_id,
+                canonical_id,
+                raw_upstream_id,
                 title,
-                category,
-                cat_slug,
+                domain,
+                domain.lower(),
                 visibility,
                 json.dumps(meta["workflow_phases"]),
+                ss_targets_json,
+                json.dumps(meta["mf_targets"]),
                 applies_when,
                 grad_status,
                 raw_wound,
@@ -2758,22 +3255,35 @@ class SyncSyntheticScarsScript(BaseScript):
                 raw_breaker,
                 raw_reflex,
                 raw_hash,
+                in_use_wound,
+                in_use_trap,
                 in_use_breaker,
+                in_use_reflex,
+                in_use_probe,
+                orig_id_val,
                 json.dumps(meta["keywords"]),
                 json.dumps(meta["languages"]),
                 json.dumps(meta["frameworks"]),
                 json.dumps(meta["diagnostic_codes"]),
             ),
         )
-        existing_rows[scar_id] = {
-            "id": scar_id,
+        existing_upstream[raw_upstream_id] = {
+            "id": canonical_id,
+            "ss_id": raw_upstream_id,
             "title": title,
-            "wound": raw_wound,
-            "trap": raw_trap,
-            "reflex": raw_reflex,
+            "wound": in_use_wound or raw_wound,
+            "trap": in_use_trap or raw_trap,
+            "reflex": in_use_reflex or raw_reflex,
             "raw_hash": raw_hash,
             "source": "upstream",
-            "original_id": None,
+            "original_id": orig_id_val,
+            "ss_targets": ss_targets_json,
+            "mf_targets": json.dumps(meta["mf_targets"]),
+            "in_use_wound": in_use_wound,
+            "in_use_trap": in_use_trap,
+            "in_use_circuit_breaker": in_use_breaker,
+            "in_use_reflex": in_use_reflex,
+            "in_use_socratic_probe": in_use_probe,
         }
         modified = True
         inserted_or_updated += 1
