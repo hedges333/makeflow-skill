@@ -84,7 +84,7 @@ test-static: ast-lint
 		--trigger "scripts/static_check.py reported Python syntax or undefined-symbol errors." \
 		--rejected "Running functional suites before structural static checks pass." \
 		--reflex "Fix reported syntax or symbol errors and re-run make test-static."
-	@$(PYTHON) "$(TESTS_DIR)/test_static_analysis.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) "$(MKFILE_DIR)/tests/test_static_analysis.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id TEST-10 \
 		--code STATIC_ANALYSIS_SUITE_FAILED \
 		--trigger "tests/test_static_analysis.py failed." \
@@ -274,7 +274,14 @@ test-local-tickets:
 		--rejected "Breaking local ticket store CRUD, resolution comments, or dependency checks." \
 		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_local_tickets.py, fix failing tests, and re-run make test-local-tickets."
 
-test: test-static test-safe-copy test-env-preflight test-signal-trap test-compat test-compat-cwd test-base-script test-terminal-title test-mcp test-sync-scars test-scar-candidate test-hooks test-reflex test-tdd-guard test-ast-scrub test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets
+test: test-static
+	@echo "Running automatic test discovery across $(TESTS_DIR)..."
+	@$(PYTHON) -m unittest discover -s "$(TESTS_DIR)" -p "test_*.py" -v -f || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+		--scar-id TEST-09 \
+		--code TEST_DISCOVERY_SUITE_FAILED \
+		--trigger "Automatic unittest discovery across tests/test_*.py failed." \
+		--rejected "Proceeding when any discovered test fails." \
+		--reflex "Run $(PYTHON) -m unittest discover -s tests -p 'test_*.py' -v -f directly, fix the failing test, and re-run make test."
 	@echo "Testing file structure and skill context budget..."
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" plugin-files
 	@$(PYTHON) "$(SCRIPTS_DIR)/workflow_gates.py" --repo-root "$(REPO_ROOT)" skill-budget

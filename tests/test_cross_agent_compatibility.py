@@ -37,6 +37,76 @@ def check_scar_catalog_routing(catalog_text, scar_id, spoke_filename):
   return bool(re.search(pattern, catalog_text))
 
 
+def check_makefile_test_discovery(
+    mk_text: str, required_targets: tuple[str, ...] = ()
+) -> list[str]:
+  """Verifies Makefile wires test-static, unittest discover across TESTS_DIR, and convenience targets."""
+  errors = []
+  mk_rel = "Makefile"
+  if "test-static:" not in mk_text:
+    errors.append(f"{mk_rel} must define 'test-static:' target")
+
+  lines = mk_text.splitlines()
+  test_idx = next(
+      (i for i, ln in enumerate(lines) if ln.startswith("test:")), None
+  )
+  if test_idx is None:
+    errors.append(f"{mk_rel} must define 'test:' target")
+  else:
+    prereqs = lines[test_idx][len("test:") :].strip().split()
+    if prereqs != ["test-static"]:
+      errors.append(
+          f"{mk_rel} 'test:' target must list 'test-static' as its sole prerequisite"
+      )
+    recipe_lines = []
+    for ln in lines[test_idx + 1 :]:
+      if ln.startswith("\t") or not ln.strip() or ln.lstrip().startswith("#"):
+        recipe_lines.append(ln)
+      else:
+        break
+    active_cmds = []
+    cur_parts = []
+    for ln in recipe_lines:
+      if not ln.startswith("\t"):
+        continue
+      stripped = ln.lstrip()
+      if stripped.startswith("#"):
+        continue
+      cur_parts.append(stripped.rstrip("\\").strip())
+      if not ln.rstrip().endswith("\\"):
+        active_cmds.append(" ".join(cur_parts))
+        cur_parts = []
+    if cur_parts:
+      active_cmds.append(" ".join(cur_parts))
+
+    has_discovery_cmd = any(
+        "$(PYTHON)" in seg
+        and "-m unittest discover" in seg
+        and "$(TESTS_DIR)" in seg
+        for cmd in active_cmds
+        for seg in re.split(r"\s*(?:\|\||&&|;)\s*", cmd)
+    )
+    if not has_discovery_cmd:
+      errors.append(
+          f"{mk_rel} 'test:' recipe must run '$(PYTHON) -m unittest discover' across '$(TESTS_DIR)'"
+      )
+
+  if "PYTHON ?=" not in mk_text:
+    errors.append(
+        f"{mk_rel} must declare 'PYTHON ?= python3' configurable interpreter macro"
+    )
+  if "@python3 " in mk_text:
+    errors.append(
+        f"{mk_rel} test recipes must use $(PYTHON) instead of hardcoded python3"
+    )
+
+  for target in required_targets:
+    if not re.search(rf"(?m)^{re.escape(target)}:", mk_text):
+      errors.append(f"{mk_rel} must define '{target}:' target")
+
+  return errors
+
+
 def validate_human_declaration_authority_and_pause_gates():
   """Validates human declaration authority and pause gates (TEST-SCAR-PROC-102).
 
@@ -602,7 +672,7 @@ def validate_basescript_pattern_scar():
   5. All 5 adapters (CLAUDE.md, .cursorrules, .cursor/rules/makeflow.mdc,
      .github/copilot-instructions.md, adapters/chatgpt/instructions.md) document
      SCAR-ARCH-05.
-  6. Makefile defines test-base-script target and includes it in test prerequisites.
+  6. Makefile defines test-base-script target and discovers tests via unittest discover.
   7. lib/base_script.py and tests/test_base_script.py exist.
   8. Negative falsification:
      - Missing Four-Part Anatomy fields or corrupted text triggers errors.
@@ -707,12 +777,7 @@ def validate_basescript_pattern_scar():
   else:
     with open(mk_path, "r", encoding="utf-8") as f:
       mk_text = f.read()
-    if "test-base-script:" not in mk_text:
-      errors.append(f"{mk_rel} must define 'test-base-script:' target")
-    if "test-base-script" not in mk_text.split("test:")[1].split("\n")[0]:
-      errors.append(
-          f"{mk_rel} 'test:' target must list 'test-base-script' prerequisite"
-      )
+    errors.extend(check_makefile_test_discovery(mk_text, ("test-base-script",)))
 
   for script_rel in ["lib/base_script.py", "tests/test_base_script.py"]:
     script_path = repo_path(script_rel)
@@ -827,15 +892,9 @@ def validate_three_layer_python_architecture():
   if os.path.isfile(mk_path):
     with open(mk_path, "r", encoding="utf-8") as f:
       mk_text = f.read()
-    if "test-interpreter-invocation:" not in mk_text:
-      errors.append(f"{mk_rel} must define 'test-interpreter-invocation:' target")
-    if (
-        "test:" not in mk_text
-        or "test-interpreter-invocation" not in mk_text.split("test:")[1].split("\n")[0]
-    ):
-      errors.append(
-          f"{mk_rel} 'test:' target must list 'test-interpreter-invocation' prerequisite"
-      )
+    errors.extend(
+        check_makefile_test_discovery(mk_text, ("test-interpreter-invocation",))
+    )
 
   return errors
 
@@ -1622,12 +1681,7 @@ def validate_vector4_reflex_gates_scar():
   else:
     with open(mk_path, "r", encoding="utf-8") as f:
       mk_text = f.read()
-    if "test-reflex:" not in mk_text:
-      errors.append(f"{mk_rel} must define 'test-reflex:' target")
-    if "test:" not in mk_text or "test-reflex" not in mk_text.split("test:")[1].split("\n")[0]:
-      errors.append(
-          f"{mk_rel} 'test:' target must list 'test-reflex' prerequisite"
-      )
+    errors.extend(check_makefile_test_discovery(mk_text, ("test-reflex",)))
 
   for script_rel in (
       "scripts/emit_reflex.py",
@@ -1763,7 +1817,7 @@ def validate_scar_lifecycle_and_two_tier_discovery(
   return errors
 
 
-def test_two_tier_scar_lifecycle_and_discovery() -> list[str]:
+def validate_two_tier_scar_lifecycle_and_discovery() -> list[str]:
   """Runs hermetic unit tests and repository checks for GH-93 scar lifecycle."""
   errors = []
 
@@ -1942,15 +1996,7 @@ def validate_tdd_guard_scar():
   else:
     with open(mk_path, "r", encoding="utf-8") as f:
       mk_text = f.read()
-    if "test-tdd-guard:" not in mk_text:
-      errors.append(f"{mk_rel} must define 'test-tdd-guard:' target")
-    if (
-        "test:" not in mk_text
-        or "test-tdd-guard" not in mk_text.split("test:")[1].split("\n")[0]
-    ):
-      errors.append(
-          f"{mk_rel} 'test:' target must list 'test-tdd-guard' prerequisite"
-      )
+    errors.extend(check_makefile_test_discovery(mk_text, ("test-tdd-guard",)))
 
   for script_rel in ("scripts/tdd_guard.py", "lib/tdd_guard.py", "tests/test_tdd_guard.py"):
     script_path = repo_path(script_rel)
@@ -2077,18 +2123,12 @@ def validate_ast_scrubber_scar_ast_01():
       mk_text = f.read()
     if "ast-lint:" not in mk_text:
       errors.append(f"{mk_rel} must define 'ast-lint:' target")
-    if "test-ast-scrub:" not in mk_text:
-      errors.append(f"{mk_rel} must define 'test-ast-scrub:' target")
     if (
         "test-static:" not in mk_text
         or "ast-lint" not in mk_text.split("test-static:")[1].split("\n")[0]
     ):
       errors.append(f"{mk_rel} 'test-static:' must list 'ast-lint' prerequisite")
-    if (
-        "test:" not in mk_text
-        or "test-ast-scrub" not in mk_text.split("test:")[1].split("\n")[0]
-    ):
-      errors.append(f"{mk_rel} 'test:' must list 'test-ast-scrub' prerequisite")
+    errors.extend(check_makefile_test_discovery(mk_text, ("test-ast-scrub",)))
     ast_lint_block = (
         mk_text.split("ast-lint:")[1].split("\n\n")[0]
         if "ast-lint:" in mk_text
@@ -2596,7 +2636,7 @@ def validate_posix_signal_trapping():
   5. All 5 adapters (CLAUDE.md, .cursorrules, .cursor/rules/makeflow.mdc,
      .github/copilot-instructions.md, adapters/chatgpt/instructions.md) document
      SCAR-SYS-07.
-  6. Makefile defines test-signal-trap target and includes it in test prerequisites.
+  6. Makefile defines test-signal-trap target and discovers tests via unittest discover.
   7. scripts/signal_trap.py and scripts/test_signal_trap.py exist.
   8. Negative falsification:
      - Missing Four-Part Anatomy fields or corrupted text triggers errors.
@@ -2693,12 +2733,7 @@ def validate_posix_signal_trapping():
   else:
     with open(mk_path, "r", encoding="utf-8") as f:
       mk_text = f.read()
-    if "test-signal-trap:" not in mk_text:
-      errors.append(f"{mk_rel} must define 'test-signal-trap:' target")
-    if "test-signal-trap" not in mk_text.split("test:")[1].split("\n")[0]:
-      errors.append(
-          f"{mk_rel} 'test:' target must list 'test-signal-trap' prerequisite"
-      )
+    errors.extend(check_makefile_test_discovery(mk_text, ("test-signal-trap",)))
 
   for script_rel in ["scripts/signal_trap.py", "lib/signal_trap.py", "tests/test_signal_trap.py"]:
     script_path = repo_path(script_rel)
@@ -6366,6 +6401,18 @@ def validate_canonical_repo_paths_and_qualified_refs() -> list[str]:
 
 
 def validate():
+  """Runs cross-agent compatibility validation and exits non-zero on failure."""
+  errors = _collect_compatibility_errors()
+  if errors:
+    print(f"\n❌ Validation failed with {len(errors)} error(s):")
+    for err in errors:
+      print(f"  - {err}")
+    sys.exit(1)
+  print("\n✔ All cross-agent configuration files validated successfully!")
+
+
+def _collect_compatibility_errors():
+  """Collects cross-agent configuration, adapter, and scar invariant errors."""
   errors = []
 
   # 1. Claude Plugin Manifest
@@ -7168,22 +7215,11 @@ def validate():
   else:
     with open(makefile_path) as f:
       mk_text = f.read()
-    if "test-static:" not in mk_text:
-      errors.append(f"{makefile_rel} must define 'test-static:' target")
-    if "test: test-static" not in mk_text:
-      errors.append(f"{makefile_rel} 'test:' target must list 'test-static' as first prerequisite")
-    if "test-safe-copy:" not in mk_text:
-      errors.append(f"{makefile_rel} must define 'test-safe-copy:' target")
-    if "test-safe-copy" not in mk_text.split("test:")[1].split("\n")[0]:
-      errors.append(f"{makefile_rel} 'test:' target must list 'test-safe-copy' prerequisite")
-    if "test-env-preflight:" not in mk_text:
-      errors.append(f"{makefile_rel} must define 'test-env-preflight:' target")
-    if "test-env-preflight" not in mk_text.split("test:")[1].split("\n")[0]:
-      errors.append(f"{makefile_rel} 'test:' target must list 'test-env-preflight' prerequisite")
-    if "PYTHON ?= python3" not in mk_text and "PYTHON ?=" not in mk_text:
-      errors.append(f"{makefile_rel} must declare 'PYTHON ?= python3' configurable interpreter macro")
-    if "@python3 " in mk_text:
-      errors.append(f"{makefile_rel} test recipes must use $(PYTHON) instead of hardcoded python3")
+    errors.extend(
+        check_makefile_test_discovery(
+            mk_text, ("test-safe-copy", "test-env-preflight")
+        )
+    )
 
   static_check_rel = "scripts/static_check.py"
   static_check_script = repo_path(static_check_rel)
@@ -7439,7 +7475,7 @@ def validate():
     print("✔ Anti-speculative defenses and caller grounding (GH-85, SCAR-ARCH-07) verified.")
 
   # Two-Tier Scar Creation Lifecycle and Discovery Invariants (GH-93)
-  scar_lifecycle_errors = test_two_tier_scar_lifecycle_and_discovery()
+  scar_lifecycle_errors = validate_two_tier_scar_lifecycle_and_discovery()
   errors.extend(scar_lifecycle_errors)
   if not scar_lifecycle_errors:
     print(
@@ -7585,13 +7621,7 @@ def validate():
         " verified."
     )
 
-  if errors:
-    print(f"\n❌ Validation failed with {len(errors)} error(s):")
-    for err in errors:
-      print(f"  - {err}")
-    sys.exit(1)
-  else:
-    print("\n✔ All cross-agent configuration files validated successfully!")
+  return errors
 
 
 validate_all = validate
@@ -8623,5 +8653,66 @@ class TestTarget90ResolutionCommentInvariants(unittest.TestCase):
       )
 
 
+class TestCrossAgentCompatibility(unittest.TestCase):
+  """Unittest wrapper for cross-agent compatibility and scar invariants (GH-205)."""
+
+  def test_cross_agent_compatibility(self):
+    """Verifies all cross-agent configuration files, adapters, and scar invariants."""
+    errors = _collect_compatibility_errors()
+    if not errors:
+      print("\n✔ All cross-agent configuration files validated successfully!")
+    self.assertEqual(
+        errors,
+        [],
+        f"Validation failed with {len(errors)} error(s):\n"
+        + "\n".join(f"  - {err}" for err in errors),
+    )
+
+
+  def test_check_makefile_test_discovery_requires_single_active_command(self):
+    """Negative falsification: split-line or commented tokens must not satisfy discovery check."""
+    valid_mk = (
+        "PYTHON ?= python3\n"
+        "test-static:\n\t@true\n"
+        "test-sample:\n\t@true\n"
+        "test: test-static\n"
+        '\t@$(PYTHON) -m unittest discover -s "$(TESTS_DIR)" -p "test_*.py" -v -f || $(PYTHON) emit_reflex.py\n'
+    )
+    self.assertEqual(
+        check_makefile_test_discovery(valid_mk, ("test-sample",)), []
+    )
+
+    continued_mk = (
+        "PYTHON ?= python3\n"
+        "test-static:\n\t@true\n"
+        "test: test-static\n"
+        "\t@$(PYTHON) -m unittest discover \\\n"
+        '\t\t-s "$(TESTS_DIR)" -p "test_*.py" -v -f\n'
+    )
+    self.assertEqual(check_makefile_test_discovery(continued_mk), [])
+
+    commented_mk = (
+        "PYTHON ?= python3\n"
+        "test-static:\n\t@true\n"
+        "test: test-static\n"
+        '\t# $(PYTHON) -m unittest discover -s "$(TESTS_DIR)"\n'
+        "\t@true\n"
+    )
+    self.assertTrue(
+        any("test:' recipe" in err for err in check_makefile_test_discovery(commented_mk))
+    )
+
+    split_pipeline_mk = (
+        "PYTHON ?= python3\n"
+        "test-static:\n\t@true\n"
+        "test: test-static\n"
+        '\t@echo "$(TESTS_DIR)"\n'
+        '\t@python3 -m unittest discover -s "$(TESTS_DIR)" || $(PYTHON) emit_reflex.py\n'
+    )
+    self.assertTrue(
+        any("test:' recipe" in err for err in check_makefile_test_discovery(split_pipeline_mk))
+    )
+
+
 if __name__ == "__main__":
-  validate()
+  unittest.main()
