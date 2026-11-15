@@ -2202,5 +2202,27 @@
     "closes_issue": true,
     "tests_added": 6,
     "scars_earned": []
+  },
+  {
+    "id": "GH-211",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/211",
+    "title": "[FEAT] CHANGELOG.md",
+    "request": "Add root CHANGELOG.md starting at Unreleased, read plugin.json version dynamically in mcp/server.py, add Target 90 ledger and git guard helpers in lib/target90_guard.py, and document Target 90 changelog and release cut rules.",
+    "branch": "feat/211-changelog-md",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "scripts",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-15T09:43:18Z",
+    "completed_at": "2026-11-15T19:37:37Z",
+    "commit_sha": "a47b82a0c6baf27a39892cff8626d0b5eb652cc7",
+    "pr_number": 225,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/225",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": []
   }
 ]
