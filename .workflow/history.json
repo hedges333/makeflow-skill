@@ -2224,5 +2224,26 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-217",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/217",
+    "title": "[BUG] Allow ci.quiescenceSeconds=0 consistently across hooks, MCP server, and env overrides",
+    "request": "Allow ci.quiescenceSeconds=0 across get_workflow_config, resolve_workflow_config, MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0, and workflow_poll_ci, reject boolean/float/non-ASCII values, and document disabling the quiescence wait in 13_configuration_and_user_preferences.md.",
+    "branch": "fix/217-quiescence-seconds-zero",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-15T19:23:18Z",
+    "completed_at": "2026-11-15T20:00:55Z",
+    "commit_sha": "8ad40f6a1a68f92650a62624d640f22ddbb5b07d",
+    "pr_number": 227,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/227",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
