@@ -50,7 +50,9 @@ def run_test():
       assert (
           init_resp["result"]["serverInfo"]["name"] == "makeflow-guard"
       )
-      assert init_resp["result"]["serverInfo"]["version"] == "1.4.1"
+      with open(os.path.join(REPO_ROOT, "plugin.json"), encoding="utf-8") as f:
+        expected_version = json.load(f)["version"]
+      assert init_resp["result"]["serverInfo"]["version"] == expected_version
       print("✔ MCP initialize handshake passed.")
 
       # 2. Tools list
@@ -2573,6 +2575,9 @@ class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
         mcp_server.DEFAULT_INITIALIZE_PROTOCOL_VERSION, "2025-11-25"
     )
 
+    with open(os.path.join(REPO_ROOT, "plugin.json"), encoding="utf-8") as f:
+      expected_version = json.load(f)["version"]
+
     direct = mcp_server.handle_server_discover(101)
     self.assertEqual(direct["id"], 101)
     self.assertEqual(
@@ -2581,7 +2586,7 @@ class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
     self.assertEqual(direct["result"]["capabilities"], {"tools": {}})
     self.assertEqual(
         direct["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
-        {"name": "makeflow-guard", "version": "1.4.1"},
+        {"name": "makeflow-guard", "version": expected_version},
     )
 
     for idx, probe_ver in enumerate(("2026-07-28", "2027-06-01"), start=201):
@@ -2608,7 +2613,7 @@ class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
       self.assertEqual(resp["result"]["capabilities"], {"tools": {}})
       self.assertEqual(
           resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
-          {"name": "makeflow-guard", "version": "1.4.1"},
+          {"name": "makeflow-guard", "version": expected_version},
       )
 
   def test_per_request_meta_protocol_version_negotiation(self):
@@ -3144,6 +3149,159 @@ class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
       self.assertEqual(scars_payload["status"], "OK")
       self.assertEqual(scars_payload["totalResults"], 1)
       self.assertNotEqual(proc.stderr.strip(), "")
+
+
+class TestMcpDynamicVersionAndTarget90Parity(unittest.TestCase):
+  """Tests dynamic plugin.json version loading and Target 90 MCP safety parity."""
+
+  def test_get_plugin_version_dynamic_and_fallback(self):
+    from unittest.mock import patch
+
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    import mcp.server as mcp_server
+    from mcp.server import get_plugin_version, handle_initialize, handle_server_discover
+
+    with open(os.path.join(REPO_ROOT, "plugin.json"), encoding="utf-8") as f:
+      expected_version = json.load(f)["version"]
+
+    self.assertEqual(get_plugin_version(), expected_version)
+    init_resp = handle_initialize(101)
+    self.assertEqual(init_resp["result"]["serverInfo"]["version"], expected_version)
+    discover_resp = handle_server_discover(102)
+    self.assertEqual(
+        discover_resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"][
+            "version"
+        ],
+        expected_version,
+    )
+
+    with patch.object(mcp_server, "get_plugin_version", return_value="9.8.7"):
+      patched_init = handle_initialize(103)
+      self.assertEqual(patched_init["result"]["serverInfo"]["version"], "9.8.7")
+      patched_discover = handle_server_discover(104)
+      self.assertEqual(
+          patched_discover["result"]["_meta"][
+              "io.modelcontextprotocol/serverInfo"
+          ]["version"],
+          "9.8.7",
+      )
+
+    with tempfile.TemporaryDirectory() as td:
+      custom_manifest = os.path.join(td, "plugin.json")
+      with open(custom_manifest, "w", encoding="utf-8") as f:
+        json.dump({"name": "makeflow", "version": "9.8.7"}, f)
+      self.assertEqual(get_plugin_version(custom_manifest), "9.8.7")
+
+      missing_manifest = os.path.join(td, "missing.json")
+      self.assertEqual(get_plugin_version(missing_manifest), "1.4.1")
+
+      corrupt_manifest = os.path.join(td, "corrupt.json")
+      with open(corrupt_manifest, "w", encoding="utf-8") as f:
+        f.write("{invalid json")
+      self.assertEqual(get_plugin_version(corrupt_manifest), "1.4.1")
+
+      list_manifest = os.path.join(td, "list.json")
+      with open(list_manifest, "w", encoding="utf-8") as f:
+        json.dump(["1.5.0"], f)
+      self.assertEqual(get_plugin_version(list_manifest), "1.4.1")
+
+      blank_manifest = os.path.join(td, "blank.json")
+      with open(blank_manifest, "w", encoding="utf-8") as f:
+        json.dump({"name": "makeflow", "version": "   "}, f)
+      self.assertEqual(get_plugin_version(blank_manifest), "1.4.1")
+
+      int_manifest = os.path.join(td, "int.json")
+      with open(int_manifest, "w", encoding="utf-8") as f:
+        json.dump({"name": "makeflow", "version": 123}, f)
+      self.assertEqual(get_plugin_version(int_manifest), "1.4.1")
+
+  def test_workflow_safety_check_target90_changelog_and_release_parity(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import evaluate_git_safety, handle_tools_call
+
+    for cmd in (
+        "git commit -m 'docs(changelog): update unreleased notes'",
+        "git commit -m 'docs(release): cut v1.5.0'",
+        "git commit -m 'chore(release): bump manifests to v1.5.0'",
+        "git commit -m 'docs(scars): add project scar'",
+        "git commit -m 'chore: add local scar' .workflow/scars/local.md",
+        "git commit -m 'docs(changelog): document fix: edge case'",
+        "git commit -S -m 'docs(changelog): signed update'",
+    ):
+      safe, reason = evaluate_git_safety(cmd)
+      self.assertTrue(safe)
+      self.assertIn("Target 90 History Ledger Gate", reason, msg=cmd)
+
+    for t50_cmd in (
+        "git commit -m 'feat: add api' CHANGELOG.md",
+        "git commit -m 'feat(hooks): handle docs(changelog): commits'",
+        "git commit -m 'fix(ledger): handle .workflow/history'",
+        "git commit -m 'docs(changelog): sneak' src/app.py",
+        "git commit -am 'docs(changelog): update unreleased notes'",
+        "git commit --all -m 'docs(release): cut v1.5.0'",
+        "git commit -S src/app.py -m 'docs(changelog): sneak'",
+        "git commit --amend -m 'docs(changelog): amend'",
+        "git rm src/app.py && git commit -m 'docs(changelog): remove'",
+        "# docs(changelog): note\ngit commit -m 'feat: unreviewed'",
+        "git commit -m 'docs(changelog): a' && git commit -m 'feat: b'",
+    ):
+      feat_safe, feat_reason = evaluate_git_safety(t50_cmd)
+      self.assertTrue(feat_safe)
+      self.assertIn("Target 50 Commit Gate", feat_reason, msg=t50_cmd)
+
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write(
+            "# Next Action: COMPLETE (make finish satisfied)\n"
+            "- Active Target: Target 90 (finish)\n"
+        )
+
+      for req_idx, cmd in enumerate(
+          (
+              "git commit -m 'chore: finalize notes' CHANGELOG.md",
+              "git add CHANGELOG.md && git commit -m 'chore: release notes'",
+          ),
+          start=601,
+      ):
+        resp_t90 = handle_tools_call(
+            req_idx,
+            "workflow_safety_check",
+            {"commandLine": cmd, "workspaceDir": ws_dir},
+        )
+        payload_t90 = json.loads(resp_t90["result"]["content"][0]["text"])
+        self.assertTrue(payload_t90["safe"], msg=cmd)
+        self.assertIn(
+            "Target 90 History Ledger Gate", payload_t90["reason"], msg=cmd
+        )
+
+      for req_idx, cmd in enumerate(
+          (
+              "git commit -m 'feat: add api' CHANGELOG.md",
+              "git add src/app.py CHANGELOG.md && git commit -m 'chore: release notes'",
+              "git commit -m 'docs(changelog): a' && git commit -m 'feat: b'",
+              "git commit -m 'feat(hooks): handle docs(changelog): commits'",
+              "git commit -am 'docs(changelog): update unreleased notes'",
+              "git commit --all -m 'docs(release): cut v1.5.0'",
+              "git commit -S src/app.py -m 'docs(changelog): sneak'",
+              "git commit --amend -m 'docs(changelog): amend'",
+              "git rm src/app.py && git commit -m 'docs(changelog): remove'",
+          ),
+          start=610,
+      ):
+        resp_feat = handle_tools_call(
+            req_idx,
+            "workflow_safety_check",
+            {"commandLine": cmd, "workspaceDir": ws_dir},
+        )
+        payload_feat = json.loads(resp_feat["result"]["content"][0]["text"])
+        self.assertTrue(payload_feat["safe"], msg=cmd)
+        self.assertIn("Target 50 Commit Gate", payload_feat["reason"], msg=cmd)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,27 @@
+# Changelog
+
+All notable changes to this project appear in this file.
+The format follows Keep a Changelog and Semantic Versioning.
+Historical ticket records before the first tagged release live in `.workflow/history.md`.
+
+## [Unreleased]
+
+### Added
+
+- Add `CHANGELOG.md` and the two-stage Target 90 release workflow.
+- Add `lib/target90_guard.py` for shared hook and MCP Target 90 gating.
+- Add interactive Target 90 release prompting for SemVer patch, minor, or major cuts.
+- Add Target 90 ticket resolution comments for GitHub issues and local tickets.
+- Add 21 polyglot TDD guides, code documentation standards, and tree verification checks.
+- Add stacked SQLite Synthetic Scars search (`workflow_query_scars`) and local scar capture.
+- Add AST scrubbing, cryptographically sealed TDD receipts (`witness-red`, `verify-green`), and turn boundary guards.
+
+### Changed
+
+- Load `serverInfo.version` dynamically from `./plugin.json` in `mcp/server.py`.
+- Set author metadata in `./plugin.json` to Mark Hedges.
+- Align hook and MCP commit gates on `docs(changelog):`, `docs(release):`, `chore(release):`, and `docs(scars):`.
+
+### Fixed
+
+- Route feature commits touching `CHANGELOG.md` to Target 50 instead of Target 90.

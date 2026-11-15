@@ -89,6 +89,27 @@ from lib.workflow_gates import (
     fetch_and_inspect_main_sync,
     inspect_main_sync,
 )
+from lib.target90_guard import (
+    is_target_90_state_dir,
+    iter_subcommand_tokens_with_target90,
+)
+
+DEFAULT_PLUGIN_VERSION = "1.4.1"
+
+
+def get_plugin_version(plugin_path=None):
+  """Return plugin version from plugin.json with safe fallback when unreadable."""
+  target = plugin_path or os.path.join(_REPO_ROOT, "plugin.json")
+  try:
+    with open(target, "r", encoding="utf-8") as f:
+      data = json.load(f)
+    if isinstance(data, dict):
+      version = data.get("version")
+      if isinstance(version, str) and version.strip():
+        return version.strip()
+  except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+    pass
+  return DEFAULT_PLUGIN_VERSION
 
 ALL_TARGETS = {
     "T00",
@@ -145,7 +166,7 @@ REQUIRED_STATE_CARDS = {
 }
 
 
-def _evaluate_git_tokens_safety(tokens):
+def _evaluate_git_tokens_safety(tokens, is_t90_commit=False):
   """Returns (safe: bool, reason: str) for MCP workflow_safety_check."""
   exe, rem = _unwrap_command_tokens(tokens)
   if not exe or exe == "SHELL_C":
@@ -349,15 +370,7 @@ def _evaluate_git_tokens_safety(tokens):
     return True, "OK"
 
   if subcmd == "commit":
-    if any(
-        k in " ".join(tokens)
-        for k in (
-            "docs(history):",
-            ".workflow/history",
-            "history.json",
-            "history.md",
-        )
-    ):
+    if is_t90_commit:
       return (
           True,
           "Requires human operator approval at Target 90 History Ledger Gate",
@@ -367,16 +380,26 @@ def _evaluate_git_tokens_safety(tokens):
   return True, "OK"
 
 
-def evaluate_git_safety(cmd):
+def evaluate_git_safety(cmd, state_dir=None):
   """Checks all shell subcommands for destructive Git operations."""
+  is_t90_state = is_target_90_state_dir(state_dir)
   last_reason = "OK"
-  for subcmd in _expand_shell_subcommands(cmd):
-    for tokens in _tokenize_subcommand(subcmd):
-      is_safe, reason = _evaluate_git_tokens_safety(tokens)
-      if not is_safe:
-        return False, reason
-      if reason != "OK" and last_reason == "OK":
-        last_reason = reason
+  for tokens, _, is_subcmd_t90 in iter_subcommand_tokens_with_target90(
+      cmd, is_t90_state=is_t90_state
+  ):
+    is_safe, reason = _evaluate_git_tokens_safety(
+        tokens, is_t90_commit=is_subcmd_t90
+    )
+    if not is_safe:
+      return False, reason
+    if reason != "OK" and (
+        last_reason == "OK"
+        or (
+            "Target 90 History Ledger Gate" in last_reason
+            and "Target 50 Commit Gate" in reason
+        )
+    ):
+      last_reason = reason
   return True, last_reason
 
 
@@ -667,10 +690,15 @@ def poll_ci_status(
     time.sleep(p_sec)
 
 
-SERVER_INFO = {
-    "name": "makeflow-guard",
-    "version": "1.4.1",
-}
+def get_server_info():
+  """Return dynamic MCP serverInfo metadata backed by plugin.json."""
+  return {
+      "name": "makeflow-guard",
+      "version": get_plugin_version(),
+  }
+
+
+SERVER_INFO = get_server_info()
 
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2026-07-28",
@@ -703,7 +731,7 @@ def handle_server_discover(request_id):
           "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
           "capabilities": {"tools": {}},
           "_meta": {
-              MCP_SERVER_INFO_META_KEY: dict(SERVER_INFO),
+              MCP_SERVER_INFO_META_KEY: get_server_info(),
           },
       },
   }
@@ -734,7 +762,7 @@ def handle_initialize(request_id, params=None):
       "result": {
           "protocolVersion": negotiated,
           "capabilities": {"tools": {}},
-          "serverInfo": dict(SERVER_INFO),
+          "serverInfo": get_server_info(),
       },
   }
 
@@ -1353,7 +1381,13 @@ def handle_tools_call(request_id, tool_name, arguments):
     cfg = resolve_workflow_config(ws)
     is_safe, reason = evaluate_database_safety(cmd, cfg.get("database"))
     if is_safe:
-      git_safe, git_reason = evaluate_git_safety(cmd)
+      explicit_ws = arguments.get("workspaceDir")
+      state_dir = (
+          os.path.join(ws, ".workflow", "state")
+          if ws and (explicit_ws or not is_plugin_dir(ws))
+          else None
+      )
+      git_safe, git_reason = evaluate_git_safety(cmd, state_dir=state_dir)
       if not git_safe:
         is_safe, reason = False, git_reason
       elif reason == "OK" and git_reason != "OK":

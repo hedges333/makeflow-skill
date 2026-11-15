@@ -6679,6 +6679,22 @@ def _collect_compatibility_errors():
     else:
       print("✔ All 5 new polyglot guides (GDScript, Nim, Haxe, Odin, D) present.")
 
+  canonical_version = None
+  root_plugin_path = repo_path("plugin.json")
+  if os.path.exists(root_plugin_path):
+    with open(root_plugin_path) as f:
+      root_plugin_data = json.load(f)
+    canonical_version = root_plugin_data.get("version")
+    if not isinstance(canonical_version, str) or not re.match(
+        r"^\d+\.\d+\.\d+$", canonical_version
+    ):
+      errors.append(
+          "Manifest plugin.json must declare a SemVer X.Y.Z version"
+      )
+    author_obj = root_plugin_data.get("author")
+    if not isinstance(author_obj, dict) or author_obj.get("name") != "Mark Hedges":
+      errors.append("Manifest plugin.json author.name must be 'Mark Hedges'")
+
   for manifest_rel in (
       "plugin.json",
       ".claude-plugin/plugin.json",
@@ -6688,12 +6704,13 @@ def _collect_compatibility_errors():
     if os.path.exists(manifest_path):
       with open(manifest_path) as f:
         m_data = json.load(f)
-      if m_data.get("version") != "1.4.1" or "27-language" not in m_data.get(
-          "description", ""
-      ):
+      if (
+          canonical_version
+          and m_data.get("version") != canonical_version
+      ) or "27-language" not in m_data.get("description", ""):
         errors.append(
-            f"Manifest {manifest_rel} must declare version 1.4.1 and"
-            " 27-language support"
+            f"Manifest {manifest_rel} must match canonical version"
+            f" {canonical_version} and declare 27-language support"
         )
 
   ref_09_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
@@ -7618,6 +7635,15 @@ def _collect_compatibility_errors():
   if not t90_comment_errors:
     print(
         "✔ Target 90 ticket resolution comment invariants (GH-197)"
+        " verified."
+    )
+
+  # Target 90 CHANGELOG.md and Release Hygiene Invariants (GH-211)
+  t90_changelog_errors = check_target_90_changelog_and_release_invariants()
+  errors.extend(t90_changelog_errors)
+  if not t90_changelog_errors:
+    print(
+        "✔ Target 90 CHANGELOG.md and release hygiene invariants (GH-211)"
         " verified."
     )
 
@@ -8711,6 +8737,511 @@ class TestCrossAgentCompatibility(unittest.TestCase):
     )
     self.assertTrue(
         any("test:' recipe" in err for err in check_makefile_test_discovery(split_pipeline_mk))
+    )
+
+
+TARGET_90_CHANGELOG_FILES = (
+    "CHANGELOG.md",
+    "plugin.json",
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json",
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/12_request_history_ledger.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "skills/makeflow/references/07_ci_and_bot_triage.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "README.md",
+    "CLAUDE.md",
+    "rules/AGENTS.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def _discover_semver_git_tags(base_dir: str) -> set[str]:
+  """Returns normalized X.Y.Z tags present in base_dir when a Git repo exists."""
+  if not os.path.exists(os.path.join(base_dir, ".git")):
+    return set()
+  res = subprocess.run(
+      ["git", "tag", "-l"],
+      cwd=base_dir,
+      capture_output=True,
+      text=True,
+      check=False,
+      timeout=5,
+  )
+  if res.returncode != 0:
+    return set()
+  tags: set[str] = set()
+  for raw in res.stdout.splitlines():
+    tok = raw.strip().lstrip("v")
+    if re.match(r"^\d+\.\d+\.\d+$", tok):
+      tags.add(tok)
+  return tags
+
+
+def check_target_90_changelog_and_release_invariants(
+    files_map: dict[str, str] | None = None,
+    repo_root: str | None = None,
+    known_tags: set[str] | None = None,
+) -> list[str]:
+  """Validates Keep-a-Changelog workflow, Target 90 release prompting, and manifest metadata (GH-211)."""
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scar_candidate import (
+      count_words_in_sentence,
+      mask_code_and_math_spans,
+      split_into_sentences,
+  )
+
+  base_dir = repo_root or REPO_ROOT
+  from_disk = files_map is None
+  if files_map is None:
+    files_map = {}
+    for rel in TARGET_90_CHANGELOG_FILES:
+      fpath = os.path.join(base_dir, rel)
+      if os.path.isfile(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  errs: list[str] = []
+  for rel in TARGET_90_CHANGELOG_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. Manifest author.name and unified SemVer version across manifests
+  manifest_versions: dict[str, str] = {}
+  for m_rel in (
+      "plugin.json",
+      ".claude-plugin/plugin.json",
+      ".codex-plugin/plugin.json",
+  ):
+    try:
+      m_data = json.loads(files_map[m_rel])
+    except json.JSONDecodeError as exc:
+      errs.append(f"{m_rel} is invalid JSON: {exc}")
+      continue
+    ver = m_data.get("version")
+    if not isinstance(ver, str) or not re.match(r"^\d+\.\d+\.\d+$", ver):
+      errs.append(f"{m_rel} must declare a valid SemVer X.Y.Z version")
+    else:
+      manifest_versions[m_rel] = ver
+    if m_rel == "plugin.json":
+      author_obj = m_data.get("author")
+      if not isinstance(author_obj, dict) or author_obj.get("name") != "Mark Hedges":
+        errs.append("plugin.json author.name must be 'Mark Hedges'")
+  if len(set(manifest_versions.values())) > 1:
+    errs.append(
+        f"Manifest versions diverge across manifests: {manifest_versions}"
+    )
+
+  canonical_ver = (
+      manifest_versions.get("plugin.json")
+      if len(set(manifest_versions.values())) == 1
+      else None
+  )
+  if known_tags is not None:
+    resolved_tags = {t.lstrip("v") for t in known_tags}
+  elif from_disk:
+    resolved_tags = _discover_semver_git_tags(base_dir)
+  else:
+    resolved_tags = set()
+
+  # 2. CHANGELOG.md format, backed-only release headings, and Simple English checks
+  changelog_text = files_map["CHANGELOG.md"]
+  if not re.search(r"(?m)^#\s+Changelog\b", changelog_text):
+    errs.append("CHANGELOG.md must begin with '# Changelog' heading")
+  if "## [Unreleased]" not in changelog_text:
+    errs.append("CHANGELOG.md must include '## [Unreleased]' section")
+
+  for rel_ver in re.findall(
+      r"(?m)^##\s+\[(?!Unreleased\b)(\d+\.\d+\.\d+)\]", changelog_text
+  ):
+    is_tagged = rel_ver in resolved_tags
+    is_active_release_bump = (
+        canonical_ver is not None
+        and rel_ver == canonical_ver
+        and (canonical_ver != "1.4.1" or is_tagged)
+    )
+    if not is_tagged and not is_active_release_bump:
+      errs.append(
+          "CHANGELOG.md must not contain fabricated release version heading:"
+          f" ## [{rel_ver}]"
+      )
+
+  in_fence = False
+  for raw_line in changelog_text.splitlines():
+    stripped = raw_line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+      continue
+    if (
+        in_fence
+        or not stripped
+        or stripped.startswith("#")
+        or stripped.startswith("<!--")
+    ):
+      continue
+    errs.extend(_check_prose_punctuation("CHANGELOG.md", stripped))
+    no_code = re.sub(r"`[^`]*`", "", stripped)
+    cmatch = _POLYGLOT_CONTRACTION_RE.search(no_code)
+    if cmatch:
+      errs.append(
+          f"CHANGELOG.md contains forbidden contraction '{cmatch.group(0)}' in prose"
+      )
+    body = re.sub(r"^(?:-\s+|\*\s+|\d+\.\s+)", "", stripped)
+    masked = mask_code_and_math_spans(body)
+    for sent in split_into_sentences(masked):
+      wc = count_words_in_sentence(sent)
+      if wc > 25:
+        errs.append(
+            f"CHANGELOG.md sentence exceeds 25-word limit ({wc} words): {sent}"
+        )
+
+  # 3. skills/makeflow/SKILL.md budget and Target 90 changelog/release tokens
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  skill_bytes = len(skill_text.encode("utf-8"))
+  if skill_bytes > 24576:
+    errs.append(
+        f"{skill_rel} exceeds 24576-byte budget ({skill_bytes} bytes)"
+    )
+  t90_row = next(
+      (line for line in skill_text.splitlines() if "| `90` |" in line), ""
+  )
+  if "CHANGELOG.md" not in t90_row:
+    errs.append(f"{skill_rel} Target 90 table row must reference 'CHANGELOG.md'")
+
+  t90_sec_match = re.search(
+      r"(?m)^###\s+Target 70, Target 75, Target 80, and Target 90\b.*?(?=^---|\n##\s+|\n###\s+|\Z)",
+      skill_text,
+      re.DOTALL,
+  )
+  t90_sec = t90_sec_match.group(0) if t90_sec_match else ""
+  step6_lines = [
+      line.strip()
+      for line in t90_sec.splitlines()
+      if line.strip().startswith("6.")
+  ]
+  if not step6_lines or "CHANGELOG.md" not in step6_lines[0]:
+    errs.append(f"{skill_rel} Target 90 step 6 must reference 'CHANGELOG.md'")
+  elif "release" not in step6_lines[0].lower():
+    errs.append(f"{skill_rel} Target 90 step 6 must prompt for a release")
+
+  # 4. 12_request_history_ledger.md two-stage changelog & release prompt
+  ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
+  ledger_text = files_map[ledger_rel]
+  for mode_heading in (
+      "### Mode 1: Pull Request Mode with Branch Protection",
+      "### Mode 2: Pull Request Mode with Direct Push Allowed",
+      "### Mode 3: Pure Git Mode",
+      "## 4. Update Steps at Target 90",
+  ):
+    if mode_heading not in ledger_text:
+      errs.append(f"{ledger_rel} missing heading '{mode_heading}'")
+  if "CHANGELOG.md" not in ledger_text or "## [Unreleased]" not in ledger_text:
+    errs.append(
+        f"{ledger_rel} must describe updating CHANGELOG.md under ## [Unreleased]"
+    )
+
+  mode1_match = re.search(
+      r"(?m)^### Mode 1: Pull Request Mode with Branch Protection\b.*?(?=^### Mode 2:|\Z)",
+      ledger_text,
+      re.DOTALL,
+  )
+  mode1_sec = mode1_match.group(0) if mode1_match else ""
+  if "docs(changelog):" not in mode1_sec:
+    errs.append(f"{ledger_rel} Mode 1 must reference 'docs(changelog):'")
+
+  sec4 = _extract_markdown_h2_section(
+      ledger_text, "## 4. Update Steps at Target 90"
+  )
+  for req_tok in (
+      "CHANGELOG.md",
+      "## [Unreleased]",
+      "ask_question",
+      "patch",
+      "minor",
+      "major",
+      "release/v",
+      "test",
+      "Keep an empty `## [Unreleased]`",
+      "asks to create",
+  ):
+    if req_tok not in sec4:
+      errs.append(f"{ledger_rel} Section 4 must reference '{req_tok}'")
+  if sec4.count('git commit -m "docs(release): cut vX.Y.Z"') < 2:
+    errs.append(
+        f"{ledger_rel} Section 4 Step 15 must specify 'git commit -m \"docs(release): cut vX.Y.Z\"' for both Mode 1 and Mode 2/3"
+    )
+
+  # 5. Sibling docs & rules alignment
+  r03_rel = "skills/makeflow/references/03_tdd_and_code_quality.md"
+  r03_text = files_map[r03_rel]
+  if (
+      "## [Unreleased]" not in r03_text
+      or "CHANGELOG.md" not in r03_text
+      or "If behavior changes," not in r03_text
+      or "SCAR-DOC-18" in r03_text
+  ):
+    errs.append(
+        f"{r03_rel} must document CHANGELOG.md and ## [Unreleased] with condition-first syntax and valid SCAR-DOC-16 citation"
+    )
+
+  r04_rel = "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+  if "## [Unreleased]" not in files_map[r04_rel] or "CHANGELOG.md" not in files_map[r04_rel]:
+    errs.append(
+        f"{r04_rel} Pillar 1 must check CHANGELOG.md and ## [Unreleased] hygiene"
+    )
+
+  r07_rel = "skills/makeflow/references/07_ci_and_bot_triage.md"
+  if "CHANGELOG.md" not in files_map[r07_rel]:
+    errs.append(
+        f"{r07_rel} Target 75 must include CHANGELOG.md before landing on protected main"
+    )
+
+  r09_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  r09_sec31_match = re.search(
+      r"(?m)^### 3\.1 Ticket-Scoped Core Scars\b.*?(?=^### 3\.2|\Z)",
+      files_map[r09_rel],
+      re.DOTALL,
+  )
+  r09_sec31 = r09_sec31_match.group(0) if r09_sec31_match else ""
+  if "CHANGELOG.md" not in r09_sec31 or "release" not in r09_sec31.lower():
+    errs.append(
+        f"{r09_rel} Section 3.1 step 6 must reference CHANGELOG.md and release prompting"
+    )
+
+  for summary_rel in (
+      "README.md",
+      "CLAUDE.md",
+      "rules/AGENTS.md",
+      "adapters/chatgpt/instructions.md",
+  ):
+    if "CHANGELOG.md" not in files_map[summary_rel]:
+      errs.append(
+          f"{summary_rel} must reference CHANGELOG.md in Target 90 guidance"
+      )
+
+  return errs
+
+
+class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
+  """Regression and negative falsification tests for GH-211 CHANGELOG.md and Target 90 release workflow."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in TARGET_90_CHANGELOG_FILES:
+      fpath = repo_path(rel)
+      with open(fpath, "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_repo_target90_changelog_and_release_files_pass(self):
+    errs = check_target_90_changelog_and_release_invariants()
+    self.assertEqual(errs, [])
+
+  def test_negative_falsifications_caught(self):
+    base = self._load_base_files()
+
+    # 1. Missing CHANGELOG.md in isolated tempdir repo root
+    with tempfile.TemporaryDirectory() as td:
+      for rel, content in base.items():
+        if rel == "CHANGELOG.md":
+          continue
+        dest = os.path.join(td, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+          f.write(content)
+      errs_missing = check_target_90_changelog_and_release_invariants(repo_root=td)
+      self.assertTrue(
+          any("Missing CHANGELOG.md" in e for e in errs_missing),
+          f"Expected missing CHANGELOG.md rejection, got: {errs_missing}",
+      )
+
+    # 2. Missing ## [Unreleased]
+    mut_no_unrel = dict(base)
+    mut_no_unrel["CHANGELOG.md"] = "# Changelog\n\n- Added a feature.\n"
+    errs_no_unrel = check_target_90_changelog_and_release_invariants(mut_no_unrel)
+    self.assertTrue(
+        any("## [Unreleased]" in e for e in errs_no_unrel),
+        f"Expected missing ## [Unreleased] rejection, got: {errs_no_unrel}",
+    )
+
+    # 3. Fabricated historical release heading (no tags exist)
+    mut_fab = dict(base)
+    mut_fab["CHANGELOG.md"] += "\n## [1.4.1] - 2026-01-01\n- Legacy notes.\n"
+    errs_fab = check_target_90_changelog_and_release_invariants(mut_fab)
+    self.assertTrue(
+        any("fabricated release version heading" in e for e in errs_fab),
+        f"Expected fabricated release heading rejection, got: {errs_fab}",
+    )
+
+    # 4. Over-25-word sentence and contraction in CHANGELOG.md
+    mut_verbose = dict(base)
+    mut_verbose["CHANGELOG.md"] += (
+        "\n- This entry deliberately includes far more than twenty five words"
+        " inside a single descriptive bullet sentence so Simple English"
+        " checks catch overly complex release notes quickly.\n"
+    )
+    errs_verbose = check_target_90_changelog_and_release_invariants(mut_verbose)
+    self.assertTrue(
+        any("exceeds 25-word limit" in e for e in errs_verbose),
+        f"Expected >25-word rejection in CHANGELOG.md, got: {errs_verbose}",
+    )
+
+    mut_contraction = dict(base)
+    mut_contraction["CHANGELOG.md"] += "\n- We don't break existing commands.\n"
+    errs_contraction = check_target_90_changelog_and_release_invariants(
+        mut_contraction
+    )
+    self.assertTrue(
+        any("contraction" in e for e in errs_contraction),
+        f"Expected contraction rejection in CHANGELOG.md, got: {errs_contraction}",
+    )
+
+    # 5. Wrong plugin.json author or mismatched manifest version
+    mut_author = dict(base)
+    plugin_data = json.loads(mut_author["plugin.json"])
+    plugin_data["author"]["name"] = "Other Author"
+    mut_author["plugin.json"] = json.dumps(plugin_data)
+    errs_author = check_target_90_changelog_and_release_invariants(mut_author)
+    self.assertTrue(
+        any("Mark Hedges" in e for e in errs_author),
+        f"Expected author rejection, got: {errs_author}",
+    )
+
+    mut_str_author = dict(base)
+    str_author_data = json.loads(mut_str_author["plugin.json"])
+    str_author_data["author"] = "Mark Hedges"
+    mut_str_author["plugin.json"] = json.dumps(str_author_data)
+    errs_str_author = check_target_90_changelog_and_release_invariants(
+        mut_str_author
+    )
+    self.assertTrue(
+        any("Mark Hedges" in e for e in errs_str_author),
+        f"Expected non-dict author rejection, got: {errs_str_author}",
+    )
+
+    mut_mismatch = dict(base)
+    claude_data = json.loads(mut_mismatch[".claude-plugin/plugin.json"])
+    claude_data["version"] = "9.9.9"
+    mut_mismatch[".claude-plugin/plugin.json"] = json.dumps(claude_data)
+    errs_mismatch = check_target_90_changelog_and_release_invariants(mut_mismatch)
+    self.assertTrue(
+        any("diverge" in e for e in errs_mismatch),
+        f"Expected manifest version divergence rejection, got: {errs_mismatch}",
+    )
+
+    # 6. Omitting ask_question, release/v, docs(changelog):, or release phrasing in 12_request_history_ledger.md
+    ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
+    for bad_tok in (
+        "ask_question",
+        "release/v",
+        "docs(changelog):",
+        "asks to create",
+        "Keep an empty `## [Unreleased]`",
+    ):
+      mut_ledger = dict(base)
+      mut_ledger[ledger_rel] = mut_ledger[ledger_rel].replace(bad_tok, "REMOVED")
+      errs_ledger = check_target_90_changelog_and_release_invariants(mut_ledger)
+      self.assertTrue(
+          any(bad_tok in e for e in errs_ledger),
+          f"Expected '{bad_tok}' rejection, got: {errs_ledger}",
+      )
+
+    # 7. Omitting CHANGELOG.md from SKILL.md Step 6
+    skill_rel = "skills/makeflow/SKILL.md"
+    mut_no_skill_cl = dict(base)
+    mut_no_skill_cl[skill_rel] = mut_no_skill_cl[skill_rel].replace(
+        "CHANGELOG.md", "HISTORY.txt"
+    )
+    errs_skill_cl = check_target_90_changelog_and_release_invariants(
+        mut_no_skill_cl
+    )
+    self.assertTrue(
+        any(skill_rel in e and "CHANGELOG.md" in e for e in errs_skill_cl),
+        f"Expected SKILL.md CHANGELOG.md rejection, got: {errs_skill_cl}",
+    )
+
+    # 8. Omitting CHANGELOG.md from sibling docs and summary adapters
+    for sibling_rel in (
+        "skills/makeflow/references/03_tdd_and_code_quality.md",
+        "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+        "skills/makeflow/references/07_ci_and_bot_triage.md",
+        "skills/makeflow/references/09_synthetic_scars_catalog.md",
+        "README.md",
+        "CLAUDE.md",
+        "rules/AGENTS.md",
+        "adapters/chatgpt/instructions.md",
+    ):
+      mut_sib = dict(base)
+      mut_sib[sibling_rel] = mut_sib[sibling_rel].replace(
+          "CHANGELOG.md", "REMOVED.md"
+      )
+      errs_sib = check_target_90_changelog_and_release_invariants(mut_sib)
+      self.assertTrue(
+          any(sibling_rel in e for e in errs_sib),
+          f"Expected rejection for {sibling_rel}, got: {errs_sib}",
+      )
+
+  def test_release_cut_heading_allowed_when_manifests_or_tags_match(self):
+    base = self._load_base_files()
+
+    # Active release cut (Step 12-14 before tagging): manifests bumped to 1.4.2, ## [Unreleased] kept at top
+    cut_files = dict(base)
+    for m_rel in (
+        "plugin.json",
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+    ):
+      m_data = json.loads(cut_files[m_rel])
+      m_data["version"] = "1.4.2"
+      cut_files[m_rel] = json.dumps(m_data)
+    cut_files["CHANGELOG.md"] = (
+        "# Changelog\n\n## [Unreleased]\n\n"
+        "## [1.4.2] - 2026-11-15\n\n### Added\n- Release cut test.\n"
+    )
+    self.assertEqual(
+        check_target_90_changelog_and_release_invariants(
+            cut_files, known_tags=set()
+        ),
+        [],
+    )
+
+    # Subsequent release cut 1.5.0 when v1.4.2 is tagged
+    next_cut = dict(cut_files)
+    for m_rel in (
+        "plugin.json",
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+    ):
+      m_data = json.loads(next_cut[m_rel])
+      m_data["version"] = "1.5.0"
+      next_cut[m_rel] = json.dumps(m_data)
+    next_cut["CHANGELOG.md"] = (
+        "# Changelog\n\n## [Unreleased]\n\n"
+        "## [1.5.0] - 2026-12-01\n\n### Added\n- Minor release.\n\n"
+        "## [1.4.2] - 2026-11-15\n\n### Added\n- Release cut test.\n"
+    )
+    self.assertEqual(
+        check_target_90_changelog_and_release_invariants(
+            next_cut, known_tags={"1.4.2"}
+        ),
+        [],
+    )
+
+    # Unbacked fabricated heading 0.9.0 alongside valid 1.4.2 still fails
+    bad_cut = dict(cut_files)
+    bad_cut["CHANGELOG.md"] += "\n## [0.9.0] - 2025-01-01\n- Fake release.\n"
+    errs_bad = check_target_90_changelog_and_release_invariants(
+        bad_cut, known_tags=set()
+    )
+    self.assertTrue(
+        any("0.9.0" in e for e in errs_bad),
+        f"Expected fabricated 0.9.0 rejection, got: {errs_bad}",
     )
 
 

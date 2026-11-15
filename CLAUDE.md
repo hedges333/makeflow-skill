@@ -51,4 +51,4 @@ claude -p --model claude-3-opus-20240229 "Run Six-Pillar review on $(git merge-b
 - `T70`: Poll CI checks and wait for review bots to finish (quiescence window).
 - `T75`: Present policy checks and wait for merge approval.
 - `T80`: Squash-merge the pull request, delete the ticket branch, and update `main`.
-- `T90`: Record lessons and append the task to `.workflow/history.json` and `.workflow/history.md`.
+- `T90`: Record lessons, update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md`, and prompt whether to cut a release.

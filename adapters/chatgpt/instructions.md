@@ -22,7 +22,7 @@ Move through these targets in dependency order:
 - Target 70 (bot-quiescence): Check CI status and automated review comments.
 - Target 75 (ready-to-land): Present policy checks and wait for merge approval.
 - Target 80 (land): Merge the pull request, delete the ticket branch, and update `main`.
-- Target 90 (finish): Record lessons learned and update `.workflow/history.json` and `.workflow/history.md`.
+- Target 90 (finish): Record lessons learned, update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md`, and prompt whether to cut a release.
 
 2. DATABASE ISOLATION AND QUERY SPEED
 - Never connect tests to live production databases.
