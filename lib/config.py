@@ -30,15 +30,94 @@ CI_ENV_MAPPINGS = {
     "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL": "pollIntervalSeconds",
 }
 
+_CI_FIELD_SPECS = {
+    "pollIntervalSeconds": (30, 1),
+    "quiescenceSeconds": (180, 0),
+}
+
+
+def _parse_int_min(val, default, min_val):
+  """Parses a non-boolean integer or ASCII digit string >= min_val.
+
+  Args:
+    val: Raw integer, ASCII digit string, or invalid configuration value.
+    default: Fallback value returned when ``val`` fails validation.
+    min_val: Minimum inclusive integer value allowed.
+
+  Returns:
+    Validated integer >= ``min_val``, or ``default`` when invalid.
+  """
+  if isinstance(val, int) and not isinstance(val, bool) and val >= min_val:
+    return val
+  if isinstance(val, str):
+    stripped = val.strip()
+    if stripped.isascii() and stripped.isdigit():
+      num = int(stripped)
+      if num >= min_val:
+        return num
+  return default
+
+
+def _parse_non_negative_int(val, default):
+  """Parses an integer >= 0 while rejecting booleans and non-ASCII digits.
+
+  Args:
+    val: Raw configuration value to validate.
+    default: Fallback value returned when ``val`` is invalid.
+
+  Returns:
+    Non-negative integer or ``default``.
+  """
+  return _parse_int_min(val, default, 0)
+
 
 def _parse_positive_int(val, default):
-  if isinstance(val, int) and val > 0:
-    return val
-  if isinstance(val, str) and val.strip().isdigit():
-    num = int(val.strip())
-    if num > 0:
-      return num
-  return default
+  """Parses an integer >= 1 while rejecting booleans and non-ASCII digits.
+
+  Args:
+    val: Raw configuration value to validate.
+    default: Fallback value returned when ``val`` is invalid.
+
+  Returns:
+    Positive integer or ``default``.
+  """
+  return _parse_int_min(val, default, 1)
+
+
+def _normalize_ci_config(raw_ci):
+  """Normalizes CI configuration values to validated integer bounds.
+
+  Args:
+    raw_ci: Raw ``ci`` configuration mapping or invalid non-dict value.
+
+  Returns:
+    Dictionary with validated ``pollIntervalSeconds`` (>= 1) and
+    ``quiescenceSeconds`` (>= 0) integers.
+  """
+  ci_dict = raw_ci if isinstance(raw_ci, dict) else {}
+  return {
+      key: _parse_int_min(ci_dict.get(key), default_val, min_val)
+      for key, (default_val, min_val) in _CI_FIELD_SPECS.items()
+  }
+
+
+def _apply_ci_env_overrides(ci_cfg):
+  """Applies validated CI environment overrides onto ``ci_cfg`` in place.
+
+  Args:
+    ci_cfg: Mutable dictionary containing normalized CI settings.
+
+  Returns:
+    List of ``(env_var, value)`` pairs for accepted environment overrides.
+  """
+  applied = []
+  for env_var, ci_key in CI_ENV_MAPPINGS.items():
+    _, min_val = _CI_FIELD_SPECS[ci_key]
+    num = _parse_int_min(os.getenv(env_var), None, min_val)
+    if num is not None:
+      ci_cfg[ci_key] = num
+      applied.append((env_var, num))
+  return applied
 
 
 def _normalize_str_list(items):
@@ -147,6 +226,15 @@ def is_plugin_dir(path):
 
 
 def get_workflow_config(workspace_paths):
+  """Resolves normalized hook workflow configuration and source label.
+
+  Args:
+    workspace_paths: List of candidate workspace root paths.
+
+  Returns:
+    Tuple of ``(config_dict, source_label)`` where ``source_label`` is ``None``
+    when no config file or environment override applies.
+  """
   default_cfg = load_default_config()
   raw_cfg = {}
   source = None
@@ -193,20 +281,7 @@ def get_workflow_config(workspace_paths):
       if db_key in raw_db:
         db_cfg[db_key] = _normalize_str_list(raw_db[db_key])
 
-  ci_cfg = {
-      "pollIntervalSeconds": 30,
-      "quiescenceSeconds": 180,
-  }
-  raw_ci = merged_cfg.get("ci")
-  if isinstance(raw_ci, dict):
-    if "pollIntervalSeconds" in raw_ci:
-      ci_cfg["pollIntervalSeconds"] = _parse_positive_int(
-          raw_ci["pollIntervalSeconds"], 30
-      )
-    if "quiescenceSeconds" in raw_ci:
-      ci_cfg["quiescenceSeconds"] = _parse_positive_int(
-          raw_ci["quiescenceSeconds"], 180
-      )
+  ci_cfg = _normalize_ci_config(merged_cfg.get("ci"))
 
   env_applied = []
   for env_var, agent_key in ENV_MAPPINGS.items():
@@ -215,13 +290,8 @@ def get_workflow_config(workspace_paths):
       models[agent_key] = val.strip()
       env_applied.append(env_var)
 
-  for env_var, ci_key in CI_ENV_MAPPINGS.items():
-    val = os.getenv(env_var)
-    if val and val.strip().isdigit():
-      num = int(val.strip())
-      if num > 0:
-        ci_cfg[ci_key] = num
-        env_applied.append(env_var)
+  for env_var, _ in _apply_ci_env_overrides(ci_cfg):
+    env_applied.append(env_var)
 
   for env_var, db_key in DB_ENV_MAPPINGS.items():
     val = os.getenv(env_var)
@@ -408,7 +478,15 @@ def map_to_agy_tier(model_value):
 
 
 def resolve_workflow_config(workspace_dir=None):
-  """Resolves workflow configuration from workspace, global path, or environment."""
+  """Resolves workflow configuration from workspace, global path, or environment.
+
+  Args:
+    workspace_dir: Optional project root directory path.
+
+  Returns:
+    Normalized workflow configuration dictionary including ``configSource``,
+    ``envOverrides``, and ``agyModelTiers``.
+  """
   ws = workspace_dir if workspace_dir is not None else resolve_workspace_dir({})
   local_cfg_path = os.path.join(ws, ".workflow", "config.json") if ws else None
   global_cfg_path = os.path.expanduser("~/.gemini/config/makeflow.json")
@@ -436,6 +514,8 @@ def resolve_workflow_config(workspace_dir=None):
       except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
 
+  config["ci"] = _normalize_ci_config(config.get("ci"))
+
   for env_var, agent_key in ENV_MAPPINGS.items():
     val = os.getenv(env_var)
     if val:
@@ -452,13 +532,8 @@ def resolve_workflow_config(workspace_dir=None):
       config["database"][db_key] = merged
       config["envOverrides"].append(f"{env_var}={','.join(vals)}")
 
-  for env_var, ci_key in CI_ENV_MAPPINGS.items():
-    val = os.getenv(env_var)
-    if val and val.strip().isdigit():
-      num = int(val.strip())
-      if num > 0:
-        config["ci"][ci_key] = num
-        config["envOverrides"].append(f"{env_var}={num}")
+  for env_var, num in _apply_ci_env_overrides(config["ci"]):
+    config["envOverrides"].append(f"{env_var}={num}")
 
   if "state" not in config or not isinstance(config["state"], dict):
     config["state"] = {"completedCardAction": "unlink"}

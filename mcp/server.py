@@ -42,6 +42,8 @@ except ImportError:
 from lib.config import (
     _normalize_str_list,
     _parse_csv_env,
+    _parse_non_negative_int,
+    _parse_positive_int,
     deep_merge,
     is_plugin_dir,
     is_ticket_active,
@@ -464,17 +466,32 @@ def poll_ci_status(
     max_wait_sec=600,
     hosting_mode=None,
 ):
+  """Polls GitHub pull request checks and review comments until CI and quiescence pass.
+
+  Args:
+    pr_number: Pull request number, or 0 for pure-Git fallback.
+    ws: Workspace root directory path.
+    quiescence_sec: Optional override for post-CI quiescence seconds (>= 0).
+    poll_interval_sec: Optional override for polling sleep interval seconds (>= 1).
+    max_wait_sec: Maximum total seconds before timeout.
+    hosting_mode: Optional hosting mode override (``"github"`` or ``"pure_git"``).
+
+  Returns:
+    Dictionary describing CI completion, bot comments, and landing readiness.
+  """
   cfg = resolve_workflow_config(ws)
   ci_cfg = cfg.get("ci", {})
+  default_q = _parse_non_negative_int(ci_cfg.get("quiescenceSeconds"), 180)
+  default_p = _parse_positive_int(ci_cfg.get("pollIntervalSeconds"), 30)
   q_sec = (
-      quiescence_sec
+      _parse_non_negative_int(quiescence_sec, default_q)
       if quiescence_sec is not None
-      else ci_cfg.get("quiescenceSeconds", 180)
+      else default_q
   )
   p_sec = (
-      poll_interval_sec
+      _parse_positive_int(poll_interval_sec, default_p)
       if poll_interval_sec is not None
-      else ci_cfg.get("pollIntervalSeconds", 30)
+      else default_p
   )
 
   effective_mode = (
@@ -920,11 +937,16 @@ def handle_tools_list(request_id):
                   },
                   "quiescenceSeconds": {
                       "type": "integer",
-                      "description": "Seconds of silence with no new bot activity required (overrides config)",
+                      "description": (
+                          "Seconds of silence with no new bot activity required"
+                          " (0 disables quiescence wait; overrides config)"
+                      ),
                   },
                   "pollIntervalSeconds": {
                       "type": "integer",
-                      "description": "Seconds between status polls (overrides config)",
+                      "description": (
+                          "Seconds between status polls (>= 1; overrides config)"
+                      ),
                   },
                   "maxWaitSeconds": {
                       "type": "integer",
@@ -1430,6 +1452,24 @@ def handle_tools_call(request_id, tool_name, arguments):
       )
     q_sec = arguments.get("quiescenceSeconds")
     p_sec = arguments.get("pollIntervalSeconds")
+    for field_name, field_val, min_val, hint in (
+        (
+            "quiescenceSeconds",
+            q_sec,
+            0,
+            "Provide an integer >= 0 (0 disables quiescence wait).",
+        ),
+        ("pollIntervalSeconds", p_sec, 1, "Provide an integer >= 1."),
+    ):
+      if field_val is not None and (
+          isinstance(field_val, bool)
+          or not isinstance(field_val, int)
+          or field_val < min_val
+      ):
+        return _error_result(
+            request_id,
+            f"Invalid '{field_name}' argument '{field_val}'. {hint}",
+        )
     max_wait = arguments.get("maxWaitSeconds", 600)
     res = poll_ci_status(
         pr_number=pr_num,

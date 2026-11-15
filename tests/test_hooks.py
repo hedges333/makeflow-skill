@@ -18,6 +18,8 @@ PRE_TOOL = os.path.join(REPO_ROOT, "scripts", "pre_tool_guard.py")
 SESSION_START = os.path.join(REPO_ROOT, "scripts", "session_start.py")
 MCP_SERVER = os.path.join(REPO_ROOT, "mcp", "server.py")
 
+import lib.config as config_mod  # noqa: E402
+
 
 def run_hook(script_path, payload, cwd=None, env=None):
   proc = subprocess.run(
@@ -1835,6 +1837,242 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
               self.session_start.main()
               res = json.loads(mock_out.getvalue())
               self.assertIn("injectSteps", res)
+
+
+class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
+  """Regression tests for ci.quiescenceSeconds=0 and CI config validation (GH-217)."""
+
+  def _clean_env(self, home_dir, **extra):
+    env = dict(os.environ)
+    env["HOME"] = home_dir
+    for key in (
+        "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS",
+        "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL",
+        "MAKEFILE_WORKFLOW_WORKSPACE",
+    ):
+      env.pop(key, None)
+    env.update(extra)
+    return env
+
+  def test_parse_ci_integers_bounds_and_type_safety(self):
+    """Tests _parse_non_negative_int and _parse_positive_int boundaries (GH-217)."""
+    for raw_val, expected in (
+        (0, 0),
+        ("0", 0),
+        (" 0 ", 0),
+        (45, 45),
+        ("45", 45),
+    ):
+      parsed = config_mod._parse_non_negative_int(raw_val, 180)
+      self.assertIs(type(parsed), int)
+      self.assertEqual(parsed, expected)
+
+    for invalid_val in (False, True, -1, "-1", "bad", "²", 1.5, None, ""):
+      parsed = config_mod._parse_non_negative_int(invalid_val, 180)
+      self.assertIs(type(parsed), int)
+      self.assertEqual(parsed, 180)
+
+    for raw_val, expected in ((1, 1), ("1", 1), (15, 15), ("15", 15)):
+      parsed = config_mod._parse_positive_int(raw_val, 30)
+      self.assertIs(type(parsed), int)
+      self.assertEqual(parsed, expected)
+
+    for invalid_val in (0, "0", " 0 ", False, True, -1, "-1", "bad", "²", 1.5, None, ""):
+      parsed = config_mod._parse_positive_int(invalid_val, 30)
+      self.assertIs(type(parsed), int)
+      self.assertEqual(parsed, 30)
+
+  def test_loaders_accept_quiescence_zero_and_reject_poll_zero(self):
+    """Tests JSON 0 and invalid CI field values in get_workflow_config and resolve_workflow_config (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      wf_dir = os.path.join(ws_dir, ".workflow")
+      os.makedirs(wf_dir)
+      cfg_path = os.path.join(wf_dir, "config.json")
+
+      with mock.patch.dict(os.environ, self._clean_env(fake_home), clear=True):
+        # Default when no config file exists
+        hook_cfg, hook_src = config_mod.get_workflow_config([ws_dir])
+        mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+        self.assertIsNone(hook_src)
+        self.assertIs(type(hook_cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(hook_cfg["ci"]["quiescenceSeconds"], 180)
+        self.assertEqual(hook_cfg["ci"]["pollIntervalSeconds"], 30)
+        self.assertIs(type(mcp_cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(mcp_cfg["ci"]["quiescenceSeconds"], 180)
+        self.assertEqual(mcp_cfg["ci"]["pollIntervalSeconds"], 30)
+
+        # quiescenceSeconds = 0 and "0" both resolve to int 0
+        for valid_zero in (0, "0", " 0 "):
+          with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({"ci": {"quiescenceSeconds": valid_zero}}, f)
+          hook_cfg, _ = config_mod.get_workflow_config([ws_dir])
+          mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+          for cfg in (hook_cfg, mcp_cfg):
+            self.assertIs(type(cfg["ci"]["quiescenceSeconds"]), int)
+            self.assertEqual(cfg["ci"]["quiescenceSeconds"], 0)
+            self.assertIs(type(cfg["ci"]["pollIntervalSeconds"]), int)
+            self.assertEqual(cfg["ci"]["pollIntervalSeconds"], 30)
+
+        # Invalid quiescenceSeconds values fall back to 180
+        for invalid_q in (False, True, -1, "-1", "bad", "²", 1.5, None):
+          with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({"ci": {"quiescenceSeconds": invalid_q}}, f)
+          hook_cfg, _ = config_mod.get_workflow_config([ws_dir])
+          mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+          for cfg in (hook_cfg, mcp_cfg):
+            self.assertIs(type(cfg["ci"]["quiescenceSeconds"]), int)
+            self.assertEqual(cfg["ci"]["quiescenceSeconds"], 180)
+
+        # Invalid pollIntervalSeconds values fall back to 30
+        for invalid_p in (0, "0", False, True, -1, "bad", "²", 1.5, None):
+          with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump({"ci": {"pollIntervalSeconds": invalid_p}}, f)
+          hook_cfg, _ = config_mod.get_workflow_config([ws_dir])
+          mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+          for cfg in (hook_cfg, mcp_cfg):
+            self.assertIs(type(cfg["ci"]["pollIntervalSeconds"]), int)
+            self.assertEqual(cfg["ci"]["pollIntervalSeconds"], 30)
+
+  def test_loaders_handle_env_overrides_and_non_dict_ci(self):
+    """Tests CI env overrides, invalid env preservation, and non-dict ci handling (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      wf_dir = os.path.join(ws_dir, ".workflow")
+      os.makedirs(wf_dir)
+      cfg_path = os.path.join(wf_dir, "config.json")
+
+      # Env "0" overrides JSON 120 in both loaders and appears in source/envOverrides
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"quiescenceSeconds": 120}}, f)
+      env_zero = self._clean_env(
+          fake_home, MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0"
+      )
+      with mock.patch.dict(os.environ, env_zero, clear=True):
+        hook_cfg, hook_src = config_mod.get_workflow_config([ws_dir])
+        mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+        self.assertIs(type(hook_cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(hook_cfg["ci"]["quiescenceSeconds"], 0)
+        self.assertIn("MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS", hook_src)
+        self.assertIs(type(mcp_cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(mcp_cfg["ci"]["quiescenceSeconds"], 0)
+        self.assertIn(
+            "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0", mcp_cfg["envOverrides"]
+        )
+
+      # Env POLL_INTERVAL="0" is ignored and omitted while valid JSON pollIntervalSeconds=15 is preserved
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"pollIntervalSeconds": 15}}, f)
+      env_poll_zero = self._clean_env(
+          fake_home, MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="0"
+      )
+      with mock.patch.dict(os.environ, env_poll_zero, clear=True):
+        hook_cfg, hook_src = config_mod.get_workflow_config([ws_dir])
+        mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+        self.assertEqual(hook_cfg["ci"]["pollIntervalSeconds"], 15)
+        self.assertNotIn("MAKEFILE_WORKFLOW_CI_POLL_INTERVAL", hook_src)
+        self.assertEqual(mcp_cfg["ci"]["pollIntervalSeconds"], 15)
+        self.assertEqual(mcp_cfg["envOverrides"], [])
+
+      # Non-dict "ci": null or "bad" never raises TypeError and resolves env override "0"
+      for bad_ci in (None, "bad"):
+        with open(cfg_path, "w", encoding="utf-8") as f:
+          json.dump({"ci": bad_ci}, f)
+        with mock.patch.dict(os.environ, env_zero, clear=True):
+          hook_cfg, _ = config_mod.get_workflow_config([ws_dir])
+          mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+          for cfg in (hook_cfg, mcp_cfg):
+            self.assertIs(type(cfg["ci"]["quiescenceSeconds"]), int)
+            self.assertEqual(cfg["ci"]["quiescenceSeconds"], 0)
+            self.assertIs(type(cfg["ci"]["pollIntervalSeconds"]), int)
+            self.assertEqual(cfg["ci"]["pollIntervalSeconds"], 30)
+
+      # Env POLL_INTERVAL="0" without any config file stays 30 and is omitted
+      with tempfile.TemporaryDirectory() as empty_ws:
+        with mock.patch.dict(os.environ, env_poll_zero, clear=True):
+          hook_cfg, hook_src = config_mod.get_workflow_config([empty_ws])
+          mcp_cfg = config_mod.resolve_workflow_config(empty_ws)
+          self.assertIsNone(hook_src)
+          self.assertEqual(hook_cfg["ci"]["pollIntervalSeconds"], 30)
+          self.assertEqual(mcp_cfg["configSource"], "defaults")
+          self.assertEqual(mcp_cfg["envOverrides"], [])
+          self.assertEqual(mcp_cfg["ci"]["pollIntervalSeconds"], 30)
+
+  def test_loaders_global_config_quiescence_zero(self):
+    """Tests global ~/.gemini/config/makeflow.json quiescenceSeconds=0 resolution (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      global_dir = os.path.join(fake_home, ".gemini", "config")
+      os.makedirs(global_dir)
+      global_cfg = os.path.join(global_dir, "makeflow.json")
+      with open(global_cfg, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"quiescenceSeconds": 0}}, f)
+
+      with mock.patch.dict(os.environ, self._clean_env(fake_home), clear=True):
+        hook_cfg, hook_src = config_mod.get_workflow_config([ws_dir])
+        mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
+        self.assertEqual(hook_src, "~/.gemini/config/makeflow.json")
+        self.assertIs(type(hook_cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(hook_cfg["ci"]["quiescenceSeconds"], 0)
+        self.assertEqual(hook_cfg["ci"]["pollIntervalSeconds"], 30)
+        self.assertEqual(mcp_cfg["configSource"], global_cfg)
+        self.assertIs(type(mcp_cfg["ci"]["quiescenceSeconds"]), int)
+        self.assertEqual(mcp_cfg["ci"]["quiescenceSeconds"], 0)
+        self.assertEqual(mcp_cfg["ci"]["pollIntervalSeconds"], 30)
+
+  def test_session_start_subprocess_quiescence_zero_and_sanitization(self):
+    """Tests SessionStart subprocess output for quiescence=0, env overrides, and invalid CI config (GH-217)."""
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as hook_cwd, tempfile.TemporaryDirectory() as fake_home:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8") as f:
+        f.write("# Ticket GH-217\n")
+      cfg_path = os.path.join(ws_dir, ".workflow", "config.json")
+
+      # 1. JSON quiescenceSeconds: 0 emits ci.quiescence=0s and ci.poll=30s
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"quiescenceSeconds": 0}}, f)
+      res = run_hook(
+          SESSION_START,
+          {"workspacePaths": [ws_dir]},
+          cwd=hook_cwd,
+          env=self._clean_env(fake_home),
+      )
+      msg = res["injectSteps"][0]["systemMessage"]["systemMessage"]
+      self.assertIn("ci.quiescence=0s", msg)
+      self.assertIn("ci.poll=30s", msg)
+
+      # 2. Env MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0" overrides JSON 120
+      with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"ci": {"quiescenceSeconds": 120}}, f)
+      res_env = run_hook(
+          SESSION_START,
+          {"workspacePaths": [ws_dir]},
+          cwd=hook_cwd,
+          env=self._clean_env(
+              fake_home, MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0"
+          ),
+      )
+      msg_env = res_env["injectSteps"][0]["systemMessage"]["systemMessage"]
+      self.assertIn("ci.quiescence=0s", msg_env)
+      self.assertIn("MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS", msg_env)
+
+      # 3. Invalid JSON values (True, -1, pollIntervalSeconds: 0) fall back to 180s / 30s
+      for bad_ci in (
+          {"quiescenceSeconds": True, "pollIntervalSeconds": 0},
+          {"quiescenceSeconds": -1},
+      ):
+        with open(cfg_path, "w", encoding="utf-8") as f:
+          json.dump({"ci": bad_ci}, f)
+        res_bad = run_hook(
+            SESSION_START,
+            {"workspacePaths": [ws_dir]},
+            cwd=hook_cwd,
+            env=self._clean_env(
+                fake_home, MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="0"
+            ),
+        )
+        msg_bad = res_bad["injectSteps"][0]["systemMessage"]["systemMessage"]
+        self.assertIn("ci.quiescence=180s", msg_bad)
+        self.assertIn("ci.poll=30s", msg_bad)
+        self.assertNotIn("MAKEFILE_WORKFLOW_CI_POLL_INTERVAL", msg_bad)
 
 
 if __name__ == "__main__":
