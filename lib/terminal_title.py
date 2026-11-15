@@ -1,8 +1,8 @@
-"""Dynamically detects terminal capabilities and updates terminal titles (GH-103, GH-113).
+"""Dynamically detects terminal capabilities and updates terminal titles (GH-103, GH-113, GH-224).
 
 Detects whether running in an interactive terminal supporting title changes (OSC 0,
-tmux DCS passthrough, GNU screen), resolves project name, active ticket ID, and issue tag,
-and sets the terminal title to '{ticket_number} {project_name}: {issue_tag}'.
+tmux DCS passthrough, GNU screen), resolves directory name, active ticket ID, and issue tag,
+and sets the terminal title to '{dir_name}/: {ticket_number} {issue_tag}'.
 """
 
 import argparse
@@ -272,6 +272,28 @@ def detect_project_name(
   return base
 
 
+def detect_directory_name(repo_root: Optional[str] = None) -> str:
+  """Detects the bare unqualified directory name for a repository root.
+
+  Args:
+    repo_root: Optional repository path. Defaults to current working directory.
+
+  Returns:
+    Sanitized directory basename, or empty string for root or temporary paths.
+  """
+  root = os.path.abspath(repo_root or os.getcwd())
+  base = os.path.basename(root)
+  cleaned = sanitize_terminal_title(base)
+  if (
+      not cleaned
+      or is_temporary_directory_name(base)
+      or is_temporary_directory_name(root)
+      or is_temporary_directory_name(cleaned)
+  ):
+    return ""
+  return cleaned
+
+
 def detect_ticket_id(
     repo_root: Optional[str] = None,
     branch: Optional[str] = None,
@@ -420,48 +442,54 @@ def detect_issue_tag(
 
 
 def format_terminal_title(
-    ticket_id: str,
-    project_name: str,
+    ticket_id: str = "",
+    dir_name: str = "",
     issue_tag: Optional[str] = None,
 ) -> str:
-  """Formats title string as '{ticket_id} {project_name}: {issue_tag}'."""
+  """Formats title string as '{dir_name}/: {ticket_id} {issue_tag}'.
+
+  Args:
+    ticket_id: Active ticket identifier (for example 'GH-224').
+    dir_name: Unqualified directory name.
+    issue_tag: Optional short issue description tag.
+
+  Returns:
+    Formatted terminal title string with trailing slash after directory name.
+  """
   t = sanitize_terminal_title(ticket_id)
-  p = sanitize_terminal_title(project_name)
-  tag = ""
-  if issue_tag:
-    tag = sanitize_terminal_title(issue_tag).strip()
+  d = sanitize_terminal_title(dir_name).rstrip("/\\").strip()
+  tag = sanitize_terminal_title(issue_tag) if issue_tag else ""
 
-  if tag:
-    if t and p:
-      return f"{t} {p}: {tag}"
-    if t:
-      return f"{t}: {tag}"
-    if p:
-      return f"{p}: {tag}"
-    return tag
-
-  if t and p:
-    return f"{t} {p}"
-  if t:
-    return t
-  if p:
-    return p
-  return ""
+  body = " ".join(part for part in (t, tag) if part)
+  if d and body:
+    return f"{d}/: {body}"
+  if d:
+    return f"{d}/"
+  return body
 
 
 def set_terminal_title(
     title: Optional[str] = None,
     repo_root: Optional[str] = None,
     ticket_id: Optional[str] = None,
-    project_name: Optional[str] = None,
+    dir_name: Optional[str] = None,
     issue_tag: Optional[str] = None,
     stream: Optional[TextIO] = None,
     env: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str]:
   """Detects capability, formats title, and applies terminal escape sequence.
 
+  Args:
+    title: Optional explicit full title override.
+    repo_root: Optional repository root path.
+    ticket_id: Optional ticket identifier override.
+    dir_name: Optional directory name override.
+    issue_tag: Optional short issue description tag override.
+    stream: Optional output stream for TTY detection and escape emission.
+    env: Optional environment variable mapping override.
+
   Returns:
-      Tuple of (success: bool, applied_title: str).
+    Tuple of (success: bool, applied_title: str).
   """
   target_env = os.environ if env is None else env
   root = os.path.abspath(repo_root or os.getcwd())
@@ -469,11 +497,11 @@ def set_terminal_title(
   final_title = title
   if not final_title:
     t_id = ticket_id if ticket_id is not None else detect_ticket_id(repo_root=root, env=target_env)
-    p_name = project_name if project_name is not None else detect_project_name(repo_root=root, env=target_env)
+    d_name = dir_name if dir_name is not None else detect_directory_name(repo_root=root)
     i_tag = issue_tag
     if i_tag is None and ticket_id is None:
       i_tag = detect_issue_tag(repo_root=root, env=target_env)
-    final_title = format_terminal_title(t_id, p_name, i_tag)
+    final_title = format_terminal_title(t_id, d_name, i_tag)
 
   if not final_title:
     return False, ""
@@ -529,7 +557,7 @@ class TerminalTitleScript(BaseScript):
     self.command: str = ""
     self.repo_root: str = os.getcwd()
     self.ticket: Optional[str] = None
-    self.project: Optional[str] = None
+    self.directory: Optional[str] = None
     self.issue_tag: Optional[str] = None
     self.title: Optional[str] = None
     self.as_json: bool = False
@@ -598,8 +626,8 @@ class TerminalTitleScript(BaseScript):
 
     p_info = subparsers.add_parser(
         "info",
-        help="Inspect resolved ticket ID, project name, issue tag, and formatted title.",
-        description="Display the detected ticket ID, project name, issue tag, formatted title, and capability.",
+        help="Inspect resolved ticket ID, directory name, issue tag, and formatted title.",
+        description="Display the detected ticket ID, directory name, issue tag, formatted title, and capability.",
         epilog="Example:\n  python3 scripts/terminal_title.py info --repo-root . --json",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -609,9 +637,9 @@ class TerminalTitleScript(BaseScript):
         help="Override ticket identifier.",
     )
     p_info.add_argument(
-        "--project",
+        "--directory",
         default=None,
-        help="Override project name.",
+        help="Override directory name.",
     )
     p_info.add_argument(
         "--issue-tag",
@@ -634,7 +662,7 @@ class TerminalTitleScript(BaseScript):
         "set",
         help="Format and apply the terminal window/tab title for the active ticket.",
         description="Format and write the escape sequence to set the terminal window or tab title.",
-        epilog="Example:\n  python3 scripts/terminal_title.py set --ticket GH-170 --project makeflow",
+        epilog="Example:\n  python3 scripts/terminal_title.py set --ticket GH-170 --directory makeflow",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_set.add_argument(
@@ -643,9 +671,9 @@ class TerminalTitleScript(BaseScript):
         help="Ticket identifier (for example GH-170 or LOCAL-1).",
     )
     p_set.add_argument(
-        "--project",
+        "--directory",
         default=None,
-        help="Project name.",
+        help="Directory name.",
     )
     p_set.add_argument(
         "--issue-tag",
@@ -671,15 +699,15 @@ class TerminalTitleScript(BaseScript):
 
     p_reset = subparsers.add_parser(
         "reset",
-        help="Reset the terminal title to the project name.",
-        description="Reset the terminal window or tab title to the bare project name.",
+        help="Reset the terminal title to the directory name.",
+        description="Reset the terminal window or tab title to the directory name with trailing slash.",
         epilog="Example:\n  python3 scripts/terminal_title.py reset --repo-root .",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_reset.add_argument(
-        "--project",
+        "--directory",
         default=None,
-        help="Explicit project name override.",
+        help="Explicit directory name override.",
     )
     p_reset.add_argument(
         "--repo-root",
@@ -702,7 +730,7 @@ class TerminalTitleScript(BaseScript):
     if getattr(ns, "repo_root", None):
       self.repo_root = os.path.abspath(ns.repo_root)
     self.ticket = getattr(ns, "ticket", None)
-    self.project = getattr(ns, "project", None)
+    self.directory = getattr(ns, "directory", None)
     self.issue_tag = getattr(ns, "issue_tag", None)
     self.title = getattr(ns, "title", None)
 
@@ -725,15 +753,23 @@ class TerminalTitleScript(BaseScript):
         )
       return 0
 
+    dir_name = (
+        self.directory
+        if self.directory is not None
+        else detect_directory_name(repo_root=self.repo_root)
+    )
+
     if self.command == "reset":
-      project_name = self.project or detect_project_name(
-          repo_root=self.repo_root, env=env
-      )
       ok = False
       applied = ""
-      if project_name and not is_temporary_directory_name(project_name):
+      reset_title = (
+          format_terminal_title("", dir_name)
+          if dir_name and not is_temporary_directory_name(dir_name)
+          else ""
+      )
+      if reset_title:
         ok, applied = set_terminal_title(
-            title=project_name,
+            title=reset_title,
             repo_root=self.repo_root,
             stream=stream_to_check,
             env=env,
@@ -759,20 +795,17 @@ class TerminalTitleScript(BaseScript):
       return 0
 
     ticket_id = self.ticket or detect_ticket_id(repo_root=self.repo_root, env=env)
-    project_name = self.project or detect_project_name(
-        repo_root=self.repo_root, env=env
-    )
     issue_tag = self.issue_tag
     if issue_tag is None and self.ticket is None:
       issue_tag = detect_issue_tag(repo_root=self.repo_root, env=env)
     title = self.title or format_terminal_title(
-        ticket_id, project_name, issue_tag
+        ticket_id, dir_name, issue_tag
     )
 
     if self.command == "info":
       data = {
           "ticket_id": ticket_id,
-          "project_name": project_name,
+          "directory_name": dir_name,
           "issue_tag": issue_tag,
           "title": title,
           "can_change": can_change,
@@ -783,7 +816,7 @@ class TerminalTitleScript(BaseScript):
       else:
         self.stdout.write(
             f"Ticket: {ticket_id}\n"
-            f"Project: {project_name}\n"
+            f"Directory: {dir_name}\n"
             f"Issue Tag: {issue_tag}\n"
             f"Title: {title}\n"
             f"Supported: {can_change} ({mechanism})\n"
