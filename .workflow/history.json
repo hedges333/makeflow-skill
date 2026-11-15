@@ -2245,5 +2245,26 @@
     "closes_issue": true,
     "tests_added": 2,
     "scars_earned": []
+  },
+  {
+    "id": "GH-224",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/224",
+    "title": "[FEAT] include directory name in terminal title",
+    "request": "Add detect_directory_name in lib/terminal_title.py and scripts/terminal_title.py, update terminal title formatting and reset output to <dir_name>/: <ticket_id> <title> without project names, switch WorkflowGatesScript and CLI options to directory naming, and update 01_intake_and_branching.md and tests/test_terminal_title.py.",
+    "branch": "feat/224-include-dir-name-in-terminal-title",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-15T19:23:50Z",
+    "completed_at": "2026-11-15T20:25:57Z",
+    "commit_sha": "9126432f00f88a7632058aa221155e264fdf905a",
+    "pr_number": 229,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/229",
+    "closes_issue": true,
+    "tests_added": 12,
+    "scars_earned": []
   }
 ]

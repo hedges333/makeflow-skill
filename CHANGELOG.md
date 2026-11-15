@@ -21,6 +21,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - Load `serverInfo.version` dynamically from `./plugin.json` in `mcp/server.py`.
 - Set author metadata in `./plugin.json` to Mark Hedges.
 - Align hook and MCP commit gates on `docs(changelog):`, `docs(release):`, `chore(release):`, and `docs(scars):`.
+- Change terminal titles to start with the bare directory name and trailing slash instead of the project name.
 
 ### Fixed
 
