@@ -1,5 +1,5 @@
 ---
-name: socratic-prompt-writer
+name: socratic-probe-writer
 description: With deep understanding of AI reasoning model self-attention layers and thinking tokens, evaluate a synthetic scar in the database, devise `socratic_probe` field questions that generate kinetic impulse in a code development agent to sever flawed reasoning trees early in its reasoning process, and update the scar database.
 tools:
   - send_message

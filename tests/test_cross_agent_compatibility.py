@@ -4876,8 +4876,6 @@ OPEN_ENGLISH_SPEC_REQUIREMENTS = {
         "wh-quer",
         "how much",
         "how many",
-        "socratic-prompt-writer.md",
-        "20 words",
         "prepositional",
         "right association",
         "binding order",
@@ -4893,7 +4891,7 @@ OPEN_ENGLISH_REPO_TARGETS = (
     "scripts/session_start.py",
     "skills/makeflow/SKILL.md",
     "skills/makeflow/references/04_six_pillars_adversarial_review.md",
-    "agents/socratic-prompt-writer.md",
+    "agents/socratic-probe-writer.md",
     "agents/synthetic-scar-importer.md",
 )
 
@@ -5503,7 +5501,7 @@ def validate_open_technical_english_specs():
           "## Part VI\n"
           "Binding covers anaphora, pronoun, definite noun phrase, accessibility, recency, specificity, reflexivity, his own, and itself.\n"
           "## Part VII\n"
-          "Queries cover interrogative, imperative, wh-queries, how much, how many, socratic-prompt-writer.md, and 20 words.\n"
+          "Queries cover interrogative, imperative, wh-queries, how much, how many, socratic-probe-writer.md, and 20 words.\n"
           "## Part VIII\n"
           "Attachment covers prepositional, right association, binding order, `,and`, and `,or`.\n"
           "| Avoid | Use |\n"

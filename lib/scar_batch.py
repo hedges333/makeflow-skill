@@ -19,7 +19,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _RULE_DOC_PATHS = {
     "importer_agent": os.path.join("agents", "synthetic-scar-importer.md"),
-    "socratic_agent": os.path.join("agents", "socratic-prompt-writer.md"),
+    "socratic_agent": os.path.join("agents", "socratic-probe-writer.md"),
     "simple_english_guide": os.path.join(
         "skills",
         "makeflow",
@@ -200,7 +200,7 @@ def build_socratic_probe_prompt(
       "Write a kinetic Socratic probe (1 to 3 short questions ending in '?').",
       "Return only JSON matching the schema with socratic_probe.",
       "",
-      "## Socratic Writer Rules (agents/socratic-prompt-writer.md)",
+      "## Socratic Writer Rules (agents/socratic-probe-writer.md)",
       rule_docs.get("socratic_agent", ""),
       "",
       "## Kinetic Impulse Rules (socratic_prompting.md)",

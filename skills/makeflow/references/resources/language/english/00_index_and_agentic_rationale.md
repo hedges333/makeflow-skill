@@ -163,7 +163,7 @@ Delete zero-information phrases outright (`DELETE (0 tokens)`) or replace verbos
 
 ## 6. Worked scar and Socratic probe compression patterns
 
-When `agents/synthetic-scar-importer.md` or `agents/socratic-prompt-writer.md` compresses scars, `ScarCandidateValidator` checks sentence limits while preserving inline code and `$...$` / `$$...$$` math byte-for-byte.
+When `agents/synthetic-scar-importer.md` or `agents/socratic-probe-writer.md` compresses scars, `ScarCandidateValidator` checks sentence limits while preserving inline code and `$...$` / `$$...$$` math byte-for-byte.
 
 | Scar field | Word limit | Worked `Before` and `After` compression example |
 | :--- | :--- | :--- |

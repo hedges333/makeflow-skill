@@ -301,17 +301,6 @@ An imperative sentence (a command directed at an explicit addressee) starts with
 An ACE text is a sequence of declarative, interrogative, and imperative sentences.
 Declarative, interrogative, and imperative sentences can refer anaphorically to entities introduced in preceding declarative sentences, but never to entities introduced in preceding queries or commands.
 
-### 3. Formal ACE Socratic Probe Patterns for `agents/socratic-prompt-writer.md`
-
-When `agents/socratic-prompt-writer.md` distills synthetic scar fields (`wound`, `trap`, `circuit_breaker`, and `reflex`) into `socratic_probe` questions, follow these ACE interrogative rules:
-
-1. Keep every question sentence at 20 words or fewer, ending with a question mark (`?`).
-2. Eliminate bare pronouns (`it`, `they`, `this`) by naming the exact definite noun phrase (`the child process`, `the lock directory`).
-3. Formulate affirmative conditional `Yes/No` queries or `wh`-queries that test the candidate plan against the `reflex` invariant:
-   - **Trap-to-Reflex Probe**: `If the worker skips <reflex>, can <trap> cause <wound>?`
-   - **Circuit-Breaker Probe**: `When <circuit_breaker> occurs, does the handler execute <reflex> before the process exits?`
-   - **State-Boundary `wh`-Query**: `What happens to <target noun phrase> if <failure condition> occurs during execution?`
-
 ## Part VIII: Deterministic Interpretation and Attachment Rules (Interpretation Rules and Troubleshooting Guide)
 
 ### 1. Prepositional Phrase and Adverb Attachment

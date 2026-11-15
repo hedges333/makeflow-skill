@@ -38,7 +38,7 @@ Loop:
    sqlite3 skills/makeflow/data/scars_registry.db "SELECT id FROM scars WHERE (socratic_probe IS NULL OR TRIM(socratic_probe) = '') AND (wound IS NOT NULL AND TRIM(wound) != '') AND (reflex IS NOT NULL AND TRIM(reflex) != '') ORDER BY id LIMIT 1;"
 
 2. If an ID is returned:
-   - Invoke the socratic-prompt-writer subagent with that scar ID to create the Socratic prompt and update the database row.
+   - Invoke the socratic-probe-writer subagent with that scar ID to create the Socratic prompt and update the database row.
    - Wait for the subagent to report completion.
    - Return to step 1. Keep iterating until no rows match the query.
 
