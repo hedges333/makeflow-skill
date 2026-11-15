@@ -189,7 +189,7 @@ flowchart TD
 - Target 70 (`bot-quiescence`): Polls CI checks and waits 180 seconds for review bots to finish commenting.
 - Target 75 (`ready-to-land`): Human Pause Gate. Presents CI status and the 7-criteria merge policy table.
 - Target 80 (`land`): Squash-merges the pull request, deletes the ticket branch, and updates `main`.
-- Target 90 (`finish`): Records process lessons and appends the task to `.workflow/history.json` and `.workflow/history.md`.
+- Target 90 (`finish`): Records process lessons, updates `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md`, and prompts to cut a release.
 
 ---
 
@@ -348,7 +348,7 @@ Automated test suites and agent commands must never touch live production system
 
 ## Request History Ledger
 
-At Target 90, the agent appends completed task metadata to `.workflow/history.json` and `.workflow/history.md`. These files give your repository a version-controlled log of resolved issues, branches, pull requests, added tests, and codified process scars.
+At Target 90, the agent updates `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` (`## [Unreleased]`), and asks whether to cut a release. These files keep a version-controlled log of resolved issues, branches, pull requests, added tests, and codified process scars.
 
 ---
 

@@ -74,7 +74,7 @@ Synthetic Scars use a two-tier storage and discovery lifecycle:
 3. If a core scar is a ticket deliverable, scope it in Target 15 and plan it in Target 20.
 4. Author and test core scars with `tdd-worker` at Target 30 on a feature branch, and review in Target 40.
 5. Target 90 never creates or modifies core catalog files on `main`.
-6. At Target 90, record only merged scar IDs in `.workflow/history.json` and `.workflow/history.md`.
+6. At Target 90, record only merged scar IDs in `.workflow/history.json` and `.workflow/history.md`. Update `CHANGELOG.md` under `## [Unreleased]` and prompt the user for a release.
 7. Inside `makeflow-skill`, record incidental session lessons in ticket notes for a future feature request ticket.
 8. Inside external user projects, offer to record project-specific lessons in `.workflow/scars/local.md` at Target 90.
 9. During Target 15, Target 20, Target 30, Target 40, and Target 70, inspect both `skills/makeflow/references/scars/` and `.workflow/scars/`, and query stacked SQLite registries via `workflow_query_scars`.

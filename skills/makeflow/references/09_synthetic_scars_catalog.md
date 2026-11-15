@@ -136,7 +136,7 @@ Query them on demand with `workflow_query_scars` using `language` and `framework
 3. Implement and test the scar with `tdd-worker` at Target 30 on a feature branch.
 4. Audit the scar diff with `adversarial-critic` at Target 40 before merging.
 5. Target 90 never creates or modifies core catalog files on `main`.
-6. At Target 90, record only merged scar IDs in `.workflow/history.json` and `.workflow/history.md`.
+6. At Target 90, record only merged scar IDs in `.workflow/history.json` and `.workflow/history.md`. Update `CHANGELOG.md` under `## [Unreleased]` and prompt the user for a release.
 
 ### 3.2 Incidental Retrospective Lessons and Project-Local Scars (Tier 2)
 

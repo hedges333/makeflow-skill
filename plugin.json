@@ -4,7 +4,7 @@
   "version": "1.4.1",
   "description": "Compaction-immune, DAG-based ticket resolution workflow with hardware hooks, cross-agent MCP server, human pause gates, 27-language polyglot TDD, design pattern guides, and adversarial review. Implements Randal Schwartz's Synthetic Scars methodology.",
   "author": {
-    "name": "Randal L. Schwartz (methodology) / hedges333 (packaging)",
+    "name": "Mark Hedges",
     "url": "https://github.com/hedges333/makeflow-skill"
   },
   "homepage": "https://github.com/hedges333/makeflow-skill",

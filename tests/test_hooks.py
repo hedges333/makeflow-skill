@@ -904,6 +904,24 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
         "git branch -M old main",
         "git branch -d feat/1-done",
         'git commit -m "feat: add guard"',
+        "git commit -m 'docs(changelog): update unreleased notes'",
+        "git commit -m 'docs(release): cut v1.5.0'",
+        "git commit -m 'chore(release): bump manifests to v1.5.0'",
+        "git commit -m 'docs(scars): add project scar'",
+        "git commit -m 'chore: add local scar' .workflow/scars/local.md",
+        "git commit -m 'feat: add api' CHANGELOG.md",
+        "git commit -m 'feat(hooks): handle docs(changelog): commits'",
+        "git commit -m 'fix(ledger): handle .workflow/history'",
+        "git commit -m 'docs(changelog): document fix: edge case'",
+        "git commit -S -m 'docs(changelog): signed update'",
+        "git commit -m 'docs(changelog): sneak' src/app.py",
+        "git commit -am 'docs(changelog): update unreleased notes'",
+        "git commit --all -m 'docs(release): cut v1.5.0'",
+        "git commit -S src/app.py -m 'docs(changelog): sneak'",
+        "git commit --amend -m 'docs(changelog): amend'",
+        "git rm src/app.py && git commit -m 'docs(changelog): remove'",
+        "# docs(changelog): note\ngit commit -m 'feat: unreviewed'",
+        "git commit -m 'docs(changelog): a' && git commit -m 'feat: b'",
         "gh pr merge 2 --squash",
         'for f in README.md; do git checkout -- "$f"; done',
         'sh -c -- "git reset --hard"',
@@ -923,6 +941,11 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
           mcp_safe and mcp_reason.startswith("Requires human operator approval")
       ), (
           f"Gate parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
+      )
+      hook_is_t90 = "Target 90 History Ledger Gate" in hook_res.get("reason", "")
+      mcp_is_t90 = "Target 90 History Ledger Gate" in mcp_reason
+      assert hook_is_t90 == mcp_is_t90, (
+          f"Target 90 vs 50 parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
       )
 
     print("✔ Hook and MCP Git guard parity assertions passed.")
@@ -1065,6 +1088,267 @@ class TestTarget90ScarsHook(unittest.TestCase):
         self.assertNotIn("Target 50 Commit Gate", res["reason"])
 
 
+class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
+  """Tests Target 90 changelog, release commit markers, and Target 50 boundary safety."""
+
+  def test_shared_target90_guard_helpers(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.target90_guard import is_target_90_commit_command
+
+    for cmd in (
+        "git commit -m 'docs(changelog): update unreleased notes'",
+        "git commit -m 'docs(release): cut v1.5.0'",
+        "git commit -m 'chore(release): bump manifests to v1.5.0'",
+    ):
+      self.assertTrue(is_target_90_commit_command(cmd, is_t90_state=False))
+      self.assertTrue(is_target_90_commit_command(cmd, is_t90_state=True))
+
+    self.assertFalse(
+        is_target_90_commit_command(
+            "git commit -m 'chore: finalize notes' CHANGELOG.md",
+            is_t90_state=False,
+        )
+    )
+    self.assertTrue(
+        is_target_90_commit_command(
+            "git commit -m 'chore: finalize notes' CHANGELOG.md",
+            is_t90_state=True,
+        )
+    )
+    self.assertTrue(
+        is_target_90_commit_command(
+            "git commit -m 'chore: bump version' ./plugin.json",
+            is_t90_state=True,
+        )
+    )
+    self.assertFalse(
+        is_target_90_commit_command(
+            "git commit -m 'feat: add api' CHANGELOG.md",
+            is_t90_state=False,
+        )
+    )
+    self.assertFalse(
+        is_target_90_commit_command(
+            "git commit -m 'feat: add api' CHANGELOG.md",
+            is_t90_state=True,
+        )
+    )
+    self.assertFalse(
+        is_target_90_commit_command(
+            "git commit -m 'fix(mcp): repair parser' CHANGELOG.md",
+            is_t90_state=True,
+        )
+    )
+    for blocked_header_cmd in (
+        "git commit -m 'feat(hooks): handle docs(changelog): commits'",
+        "git commit -m 'fix(ledger): handle .workflow/history'",
+        "git commit -m 'docs(changelog): sneak' src/app.py",
+        "git commit -am 'docs(changelog): update unreleased notes'",
+        "git commit --all -m 'docs(release): cut v1.5.0'",
+        "git commit -a -m 'chore(release): bump manifests to v1.5.0'",
+        "git add CHANGELOG.md && git commit -a -m 'chore: release notes'",
+        "git commit -S src/app.py -m 'docs(changelog): sneak'",
+        "git commit -u src/app.py -m 'docs(changelog): sneak'",
+        "git commit --amend -m 'docs(changelog): amend'",
+        "git rm src/app.py && git commit -m 'docs(changelog): remove'",
+        "git mv src/a.py src/b.py && git commit -m 'docs(changelog): move'",
+        "# docs(changelog): note\ngit commit -m 'feat: unreviewed'",
+        "git commit -m 'docs(changelog): a' && git commit -m 'feat: b'",
+    ):
+      self.assertFalse(
+          is_target_90_commit_command(blocked_header_cmd, is_t90_state=False),
+          msg=blocked_header_cmd,
+      )
+      self.assertFalse(
+          is_target_90_commit_command(blocked_header_cmd, is_t90_state=True),
+          msg=blocked_header_cmd,
+      )
+    self.assertTrue(
+        is_target_90_commit_command(
+            "git commit -m 'docs(changelog): document fix: edge case'",
+            is_t90_state=False,
+        )
+    )
+    self.assertTrue(
+        is_target_90_commit_command(
+            "git commit -S -m 'docs(changelog): signed update'",
+            is_t90_state=False,
+        )
+    )
+    self.assertTrue(
+        is_target_90_commit_command(
+            "git commit --gpg-sign -m 'docs(release): cut v1.5.0'",
+            is_t90_state=False,
+        )
+    )
+    self.assertFalse(
+        is_target_90_commit_command(
+            "git add CHANGELOG.md && git commit -m 'chore: release notes'",
+            is_t90_state=False,
+        )
+    )
+    self.assertTrue(
+        is_target_90_commit_command(
+            "git add CHANGELOG.md && git commit -m 'chore: release notes'",
+            is_t90_state=True,
+        )
+    )
+    self.assertFalse(
+        is_target_90_commit_command(
+            "git add src/app.py CHANGELOG.md && git commit -m 'chore: release notes'",
+            is_t90_state=True,
+        )
+    )
+
+  def test_detect_target_90_recognizes_changelog_and_release_markers(self):
+    guard_mod = _load_module("pre_tool_guard", PRE_TOOL)
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+
+      for cmd in (
+          "git commit -m 'docs(changelog): update unreleased notes'",
+          "git commit -m 'docs(release): cut v1.5.0'",
+          "git commit -m 'chore(release): bump version manifests'",
+      ):
+        is_hist, is_t90 = guard_mod._detect_target_90(cmd, state_dir=state_dir)
+        self.assertTrue(is_hist, f"Expected T90 commit marker for: {cmd}")
+        self.assertFalse(is_t90)
+
+      is_hist_feat, _ = guard_mod._detect_target_90(
+          "git commit -m 'feat: add api' CHANGELOG.md", state_dir=state_dir
+      )
+      self.assertFalse(is_hist_feat)
+
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# 99_next_action\n- Active Target: Target 90 (finish)\n")
+
+      for t90_cmd in (
+          "git commit -m 'chore: finalize notes' CHANGELOG.md",
+          "git commit -m 'chore: update manifest version' plugin.json",
+      ):
+        is_hist_ok, is_t90_ok = guard_mod._detect_target_90(
+            t90_cmd, state_dir=state_dir
+        )
+        self.assertTrue(is_hist_ok, f"Expected T90 match at Target 90: {t90_cmd}")
+        self.assertTrue(is_t90_ok)
+
+      is_hist_stale_feat, is_t90_stale = guard_mod._detect_target_90(
+          "git commit -m 'feat: add api' CHANGELOG.md", state_dir=state_dir
+      )
+      self.assertTrue(is_t90_stale)
+      self.assertFalse(is_hist_stale_feat)
+
+  def test_pre_tool_guard_changelog_and_release_gate_routing(self):
+    with (
+        tempfile.TemporaryDirectory() as ws_dir,
+        tempfile.TemporaryDirectory() as hook_cwd,
+    ):
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      next_card = os.path.join(state_dir, "99_next_action.md")
+      with open(next_card, "w", encoding="utf-8") as f:
+        f.write(
+            "# Next Action: COMPLETE (make finish satisfied)\n"
+            "- Active Target: Target 90 (finish)\n"
+        )
+
+      for cmd in (
+          "git commit -m 'docs(changelog): update unreleased notes'",
+          "git commit -m 'docs(release): cut v1.5.0'",
+          "git commit -m 'chore(release): bump manifests to v1.5.0'",
+          "git commit -m 'chore: finalize notes' CHANGELOG.md",
+          "git add CHANGELOG.md && git commit -m 'chore: release notes'",
+          "git commit -m 'docs(changelog): document fix: edge case'",
+          "git commit -S -m 'docs(changelog): signed update'",
+      ):
+        res = run_hook(
+            PRE_TOOL,
+            {
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": cmd},
+                },
+            },
+            cwd=hook_cwd,
+        )
+        self.assertEqual(res["decision"], "force_ask", msg=cmd)
+        self.assertIn("Target 90 History Ledger Gate", res["reason"], msg=cmd)
+        self.assertNotIn("Target 50 Commit Gate", res["reason"], msg=cmd)
+
+      for t50_cmd in (
+          "git commit -m 'feat: add api' CHANGELOG.md",
+          "git commit -m 'feat(hooks): handle docs(changelog): commits'",
+          "git commit -m 'fix(ledger): handle .workflow/history'",
+          "git commit -m 'docs(changelog): sneak' src/app.py",
+          "git commit -am 'docs(changelog): update unreleased notes'",
+          "git commit --all -m 'docs(release): cut v1.5.0'",
+          "git commit -S src/app.py -m 'docs(changelog): sneak'",
+          "git commit --amend -m 'docs(changelog): amend'",
+          "git rm src/app.py && git commit -m 'docs(changelog): remove'",
+          "# docs(changelog): note\ngit commit -m 'feat: unreviewed'",
+          "git commit -m 'docs(changelog): a' && git commit -m 'feat: b'",
+          "git add src/app.py CHANGELOG.md && git commit -m 'chore: release notes'",
+      ):
+        stale_res = run_hook(
+            PRE_TOOL,
+            {
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": t50_cmd},
+                },
+            },
+            cwd=hook_cwd,
+        )
+        self.assertEqual(stale_res["decision"], "force_ask", msg=t50_cmd)
+        self.assertIn("Target 50 Commit Gate", stale_res["reason"], msg=t50_cmd)
+        self.assertNotIn(
+            "Target 90 History Ledger Gate", stale_res["reason"], msg=t50_cmd
+        )
+
+      with (
+          tempfile.TemporaryDirectory() as t30_ws,
+          tempfile.TemporaryDirectory() as t30_cwd,
+      ):
+        t30_state = os.path.join(t30_ws, ".workflow", "state")
+        os.makedirs(t30_state)
+        with open(
+            os.path.join(t30_state, "99_next_action.md"), "w", encoding="utf-8"
+        ) as f:
+          f.write("- Active Target: Target 30 (implementation-diff)\n")
+        with open(
+            os.path.join(t30_state, "gate_entry.json"), "w", encoding="utf-8"
+        ) as f:
+          json.dump({"gate": "T50", "humanTurnVerified": False}, f)
+        for smuggle_cmd in (
+            "# docs(changelog): note\ngit commit -m 'feat: unreviewed'",
+            "git commit -m 'docs(changelog): a' && git commit -m 'feat: b'",
+            "git commit -m 'feat(hooks): handle docs(changelog): commits'",
+            "git commit -am 'docs(changelog): update unreleased notes'",
+            "git commit --all -m 'docs(release): cut v1.5.0'",
+            "git commit -S src/app.py -m 'docs(changelog): sneak'",
+            "git commit --amend -m 'docs(changelog): amend'",
+        ):
+          smuggle_res = run_hook(
+              PRE_TOOL,
+              {
+                  "workspacePaths": [t30_ws],
+                  "toolCall": {
+                      "name": "run_command",
+                      "args": {"CommandLine": smuggle_cmd},
+                  },
+              },
+              cwd=t30_cwd,
+          )
+          self.assertEqual(smuggle_res["decision"], "deny", msg=smuggle_cmd)
+          self.assertIn("T50", smuggle_res["reason"], msg=smuggle_cmd)
+
+
 class TestPreToolGuardSelfModification(unittest.TestCase):
   """Unit tests verifying pre_tool_guard denies self-modification of governance files."""
 
@@ -1080,6 +1364,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "true >| .workflow/state/Makefile",
         "echo 'x' &> scripts/workflow_gates.py",
         "echo 'x' > lib/tdd_guard.py",
+        "echo 'x' > lib/target90_guard.py",
     ]
     for cmd in bad_commands:
       res = run_hook(
@@ -1115,6 +1400,9 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "sed -i 's/foo/bar/' scripts/workflow_gates.py",
         "sed -i.bak 's/foo/bar/' hooks.json",
         "sed -i 's/foo/bar/' .workflow/state/Makefile",
+        "rm -f lib/target90_guard.py",
+        "truncate -s 0 lib/target90_guard.py",
+        "sed -i 's/foo/bar/' lib/target90_guard.py",
     ]
     for cmd in bad_commands:
       res = run_hook(
@@ -1186,6 +1474,8 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "mv evil.py lib/base_script.py",
         "mv evil.py scripts/emit_reflex.py",
         "mv evil.py hooks.json",
+        "cp evil.py lib/target90_guard.py",
+        "mv evil.py lib/target90_guard.py",
     ]
     for cmd in denied_commands:
       res = run_hook(

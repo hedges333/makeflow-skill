@@ -22,6 +22,11 @@ from lib.config import (
     load_database_config,
     resolve_state_dir,
 )
+from lib.target90_guard import (
+    is_target_90_commit_command,
+    is_target_90_state_dir,
+    iter_subcommand_tokens_with_target90,
+)
 from lib.shell_safety import (
     DB_TOOLS,
     ENV_ASSIGN_RE,
@@ -64,40 +69,22 @@ from lib.turn_boundary import (
 )
 
 
-def _detect_target_90(cmd, state_dir=None):
-  """Detects whether command is a Target 90 history ledger or local scar operation."""
-  is_history_msg = (
-      "docs(history):" in cmd
-      or "docs(scars):" in cmd
-      or ".workflow/history" in cmd
-      or ".workflow/scars" in cmd
-      or "history.json" in cmd
-      or "history.md" in cmd
-  )
-  is_t90_state = False
-  if state_dir is None:
-    if not is_plugin_dir(os.getcwd()):
-      cwd_state = os.path.join(os.getcwd(), ".workflow", "state")
-      if os.path.isdir(cwd_state):
-        state_dir = cwd_state
+def _resolve_effective_state_dir(state_dir=None):
+  """Resolves workflow state directory while preserving plugin-dir isolation."""
+  if state_dir is not None:
+    return state_dir
+  if not is_plugin_dir(os.getcwd()):
+    cwd_state = os.path.join(os.getcwd(), ".workflow", "state")
+    if os.path.isdir(cwd_state):
+      return cwd_state
+  return None
 
-  if state_dir and os.path.isdir(state_dir):
-    next_action_card = os.path.join(state_dir, "99_next_action.md")
-    if os.path.isfile(next_action_card):
-      try:
-        with open(next_action_card, "r", encoding="utf-8") as f:
-          txt = f.read()
-        if (
-            re.search(r"(?im)^-\s*Active Target:\s*(?:Target\s*90|T90)\b", txt)
-            or re.search(r"^\s*-\s*\[>\]\s*(?:Target\s*90|T90)\b", txt, re.M)
-            or re.search(
-                r"(?im)^#\s*Next Action:.*(?:COMPLETE|make finish satisfied)",
-                txt,
-            )
-        ):
-          is_t90_state = True
-      except (OSError, UnicodeDecodeError):
-        pass
+
+def _detect_target_90(cmd, state_dir=None):
+  """Detects whether command is a Target 90 ledger, scar, changelog, or release operation."""
+  effective_state_dir = _resolve_effective_state_dir(state_dir)
+  is_t90_state = is_target_90_state_dir(effective_state_dir)
+  is_history_msg = is_target_90_commit_command(cmd, is_t90_state=is_t90_state)
   return is_history_msg, is_t90_state
 
 
@@ -428,22 +415,30 @@ def _evaluate_git_tokens(
 
 def evaluate_git_command(cmd, has_review, state_dir=None, transcript_path=""):
   """Evaluates all subcommands with deny > force_ask > allow precedence."""
-  is_history_msg, is_t90_state = _detect_target_90(cmd, state_dir)
+  effective_state_dir = _resolve_effective_state_dir(state_dir)
+  is_t90_state = is_target_90_state_dir(effective_state_dir)
   first_ask_reason = None
-  for subcmd in _expand_shell_subcommands(cmd):
-    for tokens in _tokenize_subcommand(subcmd):
-      decision, reason = _evaluate_git_tokens(
-          tokens,
-          has_review,
-          is_history_msg=is_history_msg,
-          is_t90_state=is_t90_state,
-          state_dir=state_dir,
-          transcript_path=transcript_path,
-      )
-      if decision == "deny":
-        return {"decision": "deny", "reason": reason}
-      if decision == "force_ask" and first_ask_reason is None:
-        first_ask_reason = reason
+  for tokens, _, is_subcmd_t90 in iter_subcommand_tokens_with_target90(
+      cmd, is_t90_state=is_t90_state
+  ):
+    decision, reason = _evaluate_git_tokens(
+        tokens,
+        has_review,
+        is_history_msg=is_subcmd_t90,
+        is_t90_state=is_t90_state,
+        state_dir=state_dir,
+        transcript_path=transcript_path,
+    )
+    if decision == "deny":
+      return {"decision": "deny", "reason": reason}
+    if decision == "force_ask" and (
+        first_ask_reason is None
+        or (
+            "Target 90 History Ledger Gate" in first_ask_reason
+            and "Target 50 Commit Gate" in reason
+        )
+    ):
+      first_ask_reason = reason
   if first_ask_reason is not None:
     return {"decision": "force_ask", "reason": first_ask_reason}
   return {"decision": "allow"}
@@ -460,6 +455,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/reflex.py",
     "lib/config.py",
     "lib/shell_safety.py",
+    "lib/target90_guard.py",
     "lib/turn_boundary.py",
     "hooks.json",
     ".workflow/state/Makefile",
