@@ -2184,5 +2184,23 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-205",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/205",
+    "title": "[FEAT] unify make test on automatic test discovery across tests/test_*.py",
+    "request": "Unify make test onto automatic unittest discovery across tests/test_*.py after test-static and before plugin-files and skill-budget, wrap legacy standalone checks in tests/test_static_analysis.py, tests/test_hooks.py, tests/test_mcp_server.py, and tests/test_cross_agent_compatibility.py inside unittest.TestCase subclasses with unittest.main entrypoints, update self-referential Makefile assertions, and add discovery parity and hermetic TESTS_DIR boundary tests in tests/test_make_test_discovery.py.",
+    "branch": "feat/205-unify-make-test-discovery",
+    "subprojects": [
+      "tests"
+    ],
+    "started_at": "2026-11-15T09:42:22Z",
+    "completed_at": "2026-11-15T19:09:57Z",
+    "commit_sha": "d998713bbd7a23f08e8de629c25db3b389afa567",
+    "pr_number": 223,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/223",
+    "closes_issue": true,
+    "tests_added": 6,
+    "scars_earned": []
   }
 ]
