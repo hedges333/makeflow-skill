@@ -20,6 +20,8 @@ import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+  sys.path.insert(0, REPO_ROOT)
 SERVER_SCRIPT = os.path.join(REPO_ROOT, "mcp", "server.py")
 
 
@@ -3145,18 +3147,4 @@ class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
 
 
 if __name__ == "__main__":
-  run_test()
-  TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
-  TestGateEvidenceKeysEnumeration().test_gate_evidence_keys_schema_runtime_and_docs()
-  TestMcpServerMultiDimensionalQueryScars().test_workflow_query_scars_multidimensional_filters()
-  TestMcpServerOntologyAndMfTarget().test_workflow_query_scars_mf_target_and_ss_id_fields()
-  TestMcpPauseGateTurnBoundary().test_mcp_pause_gate_entry_and_same_turn_chaining_blocked()
-  TestMcpPauseGateTurnBoundary().test_mcp_declarative_recovery_transitions_and_gate_entry_cleanup()
-  TestMcpMainSyncTransitions().test_mcp_main_sync_behind_clean_and_conflict_transitions()
-  TestMcpDualEraProtocolAndScarsSchema().test_protocol_constants_and_server_discover()
-  TestMcpDualEraProtocolAndScarsSchema().test_per_request_meta_protocol_version_negotiation()
-  TestMcpDualEraProtocolAndScarsSchema().test_handle_initialize_version_negotiation()
-  TestMcpDualEraProtocolAndScarsSchema().test_dispatch_jsonrpc_line_framing_and_lifecycle()
-  TestMcpDualEraProtocolAndScarsSchema().test_tools_call_stringified_arguments_and_internal_errors()
-  TestMcpDualEraProtocolAndScarsSchema().test_workflow_query_scars_optional_schema_and_fallback()
-  TestMcpDualEraProtocolAndScarsSchema().test_stdio_subprocess_wire_sequence_never_emits_null_id()
+  unittest.main()

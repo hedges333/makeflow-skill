@@ -500,7 +500,7 @@ class TestLocalTickets(unittest.TestCase):
     )
 
   def test_makefile_wires_test_local_tickets_target(self):
-    """TestCase 9: Root Makefile wires test-local-tickets into .PHONY and test: prerequisites."""
+    """TestCase 9: Root Makefile wires test-local-tickets and test discovery across TESTS_DIR."""
     makefile_path = os.path.join(_REPO_ROOT, "Makefile")
     with open(makefile_path, "r", encoding="utf-8") as f:
       mk_text = f.read()
@@ -522,12 +522,33 @@ class TestLocalTickets(unittest.TestCase):
         mk_text,
         "Makefile test-local-tickets recipe must invoke test_local_tickets.py",
     )
-    test_prereq_lines = [
-        line for line in mk_text.splitlines() if line.startswith("test:")
-    ]
-    self.assertTrue(
-        any("test-local-tickets" in line for line in test_prereq_lines),
-        "Makefile test: target prerequisites must include test-local-tickets",
+    lines = mk_text.splitlines()
+    test_idx = next(
+        (i for i, line in enumerate(lines) if line.startswith("test:")), None
+    )
+    self.assertIsNotNone(test_idx, "Makefile must define test: target")
+    prereqs = lines[test_idx][len("test:") :].strip().split()
+    self.assertEqual(
+        prereqs,
+        ["test-static"],
+        "Makefile test: target must depend solely on test-static",
+    )
+    recipe_lines = []
+    for line in lines[test_idx + 1 :]:
+      if line.startswith("\t") or not line.strip() or line.lstrip().startswith("#"):
+        recipe_lines.append(line)
+      else:
+        break
+    test_recipe = "\n".join(recipe_lines)
+    self.assertIn(
+        "unittest discover",
+        test_recipe,
+        "Makefile test: recipe must run unittest discover",
+    )
+    self.assertIn(
+        "$(TESTS_DIR)",
+        test_recipe,
+        "Makefile test: recipe must discover tests across $(TESTS_DIR)",
     )
 
 
