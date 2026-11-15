@@ -31,14 +31,39 @@ CI_ENV_MAPPINGS = {
 }
 
 
-def _parse_positive_int(val, default):
-  if isinstance(val, int) and val > 0:
+def _parse_nonnegative_int(val, default):
+  if isinstance(val, bool):
+    return default
+  if isinstance(val, int) and val >= 0:
     return val
-  if isinstance(val, str) and val.strip().isdigit():
-    num = int(val.strip())
-    if num > 0:
-      return num
+  if isinstance(val, str) and val.strip().isdecimal():
+    return int(val.strip())
   return default
+
+
+def _parse_positive_int(val, default):
+  num = _parse_nonnegative_int(val, default)
+  return num if num is not None and num > 0 else default
+
+
+def _resolve_ci_config(raw_ci):
+  """Normalize CI timing values and apply valid environment overrides."""
+  config = dict(raw_ci) if isinstance(raw_ci, dict) else {}
+  parsers = {
+      "pollIntervalSeconds": (_parse_positive_int, 30),
+      "quiescenceSeconds": (_parse_nonnegative_int, 180),
+  }
+  for key, (parse, default) in parsers.items():
+    config[key] = parse(config.get(key), default)
+
+  overrides = {}
+  for env_var, key in CI_ENV_MAPPINGS.items():
+    parse, _ = parsers[key]
+    value = parse(os.getenv(env_var), None)
+    if value is not None:
+      config[key] = value
+      overrides[env_var] = value
+  return config, overrides
 
 
 def _normalize_str_list(items):
@@ -193,20 +218,7 @@ def get_workflow_config(workspace_paths):
       if db_key in raw_db:
         db_cfg[db_key] = _normalize_str_list(raw_db[db_key])
 
-  ci_cfg = {
-      "pollIntervalSeconds": 30,
-      "quiescenceSeconds": 180,
-  }
-  raw_ci = merged_cfg.get("ci")
-  if isinstance(raw_ci, dict):
-    if "pollIntervalSeconds" in raw_ci:
-      ci_cfg["pollIntervalSeconds"] = _parse_positive_int(
-          raw_ci["pollIntervalSeconds"], 30
-      )
-    if "quiescenceSeconds" in raw_ci:
-      ci_cfg["quiescenceSeconds"] = _parse_positive_int(
-          raw_ci["quiescenceSeconds"], 180
-      )
+  ci_cfg, ci_overrides = _resolve_ci_config(merged_cfg.get("ci"))
 
   env_applied = []
   for env_var, agent_key in ENV_MAPPINGS.items():
@@ -215,13 +227,7 @@ def get_workflow_config(workspace_paths):
       models[agent_key] = val.strip()
       env_applied.append(env_var)
 
-  for env_var, ci_key in CI_ENV_MAPPINGS.items():
-    val = os.getenv(env_var)
-    if val and val.strip().isdigit():
-      num = int(val.strip())
-      if num > 0:
-        ci_cfg[ci_key] = num
-        env_applied.append(env_var)
+  env_applied.extend(ci_overrides)
 
   for env_var, db_key in DB_ENV_MAPPINGS.items():
     val = os.getenv(env_var)
@@ -452,13 +458,10 @@ def resolve_workflow_config(workspace_dir=None):
       config["database"][db_key] = merged
       config["envOverrides"].append(f"{env_var}={','.join(vals)}")
 
-  for env_var, ci_key in CI_ENV_MAPPINGS.items():
-    val = os.getenv(env_var)
-    if val and val.strip().isdigit():
-      num = int(val.strip())
-      if num > 0:
-        config["ci"][ci_key] = num
-        config["envOverrides"].append(f"{env_var}={num}")
+  config["ci"], ci_overrides = _resolve_ci_config(config.get("ci"))
+  config["envOverrides"].extend(
+      f"{env_var}={value}" for env_var, value in ci_overrides.items()
+  )
 
   if "state" not in config or not isinstance(config["state"], dict):
     config["state"] = {"completedCardAction": "unlink"}

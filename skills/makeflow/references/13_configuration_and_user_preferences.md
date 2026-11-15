@@ -36,6 +36,11 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
    - Database guard: blocks standalone `prod` and `production` names automatically.
 
+CI timing values accept integers or decimal strings. Booleans, negative values, and other invalid JSON values use defaults.
+Invalid environment overrides leave the resolved JSON values unchanged.
+Set `ci.quiescenceSeconds` or `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS` to `0` to disable the quiet-window wait.
+The polling interval must remain greater than zero.
+
 ## 3. Configuration File Schema
 
 Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) to `<workspace>/.workflow/config.json` or `~/.gemini/config/makeflow.json`:
