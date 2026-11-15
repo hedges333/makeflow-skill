@@ -667,17 +667,74 @@ def poll_ci_status(
     time.sleep(p_sec)
 
 
-def handle_initialize(request_id):
+SERVER_INFO = {
+    "name": "makeflow-guard",
+    "version": "1.4.1",
+}
+
+SUPPORTED_PROTOCOL_VERSIONS = (
+    "2026-07-28",
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
+
+DEFAULT_INITIALIZE_PROTOCOL_VERSION = "2025-11-25"
+UNSUPPORTED_PROTOCOL_VERSION_CODE = -32022
+MCP_PROTOCOL_VERSION_META_KEY = "io.modelcontextprotocol/protocolVersion"
+MCP_SERVER_INFO_META_KEY = "io.modelcontextprotocol/serverInfo"
+
+
+def handle_server_discover(request_id):
+  """Returns stateless MCP 2026-07-28 discovery metadata.
+
+  Args:
+    request_id: Valid JSON-RPC 2.0 string or integer request identifier.
+
+  Returns:
+    JSON-RPC 2.0 response dictionary containing supportedVersions,
+    capabilities, and serverInfo metadata.
+  """
   return {
       "jsonrpc": "2.0",
       "id": request_id,
       "result": {
-          "protocolVersion": "2024-11-05",
+          "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
           "capabilities": {"tools": {}},
-          "serverInfo": {
-              "name": "makeflow-guard",
-              "version": "1.4.1",
+          "_meta": {
+              MCP_SERVER_INFO_META_KEY: dict(SERVER_INFO),
           },
+      },
+  }
+
+
+def handle_initialize(request_id, params=None):
+  """Negotiates a legacy stateful MCP protocol version with the client.
+
+  Args:
+    request_id: Valid JSON-RPC 2.0 string or integer request identifier.
+    params: Optional initialize request parameters dictionary.
+
+  Returns:
+    JSON-RPC 2.0 response dictionary echoing a supported protocolVersion or
+    falling back to DEFAULT_INITIALIZE_PROTOCOL_VERSION.
+  """
+  requested = (
+      params.get("protocolVersion") if isinstance(params, dict) else None
+  )
+  negotiated = (
+      requested
+      if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS
+      else DEFAULT_INITIALIZE_PROTOCOL_VERSION
+  )
+  return {
+      "jsonrpc": "2.0",
+      "id": request_id,
+      "result": {
+          "protocolVersion": negotiated,
+          "capabilities": {"tools": {}},
+          "serverInfo": dict(SERVER_INFO),
       },
   }
 
@@ -908,7 +965,6 @@ def handle_tools_list(request_id):
                       "description": "Set true to re-emit full scar text even if already loaded in this session",
                   },
               },
-              "required": ["query"],
           },
       },
   ]
@@ -926,8 +982,58 @@ def _error_result(request_id, message):
   }
 
 
+def _normalize_object_arg(raw_value, field_name):
+  """Normalizes an optional dictionary or JSON-object string payload.
+
+  Args:
+    raw_value: Raw argument value (None, dict, JSON string, or invalid type).
+    field_name: Human-readable parameter name for error messages.
+
+  Returns:
+    Tuple of (normalized_dict, error_message). On error, normalized_dict is
+    None and error_message is a non-empty string.
+  """
+  if raw_value is None:
+    return {}, None
+  if isinstance(raw_value, dict):
+    return raw_value, None
+  if isinstance(raw_value, str):
+    stripped = raw_value.strip()
+    if not stripped:
+      return {}, None
+    try:
+      parsed = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+      return (
+          None,
+          f"Invalid '{field_name}': expected JSON object, got invalid JSON string ({exc}).",
+      )
+    if not isinstance(parsed, dict):
+      return (
+          None,
+          f"Invalid '{field_name}': expected JSON object, got {type(parsed).__name__}.",
+      )
+    return parsed, None
+  return (
+      None,
+      f"Invalid '{field_name}': expected JSON object, got {type(raw_value).__name__}.",
+  )
+
+
 def handle_tools_call(request_id, tool_name, arguments):
-  arguments = arguments or {}
+  """Executes a named MCP tool call and returns a JSON-RPC 2.0 response.
+
+  Args:
+    request_id: Valid JSON-RPC 2.0 string or integer request identifier.
+    tool_name: Registered MCP tool name.
+    arguments: Optional dictionary or JSON-encoded object string of arguments.
+
+  Returns:
+    JSON-RPC 2.0 response dictionary correlated with request_id.
+  """
+  arguments, arg_err = _normalize_object_arg(arguments, "arguments")
+  if arg_err is not None:
+    return _error_result(request_id, arg_err)
 
   if tool_name == "workflow_get_state":
     ws = resolve_workspace_dir(arguments)
@@ -1014,9 +1120,13 @@ def handle_tools_call(request_id, tool_name, arguments):
     }
 
   elif tool_name == "workflow_advance_target":
-    current = arguments.get("currentTarget", "").strip()
-    next_t = arguments.get("nextTarget", "").strip()
-    evidence = arguments.get("evidence") or {}
+    current = str(arguments.get("currentTarget") or "").strip()
+    next_t = str(arguments.get("nextTarget") or "").strip()
+    evidence, evidence_err = _normalize_object_arg(
+        arguments.get("evidence"), "evidence"
+    )
+    if evidence_err is not None:
+      return _error_result(request_id, evidence_err)
 
     if current not in VALID_TRANSITIONS:
       return _error_result(
@@ -1351,7 +1461,9 @@ def handle_tools_call(request_id, tool_name, arguments):
     ):
       return _error_result(
           request_id,
-          "Missing required argument 'query'. Provide a keyword or search query.",
+          "Missing required argument 'query' or filter. Provide a search query"
+          " or at least one filter (category, language, source, framework,"
+          " diagnosticCode, workflowPhase, mfTarget).",
       )
 
     ws = resolve_workspace_dir(arguments)
@@ -1363,7 +1475,7 @@ def handle_tools_call(request_id, tool_name, arguments):
     if resolve_scars_db_path is None or query_scars is None:
       return _error_result(
           request_id,
-          "Scars query engine is unavailable. Ensure scripts/sync_synthetic_scars.py is present.",
+          "Scars query engine is unavailable. Ensure lib/scars_db.py is present.",
       )
 
     explicit_db = arguments.get("dbPath") or arguments.get("db_path")
@@ -1536,48 +1648,169 @@ def handle_tools_call(request_id, tool_name, arguments):
   }
 
 
-def main():
-  for line in sys.stdin:
-    if not line.strip():
-      continue
-    try:
-      req = json.loads(line)
-      req_id = req.get("id")
-      method = req.get("method")
+def _is_valid_request_id(request_id):
+  """Checks whether request_id is a non-boolean integer or string."""
+  if isinstance(request_id, bool):
+    return False
+  return isinstance(request_id, (int, str))
 
-      if method == "initialize":
-        resp = handle_initialize(req_id)
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-      elif method == "notifications/initialized":
-        pass
-      elif method == "tools/list":
-        resp = handle_tools_list(req_id)
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-      elif method == "tools/call":
-        params = req.get("params", {})
-        name = params.get("name")
-        args = params.get("arguments", {})
-        resp = handle_tools_call(req_id, name, args)
-        sys.stdout.write(json.dumps(resp) + "\n")
-        sys.stdout.flush()
-      else:
-        if req_id is not None:
-          resp = {
-              "jsonrpc": "2.0",
-              "id": req_id,
-              "error": {"code": -32601, "message": f"Unknown method: {method}"},
-          }
-          sys.stdout.write(json.dumps(resp) + "\n")
-          sys.stdout.flush()
-    except Exception as exc:
-      err_resp = {
+
+def _jsonrpc_error(request_id, code, message, data=None):
+  """Builds a JSON-RPC 2.0 error response correlated with request_id."""
+  err_obj = {"code": code, "message": message}
+  if data is not None:
+    err_obj["data"] = data
+  return {
+      "jsonrpc": "2.0",
+      "id": request_id,
+      "error": err_obj,
+  }
+
+
+def _extract_requested_protocol_version(req, params):
+  """Extracts per-request MCP protocol version from params or top-level _meta."""
+  params_meta = params.get("_meta") if isinstance(params, dict) else None
+  if isinstance(params_meta, dict):
+    version = params_meta.get(MCP_PROTOCOL_VERSION_META_KEY)
+    if version is not None:
+      return version
+  req_meta = req.get("_meta") if isinstance(req, dict) else None
+  if isinstance(req_meta, dict):
+    return req_meta.get(MCP_PROTOCOL_VERSION_META_KEY)
+  return None
+
+
+def dispatch_jsonrpc_line(line, stderr=None):
+  """Parses and dispatches a single JSON-RPC 2.0 line without null-id frames.
+
+  Args:
+    line: Raw single-line text read from standard input.
+    stderr: Optional text stream for parse, framing, and internal diagnostics.
+
+  Returns:
+    JSON-RPC 2.0 response dictionary for valid requests, or None for blank
+    lines, notifications, malformed payloads, and invalid request identifiers.
+  """
+  err_stream = stderr if stderr is not None else sys.stderr
+  if not line or not line.strip():
+    return None
+
+  try:
+    req = json.loads(line)
+  except (json.JSONDecodeError, ValueError, TypeError) as exc:
+    err_stream.write(f"[makeflow-mcp] Invalid JSON frame ignored: {exc}\n")
+    err_stream.flush()
+    return None
+
+  if not isinstance(req, dict):
+    err_stream.write(
+        f"[makeflow-mcp] Non-object JSON-RPC frame ignored: {type(req).__name__}\n"
+    )
+    err_stream.flush()
+    return None
+
+  method = req.get("method")
+  if isinstance(method, str) and method.startswith("notifications/"):
+    return None
+
+  if "id" not in req:
+    return None
+
+  req_id = req.get("id")
+  if req_id is None:
+    err_stream.write("[makeflow-mcp] Null request id ignored\n")
+    err_stream.flush()
+    return None
+
+  if not _is_valid_request_id(req_id):
+    err_stream.write(
+        f"[makeflow-mcp] Invalid request id type ignored: {type(req_id).__name__}\n"
+    )
+    err_stream.flush()
+    return None
+
+  if not isinstance(method, str) or not method.strip():
+    return _jsonrpc_error(
+        req_id, -32600, "Invalid Request: method must be a non-empty string"
+    )
+
+  try:
+    raw_params = req.get("params", {})
+    if raw_params is None:
+      params = {}
+    elif not isinstance(raw_params, dict):
+      return _jsonrpc_error(
+          req_id, -32602, "Invalid params: expected JSON object"
+      )
+    else:
+      params = raw_params
+
+    if method == "server/discover":
+      return handle_server_discover(req_id)
+
+    if method == "initialize":
+      return handle_initialize(req_id, params)
+
+    requested_version = _extract_requested_protocol_version(req, params)
+    if requested_version is not None and (
+        not isinstance(requested_version, str)
+        or requested_version not in SUPPORTED_PROTOCOL_VERSIONS
+    ):
+      return _jsonrpc_error(
+          req_id,
+          UNSUPPORTED_PROTOCOL_VERSION_CODE,
+          "Unsupported protocol version",
+          data={
+              "supported": list(SUPPORTED_PROTOCOL_VERSIONS),
+              "requested": requested_version,
+          },
+      )
+
+    if method == "ping":
+      return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    if method == "tools/list":
+      return handle_tools_list(req_id)
+
+    if method == "resources/list":
+      return {"jsonrpc": "2.0", "id": req_id, "result": {"resources": []}}
+
+    if method == "resources/templates/list":
+      return {
           "jsonrpc": "2.0",
-          "id": None,
-          "error": {"code": -32700, "message": f"Parse error: {exc}"},
+          "id": req_id,
+          "result": {"resourceTemplates": []},
       }
-      sys.stdout.write(json.dumps(err_resp) + "\n")
+
+    if method == "prompts/list":
+      return {"jsonrpc": "2.0", "id": req_id, "result": {"prompts": []}}
+
+    if method == "tools/call":
+      name = params.get("name")
+      if not isinstance(name, str) or not name.strip():
+        return _jsonrpc_error(
+            req_id,
+            -32602,
+            "Invalid params: tools/call requires a non-empty string 'name'",
+        )
+      args = params.get("arguments", {})
+      return handle_tools_call(req_id, name, args)
+
+    return _jsonrpc_error(req_id, -32601, f"Unknown method: {method}")
+  except Exception as exc:
+    err_stream.write(
+        f"[makeflow-mcp] Internal error handling method '{method}' (id={req_id!r}): {exc}\n"
+    )
+    err_stream.flush()
+    return _jsonrpc_error(req_id, -32603, f"Internal error: {exc}")
+
+
+def main():
+  """Reads JSON-RPC 2.0 requests from stdin and writes responses to stdout."""
+  for line in sys.stdin:
+    resp = dispatch_jsonrpc_line(line, stderr=sys.stderr)
+    if resp is not None:
+      sys.stdout.write(json.dumps(resp) + "\n")
       sys.stdout.flush()
 
 
