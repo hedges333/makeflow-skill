@@ -1542,12 +1542,89 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
               self.assertIn("injectSteps", res)
 
 
+class TestCiConfiguration(unittest.TestCase):
+  """Keep the SessionStart and MCP configuration entrypoints consistent."""
+
+  def setUp(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.config import get_workflow_config, resolve_workflow_config
+    self.loaders = {
+        "hook": lambda ws: get_workflow_config([ws]),
+        "mcp": lambda ws: (resolve_workflow_config(ws), None),
+    }
+    self.temp = tempfile.TemporaryDirectory()
+    self.addCleanup(self.temp.cleanup)
+    self.workspace = os.path.join(self.temp.name, "workspace")
+    os.makedirs(os.path.join(self.workspace, ".workflow"))
+    self.env = mock.patch.dict(os.environ, {"HOME": self.temp.name}, clear=True)
+    self.env.start()
+    self.addCleanup(self.env.stop)
+
+  def write_config(self, value, global_config=False):
+    path = (os.path.join(self.temp.name, ".gemini", "config", "makeflow.json")
+            if global_config else os.path.join(self.workspace, ".workflow", "config.json"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump({"ci": value}, f)
+
+  def test_json_ci_values(self):
+    for global_config in (False, True):
+      for value, expected in (
+          (0, {"quiescenceSeconds": 0, "pollIntervalSeconds": 30}),
+          (" 0 ", {"quiescenceSeconds": 0, "pollIntervalSeconds": 30}),
+          (8, {"quiescenceSeconds": 8, "pollIntervalSeconds": 8}),
+          (" 8 ", {"quiescenceSeconds": 8, "pollIntervalSeconds": 8}),
+          *[(invalid, {"quiescenceSeconds": 180, "pollIntervalSeconds": 30})
+            for invalid in (-1, "-1", True, False, None, 1.5, "invalid", "", [], {})],
+      ):
+        self.write_config({"quiescenceSeconds": value, "pollIntervalSeconds": value}, global_config)
+        for name, load in self.loaders.items():
+          with self.subTest(loader=name, global_config=global_config, value=value):
+            config, _ = load(self.workspace)
+            self.assertEqual(config["ci"], expected)
+      if not global_config:
+        os.unlink(os.path.join(self.workspace, ".workflow", "config.json"))
+
+  def test_environment_overrides_and_provenance(self):
+    self.write_config({"quiescenceSeconds": 12, "pollIntervalSeconds": 6})
+    for value, expected in (
+        ("0", {"quiescenceSeconds": 0, "pollIntervalSeconds": 6}),
+        (" 9 ", {"quiescenceSeconds": 9, "pollIntervalSeconds": 9}),
+        *[(invalid, {"quiescenceSeconds": 12, "pollIntervalSeconds": 6})
+          for invalid in ("-1", "false", "invalid", "1.5", "")],
+    ):
+      with mock.patch.dict(os.environ, {
+          "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS": value,
+          "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL": value,
+      }):
+        for name, load in self.loaders.items():
+          with self.subTest(loader=name, value=value):
+            config, source = load(self.workspace)
+            self.assertEqual(config["ci"], expected)
+            if value == "0":
+              if name == "hook":
+                self.assertIn("MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS", source)
+                self.assertNotIn("MAKEFILE_WORKFLOW_CI_POLL_INTERVAL", source)
+              else:
+                self.assertEqual(config["envOverrides"], ["MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0"])
+
+  def test_malformed_ci_section_uses_defaults(self):
+    for value in (None, [], "invalid", True):
+      self.write_config(value)
+      for name, load in self.loaders.items():
+        with self.subTest(loader=name, value=value):
+          config, _ = load(self.workspace)
+          self.assertEqual(config["ci"], {"quiescenceSeconds": 180, "pollIntervalSeconds": 30})
+
+
 if __name__ == "__main__":
   test_pre_tool_guard()
   test_session_start()
   test_hook_mcp_parity()
   test_plugin_directory_isolation()
   suite = unittest.TestSuite()
+  suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestCiConfiguration))
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestTarget90ScarsHook))
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSelfModification))
   suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(TestPreToolGuardSpecificExceptions))
