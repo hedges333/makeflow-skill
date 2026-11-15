@@ -2143,5 +2143,27 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-193",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/193",
+    "title": "[FEAT] scar id independent from syntheticscars.org, and consistent scar id ontology",
+    "request": "Decouple Makeflow scar primary keys (`id`) from upstream syntheticscars.org identifiers (`ss_id`) with partial unique indexing and FTS5 search, add the 68-code canonical domain ontology and 4-digit scar IDs, preserve upstream targets in `ss_targets` alongside shift-left integer `mf_targets` and MCP `mfTarget` filtering, wire unified `--batch-size` `agy --print` CLI batch enrichment in `lib/scar_batch.py`, and migrate all 596 bundled SQLite rows losslessly.",
+    "branch": "feat/193-scar-id-ontology",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "mcp",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-14T23:20:00Z",
+    "completed_at": "2026-11-15T03:49:25Z",
+    "commit_sha": "8cd15fc0678e59dab62d4d8f60f6759a1ce953b7",
+    "pr_number": 208,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/208",
+    "closes_issue": true,
+    "tests_added": 14,
+    "scars_earned": []
   }
 ]
