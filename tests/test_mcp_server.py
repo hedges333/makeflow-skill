@@ -2489,6 +2489,661 @@ class TestMcpMainSyncTransitions(unittest.TestCase):
       self.assertFalse(resp_t50_t60_override["result"].get("isError"))
 
 
+class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
+  """Tests dual-era MCP JSON-RPC framing and scars schema behavior."""
+
+  def _load_mcp_server(self):
+    """Imports mcp.server after adding REPO_ROOT to sys.path."""
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    import mcp.server as mcp_server
+
+    return mcp_server
+
+  def _build_scars_fixture_db(self, db_path):
+    """Creates a temporary SQLite FTS5 database with one Python Target 30 scar."""
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+
+    script = SyncSyntheticScarsScript()
+    script.db_path = db_path
+    script._init_db_schema()
+    cur = script.conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO scars (
+            id, ss_id, title, category, category_slug, visibility,
+            workflow_phases, ss_targets, mf_targets, applies_when,
+            graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+            raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
+            socratic_probe, source, original_id
+        ) VALUES (
+            'SCAR-LANG-PYTHON-TEST-0099',
+            'SCAR-TEST-99',
+            'Hermetic JSON-RPC Framing Guard',
+            'TEST',
+            'test',
+            'public',
+            '["Target 30: tdd", "Target 40: review"]',
+            '["Target 3", "Target 4"]',
+            '[30, 40]',
+            'Writing Python MCP server tests',
+            'graduated',
+            'Raw wound.',
+            'Raw trap.',
+            'If null id frame appears, stop.',
+            'Keep JSON-RPC responses correlated in Python.',
+            'hash-framing-guard',
+            'Simple wound.',
+            'Simple trap.',
+            'If null id frame appears, stop.',
+            'Keep JSON-RPC responses correlated in Python.',
+            'Did you verify response id correlation?',
+            'upstream',
+            NULL
+        )
+        """
+    )
+    script.conn.commit()
+    script.conn.close()
+    enrich_scars_database(db_path)
+
+  def test_protocol_constants_and_server_discover(self):
+    """Checks SUPPORTED_PROTOCOL_VERSIONS and stateless server/discover."""
+    import io
+
+    mcp_server = self._load_mcp_server()
+    self.assertTrue(hasattr(mcp_server, "SUPPORTED_PROTOCOL_VERSIONS"))
+    self.assertTrue(hasattr(mcp_server, "DEFAULT_INITIALIZE_PROTOCOL_VERSION"))
+    self.assertTrue(hasattr(mcp_server, "handle_server_discover"))
+    self.assertTrue(hasattr(mcp_server, "dispatch_jsonrpc_line"))
+
+    expected_versions = (
+        "2026-07-28",
+        "2025-11-25",
+        "2025-06-18",
+        "2025-03-26",
+        "2024-11-05",
+    )
+    self.assertEqual(mcp_server.SUPPORTED_PROTOCOL_VERSIONS, expected_versions)
+    self.assertEqual(
+        mcp_server.DEFAULT_INITIALIZE_PROTOCOL_VERSION, "2025-11-25"
+    )
+
+    direct = mcp_server.handle_server_discover(101)
+    self.assertEqual(direct["id"], 101)
+    self.assertEqual(
+        direct["result"]["supportedVersions"], list(expected_versions)
+    )
+    self.assertEqual(direct["result"]["capabilities"], {"tools": {}})
+    self.assertEqual(
+        direct["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
+        {"name": "makeflow-guard", "version": "1.4.1"},
+    )
+
+    for idx, probe_ver in enumerate(("2026-07-28", "2027-06-01"), start=201):
+      err_buf = io.StringIO()
+      resp = mcp_server.dispatch_jsonrpc_line(
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": idx,
+              "method": "server/discover",
+              "params": {
+                  "_meta": {
+                      "io.modelcontextprotocol/protocolVersion": probe_ver
+                  }
+              },
+          }),
+          stderr=err_buf,
+      )
+      self.assertIsNotNone(resp)
+      self.assertEqual(resp["id"], idx)
+      self.assertNotIn("error", resp)
+      self.assertEqual(
+          resp["result"]["supportedVersions"], list(expected_versions)
+      )
+      self.assertEqual(resp["result"]["capabilities"], {"tools": {}})
+      self.assertEqual(
+          resp["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
+          {"name": "makeflow-guard", "version": "1.4.1"},
+      )
+
+  def test_per_request_meta_protocol_version_negotiation(self):
+    """Checks per-request _meta protocol version acceptance and -32022 error."""
+    import io
+
+    mcp_server = self._load_mcp_server()
+    self.assertTrue(hasattr(mcp_server, "dispatch_jsonrpc_line"))
+    self.assertTrue(hasattr(mcp_server, "SUPPORTED_PROTOCOL_VERSIONS"))
+
+    expected_versions = list(mcp_server.SUPPORTED_PROTOCOL_VERSIONS)
+    methods = (
+        "ping",
+        "tools/list",
+        "tools/call",
+        "resources/list",
+        "resources/templates/list",
+        "prompts/list",
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      req_counter = 300
+      for method in methods:
+        base_params = (
+            {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": tmp_dir},
+            }
+            if method == "tools/call"
+            else {}
+        )
+        for accepted_ver in ("2026-07-28", "2025-11-25", None, "OMIT"):
+          req_counter += 1
+          params = dict(base_params)
+          if accepted_ver != "OMIT":
+            params["_meta"] = {
+                "io.modelcontextprotocol/protocolVersion": accepted_ver
+            }
+          resp = mcp_server.dispatch_jsonrpc_line(
+              json.dumps({
+                  "jsonrpc": "2.0",
+                  "id": req_counter,
+                  "method": method,
+                  "params": params,
+              }),
+              stderr=io.StringIO(),
+          )
+          self.assertEqual(resp["id"], req_counter)
+          self.assertIn("result", resp)
+          self.assertNotIn("error", resp)
+
+        req_counter += 1
+        bad_params = dict(base_params)
+        bad_params["_meta"] = {
+            "io.modelcontextprotocol/protocolVersion": "2027-06-01"
+        }
+        rejected = mcp_server.dispatch_jsonrpc_line(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": req_counter,
+                "method": method,
+                "params": bad_params,
+            }),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(rejected["id"], req_counter)
+        self.assertEqual(rejected["error"]["code"], -32022)
+        self.assertEqual(
+            rejected["error"]["message"], "Unsupported protocol version"
+        )
+        self.assertEqual(
+            rejected["error"]["data"],
+            {"supported": expected_versions, "requested": "2027-06-01"},
+        )
+
+        req_counter += 1
+        top_rejected = mcp_server.dispatch_jsonrpc_line(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": req_counter,
+                "method": method,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2027-06-01"
+                },
+                "params": dict(base_params),
+            }),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(top_rejected["id"], req_counter)
+        self.assertEqual(top_rejected["error"]["code"], -32022)
+        self.assertEqual(
+            top_rejected["error"]["message"], "Unsupported protocol version"
+        )
+        self.assertEqual(
+            top_rejected["error"]["data"],
+            {"supported": expected_versions, "requested": "2027-06-01"},
+        )
+
+  def test_handle_initialize_version_negotiation(self):
+    """Checks legacy initialize protocol version negotiation and fallbacks."""
+    import io
+
+    mcp_server = self._load_mcp_server()
+    self.assertTrue(hasattr(mcp_server, "dispatch_jsonrpc_line"))
+
+    supported = (
+        "2026-07-28",
+        "2025-11-25",
+        "2025-06-18",
+        "2025-03-26",
+        "2024-11-05",
+    )
+    for idx, ver in enumerate(supported, start=1):
+      resp = mcp_server.handle_initialize(idx, {"protocolVersion": ver})
+      self.assertEqual(resp["id"], idx)
+      self.assertEqual(resp["result"]["protocolVersion"], ver)
+
+    wire_init = mcp_server.dispatch_jsonrpc_line(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": "init-wire",
+            "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25"},
+        }),
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(wire_init["id"], "init-wire")
+    self.assertEqual(wire_init["result"]["protocolVersion"], "2025-11-25")
+
+    self.assertEqual(
+        mcp_server.handle_initialize(10)["result"]["protocolVersion"],
+        "2025-11-25",
+    )
+    self.assertEqual(
+        mcp_server.handle_initialize(11, None)["result"]["protocolVersion"],
+        "2025-11-25",
+    )
+    self.assertEqual(
+        mcp_server.handle_initialize(12, {})["result"]["protocolVersion"],
+        "2025-11-25",
+    )
+    self.assertEqual(
+        mcp_server.handle_initialize(13, {"protocolVersion": "2027-06-01"})[
+            "result"
+        ]["protocolVersion"],
+        "2025-11-25",
+    )
+
+  def test_dispatch_jsonrpc_line_framing_and_lifecycle(self):
+    """Checks JSON-RPC 2.0 framing, notification silence, and lifecycle methods."""
+    import io
+
+    mcp_server = self._load_mcp_server()
+    self.assertTrue(hasattr(mcp_server, "dispatch_jsonrpc_line"))
+
+    for blank in ("", "   \t\n"):
+      blank_err = io.StringIO()
+      self.assertIsNone(
+          mcp_server.dispatch_jsonrpc_line(blank, stderr=blank_err)
+      )
+      self.assertEqual(blank_err.getvalue(), "")
+
+    for bad_raw in ("{bad", "[]", "null", "42", "true"):
+      bad_err = io.StringIO()
+      self.assertIsNone(
+          mcp_server.dispatch_jsonrpc_line(bad_raw, stderr=bad_err)
+      )
+      self.assertNotEqual(bad_err.getvalue().strip(), "")
+
+    notifications = (
+        {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}},
+        {"jsonrpc": "2.0", "id": 5, "method": "notifications/cancelled"},
+        {"jsonrpc": "2.0", "method": "ping"},
+        {"jsonrpc": "2.0", "id": None, "method": "ping"},
+    )
+    for note in notifications:
+      self.assertIsNone(
+          mcp_server.dispatch_jsonrpc_line(
+              json.dumps(note), stderr=io.StringIO()
+          )
+      )
+
+    for bad_id in (True, False, [1], {"k": 1}, 1.5):
+      id_err = io.StringIO()
+      self.assertIsNone(
+          mcp_server.dispatch_jsonrpc_line(
+              json.dumps({"jsonrpc": "2.0", "id": bad_id, "method": "ping"}),
+              stderr=id_err,
+          )
+      )
+      self.assertNotEqual(id_err.getvalue().strip(), "")
+
+    for req_id, bad_method_frame in (
+        (401, {"jsonrpc": "2.0", "id": 401}),
+        ("m-402", {"jsonrpc": "2.0", "id": "m-402", "method": 123}),
+        (403, {"jsonrpc": "2.0", "id": 403, "method": "   "}),
+    ):
+      resp = mcp_server.dispatch_jsonrpc_line(
+          json.dumps(bad_method_frame), stderr=io.StringIO()
+      )
+      self.assertEqual(resp["id"], req_id)
+      self.assertEqual(resp["error"]["code"], -32600)
+
+    ping_resp = mcp_server.dispatch_jsonrpc_line(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 410, "method": "ping", "params": None}
+        ),
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(ping_resp, {"jsonrpc": "2.0", "id": 410, "result": {}})
+
+    res_resp = mcp_server.dispatch_jsonrpc_line(
+        json.dumps({"jsonrpc": "2.0", "id": 411, "method": "resources/list"}),
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(
+        res_resp, {"jsonrpc": "2.0", "id": 411, "result": {"resources": []}}
+    )
+
+    tmpl_resp = mcp_server.dispatch_jsonrpc_line(
+        json.dumps(
+            {"jsonrpc": "2.0", "id": 412, "method": "resources/templates/list"}
+        ),
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(
+        tmpl_resp,
+        {"jsonrpc": "2.0", "id": 412, "result": {"resourceTemplates": []}},
+    )
+
+    prompts_resp = mcp_server.dispatch_jsonrpc_line(
+        json.dumps({"jsonrpc": "2.0", "id": 413, "method": "prompts/list"}),
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(
+        prompts_resp, {"jsonrpc": "2.0", "id": 413, "result": {"prompts": []}}
+    )
+
+    unknown_resp = mcp_server.dispatch_jsonrpc_line(
+        json.dumps({"jsonrpc": "2.0", "id": 414, "method": "unknown/method"}),
+        stderr=io.StringIO(),
+    )
+    self.assertEqual(unknown_resp["id"], 414)
+    self.assertEqual(unknown_resp["error"]["code"], -32601)
+
+    for idx, bad_params in enumerate(([1], "bad", 99), start=420):
+      bad_p_resp = mcp_server.dispatch_jsonrpc_line(
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": idx,
+              "method": "tools/list",
+              "params": bad_params,
+          }),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(bad_p_resp["id"], idx)
+      self.assertEqual(bad_p_resp["error"]["code"], -32602)
+
+    for idx, call_params in enumerate(
+        ({}, {"name": ""}, {"name": "   "}, {"name": 42}), start=430
+    ):
+      bad_call = mcp_server.dispatch_jsonrpc_line(
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": idx,
+              "method": "tools/call",
+              "params": call_params,
+          }),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(bad_call["id"], idx)
+      self.assertEqual(bad_call["error"]["code"], -32602)
+
+  def test_tools_call_stringified_arguments_and_internal_errors(self):
+    """Checks stringified arguments, evidence normalization, and -32603 errors."""
+    import io
+    from unittest import mock
+
+    mcp_server = self._load_mcp_server()
+    self.assertTrue(hasattr(mcp_server, "dispatch_jsonrpc_line"))
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      for idx, raw_args in enumerate(
+          ("{}", "", json.dumps({"workspaceDir": tmp_dir})), start=501
+      ):
+        resp = mcp_server.dispatch_jsonrpc_line(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": idx,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_get_config",
+                    "arguments": raw_args,
+                },
+            }),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(resp["id"], idx)
+        self.assertFalse(resp["result"].get("isError"))
+        parsed_cfg = json.loads(resp["result"]["content"][0]["text"])
+        self.assertIn("models", parsed_cfg)
+
+      state_resp = mcp_server.dispatch_jsonrpc_line(
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": "state-str",
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_get_state",
+                  "arguments": json.dumps({"workspaceDir": tmp_dir}),
+              },
+          }),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(state_resp["id"], "state-str")
+      self.assertFalse(state_resp["result"].get("isError"))
+
+      for idx, bad_args in enumerate(("{bad", "[1]", 123, []), start=510):
+        bad_resp = mcp_server.dispatch_jsonrpc_line(
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": idx,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_get_config",
+                    "arguments": bad_args,
+                },
+            }),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(bad_resp["id"], idx)
+        self.assertIs(bad_resp["result"].get("isError"), True)
+
+      adv_ok = mcp_server.handle_tools_call(
+          520,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T40",
+              "nextTarget": "T45",
+              "evidence": json.dumps({"blockersCount": 0}),
+          },
+      )
+      self.assertEqual(adv_ok["id"], 520)
+      self.assertFalse(adv_ok["result"].get("isError"))
+      self.assertIn("SUCCESS", adv_ok["result"]["content"][0]["text"])
+
+      for idx, empty_ev in enumerate(("", "{}"), start=521):
+        adv_empty = mcp_server.handle_tools_call(
+            idx,
+            "workflow_advance_target",
+            {
+                "currentTarget": "T10",
+                "nextTarget": "T15",
+                "evidence": empty_ev,
+            },
+        )
+        self.assertEqual(adv_empty["id"], idx)
+        self.assertFalse(adv_empty["result"].get("isError"))
+
+      for idx, bad_ev in enumerate(("{bad", "[1]", 123, []), start=530):
+        adv_bad = mcp_server.handle_tools_call(
+            idx,
+            "workflow_advance_target",
+            {
+                "currentTarget": "T40",
+                "nextTarget": "T45",
+                "evidence": bad_ev,
+            },
+        )
+        self.assertEqual(adv_bad["id"], idx)
+        self.assertIs(adv_bad["result"].get("isError"), True)
+
+      boom_err = io.StringIO()
+      with mock.patch.object(
+          mcp_server,
+          "handle_tools_list",
+          side_effect=RuntimeError("boom-internal-error"),
+      ):
+        boom_resp = mcp_server.dispatch_jsonrpc_line(
+            json.dumps({"jsonrpc": "2.0", "id": "boom-1", "method": "tools/list"}),
+            stderr=boom_err,
+        )
+      self.assertEqual(boom_resp["id"], "boom-1")
+      self.assertEqual(boom_resp["error"]["code"], -32603)
+      self.assertIn("boom-internal-error", boom_err.getvalue())
+
+  def test_workflow_query_scars_optional_schema_and_fallback(self):
+    """Checks optional query schema, filter-only queries, and scars_db error."""
+    from unittest import mock
+
+    mcp_server = self._load_mcp_server()
+    tools_resp = mcp_server.handle_tools_list(1)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    scars_schema = tools["workflow_query_scars"]["inputSchema"]
+    self.assertNotIn("required", scars_schema)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "scars_fixture.db")
+      self._build_scars_fixture_db(db_path)
+
+      for idx, filter_args in enumerate(
+          (
+              {"mfTarget": 30, "dbPath": db_path, "refreshLoaded": True},
+              {
+                  "workflowPhase": "Target 30: tdd",
+                  "dbPath": db_path,
+                  "refreshLoaded": True,
+              },
+              {"language": "python", "dbPath": db_path, "refreshLoaded": True},
+          ),
+          start=601,
+      ):
+        resp = mcp_server.handle_tools_call(
+            idx, "workflow_query_scars", filter_args
+        )
+        self.assertEqual(resp["id"], idx)
+        self.assertFalse(resp["result"].get("isError"))
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["totalResults"], 1)
+        self.assertEqual(payload["scars"][0]["id"], "SCAR-LANG-PYTHON-TEST-0099")
+
+      for idx, empty_args in enumerate(({}, {"workspaceDir": tmp_dir}), start=610):
+        empty_resp = mcp_server.handle_tools_call(
+            idx, "workflow_query_scars", empty_args
+        )
+        self.assertEqual(empty_resp["id"], idx)
+        self.assertIs(empty_resp["result"].get("isError"), True)
+        self.assertIn(
+            "Missing required argument 'query'",
+            empty_resp["result"]["content"][0]["text"],
+        )
+
+      with mock.patch.object(mcp_server, "query_scars", None):
+        missing_engine_resp = mcp_server.handle_tools_call(
+            620,
+            "workflow_query_scars",
+            {"query": "Framing", "workspaceDir": tmp_dir},
+        )
+      self.assertEqual(missing_engine_resp["id"], 620)
+      self.assertIs(missing_engine_resp["result"].get("isError"), True)
+      fallback_msg = missing_engine_resp["result"]["content"][0]["text"]
+      self.assertIn("lib/scars_db.py", fallback_msg)
+      self.assertNotIn("scripts/sync_synthetic_scars.py", fallback_msg)
+
+  def test_stdio_subprocess_wire_sequence_never_emits_null_id(self):
+    """Checks mixed stdio wire traffic exits cleanly with zero null-id frames."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "stdio_scars.db")
+      self._build_scars_fixture_db(db_path)
+
+      wire_lines = [
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "server/discover",
+              "params": {
+                  "_meta": {
+                      "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+                  }
+              },
+          }),
+          "{malformed json line",
+          json.dumps({
+              "jsonrpc": "2.0",
+              "method": "notifications/initialized",
+              "params": {},
+          }),
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "ping",
+              "params": {
+                  "_meta": {
+                      "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+                  }
+              },
+          }),
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": 3,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_get_config",
+                  "arguments": "{}",
+              },
+          }),
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": 4,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_get_state",
+                  "arguments": {"workspaceDir": tmp_dir},
+              },
+          }),
+          json.dumps({
+              "jsonrpc": "2.0",
+              "id": 5,
+              "method": "tools/call",
+              "params": {
+                  "name": "workflow_query_scars",
+                  "arguments": {"mfTarget": 30, "dbPath": db_path},
+              },
+          }),
+      ]
+
+      proc = subprocess.run(
+          [sys.executable, SERVER_SCRIPT],
+          input="\n".join(wire_lines) + "\n",
+          cwd=tmp_dir,
+          capture_output=True,
+          text=True,
+          check=False,
+          timeout=10,
+      )
+      self.assertEqual(proc.returncode, 0)
+      raw_out_lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+      for raw_ln in raw_out_lines:
+        self.assertNotIn('"id": null', raw_ln)
+        self.assertNotIn('"id":null', raw_ln)
+
+      responses = [json.loads(ln) for ln in raw_out_lines]
+      self.assertEqual([r.get("id") for r in responses], [1, 2, 3, 4, 5])
+      self.assertEqual(
+          responses[0]["result"]["supportedVersions"][0], "2026-07-28"
+      )
+      self.assertEqual(responses[1]["result"], {})
+      self.assertFalse(responses[2]["result"].get("isError"))
+      self.assertFalse(responses[3]["result"].get("isError"))
+      scars_payload = json.loads(responses[4]["result"]["content"][0]["text"])
+      self.assertEqual(scars_payload["status"], "OK")
+      self.assertEqual(scars_payload["totalResults"], 1)
+      self.assertNotEqual(proc.stderr.strip(), "")
+
+
 if __name__ == "__main__":
   run_test()
   TestMcpServerScarImporterAndSimpleEnglish().test_scar_importer_config_and_simple_english_query()
@@ -2498,3 +3153,10 @@ if __name__ == "__main__":
   TestMcpPauseGateTurnBoundary().test_mcp_pause_gate_entry_and_same_turn_chaining_blocked()
   TestMcpPauseGateTurnBoundary().test_mcp_declarative_recovery_transitions_and_gate_entry_cleanup()
   TestMcpMainSyncTransitions().test_mcp_main_sync_behind_clean_and_conflict_transitions()
+  TestMcpDualEraProtocolAndScarsSchema().test_protocol_constants_and_server_discover()
+  TestMcpDualEraProtocolAndScarsSchema().test_per_request_meta_protocol_version_negotiation()
+  TestMcpDualEraProtocolAndScarsSchema().test_handle_initialize_version_negotiation()
+  TestMcpDualEraProtocolAndScarsSchema().test_dispatch_jsonrpc_line_framing_and_lifecycle()
+  TestMcpDualEraProtocolAndScarsSchema().test_tools_call_stringified_arguments_and_internal_errors()
+  TestMcpDualEraProtocolAndScarsSchema().test_workflow_query_scars_optional_schema_and_fallback()
+  TestMcpDualEraProtocolAndScarsSchema().test_stdio_subprocess_wire_sequence_never_emits_null_id()
