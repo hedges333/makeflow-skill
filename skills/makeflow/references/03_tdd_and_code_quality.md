@@ -62,6 +62,6 @@ Update documentation alongside code across four progressive disclosure tree leve
 - **Leaf Inline Code Docstrings**: Update doc comments, parameter descriptions, return types, and exceptions in modified files.
 - **Branch Subproject READMEs**: Update module README files when public contracts change.
 - **Branch Guides and Examples**: Update usage examples and tutorials when flags or APIs change.
-- **Root Overview and Changelogs**: If behavior changes, update top-level overview indexes and add user-facing entries under `## [Unreleased]` in `CHANGELOG.md` (`SCAR-DOC-16`, `SCAR-PROC-159`).
+- **Root Overview and Changelogs**: If behavior changes, update top-level overview indexes and add ticket-prefixed entries (`- GH-1234:` or `- LOCAL-1234:`) under `## [Unreleased]` in `CHANGELOG.md` (`SCAR-DOC-16`, `SCAR-PROC-159`).
 
 When targeted tests and docs are complete, update `.workflow/state/99_next_action.md` and advance to Target 40.

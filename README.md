@@ -348,7 +348,7 @@ Automated test suites and agent commands must never touch live production system
 
 ## Request History Ledger
 
-At Target 90, the agent updates `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` (`## [Unreleased]`), and asks whether to cut a release. These files keep a version-controlled log of resolved issues, branches, pull requests, added tests, and codified process scars.
+At Target 90, the agent updates `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` (`## [Unreleased]` with ticket-prefixed bullets), and asks whether to cut a release. These files keep a version-controlled log of resolved issues, branches, pull requests, added tests, and codified process scars.
 
 ---
 

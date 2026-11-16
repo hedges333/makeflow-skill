@@ -77,7 +77,7 @@ Select the Git lifecycle that matches your branch protection settings:
 ### Mode 1: Pull Request Mode with Branch Protection
 
 If branch protection forbids direct pushes to `main`, follow this lifecycle:
-1. Update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]` during Target 75 on the feature branch.
+1. Update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]` with a ticket-prefixed bullet during Target 75 on the feature branch.
 2. Commit the updates to the feature branch with `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
 3. Push the feature branch to update the pull request. Wait for required status checks to pass before requesting landing approval.
 4. When `gh pr merge --squash` runs at Target 80, the pull request merges the ledger and changelog updates into `main`.
@@ -88,7 +88,7 @@ If branch protection forbids direct pushes to `main`, follow this lifecycle:
 If direct pushes to `main` are permitted for automated workflows, follow this lifecycle:
 1. Complete the pull request squash merge and branch deletion at Target 80.
 2. Switch to `main` and pull the latest commits with `git checkout main && git pull --ff-only`.
-3. Update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]` at Target 90.
+3. Update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]` with a ticket-prefixed bullet at Target 90.
 4. Commit the updates with `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
 5. Push the commits directly to `main` with `git push origin main`.
 
@@ -96,7 +96,7 @@ If direct pushes to `main` are permitted for automated workflows, follow this li
 
 If the repository runs without pull requests, follow this lifecycle:
 1. At Target 80, squash-merge the feature branch into `main` and delete the feature branch.
-2. At Target 90, update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]`.
+2. At Target 90, update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]` with a ticket-prefixed bullet.
 3. Commit the updates with `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
 4. Push `main` to the remote repository with `git push origin main`.
 
@@ -108,7 +108,7 @@ Run these steps during Target 90 after a pull request merges:
 2. Read `.workflow/history.json`, or start with `[]` when the file is new.
 3. Append the completed ticket object to `.workflow/history.json`.
 4. Add a matching summary row to `.workflow/history.md`.
-5. If a ticket bullet is missing, update `CHANGELOG.md` under `## [Unreleased]` in concise user-facing prose. In external projects, update `CHANGELOG.md` when it exists or when the user asks to create it.
+5. If a ticket bullet is missing, add a ticket-prefixed bullet under `## [Unreleased]` in `CHANGELOG.md` using `python3 scripts/changelog.py add`. Start each bullet with the normalized ticket ID, such as `- GH-1234: Added feature` or `- LOCAL-1234: Added task`. In external projects, update `CHANGELOG.md` when it exists or when the user asks to create it.
 6. If the ticket is a local ticket, run `python3 scripts/local_tickets.py close --ticket <id> --comment-file <file>` with the resolution summary.
 7. Commit the ledger and changelog updates when tracked in Git: `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
 8. If direct push to `main` is permitted, push the updates with `git push origin main`.

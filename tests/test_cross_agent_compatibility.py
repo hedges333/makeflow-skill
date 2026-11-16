@@ -8929,6 +8929,13 @@ def check_target_90_changelog_and_release_invariants(
     errs.append(f"{skill_rel} Target 90 step 6 must reference 'CHANGELOG.md'")
   elif "release" not in step6_lines[0].lower():
     errs.append(f"{skill_rel} Target 90 step 6 must prompt for a release")
+  if step6_lines:
+    for prefix_tok in ("- GH-", "- LOCAL-"):
+      if prefix_tok not in step6_lines[0]:
+        errs.append(
+            f"{skill_rel} Target 90 step 6 must include ticket-prefixed"
+            f" CHANGELOG.md example '{prefix_tok}'"
+        )
 
   # 4. 12_request_history_ledger.md two-stage changelog & release prompt
   ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
@@ -8969,6 +8976,9 @@ def check_target_90_changelog_and_release_invariants(
       "test",
       "Keep an empty `## [Unreleased]`",
       "asks to create",
+      "- GH-",
+      "- LOCAL-",
+      "scripts/changelog.py",
   ):
     if req_tok not in sec4:
       errs.append(f"{ledger_rel} Section 4 must reference '{req_tok}'")
@@ -9135,7 +9145,7 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
         f"Expected manifest version divergence rejection, got: {errs_mismatch}",
     )
 
-    # 6. Omitting ask_question, release/v, docs(changelog):, or release phrasing in 12_request_history_ledger.md
+    # 6. Omitting ask_question, release/v, docs(changelog):, or ticket-prefix guidance in 12_request_history_ledger.md
     ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
     for bad_tok in (
         "ask_question",
@@ -9143,6 +9153,9 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
         "docs(changelog):",
         "asks to create",
         "Keep an empty `## [Unreleased]`",
+        "- GH-",
+        "- LOCAL-",
+        "scripts/changelog.py",
     ):
       mut_ledger = dict(base)
       mut_ledger[ledger_rel] = mut_ledger[ledger_rel].replace(bad_tok, "REMOVED")
@@ -9152,7 +9165,7 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
           f"Expected '{bad_tok}' rejection, got: {errs_ledger}",
       )
 
-    # 7. Omitting CHANGELOG.md from SKILL.md Step 6
+    # 7. Omitting CHANGELOG.md or ticket-prefix examples from SKILL.md Step 6
     skill_rel = "skills/makeflow/SKILL.md"
     mut_no_skill_cl = dict(base)
     mut_no_skill_cl[skill_rel] = mut_no_skill_cl[skill_rel].replace(
@@ -9165,6 +9178,19 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
         any(skill_rel in e and "CHANGELOG.md" in e for e in errs_skill_cl),
         f"Expected SKILL.md CHANGELOG.md rejection, got: {errs_skill_cl}",
     )
+
+    for prefix_tok in ("- GH-", "- LOCAL-"):
+      mut_skill_prefix = dict(base)
+      mut_skill_prefix[skill_rel] = mut_skill_prefix[skill_rel].replace(
+          prefix_tok, "REMOVED"
+      )
+      errs_skill_prefix = check_target_90_changelog_and_release_invariants(
+          mut_skill_prefix
+      )
+      self.assertTrue(
+          any(skill_rel in e and prefix_tok in e for e in errs_skill_prefix),
+          f"Expected SKILL.md '{prefix_tok}' rejection, got: {errs_skill_prefix}",
+      )
 
     # 8. Omitting CHANGELOG.md from sibling docs and summary adapters
     for sibling_rel in (

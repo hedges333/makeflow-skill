@@ -452,9 +452,10 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     self.assertIn("--item", out.getvalue())
     self.assertEqual(err.getvalue(), "")
 
-  def test_all_twelve_cli_scripts_root_help(self):
-    """Verifies all 12 CLI BaseScript classes return 0 and print usage on --help and -h."""
+  def test_all_cli_scripts_root_help(self):
+    """Verifies all 13 CLI BaseScript classes return 0 and print usage on --help and -h."""
     from lib.ast_scrub import AstScrubScript
+    from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.env_preflight import EnvPreflightScript
     from lib.reflex import EmitReflexScript
@@ -480,6 +481,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (AstScrubScript, "ast_scrub.py"),
         (SyncSyntheticScarsScript, "sync_synthetic_scars.py"),
         (SignalTrapScript, "signal_trap.py"),
+        (ChangelogScript, "changelog.py"),
     ]
 
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
@@ -501,8 +503,9 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
       sys.stdout = orig_stdout
       sys.stderr = orig_stderr
 
-  def test_all_twenty_four_subcommands_help(self):
-    """Verifies all 24 subcommands across the 5 multi-command CLI scripts support --help and -h."""
+  def test_all_cli_subcommands_help(self):
+    """Verifies all 27 subcommands across the 6 multi-command CLI scripts support --help and -h."""
+    from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.tdd_guard import TddGuardScript
     from lib.terminal_title import TerminalTitleScript
@@ -544,10 +547,14 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
             TerminalTitleScript,
             ["detect", "info", "set", "reset"],
         ),
+        (
+            ChangelogScript,
+            ["format", "validate", "add"],
+        ),
     ]
 
     total_subcommands = sum(len(subs) for _, subs in subcommand_matrix)
-    self.assertEqual(total_subcommands, 24)
+    self.assertEqual(total_subcommands, 27)
 
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     try:
@@ -571,9 +578,10 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
       sys.stdout = orig_stdout
       sys.stderr = orig_stderr
 
-  def test_unknown_flag_falsification_across_twelve_cli_scripts(self):
+  def test_unknown_flag_falsification_across_cli_scripts(self):
     """Verifies passing --unknown-flag-xyz fails with non-zero exit code and Error: on stderr."""
     from lib.ast_scrub import AstScrubScript
+    from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.env_preflight import EnvPreflightScript
     from lib.reflex import EmitReflexScript
@@ -599,6 +607,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (AstScrubScript, 1),
         (SyncSyntheticScarsScript, 2),
         (SignalTrapScript, 1),
+        (ChangelogScript, 1),
     ]
 
     for cls, expected_code in expected_exit_codes:
