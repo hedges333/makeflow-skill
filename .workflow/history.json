@@ -2308,5 +2308,27 @@
     "closes_issue": true,
     "tests_added": 26,
     "scars_earned": []
+  },
+  {
+    "id": "GH-232",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/232",
+    "title": "[FEAT] Add upstream root-cause remediation scar and tdd-worker Socratic directive",
+    "request": "Add Tier 1 core scar SCAR-ARCH-09 in skills/makeflow/references/scars/architecture.md and skills/makeflow/references/09_synthetic_scars_catalog.md, insert and enrich SCAR-ARCH-0009 in skills/makeflow/data/scars_registry.db, add upstream root-cause remediation directives and Socratic probes to agents/tdd-worker.md, skills/makeflow/references/02_archaeology_and_planning.md, skills/makeflow/references/04_six_pillars_adversarial_review.md, and agents/adversarial-critic.md, and add compatibility, reflex, and SQLite registry tests in tests/test_cross_agent_compatibility.py, tests/test_emit_reflex.py, and tests/test_sync_synthetic_scars.py.",
+    "branch": "feat/232-upstream-root-cause-scar",
+    "subprojects": [
+      "agents",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-16T20:07:02Z",
+    "completed_at": "2026-11-16T20:47:06Z",
+    "commit_sha": "f90f25e0f35f52c1e3c3221fa067ea233129ae0b",
+    "pr_number": 234,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/234",
+    "closes_issue": true,
+    "tests_added": 3,
+    "scars_earned": [
+      "SCAR-ARCH-09: Upstream Root-Cause Remediation Over Downstream Workarounds"
+    ]
   }
 ]

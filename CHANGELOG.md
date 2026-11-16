@@ -16,6 +16,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - Add stacked SQLite Synthetic Scars search (`workflow_query_scars`) and local scar capture.
 - Add AST scrubbing, cryptographically sealed TDD receipts (`witness-red`, `verify-green`), and turn boundary guards.
 - GH-228: Enforce ticket-ID prefixes on Target 90 changelog bullets with extensible Strategy and Registry support.
+- GH-232: Add SCAR-ARCH-09 upstream root-cause scar, SCAR-ARCH-0009 SQLite row, and planning, TDD, and review directives.
 
 ### Changed
 
