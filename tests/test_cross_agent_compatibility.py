@@ -23,7 +23,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
-from lib.scar_candidate import ScarCandidateValidator, split_into_sentences
+from lib.scar_candidate import ScarCandidateValidator, split_into_sentences, validate_socratic_probe
 
 
 def repo_path(*parts):
@@ -1632,6 +1632,443 @@ def validate_polyglot_layer_separation_scar_arch_08() -> list[str]:
   ):
     errors.append(
         "Negative falsification failed: missing SCAR-ARCH-08 in CLAUDE.md was not rejected"
+    )
+
+  return errors
+
+
+SCAR_ARCH_09_TARGET_FILES = (
+    "skills/makeflow/references/scars/architecture.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "agents/tdd-worker.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "agents/adversarial-critic.md",
+)
+
+SCAR_ARCH_09_PROBE_QUESTIONS = (
+    "Would fixing the root cause upstream keep code simplest without harming other subsystems?",
+    "Can you remove downstream workarounds instead of patching symptoms further down the control flow?",
+)
+
+
+def check_scar_arch_09_upstream_root_cause(
+    files_map: dict[str, str],
+) -> list[str]:
+  """Validates SCAR-ARCH-09 upstream root-cause remediation invariants across Target 20/30/40 (GH-232)."""
+  errs: list[str] = []
+  for rel in SCAR_ARCH_09_TARGET_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # a. skills/makeflow/references/scars/architecture.md
+  arch_rel = "skills/makeflow/references/scars/architecture.md"
+  arch_text = files_map[arch_rel]
+  table_match = re.search(
+      r"## Scars in this Category.*?(?=\n###|\Z)", arch_text, re.DOTALL
+  )
+  table_sec = table_match.group(0) if table_match else ""
+  if (
+      "SCAR-ARCH-09" not in table_sec
+      or "Upstream Root-Cause Remediation Over Downstream Workarounds"
+      not in table_sec
+  ):
+    errs.append(
+        f"{arch_rel} category table must list SCAR-ARCH-09 (Upstream Root-Cause Remediation Over Downstream Workarounds)"
+    )
+
+  m08 = re.search(r"(?m)^###\s+SCAR-ARCH-08\b", arch_text)
+  m09 = re.search(
+      r"(?m)^###\s+SCAR-ARCH-09:\s+Upstream Root-Cause Remediation Over Downstream Workarounds\b",
+      arch_text,
+  )
+  if not (m08 and m09 and m08.start() < m09.start()):
+    errs.append(
+        f"{arch_rel} must define '### SCAR-ARCH-09: Upstream Root-Cause Remediation Over Downstream Workarounds' monotonically after SCAR-ARCH-08"
+    )
+  else:
+    sec09 = arch_text[m09.start() :].split("\n### SCAR-")[0]
+    extracted: dict[str, str] = {}
+    req_fields = ("Wound", "Trap", "Permanent Reflex", "Socratic Probe")
+    for field in req_fields:
+      fm = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", sec09)
+      val = fm.group(1).strip() if fm else ""
+      extracted[field] = val
+      if not val:
+        errs.append(f"{arch_rel} SCAR-ARCH-09 missing non-empty '**{field}**:'")
+
+    sec09_lower = sec09.lower()
+    for tok in ("upstream", "root cause", "downstream", "workaround"):
+      if tok not in sec09_lower:
+        errs.append(f"{arch_rel} SCAR-ARCH-09 missing required token '{tok}'")
+
+    if all(extracted[f] for f in req_fields):
+      candidate = {
+          "id": "SCAR-ARCH-09",
+          "raw_wound": extracted["Wound"],
+          "wound": extracted["Wound"],
+          "raw_trap": extracted["Trap"],
+          "trap": extracted["Trap"],
+          "raw_circuit_breaker": "",
+          "circuit_breaker": "",
+          "raw_reflex": extracted["Permanent Reflex"],
+          "reflex": extracted["Permanent Reflex"],
+          "socratic_probe": extracted["Socratic Probe"],
+      }
+      errs.extend(ScarCandidateValidator().validate(candidate))
+      errs.extend(
+          validate_socratic_probe(
+              extracted["Socratic Probe"], scar_id="SCAR-ARCH-09"
+          )
+      )
+      probe_sents = split_into_sentences(extracted["Socratic Probe"])
+      if not (1 <= len(probe_sents) <= 3):
+        errs.append(
+            f"{arch_rel} SCAR-ARCH-09 Socratic Probe must contain 1-3 '?' sentences, found {len(probe_sents)}"
+        )
+
+  errs.extend(_check_prose_punctuation(arch_rel, arch_text))
+
+  # b. skills/makeflow/references/09_synthetic_scars_catalog.md
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_text = files_map[cat_rel]
+  if not check_scar_catalog_routing(cat_text, "SCAR-ARCH-09", "architecture.md"):
+    errs.append(
+        f"{cat_rel} Master Routing Table must strictly route SCAR-ARCH-09 to scars/architecture.md"
+    )
+  c08 = re.search(r"(?m)^\|\s*`SCAR-ARCH-08`\s*\|", cat_text)
+  c09 = re.search(r"(?m)^\|\s*`SCAR-ARCH-09`\s*\|", cat_text)
+  if not (c08 and c09 and c08.start() < c09.start()):
+    errs.append(
+        f"{cat_rel} must place SCAR-ARCH-09 monotonically after SCAR-ARCH-08"
+    )
+
+  # c. Target 30: agents/tdd-worker.md
+  tdd_rel = "agents/tdd-worker.md"
+  tdd_text = files_map[tdd_rel]
+  tdd_lower = tdd_text.lower()
+  if "SCAR-ARCH-09" not in tdd_text:
+    errs.append(f"{tdd_rel} must reference SCAR-ARCH-09")
+  for tok in ("upstream", "root cause", "workaround", "green", "refactor", "blocker"):
+    if tok not in tdd_lower:
+      errs.append(
+          f"{tdd_rel} must include SCAR-ARCH-09 guidance token '{tok}'"
+      )
+  for q_text in SCAR_ARCH_09_PROBE_QUESTIONS:
+    if q_text not in tdd_text:
+      errs.append(
+          f"{tdd_rel} must include SCAR-ARCH-09 Socratic Probe question: '{q_text}'"
+      )
+  # Preserve existing Rule 1, Rule 3, and Rule 12 invariants
+  if "did the test fail" not in tdd_lower:
+    errs.append(f"{tdd_rel} must preserve Rule 1 ('did the test fail')")
+  if "unnecessary abstraction" not in tdd_lower:
+    errs.append(f"{tdd_rel} must preserve Rule 3 ('unnecessary abstraction')")
+  for r12_tok in (
+      "SCAR-ARCH-05",
+      "SCAR-ARCH-08",
+      "skills/makeflow/references/polyglot/<lang>.md",
+      "entrypoints -> library",
+  ):
+    if r12_tok not in tdd_text:
+      errs.append(f"{tdd_rel} must preserve Rule 12 token '{r12_tok}'")
+  errs.extend(_check_prose_punctuation(tdd_rel, tdd_text))
+
+  # d. Target 20: skills/makeflow/references/02_archaeology_and_planning.md Section 2.1
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  r02_sec2 = _extract_markdown_h2_section(r02_text, "## 2. Target 20")
+  if "### 2.1 Socratic Pre-Planning Deliberation" not in r02_sec2:
+    errs.append(
+        f"{r02_rel} Section 2 missing '### 2.1 Socratic Pre-Planning Deliberation'"
+    )
+  else:
+    s21 = r02_sec2.split("### 2.1 Socratic Pre-Planning Deliberation")[1].split(
+        "### 2.2"
+    )[0]
+    if "Upstream Root-Cause Remediation" not in s21 or "SCAR-ARCH-09" not in s21:
+      errs.append(
+          f"{r02_rel} Section 2.1 must include Socratic question on Upstream Root-Cause Remediation (SCAR-ARCH-09)"
+      )
+    for q_text in SCAR_ARCH_09_PROBE_QUESTIONS:
+      if q_text not in s21:
+        errs.append(
+            f"{r02_rel} Section 2.1 must include SCAR-ARCH-09 probe question: '{q_text}'"
+        )
+
+  # e. Target 40/42: skills/makeflow/references/04_six_pillars_adversarial_review.md
+  r04_rel = "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+  r04_text = files_map[r04_rel]
+  p3_match = re.search(
+      r"(?m)^###\s+3\.\s+Architecture\b.*?(?=^###\s+4\b|\Z)",
+      r04_text,
+      re.DOTALL,
+  )
+  p3_sec = p3_match.group(0) if p3_match else ""
+  p3_lower = p3_sec.lower()
+  if "SCAR-ARCH-09" not in p3_sec or "Upstream Root-Cause Remediation" not in p3_sec:
+    errs.append(
+        f"{r04_rel} Pillar 3 must reference Upstream Root-Cause Remediation (SCAR-ARCH-09)"
+    )
+  for tok in ("upstream", "workaround"):
+    if tok not in p3_lower:
+      errs.append(f"{r04_rel} Pillar 3 must address '{tok}' remediation")
+
+  s52_match = re.search(
+      r"(?m)^###\s+5\.2\s+The Blocker Digest\b.*?(?=^###\s+5\.3\b|\Z)",
+      r04_text,
+      re.DOTALL,
+  )
+  s52_sec = s52_match.group(0) if s52_match else ""
+  rem_match = re.search(
+      r"\*\*Remediation Strategy\*\*:.*?(?=\n\d+\.\s+|\Z)",
+      s52_sec,
+      re.DOTALL,
+  )
+  rem_sec = rem_match.group(0) if rem_match else ""
+  rem_lower = rem_sec.lower()
+  if "SCAR-ARCH-09" not in rem_sec:
+    errs.append(
+        f"{r04_rel} Section 5.2 item 2 (Remediation Strategy) must reference SCAR-ARCH-09"
+    )
+  if "upstream" not in rem_lower or (
+      "root cause" not in rem_lower and "root-cause" not in rem_lower
+  ) or "workaround" not in rem_lower:
+    errs.append(
+        f"{r04_rel} Section 5.2 item 2 (Remediation Strategy) must mandate upstream root-cause fixes over downstream workarounds"
+    )
+
+  # f. Target 40 symmetric critic prompt: agents/adversarial-critic.md
+  critic_rel = "agents/adversarial-critic.md"
+  critic_text = files_map[critic_rel]
+  c_p3_match = re.search(
+      r"(?m)^###\s+3\.\s+Architecture\b.*?(?=^###\s+4\b|\Z)",
+      critic_text,
+      re.DOTALL,
+  )
+  c_p3_sec = c_p3_match.group(0) if c_p3_match else ""
+  c_p3_lower = c_p3_sec.lower()
+  if "SCAR-ARCH-09" not in c_p3_sec:
+    errs.append(f"{critic_rel} Pillar 3 must reference SCAR-ARCH-09")
+  if (
+      "upstream" not in c_p3_lower
+      or ("root cause" not in c_p3_lower and "root-cause" not in c_p3_lower)
+      or "workaround" not in c_p3_lower
+  ):
+    errs.append(
+        f"{critic_rel} Pillar 3 must enforce upstream root-cause fixes over downstream workarounds"
+    )
+
+  return errs
+
+
+def validate_scar_arch_09_upstream_root_cause() -> list[str]:
+  """Validates SCAR-ARCH-09 upstream root-cause remediation codification and negative falsifications (GH-232)."""
+  errors: list[str] = []
+  repo_files: dict[str, str] = {}
+  for rel in SCAR_ARCH_09_TARGET_FILES:
+    fpath = repo_path(rel)
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        repo_files[rel] = f.read()
+
+  errors.extend(check_scar_arch_09_upstream_root_cause(repo_files))
+
+  # Hermetic in-memory negative falsification checks (SCAR-TEST-11)
+  sample_files = {
+      "skills/makeflow/references/scars/architecture.md": (
+          "# Architecture and Pattern Scars\n\n"
+          "## Scars in this Category\n\n"
+          "| ID | Title | Scope |\n"
+          "| :--- | :--- | :--- |\n"
+          "| `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Layer Boundaries |\n"
+          "| `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Root-Cause Boundaries |\n\n"
+          "### SCAR-ARCH-08: Polyglot Layer Separation and Structural Debt Triage\n\n"
+          "- **Wound**: Layer conflation.\n"
+          "- **Trap**: Flat scripts.\n"
+          "- **Permanent Reflex**: Enforce one-way dependencies (`entrypoints -> library`).\n"
+          "- **Socratic Probe**: Does this change separate layers?\n\n"
+          "### SCAR-ARCH-09: Upstream Root-Cause Remediation Over Downstream Workarounds\n\n"
+          "- **Wound**: Downstream workarounds accumulate duplicate validation, brittle parsing heuristics, and extra branching while leaving upstream contract defects intact.\n"
+          "- **Trap**: An agent patches symptoms at the downstream call site instead of tracing control flow upstream to the root cause.\n"
+          "- **Permanent Reflex**: Trace each defect or design friction upstream to its earliest safe boundary. If an upstream fix simplifies control flow without breaking other subsystems, fix the root cause upstream. Delete obsolete downstream workarounds instead of stacking defensive patches.\n"
+          "- **Socratic Probe**: Would fixing the root cause upstream keep code simplest without harming other subsystems? Can you remove downstream workarounds instead of patching symptoms further down the control flow?\n"
+      ),
+      "skills/makeflow/references/09_synthetic_scars_catalog.md": (
+          "| `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+          "| `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+      ),
+      "agents/tdd-worker.md": (
+          "1. Red phase: Did the test fail as expected?\n"
+          "3. Green phase: Does this change introduce unnecessary abstraction?\n"
+          "12. Separate library modules (`SCAR-ARCH-05`). Enforce `skills/makeflow/references/polyglot/<lang>.md` (`entrypoints -> library`) under `SCAR-ARCH-08`.\n"
+          "13. Root-cause remediation (`SCAR-ARCH-09`): During Green fixes, Refactor cleanup, or blocker remediation, trace defects upstream first. "
+          "Delete obsolete downstream workarounds instead of stacking patches. "
+          "Would fixing the root cause upstream keep code simplest without harming other subsystems? "
+          "Can you remove downstream workarounds instead of patching symptoms further down the control flow?\n"
+      ),
+      "skills/makeflow/references/02_archaeology_and_planning.md": (
+          "## 2. Target 20: Plan File Creation (`20_plan.md`)\n"
+          "### 2.1 Socratic Pre-Planning Deliberation\n"
+          "8. **Upstream Root-Cause Remediation (`SCAR-ARCH-09`)**: "
+          "Would fixing the root cause upstream keep code simplest without harming other subsystems? "
+          "Can you remove downstream workarounds instead of patching symptoms further down the control flow?\n"
+          "### 2.2 Socratic Invariant Audit Table\n"
+      ),
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md": (
+          "### 3. Architecture\n"
+          "- **Upstream Root-Cause Remediation (`SCAR-ARCH-09`)**: Fix defects upstream instead of adding downstream workarounds.\n"
+          "### 4. Blast Radius\n"
+          "### 5.2 The Blocker Digest\n"
+          "2. **Remediation Strategy**: Propose a failing reproduction test and upstream root-cause fix for each blocker (`SCAR-ARCH-09`). Avoid downstream workarounds.\n"
+          "### 5.3 Sovereign Human Direction\n"
+      ),
+      "agents/adversarial-critic.md": (
+          "### 3. Architecture\n"
+          "Does the diff fix defects upstream at the root cause rather than stacking downstream workarounds (`SCAR-ARCH-09`)?\n"
+          "### 4. Blast Radius\n"
+      ),
+  }
+
+  baseline_errs = check_scar_arch_09_upstream_root_cause(sample_files)
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for SCAR-ARCH-09: {baseline_errs}"
+    )
+
+  # 1) Missing SCAR-ARCH-09 or missing Socratic Probe in architecture.md
+  bad_arch_missing = dict(sample_files)
+  bad_arch_missing["skills/makeflow/references/scars/architecture.md"] = (
+      bad_arch_missing["skills/makeflow/references/scars/architecture.md"].split(
+          "### SCAR-ARCH-09"
+      )[0]
+  )
+  if not any(
+      "SCAR-ARCH-09" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_arch_missing)
+  ):
+    errors.append(
+        "Negative falsification failed: stripped SCAR-ARCH-09 in architecture.md was not rejected"
+    )
+
+  # 2) Over-20-word probe sentence in architecture.md
+  bad_probe_long = dict(sample_files)
+  bad_probe_long["skills/makeflow/references/scars/architecture.md"] = (
+      bad_probe_long[
+          "skills/makeflow/references/scars/architecture.md"
+      ].replace(
+          "Would fixing the root cause upstream keep code simplest without harming other subsystems?",
+          "Would fixing every single underlying root cause defect upstream across all callers keep the entire codebase simplest without ever causing any unexpected regressions in other subsystems today?",
+      )
+  )
+  if not any(
+      "exceeds word limit" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_probe_long)
+  ):
+    errors.append(
+        "Negative falsification failed: >20-word SCAR-ARCH-09 probe sentence was not rejected"
+    )
+
+  # 3) Misrouted SCAR-ARCH-09 row in 09_synthetic_scars_catalog.md
+  bad_cat = dict(sample_files)
+  bad_cat["skills/makeflow/references/09_synthetic_scars_catalog.md"] = (
+      "| `SCAR-ARCH-08` | Polyglot Layer Separation | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+      "| `SCAR-ARCH-09` | Upstream Root-Cause Remediation | Architecture | [`scars/process.md`](./scars/process.md) |\n"
+  )
+  if not any(
+      "must strictly route SCAR-ARCH-09 to scars/architecture.md" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_cat)
+  ):
+    errors.append(
+        "Negative falsification failed: misrouted SCAR-ARCH-09 catalog row was not rejected"
+    )
+
+  # 4) Stripped probe token or missing Rule 12 invariant in agents/tdd-worker.md
+  bad_tdd_probe = dict(sample_files)
+  bad_tdd_probe["agents/tdd-worker.md"] = bad_tdd_probe[
+      "agents/tdd-worker.md"
+  ].replace(SCAR_ARCH_09_PROBE_QUESTIONS[0], "Fix code simply?")
+  if not any(
+      "agents/tdd-worker.md" in e and "Socratic Probe" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_tdd_probe)
+  ):
+    errors.append(
+        "Negative falsification failed: stripped SCAR-ARCH-09 probe in tdd-worker.md was not rejected"
+    )
+
+  bad_tdd_r12 = dict(sample_files)
+  bad_tdd_r12["agents/tdd-worker.md"] = bad_tdd_r12[
+      "agents/tdd-worker.md"
+  ].replace("SCAR-ARCH-08", "OMITTED")
+  if not any(
+      "agents/tdd-worker.md" in e and "SCAR-ARCH-08" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_tdd_r12)
+  ):
+    errors.append(
+        "Negative falsification failed: stripped Rule 12 SCAR-ARCH-08 in tdd-worker.md was not rejected"
+    )
+
+  # 5) Missing SCAR-ARCH-09 in 02_archaeology_and_planning.md Section 2.1
+  bad_r02 = dict(sample_files)
+  bad_r02["skills/makeflow/references/02_archaeology_and_planning.md"] = (
+      "## 2. Target 20: Plan File Creation (`20_plan.md`)\n"
+      "### 2.1 Socratic Pre-Planning Deliberation\n"
+      "7. **Code Structure (`SCAR-ARCH-08`)**: Separation?\n"
+      "### 2.2 Socratic Invariant Audit Table\n"
+  )
+  if not any(
+      "Section 2.1" in e and "SCAR-ARCH-09" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_r02)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-09 in 02_archaeology_and_planning.md Section 2.1 was not rejected"
+    )
+
+  # 6) Missing SCAR-ARCH-09 in 04_six_pillars_adversarial_review.md Pillar 3 or Section 5.2 item 2
+  bad_r04_p3 = dict(sample_files)
+  bad_r04_p3["skills/makeflow/references/04_six_pillars_adversarial_review.md"] = (
+      bad_r04_p3[
+          "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+      ].replace("Upstream Root-Cause Remediation (`SCAR-ARCH-09`)", "Removed")
+  )
+  if not any(
+      "Pillar 3" in e and "SCAR-ARCH-09" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_r04_p3)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-09 in 04_six_pillars Pillar 3 was not rejected"
+    )
+
+  bad_r04_52 = dict(sample_files)
+  bad_r04_52["skills/makeflow/references/04_six_pillars_adversarial_review.md"] = (
+      bad_r04_52[
+          "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+      ].replace(
+          "2. **Remediation Strategy**: Propose a failing reproduction test and upstream root-cause fix for each blocker (`SCAR-ARCH-09`). Avoid downstream workarounds.",
+          "2. **Remediation Strategy**: Propose a surgical fix for each blocker.",
+      )
+  )
+  if not any(
+      "Section 5.2 item 2" in e and "SCAR-ARCH-09" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_r04_52)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-09 in 04_six_pillars Section 5.2 item 2 was not rejected"
+    )
+
+  # 7) Missing SCAR-ARCH-09 in agents/adversarial-critic.md Pillar 3
+  bad_critic = dict(sample_files)
+  bad_critic["agents/adversarial-critic.md"] = (
+      "### 3. Architecture\nCheck architecture.\n### 4. Blast Radius\n"
+  )
+  if not any(
+      "agents/adversarial-critic.md" in e and "SCAR-ARCH-09" in e
+      for e in check_scar_arch_09_upstream_root_cause(bad_critic)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-09 in adversarial-critic.md Pillar 3 was not rejected"
     )
 
   return errors
@@ -6815,8 +7252,8 @@ def _collect_compatibility_errors():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 60:
-    errors.append(f"Expected 60 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 61:
+    errors.append(f"Expected 61 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -7599,6 +8036,15 @@ def _collect_compatibility_errors():
   if not scar_arch_08_errors:
     print(
         "✔ Polyglot layer separation and structural debt triage (GH-175, SCAR-ARCH-08)"
+        " verified."
+    )
+
+  # Upstream Root-Cause Remediation Over Downstream Workarounds (GH-232, SCAR-ARCH-09)
+  scar_arch_09_errors = validate_scar_arch_09_upstream_root_cause()
+  errors.extend(scar_arch_09_errors)
+  if not scar_arch_09_errors:
+    print(
+        "✔ Upstream root-cause remediation invariants (GH-232, SCAR-ARCH-09)"
         " verified."
     )
 
@@ -8693,6 +9139,10 @@ class TestCrossAgentCompatibility(unittest.TestCase):
         f"Validation failed with {len(errors)} error(s):\n"
         + "\n".join(f"  - {err}" for err in errors),
     )
+
+  def test_scar_arch_09_upstream_root_cause_invariants(self):
+    """Verifies SCAR-ARCH-09 codification, directives, probe validation, and negative falsifications (GH-232)."""
+    self.assertEqual(validate_scar_arch_09_upstream_root_cause(), [])
 
 
   def test_check_makefile_test_discovery_requires_single_active_command(self):

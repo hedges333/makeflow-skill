@@ -140,6 +140,7 @@ class TestEmitReflexScript(unittest.TestCase):
         "SEC-01",
         "ARCH-06",
         "ARCH-08",
+        "ARCH-09",
     ]
     for scar_id in core_gate_scar_ids:
       probe = resolve_core_scar_probe(scar_id, repo_root=_REPO_ROOT)
@@ -173,6 +174,51 @@ class TestEmitReflexScript(unittest.TestCase):
     payload = json.loads(out_json.getvalue())
     self.assertIn("socratic_probe", payload)
     self.assertTrue(payload["socratic_probe"].endswith("?"))
+
+  def test_emit_reflex_arch_09_upstream_root_cause_probe(self):
+    """Verifies ARCH-09 Socratic Probe resolution, Simple English compliance, and emit_reflex output (GH-232)."""
+    from lib.reflex import emit_reflex, resolve_core_scar_probe
+    from lib.scar_candidate import validate_socratic_probe
+
+    probe = resolve_core_scar_probe("ARCH-09", repo_root=_REPO_ROOT)
+    self.assertEqual(
+        validate_socratic_probe(probe, scar_id="SCAR-ARCH-09"),
+        [],
+        f"Expected valid Socratic Probe for SCAR-ARCH-09, got: {probe!r}",
+    )
+
+    err_txt = io.StringIO()
+    exit_code = emit_reflex(
+        scar_id="ARCH-09",
+        code="DOWNSTREAM_WORKAROUND",
+        trigger="Patched symptom downstream.",
+        rejected="Stacking defensive workarounds downstream.",
+        reflex="Fix the root cause upstream.",
+        output_json=False,
+        stream=err_txt,
+    )
+    self.assertEqual(exit_code, 2)
+    rendered = err_txt.getvalue()
+    self.assertIn("[SCAR-ID: ARCH-09] DOWNSTREAM_WORKAROUND", rendered)
+    self.assertIn("SOCRATIC PROBE:", rendered)
+    self.assertIn(probe, rendered)
+
+    out_json = io.StringIO()
+    json_code = emit_reflex(
+        scar_id="ARCH-09",
+        code="DOWNSTREAM_WORKAROUND",
+        trigger="Patched symptom downstream.",
+        rejected="Stacking defensive workarounds downstream.",
+        reflex="Fix the root cause upstream.",
+        output_json=True,
+        stream=out_json,
+    )
+    self.assertEqual(json_code, 2)
+    payload = json.loads(out_json.getvalue())
+    self.assertEqual(payload["scar_id"], "SCAR-ARCH-09")
+    self.assertEqual(payload["short_id"], "ARCH-09")
+    self.assertEqual(payload["socratic_probe"], probe)
+    self.assertEqual(payload["exit_code"], 2)
 
   def test_scar_id_normalization_avoids_duplicate_prefix(self):
     for raw_id in ("PROC-99", "SCAR-PROC-99", "SCAR-SCAR-PROC-99"):

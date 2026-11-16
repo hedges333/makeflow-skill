@@ -165,6 +165,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 - **Persistence Boundaries**: Does the code use an ORM for standard entity relationships? If processing high-volume datasets, are parameterized queries cleanly encapsulated behind repository interfaces?
 - **Structural Decoupling**: Are user interfaces, business logic controllers, and runtime entry points cleanly separated?
 - **Polyglot Layer Separation and Structural Debt Triage (`SCAR-ARCH-08`)**: Does the diff respect `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`)? Treat new layer-boundary violations introduced in the diff as Pillar 3 Blockers. Treat pre-existing structural debt in adjacent legacy files as Non-Blocking Observations (`SCAR-PROC-108`) to prevent unapproved mid-ticket directory reorganizations.
+- **Upstream Root-Cause Remediation (`SCAR-ARCH-09`)**: Does the diff fix defects upstream at the earliest safe boundary instead of adding downstream workarounds? Can downstream defensive branches be removed when fixing the upstream contract keeps other subsystems safe?
 - **Socratic Probe**: Does this design create tight coupling or premature abstractions that will complicate future maintenance?
 
 ### 4. Blast Radius
@@ -218,7 +219,7 @@ The agent is strictly prohibited from immediately modifying code, running tests,
 ### 5.2 The Blocker Digest
 Present a structured Blocker Digest directly in chat:
 1. **Blocker Manifest**: List every blocker ID, pillar, file location, wound, and trap.
-2. **Remediation Strategy**: Propose a failing reproduction test and surgical fix for each blocker.
+2. **Remediation Strategy**: Propose a failing reproduction test and upstream root-cause fix for each blocker (`SCAR-ARCH-09`). Avoid downstream workarounds unless upstream changes harm other subsystems.
 3. **Documentation Impact**: Note any documentation or changelog updates required.
 4. **Non-Blocking Observations (NBO) Summary**: If the critic identifies NBOs during a rejected review round, present an NBO summary table in chat applying the 4-step observation triage protocol (`SCAR-PROC-108`). Include each observation's full technical description, `file:line` location, impact and rationale, scope relationship evaluation, and proposed disposition (`Apply` in the upcoming Target 30 remediation pass, `Skip` with justification, or `Defer to issue`).
 

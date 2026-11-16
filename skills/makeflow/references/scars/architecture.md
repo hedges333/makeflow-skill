@@ -10,6 +10,7 @@ This reference manual documents universal architecture and software design patte
 | `SCAR-ARCH-06` | Just-in-Time Vector 4 Reflex Gates | Context Budget & Runtime Recovery |
 | `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture & Caller Invariants |
 | `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Layer Boundaries & Structural Triage |
+| `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Root-Cause Boundaries & Control Flow |
 
 ---
 
@@ -40,3 +41,10 @@ This reference manual documents universal architecture and software design patte
 - **Trap**: Adding new domain logic into executable scripts or flat directories without auditing structure at Target 15 and Target 20. Reorganizing unrelated legacy directories mid-ticket without explicit Target 20 human approval.
 - **Permanent Reflex**: Audit subproject layout at Target 15 against `skills/makeflow/references/polyglot/<lang>.md` and disclose module placement in `20_plan.md`. Enforce one-way dependencies (`entrypoints -> library`). If an existing layout is messy, offer a user choice at Target 20. Either keep in-ticket edits minimal with a follow-up ticket, or include scoped reorganization with explicit human approval.
 - **Socratic Probe**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?
+
+### SCAR-ARCH-09: Upstream Root-Cause Remediation Over Downstream Workarounds
+
+- **Wound**: Downstream workarounds accumulate duplicate validation, brittle parsing heuristics, and extra branching while leaving upstream contract defects intact.
+- **Trap**: An agent patches symptoms at the downstream call site instead of tracing control flow upstream to the root cause.
+- **Permanent Reflex**: Trace each defect or design friction upstream to its earliest safe boundary. If an upstream fix simplifies control flow without breaking other subsystems, fix the root cause upstream. Delete obsolete downstream workarounds instead of stacking defensive patches.
+- **Socratic Probe**: Would fixing the root cause upstream keep code simplest without harming other subsystems? Can you remove downstream workarounds instead of patching symptoms further down the control flow?
