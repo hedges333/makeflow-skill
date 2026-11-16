@@ -33,56 +33,119 @@ def send_rpc(proc, msg):
   return json.loads(proc.stdout.readline())
 
 
-def run_test():
-  with tempfile.TemporaryDirectory() as non_git_cwd:
-    p = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=non_git_cwd,
-        text=True,
-    )
+def _stop_mcp_server(proc):
+  """Terminates an MCP server subprocess and closes its stdio pipes.
+
+  Args:
+    proc: Running or exited subprocess.Popen handle.
+  """
+  if proc.poll() is None:
     try:
-      # 1. Initialize
-      init_resp = send_rpc(
-          p, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-      )
-      assert init_resp["id"] == 1
-      assert (
-          init_resp["result"]["serverInfo"]["name"] == "makeflow-guard"
-      )
-      with open(os.path.join(REPO_ROOT, "plugin.json"), encoding="utf-8") as f:
-        expected_version = json.load(f)["version"]
-      assert init_resp["result"]["serverInfo"]["version"] == expected_version
-      print("✔ MCP initialize handshake passed.")
+      proc.kill()
+    except ProcessLookupError:
+      pass  # Process exited before kill() arrived.
+  try:
+    proc.wait(timeout=5)
+  except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait()
+  for pipe in (proc.stdin, proc.stdout, proc.stderr):
+    if pipe is not None and not pipe.closed:
+      pipe.close()
 
-      # 2. Tools list
-      tools_resp = send_rpc(
-          p, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-      )
-      tool_names = [t["name"] for t in tools_resp["result"]["tools"]]
-      for expected in (
-          "workflow_get_state",
-          "workflow_advance_target",
-          "workflow_verify_tree",
-          "workflow_safety_check",
-          "workflow_get_config",
-          "workflow_poll_ci",
-          "workflow_query_scars",
-      ):
-        assert expected in tool_names
-      assert len(tool_names) == 7
-      print(f"✔ MCP tools/list returned {len(tool_names)} tools: {tool_names}")
 
-      # 3. Safety check: production hostname and underscore prod_db
-      for idx, bad_cmd in enumerate(
-          (
-              "psql -h production.db.internal myapp",
-              "mariadb -u app myapp_prod",
-          ),
-          start=3,
-      ):
+def _start_mcp_server(test_case, cwd, env=None):
+  """Starts the MCP stdio server and registers pipe cleanup on test_case.
+
+  Args:
+    test_case: Active unittest.TestCase registering cleanup callbacks.
+    cwd: Working directory for the child MCP server process.
+    env: Optional environment variable mapping for the child process.
+
+  Returns:
+    Started subprocess.Popen handle connected via text stdio pipes.
+  """
+  proc = subprocess.Popen(
+      [sys.executable, SERVER_SCRIPT],
+      stdin=subprocess.PIPE,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.PIPE,
+      cwd=cwd,
+      env=env,
+      text=True,
+  )
+  test_case.addCleanup(_stop_mcp_server, proc)
+  return proc
+
+
+def _make_temp_dir(test_case):
+  """Creates a temporary directory cleaned up after server shutdown.
+
+  Args:
+    test_case: Active unittest.TestCase registering cleanup callbacks.
+
+  Returns:
+    Absolute path to the temporary directory.
+  """
+  tmp_dir = tempfile.TemporaryDirectory()
+  test_case.addCleanup(tmp_dir.cleanup)
+  return tmp_dir.name
+
+
+class TestMcpServer(unittest.TestCase):
+  """Unittest suite for MCP server JSON-RPC protocol and safety handlers (GH-216)."""
+
+  def test_initialize_and_tools_list(self):
+    """Checks MCP initialize handshake version and tools/list enumeration."""
+    non_git_cwd = _make_temp_dir(self)
+    p = _start_mcp_server(self, non_git_cwd)
+
+    # 1. Initialize
+    init_resp = send_rpc(
+        p, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    self.assertEqual(init_resp["id"], 1)
+    self.assertEqual(
+        init_resp["result"]["serverInfo"]["name"], "makeflow-guard"
+    )
+    with open(os.path.join(REPO_ROOT, "plugin.json"), encoding="utf-8") as f:
+      expected_version = json.load(f)["version"]
+    self.assertEqual(
+        init_resp["result"]["serverInfo"]["version"], expected_version
+    )
+
+    # 2. Tools list
+    tools_resp = send_rpc(
+        p, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+    )
+    tool_names = [t["name"] for t in tools_resp["result"]["tools"]]
+    for expected in (
+        "workflow_get_state",
+        "workflow_advance_target",
+        "workflow_verify_tree",
+        "workflow_safety_check",
+        "workflow_get_config",
+        "workflow_poll_ci",
+        "workflow_query_scars",
+    ):
+      with self.subTest(tool=expected):
+        self.assertIn(expected, tool_names)
+    self.assertEqual(len(tool_names), 7)
+
+  def test_safety_check_prod_and_safe_commands(self):
+    """Checks workflow_safety_check blocks prod DBs and allows safe test commands."""
+    non_git_cwd = _make_temp_dir(self)
+    p = _start_mcp_server(self, non_git_cwd)
+
+    # 3. Safety check: production hostname and underscore prod_db
+    for idx, bad_cmd in enumerate(
+        (
+            "psql -h production.db.internal myapp",
+            "mariadb -u app myapp_prod",
+        ),
+        start=3,
+    ):
+      with self.subTest(command=bad_cmd):
         bad_resp = send_rpc(
             p,
             {
@@ -96,159 +159,160 @@ def run_test():
             },
         )
         content_bad = json.loads(bad_resp["result"]["content"][0]["text"])
-        assert content_bad["safe"] is False
-      print("✔ MCP safety check blocked production database commands.")
+        self.assertIs(content_bad["safe"], False)
 
-      # 4. Safety check: safe test command
-      good_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 5,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_safety_check",
-                  "arguments": {
-                      "commandLine": "pytest tests/ --db=sqlite:///:memory:"
-                  },
-              },
-          },
-      )
-      content_good = json.loads(good_resp["result"]["content"][0]["text"])
-      assert content_good["safe"] is True
-      print("✔ MCP safety check allowed safe test command.")
-
-      # 5. Advance target: unapproved plan blocked, illegal T10->T80 jump blocked, valid T10->T15 allowed
-      adv_bad = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 6,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_advance_target",
-                  "arguments": {
-                      "currentTarget": "T20",
-                      "nextTarget": "T30",
-                      "evidence": {"humanPlanApproved": False},
-                  },
-              },
-          },
-      )
-      assert adv_bad["result"]["isError"] is True
-
-      adv_jump = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 7,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_advance_target",
-                  "arguments": {
-                      "currentTarget": "T10",
-                      "nextTarget": "T80",
-                  },
-              },
-          },
-      )
-      assert adv_jump["result"]["isError"] is True
-
-      adv_ok = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 8,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_advance_target",
-                  "arguments": {
-                      "currentTarget": "T20",
-                      "nextTarget": "T30",
-                      "evidence": {"humanPlanApproved": True},
-                  },
-              },
-          },
-      )
-      assert not adv_ok["result"].get("isError")
-      print("✔ MCP workflow_advance_target enforced DAG edges and human gates.")
-
-      # 5b. Advance target: on-disk state card enforcement
-      with tempfile.TemporaryDirectory() as tmp_state_ws:
-        tmp_state_dir = os.path.join(tmp_state_ws, ".workflow", "state")
-        os.makedirs(tmp_state_dir)
-
-        # Missing state card blocks transition
-        adv_no_card = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 80,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_advance_target",
-                    "arguments": {
-                        "currentTarget": "T20",
-                        "nextTarget": "T30",
-                        "workspaceDir": tmp_state_ws,
-                        "evidence": {"humanPlanApproved": True},
-                    },
+    # 4. Safety check: safe test command
+    good_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_safety_check",
+                "arguments": {
+                    "commandLine": "pytest tests/ --db=sqlite:///:memory:"
                 },
             },
-        )
-        assert adv_no_card["result"]["isError"] is True
-        err_msg = adv_no_card["result"]["content"][0]["text"]
-        assert "20_plan_approved.md" in err_msg
+        },
+    )
+    content_good = json.loads(good_resp["result"]["content"][0]["text"])
+    self.assertIs(content_good["safe"], True)
 
-        # Present state card permits transition
-        with open(
-            os.path.join(tmp_state_dir, "20_plan_approved.md"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-          f.write("# Plan Approved\n")
+  def test_advance_target_dag_and_state_cards(self):
+    """Checks workflow_advance_target DAG edges, state cards, and T60 -> T40 transitions."""
+    non_git_cwd = _make_temp_dir(self)
+    p = _start_mcp_server(self, non_git_cwd)
 
-        adv_with_card = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 81,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_advance_target",
-                    "arguments": {
-                        "currentTarget": "T20",
-                        "nextTarget": "T30",
-                        "workspaceDir": tmp_state_ws,
-                        "evidence": {"humanPlanApproved": True},
-                    },
+    # 5. Advance target: unapproved plan blocked, illegal T10->T80 jump blocked, valid T20->T30 allowed
+    adv_bad = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_advance_target",
+                "arguments": {
+                    "currentTarget": "T20",
+                    "nextTarget": "T30",
+                    "evidence": {"humanPlanApproved": False},
                 },
             },
-        )
-        assert not adv_with_card["result"].get("isError")
-        print("✔ MCP workflow_advance_target verified on-disk state cards.")
+        },
+    )
+    self.assertIs(adv_bad["result"]["isError"], True)
 
-      # 5c. Advance target: T60 -> T40 (pre-push rebase critic re-audit) and T60 invalid jumps
-      adv_t60_t40 = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 82,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_advance_target",
-                  "arguments": {
-                      "currentTarget": "T60",
-                      "nextTarget": "T40",
-                  },
-              },
-          },
-      )
-      assert not adv_t60_t40["result"].get("isError"), (
-          f"Expected T60 -> T40 transition to succeed, got {adv_t60_t40}"
-      )
+    adv_jump = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_advance_target",
+                "arguments": {
+                    "currentTarget": "T10",
+                    "nextTarget": "T80",
+                },
+            },
+        },
+    )
+    self.assertIs(adv_jump["result"]["isError"], True)
 
-      for bad_target in ("T10", "T20", "T50", "T80"):
+    adv_ok = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_advance_target",
+                "arguments": {
+                    "currentTarget": "T20",
+                    "nextTarget": "T30",
+                    "evidence": {"humanPlanApproved": True},
+                },
+            },
+        },
+    )
+    self.assertFalse(adv_ok["result"].get("isError"))
+
+    # 5b. Advance target: on-disk state card enforcement
+    tmp_state_ws = _make_temp_dir(self)
+    tmp_state_dir = os.path.join(tmp_state_ws, ".workflow", "state")
+    os.makedirs(tmp_state_dir)
+
+    adv_no_card = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 80,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_advance_target",
+                "arguments": {
+                    "currentTarget": "T20",
+                    "nextTarget": "T30",
+                    "workspaceDir": tmp_state_ws,
+                    "evidence": {"humanPlanApproved": True},
+                },
+            },
+        },
+    )
+    self.assertIs(adv_no_card["result"]["isError"], True)
+    err_msg = adv_no_card["result"]["content"][0]["text"]
+    self.assertIn("20_plan_approved.md", err_msg)
+
+    with open(
+        os.path.join(tmp_state_dir, "20_plan_approved.md"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+      f.write("# Plan Approved\n")
+
+    adv_with_card = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 81,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_advance_target",
+                "arguments": {
+                    "currentTarget": "T20",
+                    "nextTarget": "T30",
+                    "workspaceDir": tmp_state_ws,
+                    "evidence": {"humanPlanApproved": True},
+                },
+            },
+        },
+    )
+    self.assertFalse(adv_with_card["result"].get("isError"))
+
+    # 5c. Advance target: T60 -> T40 (pre-push rebase critic re-audit) and T60 invalid jumps
+    adv_t60_t40 = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_advance_target",
+                "arguments": {
+                    "currentTarget": "T60",
+                    "nextTarget": "T40",
+                },
+            },
+        },
+    )
+    self.assertFalse(
+        adv_t60_t40["result"].get("isError"),
+        f"Expected T60 -> T40 transition to succeed, got {adv_t60_t40}",
+    )
+
+    for bad_target in ("T10", "T20", "T50", "T80"):
+      with self.subTest(bad_target=bad_target):
         adv_t60_bad = send_rpc(
             p,
             {
@@ -264,231 +328,256 @@ def run_test():
                 },
             },
         )
-        assert adv_t60_bad["result"].get("isError") is True, (
-            f"Expected T60 -> {bad_target} transition to be blocked"
+        self.assertIs(
+            adv_t60_bad["result"].get("isError"),
+            True,
+            f"Expected T60 -> {bad_target} transition to be blocked",
         )
-      print("✔ MCP workflow_advance_target T60 -> T40 transition and T60 invalid jumps verified.")
 
-      # 6. Verify tree with workspaceDir when server cwd is not a git repo
-      with tempfile.TemporaryDirectory() as tmp_git_ws:
-        subprocess.run(
-            ["git", "init", "-q"],
-            cwd=tmp_git_ws,
-            check=True,
+  def test_verify_tree_non_git_cwd_and_default_config(self):
+    """Checks workflow_verify_tree from non-git cwd and default workflow_get_config."""
+    non_git_cwd = _make_temp_dir(self)
+    p = _start_mcp_server(self, non_git_cwd)
+
+    # 6. Verify tree with workspaceDir when server cwd is not a git repo
+    tmp_git_ws = _make_temp_dir(self)
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=tmp_git_ws,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with open(
+        os.path.join(tmp_git_ws, "README.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write("# Test\n")
+    subprocess.run(
+        ["git", "add", "README.md"],
+        cwd=tmp_git_ws,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tree_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_verify_tree",
+                "arguments": {
+                    "expectedApprovedTree": "0" * 40,
+                    "workspaceDir": tmp_git_ws,
+                },
+            },
+        },
+    )
+    self.assertFalse(tree_resp["result"].get("isError"))
+    tree_data = json.loads(tree_resp["result"]["content"][0]["text"])
+    self.assertEqual(len(tree_data["actualTree"]), 40)
+
+    # 7. Get config with default workspaceDir
+    empty_ws = _make_temp_dir(self)
+    cfg_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": empty_ws},
+            },
+        },
+    )
+    cfg_data = json.loads(cfg_resp["result"]["content"][0]["text"])
+    self.assertIn("models", cfg_data)
+    self.assertIn("agyModelTiers", cfg_data)
+    for role in (
+        "adversarial-critic",
+        "archaeology-worker",
+        "tdd-worker",
+        "triage-worker",
+    ):
+      with self.subTest(role=role):
+        self.assertEqual(
+            cfg_data["models"].get(role),
+            "inherit",
+            f"Expected default models[{role}] == 'inherit', got {cfg_data['models'].get(role)}",
         )
-        with open(
-            os.path.join(tmp_git_ws, "README.md"), "w", encoding="utf-8"
-        ) as f:
-          f.write("# Test\n")
-        subprocess.run(
-            ["git", "add", "README.md"],
-            cwd=tmp_git_ws,
-            check=True,
+        self.assertEqual(
+            cfg_data["agyModelTiers"].get(role),
+            "inherit",
+            f"Expected default agyModelTiers[{role}] == 'inherit', got {cfg_data['agyModelTiers'].get(role)}",
         )
-        tree_resp = send_rpc(
+    self.assertIn("review", cfg_data)
+    self.assertIn("ci", cfg_data)
+    self.assertIn("database", cfg_data)
+    self.assertIn("prodDatabases", cfg_data["database"])
+    self.assertIn("testDatabases", cfg_data["database"])
+    self.assertIn("prodHosts", cfg_data["database"])
+    self.assertIn("state", cfg_data)
+    self.assertEqual(cfg_data["state"]["completedCardAction"], "unlink")
+
+  def test_custom_database_config_and_git_safety_checks(self):
+    """Checks custom database config filtering and SCAR-GIT-25 git command safety checks."""
+    non_git_cwd = _make_temp_dir(self)
+    p = _start_mcp_server(self, non_git_cwd)
+
+    # 8. Custom database configuration in workspaceDir for workflow_get_config and workflow_safety_check
+    ws_cfg_dir = _make_temp_dir(self)
+    os.makedirs(os.path.join(ws_cfg_dir, ".workflow"))
+    with open(
+        os.path.join(ws_cfg_dir, ".workflow", "config.json"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+      json.dump(
+          {
+              "models": {
+                  "adversarial-critic": "gemini-4-argon-high",
+                  "archaeology-worker": "gemini-3.8-flash-low",
+                  "tdd-worker": "flash_lite",
+                  "triage-worker": "pro",
+              },
+              "database": {
+                  "prodDatabases": ["billing_live", 1, True, None],
+                  "testDatabases": ["billing_sandbox", "billing", 1, False],
+                  "prodHosts": ["db.company.internal", None],
+              },
+          },
+          f,
+      )
+
+    ws_cfg_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": ws_cfg_dir},
+            },
+        },
+    )
+    ws_cfg = json.loads(ws_cfg_resp["result"]["content"][0]["text"])
+    self.assertEqual(ws_cfg["models"]["adversarial-critic"], "gemini-4-argon-high")
+    self.assertEqual(ws_cfg["agyModelTiers"]["adversarial-critic"], "pro")
+    self.assertEqual(ws_cfg["models"]["archaeology-worker"], "gemini-3.8-flash-low")
+    self.assertEqual(ws_cfg["agyModelTiers"]["archaeology-worker"], "flash")
+    self.assertEqual(ws_cfg["models"]["tdd-worker"], "flash_lite")
+    self.assertEqual(ws_cfg["agyModelTiers"]["tdd-worker"], "flash_lite")
+    self.assertEqual(ws_cfg["models"]["triage-worker"], "pro")
+    self.assertEqual(ws_cfg["agyModelTiers"]["triage-worker"], "pro")
+    self.assertEqual(ws_cfg["database"]["prodDatabases"], ["billing_live"])
+    self.assertEqual(
+        ws_cfg["database"]["testDatabases"], ["billing_sandbox", "billing"]
+    )
+    self.assertEqual(
+        ws_cfg["database"]["prodHosts"], ["db.company.internal"]
+    )
+
+    for req_id, cmd_str, expected_safe in (
+        (12, "psql -h localhost billing_live", False),
+        (13, "psql -h db.company.internal billing_sandbox", False),
+        (
+            14,
+            "psql -h localhost billing_sandbox -c 'SELECT prod FROM invoices'",
+            True,
+        ),
+        (15, "psql -h production.db.internal billing_sandbox", False),
+        (16, "pg_dump myapp_prod | psql billing_sandbox", False),
+        (17, 'psql -h "prod.db.internal" billing_sandbox', False),
+        (18, "PGHOST=prod.db.internal psql billing_sandbox", False),
+        (19, 'psql "host=prod.db.internal dbname=billing_sandbox"', False),
+        (20, "psql -h localhost billing-prod", False),
+        (21, "pg_restore -d myapp_prod billing_sandbox.dump", False),
+        (
+            22,
+            'psql "postgresql://prod_user:secret@localhost:5432/billing_sandbox" -c "SELECT prod FROM t"',
+            True,
+        ),
+    ):
+      with self.subTest(command=cmd_str):
+        sc_resp = send_rpc(
             p,
             {
                 "jsonrpc": "2.0",
-                "id": 9,
+                "id": req_id,
                 "method": "tools/call",
                 "params": {
-                    "name": "workflow_verify_tree",
+                    "name": "workflow_safety_check",
                     "arguments": {
-                        "expectedApprovedTree": "0" * 40,
-                        "workspaceDir": tmp_git_ws,
+                        "commandLine": cmd_str,
+                        "workspaceDir": ws_cfg_dir,
                     },
                 },
             },
         )
-        assert not tree_resp["result"].get("isError")
-        tree_data = json.loads(tree_resp["result"]["content"][0]["text"])
-        assert len(tree_data["actualTree"]) == 40
-        print("✔ MCP workflow_verify_tree resolved workspaceDir cleanly.")
-
-      # 7. Get config with default workspaceDir
-      with tempfile.TemporaryDirectory() as empty_ws:
-        cfg_resp = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 10,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_get_config",
-                    "arguments": {"workspaceDir": empty_ws},
-                },
-            },
+        sc_data = json.loads(sc_resp["result"]["content"][0]["text"])
+        self.assertIs(
+            sc_data["safe"],
+            expected_safe,
+            f"Expected safe={expected_safe} for '{cmd_str}', got {sc_data}",
         )
-        cfg_data = json.loads(cfg_resp["result"]["content"][0]["text"])
-        assert "models" in cfg_data
-        assert "agyModelTiers" in cfg_data
-        for role in (
-            "adversarial-critic",
-            "archaeology-worker",
-            "tdd-worker",
-            "triage-worker",
-        ):
-          assert (
-              cfg_data["models"].get(role) == "inherit"
-          ), f"Expected default models[{role}] == 'inherit', got {cfg_data['models'].get(role)}"
-          assert (
-              cfg_data["agyModelTiers"].get(role) == "inherit"
-          ), f"Expected default agyModelTiers[{role}] == 'inherit', got {cfg_data['agyModelTiers'].get(role)}"
-        assert "review" in cfg_data
-        assert "ci" in cfg_data
-        assert "database" in cfg_data
-        assert "prodDatabases" in cfg_data["database"]
-        assert "testDatabases" in cfg_data["database"]
-        assert "prodHosts" in cfg_data["database"]
-        assert "state" in cfg_data
-        assert cfg_data["state"]["completedCardAction"] == "unlink"
-        print("✔ MCP workflow_get_config returned valid default configuration.")
 
-      # 8. Custom database configuration in workspaceDir for workflow_get_config and workflow_safety_check
-      with tempfile.TemporaryDirectory() as ws_cfg_dir:
-        os.makedirs(os.path.join(ws_cfg_dir, ".workflow"))
-        with open(
-            os.path.join(ws_cfg_dir, ".workflow", "config.json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-          json.dump(
-              {
-                  "models": {
-                      "adversarial-critic": "gemini-4-argon-high",
-                      "archaeology-worker": "gemini-3.8-flash-low",
-                      "tdd-worker": "flash_lite",
-                      "triage-worker": "pro",
-                  },
-                  "database": {
-                      "prodDatabases": ["billing_live", 1, True, None],
-                      "testDatabases": ["billing_sandbox", "billing", 1, False],
-                      "prodHosts": ["db.company.internal", None],
-                  }
-              },
-              f,
-          )
-
-        ws_cfg_resp = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 11,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_get_config",
-                    "arguments": {"workspaceDir": ws_cfg_dir},
-                },
-            },
-        )
-        ws_cfg = json.loads(ws_cfg_resp["result"]["content"][0]["text"])
-        assert ws_cfg["models"]["adversarial-critic"] == "gemini-4-argon-high"
-        assert ws_cfg["agyModelTiers"]["adversarial-critic"] == "pro"
-        assert ws_cfg["models"]["archaeology-worker"] == "gemini-3.8-flash-low"
-        assert ws_cfg["agyModelTiers"]["archaeology-worker"] == "flash"
-        assert ws_cfg["models"]["tdd-worker"] == "flash_lite"
-        assert ws_cfg["agyModelTiers"]["tdd-worker"] == "flash_lite"
-        assert ws_cfg["models"]["triage-worker"] == "pro"
-        assert ws_cfg["agyModelTiers"]["triage-worker"] == "pro"
-        assert ws_cfg["database"]["prodDatabases"] == ["billing_live"]
-        assert ws_cfg["database"]["testDatabases"] == ["billing_sandbox", "billing"]
-        assert ws_cfg["database"]["prodHosts"] == ["db.company.internal"]
-
-        for req_id, cmd_str, expected_safe in (
-            (12, "psql -h localhost billing_live", False),
-            (13, "psql -h db.company.internal billing_sandbox", False),
-            (
-                14,
-                "psql -h localhost billing_sandbox -c 'SELECT prod FROM invoices'",
-                True,
-            ),
-            (15, "psql -h production.db.internal billing_sandbox", False),
-            (16, "pg_dump myapp_prod | psql billing_sandbox", False),
-            (17, 'psql -h "prod.db.internal" billing_sandbox', False),
-            (18, "PGHOST=prod.db.internal psql billing_sandbox", False),
-            (19, 'psql "host=prod.db.internal dbname=billing_sandbox"', False),
-            (20, "psql -h localhost billing-prod", False),
-            (21, "pg_restore -d myapp_prod billing_sandbox.dump", False),
-            (
-                22,
-                'psql "postgresql://prod_user:secret@localhost:5432/billing_sandbox" -c "SELECT prod FROM t"',
-                True,
-            ),
-        ):
-          sc_resp = send_rpc(
-              p,
-              {
-                  "jsonrpc": "2.0",
-                  "id": req_id,
-                  "method": "tools/call",
-                  "params": {
-                      "name": "workflow_safety_check",
-                      "arguments": {
-                          "commandLine": cmd_str,
-                          "workspaceDir": ws_cfg_dir,
-                      },
-                  },
-              },
-          )
-          sc_data = json.loads(sc_resp["result"]["content"][0]["text"])
-          assert sc_data["safe"] is expected_safe, (
-              f"Expected safe={expected_safe} for '{cmd_str}', got {sc_data}"
-          )
-      print("✔ MCP custom database safety checks passed.")
-
-      # 8b. Destructive Git safety checks via workflow_safety_check (SCAR-GIT-25)
-      for git_idx, (git_cmd_str, expected_git_safe) in enumerate(
-          (
-              ("git reset --hard", False),
-              ("git -- reset --hard", False),
-              ("git clean -fd", False),
-              ("git clean -i", False),
-              ("git clean -n --no-dry-run -fd", False),
-              ("git -c clean.requireForce=false clean -d", False),
-              ("git checkout -- README.md", False),
-              ("git checkout .", False),
-              ("git checkout -p", False),
-              ("git checkout --ours README.md", False),
-              ("git checkout --theirs README.md", False),
-              ("git checkout --pathspec-from-file=paths.txt", False),
-              ("git switch --discard-changes main", False),
-              ("git restore README.md", False),
-              ("git restore --staged --no-staged README.md", False),
-              ("git stash drop", False),
-              ("git filter-branch --all", False),
-              ("git reflog delete HEAD@{1}", False),
-              ("git update-ref -d refs/heads/feat/old", False),
-              ("git update-ref --stdin", False),
-              ("git push --force origin feat/2-test", False),
-              ("git push --force-with-lease origin feat/2-test", False),
-              ("git push --mirror origin", False),
-              ("git push origin +HEAD:feat/2-test", False),
-              ("git -c remote.origin.push=+HEAD:main push origin", False),
-              ("git status && git reset --hard", False),
-              ('echo "$(git clean -fd)"', False),
-              ('bash -euo pipefail -c "git reset --hard"', False),
-              ('sh -c -- "git reset --hard"', False),
-              ('bash -co pipefail "git reset --hard"', False),
-              ('eval "git reset --hard"', False),
-              ('env -S "git reset --hard"', False),
-              ('for f in a; do git checkout -- "$f"; done', False),
-              ("git 2>&1 reset --hard", False),
-              ("psql 2>&1 -h production.db.internal myapp", False),
-              ("# Don't fail\ngit reset --hard", False),
-              ("echo $'a\\'b';git reset --hard", False),
-              ("(cd /tmp && git reset --hard)", False),
-              ("git status --short", True),
-              ("git checkout main 2>&1", True),
-              ("git checkout main 2>/dev/null", True),
-              ("git checkout -b feat/2-test", True),
-              ("git restore --staged README.md", True),
-              ("git clean -nd", True),
-              ("git branch -d feat/1-done", True),
-              ('echo "do not run git reset --hard"', True),
-              ('git commit -m "block git reset --hard"', True),
-          ),
-          start=100,
-      ):
+    # 8b. Destructive Git safety checks via workflow_safety_check (SCAR-GIT-25)
+    for git_idx, (git_cmd_str, expected_git_safe) in enumerate(
+        (
+            ("git reset --hard", False),
+            ("git -- reset --hard", False),
+            ("git clean -fd", False),
+            ("git clean -i", False),
+            ("git clean -n --no-dry-run -fd", False),
+            ("git -c clean.requireForce=false clean -d", False),
+            ("git checkout -- README.md", False),
+            ("git checkout .", False),
+            ("git checkout -p", False),
+            ("git checkout --ours README.md", False),
+            ("git checkout --theirs README.md", False),
+            ("git checkout --pathspec-from-file=paths.txt", False),
+            ("git switch --discard-changes main", False),
+            ("git restore README.md", False),
+            ("git restore --staged --no-staged README.md", False),
+            ("git stash drop", False),
+            ("git filter-branch --all", False),
+            ("git reflog delete HEAD@{1}", False),
+            ("git update-ref -d refs/heads/feat/old", False),
+            ("git update-ref --stdin", False),
+            ("git push --force origin feat/2-test", False),
+            ("git push --force-with-lease origin feat/2-test", False),
+            ("git push --mirror origin", False),
+            ("git push origin +HEAD:feat/2-test", False),
+            ("git -c remote.origin.push=+HEAD:main push origin", False),
+            ("git status && git reset --hard", False),
+            ('echo "$(git clean -fd)"', False),
+            ('bash -euo pipefail -c "git reset --hard"', False),
+            ('sh -c -- "git reset --hard"', False),
+            ('bash -co pipefail "git reset --hard"', False),
+            ('eval "git reset --hard"', False),
+            ('env -S "git reset --hard"', False),
+            ('for f in a; do git checkout -- "$f"; done', False),
+            ("git 2>&1 reset --hard", False),
+            ("psql 2>&1 -h production.db.internal myapp", False),
+            ("# Don't fail\ngit reset --hard", False),
+            ("echo $'a\\'b';git reset --hard", False),
+            ("(cd /tmp && git reset --hard)", False),
+            ("git status --short", True),
+            ("git checkout main 2>&1", True),
+            ("git checkout main 2>/dev/null", True),
+            ("git checkout -b feat/2-test", True),
+            ("git restore --staged README.md", True),
+            ("git clean -nd", True),
+            ("git branch -d feat/1-done", True),
+            ('echo "do not run git reset --hard"', True),
+            ('git commit -m "block git reset --hard"', True),
+        ),
+        start=100,
+    ):
+      with self.subTest(command=git_cmd_str):
         git_sc_resp = send_rpc(
             p,
             {
@@ -502,22 +591,25 @@ def run_test():
             },
         )
         git_sc_data = json.loads(git_sc_resp["result"]["content"][0]["text"])
-        assert git_sc_data["safe"] is expected_git_safe, (
-            f"Expected safe={expected_git_safe} for '{git_cmd_str}', got {git_sc_data}"
+        self.assertIs(
+            git_sc_data["safe"],
+            expected_git_safe,
+            f"Expected safe={expected_git_safe} for '{git_cmd_str}', got {git_sc_data}",
         )
 
-      for adv_idx, adv_cmd in enumerate(
-          (
-              "git push -u origin feat/2-test",
-              "git rebase main",
-              "git branch -D feat/old",
-              "git branch -M old main",
-              'git commit -m "feat: add safety check"',
-              "gh pr merge 2 --squash",
-              "echo ok && git rebase main",
-          ),
-          start=200,
-      ):
+    for adv_idx, adv_cmd in enumerate(
+        (
+            "git push -u origin feat/2-test",
+            "git rebase main",
+            "git branch -D feat/old",
+            "git branch -M old main",
+            'git commit -m "feat: add safety check"',
+            "gh pr merge 2 --squash",
+            "echo ok && git rebase main",
+        ),
+        start=200,
+    ):
+      with self.subTest(command=adv_cmd):
         adv_sc_resp = send_rpc(
             p,
             {
@@ -531,54 +623,68 @@ def run_test():
             },
         )
         adv_sc_data = json.loads(adv_sc_resp["result"]["content"][0]["text"])
-        assert adv_sc_data["safe"] is True, f"Expected safe=True on '{adv_cmd}'"
-        assert "Requires human operator approval" in adv_sc_data["reason"], (
-            f"Expected operator approval reason on '{adv_cmd}', got {adv_sc_data}"
+        self.assertIs(
+            adv_sc_data["safe"], True, f"Expected safe=True on '{adv_cmd}'"
         )
-      print("✔ MCP destructive Git command safety checks passed.")
+        self.assertIn(
+            "Requires human operator approval",
+            adv_sc_data["reason"],
+            f"Expected operator approval reason on '{adv_cmd}', got {adv_sc_data}",
+        )
 
-      # 8c. workflow_query_scars JSON-RPC checks
-      # Case a: Query without query argument -> error
-      no_query_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 250,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {"workspaceDir": non_git_cwd},
-              },
-          },
-      )
-      assert no_query_resp["result"]["isError"] is True
-      assert "Missing required argument 'query'" in no_query_resp["result"]["content"][0]["text"]
+  def test_workflow_query_scars_jsonrpc_and_loaded_cache(self):
+    """Checks workflow_query_scars JSON-RPC queries, filters, and loaded_scars.json cache."""
+    non_git_cwd = _make_temp_dir(self)
+    p = _start_mcp_server(self, non_git_cwd)
 
-      # Case b: Query when database does not exist -> UNINITIALIZED status
-      uninit_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 251,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "BaseScript",
-                      "workspaceDir": non_git_cwd,
-                      "dbPath": os.path.join(non_git_cwd, "nonexistent.db"),
-                  },
-              },
-          },
-      )
-      uninit_data = json.loads(uninit_resp["result"]["content"][0]["text"])
-      assert uninit_data["status"] == "UNINITIALIZED"
-      assert "Bundled registry database is missing from skill package" in uninit_data["message"]
-      assert uninit_data["scars"] == []
+    # Case a: Query without query argument -> error
+    no_query_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 250,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {"workspaceDir": non_git_cwd},
+            },
+        },
+    )
+    self.assertIs(no_query_resp["result"]["isError"], True)
+    self.assertIn(
+        "Missing required argument 'query'",
+        no_query_resp["result"]["content"][0]["text"],
+    )
 
-      # Case c: Query when database exists with sample scars
-      test_scars_db = os.path.join(non_git_cwd, "test_scars.db")
-      conn = sqlite3.connect(test_scars_db)
+    # Case b: Query when database does not exist -> UNINITIALIZED status
+    uninit_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 251,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "BaseScript",
+                    "workspaceDir": non_git_cwd,
+                    "dbPath": os.path.join(non_git_cwd, "nonexistent.db"),
+                },
+            },
+        },
+    )
+    uninit_data = json.loads(uninit_resp["result"]["content"][0]["text"])
+    self.assertEqual(uninit_data["status"], "UNINITIALIZED")
+    self.assertIn(
+        "Bundled registry database is missing from skill package",
+        uninit_data["message"],
+    )
+    self.assertEqual(uninit_data["scars"], [])
+
+    # Case c: Query when database exists with sample scars
+    test_scars_db = os.path.join(non_git_cwd, "test_scars.db")
+    conn = sqlite3.connect(test_scars_db)
+    try:
       conn.execute("""
           CREATE TABLE scars (
               id TEXT PRIMARY KEY,
@@ -670,172 +776,194 @@ def run_test():
           ),
       ]
       for s in test_scars:
-        conn.execute("INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
+        conn.execute(
+            "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            s,
+        )
         conn.execute(
             "INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (s[0], s[1], s[2], s[6], s[8] or "", s[9] or "", s[11] or "", s[12] or "", s[13], s[14] or ""),
+            (
+                s[0],
+                s[1],
+                s[2],
+                s[6],
+                s[8] or "",
+                s[9] or "",
+                s[11] or "",
+                s[12] or "",
+                s[13],
+                s[14] or "",
+            ),
         )
       conn.commit()
+    finally:
       conn.close()
 
-      # Query matching BaseScript
-      query_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 252,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "BaseScript",
-                      "dbPath": test_scars_db,
-                  },
-              },
-          },
-      )
-      query_data = json.loads(query_resp["result"]["content"][0]["text"])
-      assert query_data["status"] == "OK"
-      assert query_data["totalResults"] == 1
-      assert query_data["scars"][0]["id"] == "SCAR-ARCH-05"
-      assert "wound" in query_data["scars"][0]
-      assert "source" in query_data["scars"][0]
-      assert query_data["scars"][0]["source"] == "upstream"
-      assert query_data.get("alreadyLoaded") == []
-      assert os.path.abspath(test_scars_db) in query_data.get("searchedDatabases", [])
+    # Query matching BaseScript
+    query_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 252,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "BaseScript",
+                    "dbPath": test_scars_db,
+                },
+            },
+        },
+    )
+    query_data = json.loads(query_resp["result"]["content"][0]["text"])
+    self.assertEqual(query_data["status"], "OK")
+    self.assertEqual(query_data["totalResults"], 1)
+    self.assertEqual(query_data["scars"][0]["id"], "SCAR-ARCH-05")
+    self.assertIn("wound", query_data["scars"][0])
+    self.assertIn("source", query_data["scars"][0])
+    self.assertEqual(query_data["scars"][0]["source"], "upstream")
+    self.assertEqual(query_data.get("alreadyLoaded"), [])
+    self.assertIn(
+        os.path.abspath(test_scars_db),
+        query_data.get("searchedDatabases", []),
+    )
 
-      # Query with source filter (with refreshLoaded=True to get full scar fields again)
-      src_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 256,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "BaseScript",
-                      "source": "upstream",
-                      "dbPath": test_scars_db,
-                      "refreshLoaded": True,
-                  },
-              },
-          },
-      )
-      src_data = json.loads(src_resp["result"]["content"][0]["text"])
-      assert src_data["status"] == "OK"
-      assert src_data["totalResults"] >= 1
-      assert src_data["scars"][0]["source"] == "upstream"
-      assert "wound" in src_data["scars"][0]
+    # Query with source filter (with refreshLoaded=True to get full scar fields again)
+    src_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 256,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "BaseScript",
+                    "source": "upstream",
+                    "dbPath": test_scars_db,
+                    "refreshLoaded": True,
+                },
+            },
+        },
+    )
+    src_data = json.loads(src_resp["result"]["content"][0]["text"])
+    self.assertEqual(src_data["status"], "OK")
+    self.assertGreaterEqual(src_data["totalResults"], 1)
+    self.assertEqual(src_data["scars"][0]["source"], "upstream")
+    self.assertIn("wound", src_data["scars"][0])
 
-      # Query with category filter
-      cat_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 253,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "isolation",
-                      "category": "Testing",
-                      "dbPath": test_scars_db,
-                  },
-              },
-          },
-      )
-      cat_data = json.loads(cat_resp["result"]["content"][0]["text"])
-      assert cat_data["status"] == "OK"
-      assert cat_data["totalResults"] == 1
-      assert cat_data["scars"][0]["id"] == "SCAR-TEST-08"
+    # Query with category filter
+    cat_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 253,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "isolation",
+                    "category": "Testing",
+                    "dbPath": test_scars_db,
+                },
+            },
+        },
+    )
+    cat_data = json.loads(cat_resp["result"]["content"][0]["text"])
+    self.assertEqual(cat_data["status"], "OK")
+    self.assertEqual(cat_data["totalResults"], 1)
+    self.assertEqual(cat_data["scars"][0]["id"], "SCAR-TEST-08")
 
-      # Query with limit filter
-      lim_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 254,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "SCAR",
-                      "limit": 1,
-                      "dbPath": test_scars_db,
-                      "refreshLoaded": True,
-                  },
-              },
-          },
-      )
-      lim_data = json.loads(lim_resp["result"]["content"][0]["text"])
-      assert lim_data["status"] == "OK"
-      assert len(lim_data["scars"]) == 1
+    # Query with limit filter
+    lim_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 254,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "SCAR",
+                    "limit": 1,
+                    "dbPath": test_scars_db,
+                    "refreshLoaded": True,
+                },
+            },
+        },
+    )
+    lim_data = json.loads(lim_resp["result"]["content"][0]["text"])
+    self.assertEqual(lim_data["status"], "OK")
+    self.assertEqual(len(lim_data["scars"]), 1)
 
-      # Case d: Query when dbPath is omitted -> resolves stacked databases including workspace and bundled
-      ws_cache_dir = os.path.join(non_git_cwd, ".workflow", "cache")
-      ws_state_dir = os.path.join(non_git_cwd, ".workflow", "state")
-      os.makedirs(ws_cache_dir, exist_ok=True)
-      os.makedirs(ws_state_dir, exist_ok=True)
-      with open(os.path.join(ws_state_dir, "10_ticket.md"), "w", encoding="utf-8") as tf:
-        tf.write("# Ticket: GH-192\n")
-      ws_scars_db = os.path.join(ws_cache_dir, "scars_registry.db")
-      shutil.copyfile(test_scars_db, ws_scars_db)
+    # Case d: Query when dbPath is omitted -> resolves stacked databases including workspace and bundled
+    ws_cache_dir = os.path.join(non_git_cwd, ".workflow", "cache")
+    ws_state_dir = os.path.join(non_git_cwd, ".workflow", "state")
+    os.makedirs(ws_cache_dir, exist_ok=True)
+    os.makedirs(ws_state_dir, exist_ok=True)
+    with open(
+        os.path.join(ws_state_dir, "10_ticket.md"), "w", encoding="utf-8"
+    ) as tf:
+      tf.write("# Ticket: GH-192\n")
+    ws_scars_db = os.path.join(ws_cache_dir, "scars_registry.db")
+    shutil.copyfile(test_scars_db, ws_scars_db)
 
-      default_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 255,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "BaseScript",
-                      "workspaceDir": non_git_cwd,
-                      "limit": 2,
-                  },
-              },
-          },
-      )
-      default_data = json.loads(default_resp["result"]["content"][0]["text"])
-      assert default_data["status"] == "OK"
-      assert len(default_data["scars"]) > 0
-      assert os.path.abspath(ws_scars_db) in default_data.get("searchedDatabases", [])
-      assert len(default_data.get("searchedDatabases", [])) >= 2
-      assert os.path.isfile(os.path.join(ws_state_dir, "loaded_scars.json"))
+    default_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 255,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "BaseScript",
+                    "workspaceDir": non_git_cwd,
+                    "limit": 2,
+                },
+            },
+        },
+    )
+    default_data = json.loads(default_resp["result"]["content"][0]["text"])
+    self.assertEqual(default_data["status"], "OK")
+    self.assertGreater(len(default_data["scars"]), 0)
+    self.assertIn(
+        os.path.abspath(ws_scars_db),
+        default_data.get("searchedDatabases", []),
+    )
+    self.assertGreaterEqual(len(default_data.get("searchedDatabases", [])), 2)
+    self.assertTrue(
+        os.path.isfile(os.path.join(ws_state_dir, "loaded_scars.json"))
+    )
 
-      # Second query in same workspace session returns compact reminder for already-loaded SCAR-ARCH-05
-      second_resp = send_rpc(
-          p,
-          {
-              "jsonrpc": "2.0",
-              "id": 257,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_query_scars",
-                  "arguments": {
-                      "query": "SCAR-ARCH-05",
-                      "workspaceDir": non_git_cwd,
-                      "limit": 1,
-                  },
-              },
-          },
-      )
-      second_data = json.loads(second_resp["result"]["content"][0]["text"])
-      assert second_data["status"] == "OK"
-      assert len(second_data["alreadyLoaded"]) >= 1
-      assert second_data["alreadyLoaded"][0]["id"] == "SCAR-ARCH-05"
-      assert second_data["alreadyLoaded"][0]["alreadyLoaded"] is True
-      assert "wound" not in second_data["alreadyLoaded"][0]
+    # Second query in same workspace session returns compact reminder for already-loaded SCAR-ARCH-05
+    second_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 257,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {
+                    "query": "SCAR-ARCH-05",
+                    "workspaceDir": non_git_cwd,
+                    "limit": 1,
+                },
+            },
+        },
+    )
+    second_data = json.loads(second_resp["result"]["content"][0]["text"])
+    self.assertEqual(second_data["status"], "OK")
+    self.assertGreaterEqual(len(second_data["alreadyLoaded"]), 1)
+    self.assertEqual(second_data["alreadyLoaded"][0]["id"], "SCAR-ARCH-05")
+    self.assertIs(second_data["alreadyLoaded"][0]["alreadyLoaded"], True)
+    self.assertNotIn("wound", second_data["alreadyLoaded"][0])
 
-      print("✔ MCP workflow_query_scars JSON-RPC checks passed.")
-    finally:
-      p.kill()
-      p.wait()
-
-  # 9. Environment variable database overrides
-  with tempfile.TemporaryDirectory() as env_cwd:
+  def test_env_var_overrides_and_partial_config_poll_ci(self):
+    """Checks environment variable overrides, recursive config deep-merge, and poll_ci fallback."""
+    # 9. Environment variable database overrides
+    env_cwd = _make_temp_dir(self)
     custom_env = dict(os.environ)
     custom_env["MAKEFILE_WORKFLOW_PROD_DBS"] = "ledger_live"
     custom_env["MAKEFILE_WORKFLOW_TEST_DBS"] = "ledger_test"
@@ -847,91 +975,90 @@ def run_test():
     custom_env["MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS"] = "40"
     custom_env["MAKEFILE_WORKFLOW_CI_POLL_INTERVAL"] = "8"
     custom_env["MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION"] = "archive"
-    p_env = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=env_cwd,
-        env=custom_env,
-        text=True,
+    p_env = _start_mcp_server(self, env_cwd, env=custom_env)
+    send_rpc(
+        p_env, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     )
-    try:
-      send_rpc(
-          p_env, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-      )
-      env_cfg_resp = send_rpc(
-          p_env,
-          {
-              "jsonrpc": "2.0",
-              "id": 2,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_get_config",
-                  "arguments": {"workspaceDir": env_cwd},
-              },
-          },
-      )
-      env_cfg = json.loads(env_cfg_resp["result"]["content"][0]["text"])
-      assert "ledger_live" in env_cfg["database"]["prodDatabases"]
-      assert "ledger_test" in env_cfg["database"]["testDatabases"]
-      assert "live-cluster.internal" in env_cfg["database"]["prodHosts"]
-      assert env_cfg["models"]["adversarial-critic"] == "gemini-4-argon-high"
-      assert env_cfg["agyModelTiers"]["adversarial-critic"] == "pro"
-      assert env_cfg["models"]["archaeology-worker"] == "flash_lite"
-      assert env_cfg["agyModelTiers"]["archaeology-worker"] == "flash_lite"
-      assert env_cfg["models"]["tdd-worker"] == "pro"
-      assert env_cfg["agyModelTiers"]["tdd-worker"] == "pro"
-      assert env_cfg["models"]["triage-worker"] == "flash"
-      assert env_cfg["agyModelTiers"]["triage-worker"] == "flash"
-      assert env_cfg["ci"]["quiescenceSeconds"] == 40
-      assert env_cfg["ci"]["pollIntervalSeconds"] == 8
-      assert env_cfg["state"]["completedCardAction"] == "archive"
-      assert any("MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION=archive" in ov for ov in env_cfg["envOverrides"])
+    env_cfg_resp = send_rpc(
+        p_env,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": env_cwd},
+            },
+        },
+    )
+    env_cfg = json.loads(env_cfg_resp["result"]["content"][0]["text"])
+    self.assertIn("ledger_live", env_cfg["database"]["prodDatabases"])
+    self.assertIn("ledger_test", env_cfg["database"]["testDatabases"])
+    self.assertIn("live-cluster.internal", env_cfg["database"]["prodHosts"])
+    self.assertEqual(
+        env_cfg["models"]["adversarial-critic"], "gemini-4-argon-high"
+    )
+    self.assertEqual(env_cfg["agyModelTiers"]["adversarial-critic"], "pro")
+    self.assertEqual(env_cfg["models"]["archaeology-worker"], "flash_lite")
+    self.assertEqual(
+        env_cfg["agyModelTiers"]["archaeology-worker"], "flash_lite"
+    )
+    self.assertEqual(env_cfg["models"]["tdd-worker"], "pro")
+    self.assertEqual(env_cfg["agyModelTiers"]["tdd-worker"], "pro")
+    self.assertEqual(env_cfg["models"]["triage-worker"], "flash")
+    self.assertEqual(env_cfg["agyModelTiers"]["triage-worker"], "flash")
+    self.assertEqual(env_cfg["ci"]["quiescenceSeconds"], 40)
+    self.assertEqual(env_cfg["ci"]["pollIntervalSeconds"], 8)
+    self.assertEqual(env_cfg["state"]["completedCardAction"], "archive")
+    self.assertTrue(
+        any(
+            "MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION=archive" in ov
+            for ov in env_cfg["envOverrides"]
+        )
+    )
 
-      env_sc_bad = send_rpc(
-          p_env,
-          {
-              "jsonrpc": "2.0",
-              "id": 3,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_safety_check",
-                  "arguments": {
-                      "commandLine": "psql -h localhost ledger_live",
-                      "workspaceDir": env_cwd,
-                  },
-              },
-          },
-      )
-      assert json.loads(env_sc_bad["result"]["content"][0]["text"])["safe"] is False
+    env_sc_bad = send_rpc(
+        p_env,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_safety_check",
+                "arguments": {
+                    "commandLine": "psql -h localhost ledger_live",
+                    "workspaceDir": env_cwd,
+                },
+            },
+        },
+    )
+    self.assertIs(
+        json.loads(env_sc_bad["result"]["content"][0]["text"])["safe"], False
+    )
 
-      env_sc_good = send_rpc(
-          p_env,
-          {
-              "jsonrpc": "2.0",
-              "id": 4,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_safety_check",
-                  "arguments": {
-                      "commandLine": (
-                          "psql -h localhost ledger_test -c 'SELECT prod FROM tx'"
-                      ),
-                      "workspaceDir": env_cwd,
-                  },
-              },
-          },
-      )
-      assert json.loads(env_sc_good["result"]["content"][0]["text"])["safe"] is True
-      print("✔ MCP environment variable database overrides passed.")
+    env_sc_good = send_rpc(
+        p_env,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_safety_check",
+                "arguments": {
+                    "commandLine": (
+                        "psql -h localhost ledger_test -c 'SELECT prod FROM tx'"
+                    ),
+                    "workspaceDir": env_cwd,
+                },
+            },
+        },
+    )
+    self.assertIs(
+        json.loads(env_sc_good["result"]["content"][0]["text"])["safe"], True
+    )
 
-    finally:
-      p_env.kill()
-      p_env.wait()
-
-  # 10. Single-item partial config override & workflow_poll_ci tests
-  with tempfile.TemporaryDirectory() as partial_ws:
+    # 10. Single-item partial config override & workflow_poll_ci tests
+    partial_ws = _make_temp_dir(self)
     os.makedirs(os.path.join(partial_ws, ".workflow"))
     with open(
         os.path.join(partial_ws, ".workflow", "config.json"),
@@ -940,572 +1067,571 @@ def run_test():
     ) as f:
       json.dump({"ci": {"quiescenceSeconds": 20}}, f)
 
-    p_partial = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=partial_ws,
-        text=True,
+    p_partial = _start_mcp_server(self, partial_ws)
+    send_rpc(
+        p_partial,
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
     )
-    try:
-      send_rpc(
-          p_partial,
-          {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    partial_cfg_resp = send_rpc(
+        p_partial,
+        {
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": partial_ws},
+            },
+        },
+    )
+    partial_cfg = json.loads(partial_cfg_resp["result"]["content"][0]["text"])
+    self.assertEqual(partial_cfg["ci"]["quiescenceSeconds"], 20)
+    self.assertEqual(
+        partial_cfg["ci"]["pollIntervalSeconds"],
+        30,
+        f"Expected default 30s poll interval, got {partial_cfg['ci']['pollIntervalSeconds']}",
+    )
+    self.assertEqual(partial_cfg["models"]["adversarial-critic"], "inherit")
+    self.assertIs(partial_cfg["review"]["strictSixPillars"], True)
+
+    # Test workflow_poll_ci in pure git / missing PR fallback mode
+    poll_resp = send_rpc(
+        p_partial,
+        {
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_poll_ci",
+                "arguments": {
+                    "prNumber": 0,
+                    "workspaceDir": partial_ws,
+                },
+            },
+        },
+    )
+    poll_data = json.loads(poll_resp["result"]["content"][0]["text"])
+    self.assertIn("ciStatus", poll_data)
+    self.assertIn("quiescenceSatisfied", poll_data)
+    self.assertIn("readyToLand", poll_data)
+    self.assertIn("unresolvedBotCommentsCount", poll_data)
+    self.assertEqual(poll_data["mode"], "pure_git")
+
+  def test_poll_ci_status_in_memory_branches(self):
+    """Checks poll_ci_status GitHub PR parsing and quiescence branches in memory."""
+    from mcp.server import poll_ci_status
+
+    mock_data_bot = {
+        "statusCheckRollup": [{
+            "name": "ci",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "completedAt": "2026-11-01T08:00:00Z",
+        }],
+        "comments": [{
+            "author": {"login": "coderabbitai[bot]"},
+            "body": "Consider refactoring",
+            "createdAt": "2026-11-01T08:01:00Z",
+        }],
+        "reviews": [],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+    }
+    with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+        "subprocess.run"
+    ) as mock_run:
+      mock_run.return_value = mock.MagicMock(
+          stdout=json.dumps(mock_data_bot), stderr="", returncode=0
       )
-      partial_cfg_resp = send_rpc(
-          p_partial,
-          {
-              "jsonrpc": "2.0",
-              "id": 50,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_get_config",
-                  "arguments": {"workspaceDir": partial_ws},
-              },
-          },
+      res = poll_ci_status(
+          ws=REPO_ROOT,
+          pr_number=123,
+          quiescence_sec=10,
+          max_wait_sec=1,
+          hosting_mode="github",
       )
-      partial_cfg = json.loads(partial_cfg_resp["result"]["content"][0]["text"])
-      assert partial_cfg["ci"]["quiescenceSeconds"] == 20
-      assert partial_cfg["ci"]["pollIntervalSeconds"] == 30, (
-          f"Expected default 30s poll interval, got {partial_cfg['ci']['pollIntervalSeconds']}"
+      self.assertEqual(res["ciStatus"], "SUCCESS")
+      self.assertIs(res["readyToLand"], False)
+      self.assertEqual(res["unresolvedBotCommentsCount"], 1)
+
+    mock_data_clean = {
+        "statusCheckRollup": [{
+            "name": "ci",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "completedAt": "2026-11-01T07:00:00Z",
+        }],
+        "comments": [],
+        "reviews": [],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+    }
+    with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+        "subprocess.run"
+    ) as mock_run:
+      mock_run.return_value = mock.MagicMock(
+          stdout=json.dumps(mock_data_clean), stderr="", returncode=0
       )
-      assert partial_cfg["models"]["adversarial-critic"] == "inherit"
-      assert partial_cfg["review"]["strictSixPillars"] is True
-      print("✔ MCP recursive deep-merge single-item override passed.")
-
-      # Test workflow_poll_ci in pure git / missing PR fallback mode
-      poll_resp = send_rpc(
-          p_partial,
-          {
-              "jsonrpc": "2.0",
-              "id": 51,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_poll_ci",
-                  "arguments": {
-                      "prNumber": 0,
-                      "workspaceDir": partial_ws,
-                  },
-              },
-          },
+      res = poll_ci_status(
+          ws=REPO_ROOT,
+          pr_number=123,
+          quiescence_sec=10,
+          max_wait_sec=1,
+          hosting_mode="github",
       )
-      poll_data = json.loads(poll_resp["result"]["content"][0]["text"])
-      assert "ciStatus" in poll_data
-      assert "quiescenceSatisfied" in poll_data
-      assert "readyToLand" in poll_data
-      assert "unresolvedBotCommentsCount" in poll_data
-      assert poll_data["mode"] == "pure_git"
-      print("✔ MCP workflow_poll_ci fallback handling passed.")
-    finally:
-      p_partial.kill()
-      p_partial.wait()
+      self.assertEqual(res["ciStatus"], "SUCCESS")
+      self.assertIs(res["readyToLand"], True)
+      self.assertEqual(res["unresolvedBotCommentsCount"], 0)
 
-  # 11. In-memory unit tests for poll_ci_status GitHub PR parsing & quiescence
-  sys.path.insert(0, REPO_ROOT)
-  from mcp.server import poll_ci_status
-  from unittest.mock import patch, MagicMock
+    mock_data_fail = {
+        "statusCheckRollup": [
+            {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}
+        ],
+        "comments": [],
+        "reviews": [],
+    }
+    with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+        "subprocess.run"
+    ) as mock_run:
+      mock_run.return_value = mock.MagicMock(
+          stdout=json.dumps(mock_data_fail), stderr="", returncode=0
+      )
+      res = poll_ci_status(
+          ws=REPO_ROOT,
+          pr_number=123,
+          quiescence_sec=10,
+          max_wait_sec=1,
+          hosting_mode="github",
+      )
+      self.assertEqual(res["ciStatus"], "FAILURE")
+      self.assertEqual(res["failedChecks"], ["lint"])
 
-  mock_data_bot = {
-      "statusCheckRollup": [{
-          "name": "ci",
-          "status": "COMPLETED",
-          "conclusion": "SUCCESS",
-          "completedAt": "2026-11-01T08:00:00Z",
-      }],
-      "comments": [{
-          "author": {"login": "coderabbitai[bot]"},
-          "body": "Consider refactoring",
-          "createdAt": "2026-11-01T08:01:00Z",
-      }],
-      "reviews": [],
-      "mergeable": "MERGEABLE",
-      "mergeStateStatus": "CLEAN",
-  }
-  with patch("shutil.which", return_value="/usr/bin/gh"), patch(
-      "subprocess.run"
-  ) as mock_run:
-    mock_run.return_value = MagicMock(
-        stdout=json.dumps(mock_data_bot), stderr="", returncode=0
-    )
-    res = poll_ci_status(
-        ws=REPO_ROOT,
-        pr_number=123,
-        quiescence_sec=10,
-        max_wait_sec=1,
-        hosting_mode="github",
-    )
-    assert res["ciStatus"] == "SUCCESS"
-    assert res["readyToLand"] is False
-    assert res["unresolvedBotCommentsCount"] == 1
-
-  mock_data_clean = {
-      "statusCheckRollup": [{
-          "name": "ci",
-          "status": "COMPLETED",
-          "conclusion": "SUCCESS",
-          "completedAt": "2026-11-01T07:00:00Z",
-      }],
-      "comments": [],
-      "reviews": [],
-      "mergeable": "MERGEABLE",
-      "mergeStateStatus": "CLEAN",
-  }
-  with patch("shutil.which", return_value="/usr/bin/gh"), patch(
-      "subprocess.run"
-  ) as mock_run:
-    mock_run.return_value = MagicMock(
-        stdout=json.dumps(mock_data_clean), stderr="", returncode=0
-    )
-    res = poll_ci_status(
-        ws=REPO_ROOT,
-        pr_number=123,
-        quiescence_sec=10,
-        max_wait_sec=1,
-        hosting_mode="github",
-    )
-    assert res["ciStatus"] == "SUCCESS"
-    assert res["readyToLand"] is True
-    assert res["unresolvedBotCommentsCount"] == 0
-
-  mock_data_fail = {
-      "statusCheckRollup": [
-          {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}
-      ],
-      "comments": [],
-      "reviews": [],
-  }
-  with patch("shutil.which", return_value="/usr/bin/gh"), patch(
-      "subprocess.run"
-  ) as mock_run:
-    mock_run.return_value = MagicMock(
-        stdout=json.dumps(mock_data_fail), stderr="", returncode=0
-    )
-    res = poll_ci_status(
-        ws=REPO_ROOT,
-        pr_number=123,
-        quiescence_sec=10,
-        max_wait_sec=1,
-        hosting_mode="github",
-    )
-    assert res["ciStatus"] == "FAILURE"
-    assert res["failedChecks"] == ["lint"]
-  print("✔ MCP poll_ci_status in-memory branch coverage passed.")
-
-  # 15. Plugin directory isolation test
-  with tempfile.TemporaryDirectory() as mock_plugin_dir, tempfile.TemporaryDirectory() as ws_dir:
-    with open(os.path.join(mock_plugin_dir, "plugin.json"), "w", encoding="utf-8") as f:
+  def test_plugin_directory_isolation_and_state_cards(self):
+    """Checks plugin directory isolation and GH-74 workflow_get_state empty/complete cards."""
+    mock_plugin_dir = _make_temp_dir(self)
+    ws_dir = _make_temp_dir(self)
+    with open(
+        os.path.join(mock_plugin_dir, "plugin.json"), "w", encoding="utf-8"
+    ) as f:
       json.dump({"name": "makeflow"}, f)
     plugin_state = os.path.join(mock_plugin_dir, ".workflow", "state")
     os.makedirs(plugin_state)
-    with open(os.path.join(plugin_state, "10_ticket.md"), "w", encoding="utf-8") as f:
+    with open(
+        os.path.join(plugin_state, "10_ticket.md"), "w", encoding="utf-8"
+    ) as f:
       f.write("# Ticket\n- Ticket ID: GH-999\n")
 
-    p_iso = subprocess.Popen(
-        [sys.executable, SERVER_SCRIPT],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=mock_plugin_dir,
-        text=True,
+    p_iso = _start_mcp_server(self, mock_plugin_dir)
+    send_rpc(
+        p_iso, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     )
-    try:
-      send_rpc(p_iso, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
 
-      # Calling workflow_get_state with {} in plugin dir returns error or does not leak plugin cards
-      resp_empty = send_rpc(
-          p_iso,
-          {
-              "jsonrpc": "2.0",
-              "id": 2,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_get_state",
-                  "arguments": {},
-              },
-          },
-      )
-      res_obj = resp_empty.get("result", {})
-      text_out = res_obj.get("content", [{}])[0].get("text", "")
-      assert "GH-999" not in text_out, f"Leaked plugin cards: {text_out}"
-      assert res_obj.get("isError") is True or "does not exist" in text_out or "BLOCKED" in text_out
-
-      # Calling workflow_get_state with workspaceDir pointing to pristine workspace
-      resp_ws = send_rpc(
-          p_iso,
-          {
-              "jsonrpc": "2.0",
-              "id": 3,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_get_state",
-                  "arguments": {"workspaceDir": ws_dir},
-              },
-          },
-      )
-      text_ws = resp_ws.get("result", {}).get("content", [{}])[0].get("text", "")
-      assert "GH-999" not in text_ws
-      assert "does not exist" in text_ws
-
-      # GH-74: workflow_get_state on empty state directory
-      empty_st = os.path.join(ws_dir, ".workflow", "state")
-      os.makedirs(empty_st)
-      resp_empty_st = send_rpc(
-          p_iso,
-          {
-              "jsonrpc": "2.0",
-              "id": 4,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_get_state",
-                  "arguments": {"workspaceDir": ws_dir},
-              },
-          },
-      )
-      text_empty_st = resp_empty_st.get("result", {}).get("content", [{}])[0].get("text", "")
-      assert "clean (0 state cards)" in text_empty_st
-      assert "Ready for Target 10 intake" in text_empty_st
-
-      # GH-74: workflow_get_state on completed ticket
-      with open(os.path.join(empty_st, "10_ticket.md"), "w", encoding="utf-8") as f:
-        f.write("# Ticket Intake: GH-20\n")
-      with open(os.path.join(empty_st, "99_next_action.md"), "w", encoding="utf-8") as f:
-        f.write("# Target 90 Finished: COMPLETE\n- Status: COMPLETE (make finish satisfied)\n")
-      resp_comp_st = send_rpc(
-          p_iso,
-          {
-              "jsonrpc": "2.0",
-              "id": 5,
-              "method": "tools/call",
-              "params": {
-                  "name": "workflow_get_state",
-                  "arguments": {"workspaceDir": ws_dir},
-              },
-          },
-      )
-      text_comp_st = resp_comp_st.get("result", {}).get("content", [{}])[0].get("text", "")
-      assert "Previous ticket is complete" in text_comp_st
-      assert "Ready for Target 10 intake" in text_comp_st
-    finally:
-      p_iso.kill()
-      p_iso.wait()
-  print("✔ MCP plugin directory isolation passed.")
-
-  # 16. Unit tests for detect_hosting_mode and poll_ci_status hosting mode integration (GH-76)
-  from mcp.server import detect_hosting_mode
-
-  # Case a: No remote (or git remote get-url origin returns non-zero) -> "pure_git"
-  with patch("subprocess.run") as mock_run:
-    mock_run.return_value = MagicMock(returncode=128, stdout="", stderr="fatal: No such remote 'origin'")
-    assert detect_hosting_mode("/fake/repo") == "pure_git"
-
-  # Case b: Non-GitHub remote (e.g. git@gitlab.com:org/repo.git or https://gitlab.com/org/repo.git) -> "pure_git"
-  for non_gh_url in [
-      "git@gitlab.com:org/repo.git",
-      "https://gitlab.com/org/repo.git",
-      "https://bitbucket.org/org/repo.git",
-      "file:///local/path/repo.git",
-  ]:
-    with patch("subprocess.run") as mock_run:
-      mock_run.return_value = MagicMock(returncode=0, stdout=non_gh_url + "\n", stderr="")
-      assert detect_hosting_mode("/fake/repo") == "pure_git", f"Failed for {non_gh_url}"
-
-  # Case c: GitHub remote, but gh binary missing -> "pure_git"
-  with patch("subprocess.run") as mock_run, patch("shutil.which", return_value=None):
-    mock_run.return_value = MagicMock(returncode=0, stdout="git@github.com:org/repo.git\n", stderr="")
-    assert detect_hosting_mode("/fake/repo") == "pure_git"
-
-  # Case d: GitHub remote, gh present, but gh auth status non-zero -> "pure_git"
-  def mock_subp_auth_fail(cmd, **kwargs):
-    if cmd[:3] == ["git", "remote", "get-url"]:
-      return MagicMock(returncode=0, stdout="https://github.com/org/repo.git\n", stderr="")
-    if cmd[:3] == ["gh", "auth", "status"]:
-      return MagicMock(returncode=1, stdout="", stderr="You are not logged into any GitHub hosts")
-    return MagicMock(returncode=0, stdout="", stderr="")
-
-  with patch("shutil.which", return_value="/usr/bin/gh"), patch(
-      "subprocess.run", side_effect=mock_subp_auth_fail
-  ):
-    assert detect_hosting_mode("/fake/repo") == "pure_git"
-
-  # Case e: GitHub remote, gh auth status 0, but gh repo view non-zero -> "pure_git"
-  def mock_subp_repo_fail(cmd, **kwargs):
-    if cmd[:3] == ["git", "remote", "get-url"]:
-      return MagicMock(returncode=0, stdout="https://github.com/org/repo.git\n", stderr="")
-    if cmd[:3] == ["gh", "auth", "status"]:
-      return MagicMock(returncode=0, stdout="Logged in to github.com\n", stderr="")
-    if cmd[:3] == ["gh", "repo", "view"]:
-      return MagicMock(returncode=1, stdout="", stderr="GraphQL: Could not resolve to a Repository")
-    return MagicMock(returncode=0, stdout="", stderr="")
-
-  with patch("shutil.which", return_value="/usr/bin/gh"), patch(
-      "subprocess.run", side_effect=mock_subp_repo_fail
-  ):
-    assert detect_hosting_mode("/fake/repo") == "pure_git"
-
-  # Case f: GitHub remote, gh auth status 0, and gh repo view 0 -> "github"
-  def mock_subp_all_pass(cmd, **kwargs):
-    if cmd[:3] == ["git", "remote", "get-url"]:
-      return MagicMock(returncode=0, stdout="https://github.com/org/repo.git\n", stderr="")
-    if cmd[:3] == ["gh", "auth", "status"]:
-      return MagicMock(returncode=0, stdout="Logged in to github.com\n", stderr="")
-    if cmd[:3] == ["gh", "repo", "view"]:
-      return MagicMock(returncode=0, stdout='{"name": "repo"}', stderr="")
-    return MagicMock(returncode=0, stdout="", stderr="")
-
-  with patch("shutil.which", return_value="/usr/bin/gh"), patch(
-      "subprocess.run", side_effect=mock_subp_all_pass
-  ):
-    assert detect_hosting_mode("/fake/repo") == "github"
-
-  # Case g: Integration test in poll_ci_status: when detect_hosting_mode returns "pure_git",
-  # poll_ci_status returns mode: "pure_git" cleanly.
-  with patch("mcp.server.detect_hosting_mode", return_value="pure_git"):
-    res_pure = poll_ci_status(
-        pr_number=99, ws="/fake/repo", quiescence_sec=10, max_wait_sec=1
+    # Calling workflow_get_state with {} in plugin dir returns error or does not leak plugin cards
+    resp_empty = send_rpc(
+        p_iso,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_state",
+                "arguments": {},
+            },
+        },
     )
-    assert res_pure["mode"] == "pure_git"
-    assert res_pure["ciStatus"] == "SKIPPED"
-    assert res_pure["readyToLand"] is True
-    assert "Pure Git Mode" in res_pure["message"]
+    res_obj = resp_empty.get("result", {})
+    text_out = res_obj.get("content", [{}])[0].get("text", "")
+    self.assertNotIn("GH-999", text_out, f"Leaked plugin cards: {text_out}")
+    self.assertTrue(
+        res_obj.get("isError") is True
+        or "does not exist" in text_out
+        or "BLOCKED" in text_out
+    )
 
-  print("✔ detect_hosting_mode 6 branch cases and poll_ci_status pure_git integration passed.")
+    # Calling workflow_get_state with workspaceDir pointing to pristine workspace
+    resp_ws = send_rpc(
+        p_iso,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_state",
+                "arguments": {"workspaceDir": ws_dir},
+            },
+        },
+    )
+    text_ws = resp_ws.get("result", {}).get("content", [{}])[0].get("text", "")
+    self.assertNotIn("GH-999", text_ws)
+    self.assertIn("does not exist", text_ws)
 
-  print("\nAll MCP Server test cases passed.")
+    # GH-74: workflow_get_state on empty state directory
+    empty_st = os.path.join(ws_dir, ".workflow", "state")
+    os.makedirs(empty_st)
+    resp_empty_st = send_rpc(
+        p_iso,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_state",
+                "arguments": {"workspaceDir": ws_dir},
+            },
+        },
+    )
+    text_empty_st = (
+        resp_empty_st.get("result", {}).get("content", [{}])[0].get("text", "")
+    )
+    self.assertIn("clean (0 state cards)", text_empty_st)
+    self.assertIn("Ready for Target 10 intake", text_empty_st)
 
+    # GH-74: workflow_get_state on completed ticket
+    with open(
+        os.path.join(empty_st, "10_ticket.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write("# Ticket Intake: GH-20\n")
+    with open(
+        os.path.join(empty_st, "99_next_action.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write(
+          "# Target 90 Finished: COMPLETE\n- Status: COMPLETE (make finish satisfied)\n"
+      )
+    resp_comp_st = send_rpc(
+        p_iso,
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_state",
+                "arguments": {"workspaceDir": ws_dir},
+            },
+        },
+    )
+    text_comp_st = (
+        resp_comp_st.get("result", {}).get("content", [{}])[0].get("text", "")
+    )
+    self.assertIn("Previous ticket is complete", text_comp_st)
+    self.assertIn("Ready for Target 10 intake", text_comp_st)
 
-class TestMcpServer(unittest.TestCase):
-  """Unittest wrapper for MCP server test suite."""
+  def test_detect_hosting_mode_and_pure_git_poll_ci(self):
+    """Checks detect_hosting_mode branches and poll_ci_status pure_git mode (GH-76)."""
+    from mcp.server import detect_hosting_mode, poll_ci_status
 
-  def test_mcp_server(self):
-    run_test()
+    # Case a: No remote (or git remote get-url origin returns non-zero) -> "pure_git"
+    with mock.patch("subprocess.run") as mock_run:
+      mock_run.return_value = mock.MagicMock(
+          returncode=128, stdout="", stderr="fatal: No such remote 'origin'"
+      )
+      self.assertEqual(detect_hosting_mode("/fake/repo"), "pure_git")
+
+    # Case b: Non-GitHub remote -> "pure_git"
+    for non_gh_url in (
+        "git@gitlab.com:org/repo.git",
+        "https://gitlab.com/org/repo.git",
+        "https://bitbucket.org/org/repo.git",
+        "file:///local/path/repo.git",
+    ):
+      with self.subTest(non_gh_url=non_gh_url):
+        with mock.patch("subprocess.run") as mock_run:
+          mock_run.return_value = mock.MagicMock(
+              returncode=0, stdout=non_gh_url + "\n", stderr=""
+          )
+          self.assertEqual(
+              detect_hosting_mode("/fake/repo"),
+              "pure_git",
+              f"Failed for {non_gh_url}",
+          )
+
+    # Case c: GitHub remote, but gh binary missing -> "pure_git"
+    with mock.patch("subprocess.run") as mock_run, mock.patch(
+        "shutil.which", return_value=None
+    ):
+      mock_run.return_value = mock.MagicMock(
+          returncode=0, stdout="git@github.com:org/repo.git\n", stderr=""
+      )
+      self.assertEqual(detect_hosting_mode("/fake/repo"), "pure_git")
+
+    # Case d: GitHub remote, gh present, but gh auth status non-zero -> "pure_git"
+    def mock_subp_auth_fail(cmd, **kwargs):
+      if cmd[:3] == ["git", "remote", "get-url"]:
+        return mock.MagicMock(
+            returncode=0, stdout="https://github.com/org/repo.git\n", stderr=""
+        )
+      if cmd[:3] == ["gh", "auth", "status"]:
+        return mock.MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="You are not logged into any GitHub hosts",
+        )
+      return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+        "subprocess.run", side_effect=mock_subp_auth_fail
+    ):
+      self.assertEqual(detect_hosting_mode("/fake/repo"), "pure_git")
+
+    # Case e: GitHub remote, gh auth status 0, but gh repo view non-zero -> "pure_git"
+    def mock_subp_repo_fail(cmd, **kwargs):
+      if cmd[:3] == ["git", "remote", "get-url"]:
+        return mock.MagicMock(
+            returncode=0, stdout="https://github.com/org/repo.git\n", stderr=""
+        )
+      if cmd[:3] == ["gh", "auth", "status"]:
+        return mock.MagicMock(
+            returncode=0, stdout="Logged in to github.com\n", stderr=""
+        )
+      if cmd[:3] == ["gh", "repo", "view"]:
+        return mock.MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="GraphQL: Could not resolve to a Repository",
+        )
+      return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+        "subprocess.run", side_effect=mock_subp_repo_fail
+    ):
+      self.assertEqual(detect_hosting_mode("/fake/repo"), "pure_git")
+
+    # Case f: GitHub remote, gh auth status 0, and gh repo view 0 -> "github"
+    def mock_subp_all_pass(cmd, **kwargs):
+      if cmd[:3] == ["git", "remote", "get-url"]:
+        return mock.MagicMock(
+            returncode=0, stdout="https://github.com/org/repo.git\n", stderr=""
+        )
+      if cmd[:3] == ["gh", "auth", "status"]:
+        return mock.MagicMock(
+            returncode=0, stdout="Logged in to github.com\n", stderr=""
+        )
+      if cmd[:3] == ["gh", "repo", "view"]:
+        return mock.MagicMock(
+            returncode=0, stdout='{"name": "repo"}', stderr=""
+        )
+      return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", return_value="/usr/bin/gh"), mock.patch(
+        "subprocess.run", side_effect=mock_subp_all_pass
+    ):
+      self.assertEqual(detect_hosting_mode("/fake/repo"), "github")
+
+    # Case g: Integration test in poll_ci_status: pure_git returns mode: "pure_git"
+    with mock.patch("mcp.server.detect_hosting_mode", return_value="pure_git"):
+      res_pure = poll_ci_status(
+          pr_number=99, ws="/fake/repo", quiescence_sec=10, max_wait_sec=1
+      )
+      self.assertEqual(res_pure["mode"], "pure_git")
+      self.assertEqual(res_pure["ciStatus"], "SKIPPED")
+      self.assertIs(res_pure["readyToLand"], True)
+      self.assertIn("Pure Git Mode", res_pure["message"])
 
 
 class TestMcpServerScarImporterAndSimpleEnglish(unittest.TestCase):
   """Tests synthetic-scar-importer config and Simple English workflow_query_scars (GH-142)."""
 
   def test_scar_importer_config_and_simple_english_query(self):
-    with tempfile.TemporaryDirectory() as tmp_dir:
-      p = subprocess.Popen(
-          [sys.executable, SERVER_SCRIPT],
-          stdin=subprocess.PIPE,
-          stdout=subprocess.PIPE,
-          stderr=subprocess.PIPE,
-          cwd=tmp_dir,
-          text=True,
+    """Checks synthetic-scar-importer config overrides and Simple English query fields."""
+    tmp_dir = _make_temp_dir(self)
+    p = _start_mcp_server(self, tmp_dir)
+    send_rpc(
+        p, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+    )
+    # 1. Default config includes synthetic-scar-importer == "inherit"
+    empty_ws = os.path.join(tmp_dir, "empty_ws")
+    os.makedirs(empty_ws, exist_ok=True)
+    cfg_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": empty_ws},
+            },
+        },
+    )
+    cfg_data = json.loads(cfg_resp["result"]["content"][0]["text"])
+    self.assertEqual(
+        cfg_data["models"].get("synthetic-scar-importer"), "inherit"
+    )
+    self.assertEqual(
+        cfg_data["agyModelTiers"].get("synthetic-scar-importer"), "inherit"
+    )
+
+    # 2. Workspace .workflow/config.json overrides synthetic-scar-importer
+    custom_ws = os.path.join(tmp_dir, "custom_ws")
+    os.makedirs(os.path.join(custom_ws, ".workflow"), exist_ok=True)
+    with open(
+        os.path.join(custom_ws, ".workflow", "config.json"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+      json.dump({"models": {"synthetic-scar-importer": "flash"}}, f)
+    ws_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": custom_ws},
+            },
+        },
+    )
+    ws_data = json.loads(ws_resp["result"]["content"][0]["text"])
+    self.assertEqual(
+        ws_data["models"].get("synthetic-scar-importer"), "flash"
+    )
+    self.assertEqual(
+        ws_data["agyModelTiers"].get("synthetic-scar-importer"), "flash"
+    )
+
+    # 3. workflow_query_scars returns Simple English transformed fields and socraticProbe
+    se_db = os.path.join(tmp_dir, "se_scars.db")
+    conn = sqlite3.connect(se_db)
+    try:
+      conn.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT PRIMARY KEY,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              raw_wound TEXT,
+              raw_trap TEXT,
+              raw_circuit_breaker TEXT,
+              raw_reflex TEXT,
+              raw_hash TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT,
+              source TEXT DEFAULT 'upstream',
+              original_id TEXT
+          )
+          """
       )
-      try:
-        send_rpc(
-            p, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-        )
-        # 1. Default config includes synthetic-scar-importer == "inherit"
-        empty_ws = os.path.join(tmp_dir, "empty_ws")
-        os.makedirs(empty_ws, exist_ok=True)
-        cfg_resp = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_get_config",
-                    "arguments": {"workspaceDir": empty_ws},
-                },
-            },
-        )
-        cfg_data = json.loads(cfg_resp["result"]["content"][0]["text"])
-        self.assertEqual(
-            cfg_data["models"].get("synthetic-scar-importer"), "inherit"
-        )
-        self.assertEqual(
-            cfg_data["agyModelTiers"].get("synthetic-scar-importer"), "inherit"
-        )
-
-        # 2. Workspace .workflow/config.json overrides synthetic-scar-importer
-        custom_ws = os.path.join(tmp_dir, "custom_ws")
-        os.makedirs(os.path.join(custom_ws, ".workflow"), exist_ok=True)
-        with open(
-            os.path.join(custom_ws, ".workflow", "config.json"),
-            "w",
-            encoding="utf-8",
-        ) as f:
-          json.dump({"models": {"synthetic-scar-importer": "flash"}}, f)
-        ws_resp = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_get_config",
-                    "arguments": {"workspaceDir": custom_ws},
-                },
-            },
-        )
-        ws_data = json.loads(ws_resp["result"]["content"][0]["text"])
-        self.assertEqual(
-            ws_data["models"].get("synthetic-scar-importer"), "flash"
-        )
-        self.assertEqual(
-            ws_data["agyModelTiers"].get("synthetic-scar-importer"), "flash"
-        )
-
-        # 3. workflow_query_scars returns Simple English transformed fields and socraticProbe
-        se_db = os.path.join(tmp_dir, "se_scars.db")
-        conn = sqlite3.connect(se_db)
-        conn.execute(
-            """
-            CREATE TABLE scars (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                category TEXT,
-                category_slug TEXT,
-                visibility TEXT,
-                workflow_phases TEXT,
-                applies_when TEXT,
-                graduation_status TEXT,
-                raw_wound TEXT,
-                raw_trap TEXT,
-                raw_circuit_breaker TEXT,
-                raw_reflex TEXT,
-                raw_hash TEXT,
-                wound TEXT,
-                trap TEXT,
-                circuit_breaker TEXT,
-                reflex TEXT,
-                socratic_probe TEXT,
-                source TEXT DEFAULT 'upstream',
-                original_id TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE scars_fts USING fts5(
-                id UNINDEXED,
-                title,
-                category,
-                applies_when,
-                wound,
-                trap,
-                reflex,
-                socratic_probe,
-                source UNINDEXED,
-                original_id UNINDEXED
-            )
-            """
-        )
-        conn.execute(
-            "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "SCAR-SE-01",
-                "Simple English Query Test",
-                "Architecture",
-                "architecture",
-                "public",
-                json.dumps(["T20"]),
-                "Testing Simple English MCP query",
-                "graduated",
-                "Verbose raw wound.",
-                "Verbose raw trap.",
-                "Verbose raw circuit breaker.",
-                "Verbose raw reflex.",
-                "hash-se-01",
-                "Clear Simple English wound.",
-                "Clear Simple English trap.",
-                "If check fails, stop.",
-                "Run the test first.",
-                "Did you run the test before editing code?",
-                "upstream",
-                None,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "SCAR-SE-01",
-                "Simple English Query Test",
-                "Architecture",
-                "Testing Simple English MCP query",
-                "Clear Simple English wound.",
-                "Clear Simple English trap.",
-                "Run the test first.",
-                "Did you run the test before editing code?",
-                "upstream",
-                None,
-            ),
-        )
-        conn.commit()
-        conn.close()
-
-        q_resp = send_rpc(
-            p,
-            {
-                "jsonrpc": "2.0",
-                "id": 4,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_query_scars",
-                    "arguments": {"query": "Simple English", "dbPath": se_db},
-                },
-            },
-        )
-        q_data = json.loads(q_resp["result"]["content"][0]["text"])
-        self.assertEqual(q_data["status"], "OK")
-        self.assertEqual(len(q_data["scars"]), 1)
-        scar = q_data["scars"][0]
-        self.assertEqual(scar["wound"], "Clear Simple English wound.")
-        self.assertEqual(scar["trap"], "Clear Simple English trap.")
-        self.assertEqual(scar["circuitBreaker"], "If check fails, stop.")
-        self.assertEqual(scar["reflex"], "Run the test first.")
-        self.assertEqual(
-            scar["socraticProbe"],
-            "Did you run the test before editing code?",
-        )
-      finally:
-        p.kill()
-        p.wait()
-
-      # 4. Environment variable MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL override
-      custom_env = dict(os.environ)
-      custom_env["MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL"] = "flash_lite"
-      p_env = subprocess.Popen(
-          [sys.executable, SERVER_SCRIPT],
-          stdin=subprocess.PIPE,
-          stdout=subprocess.PIPE,
-          stderr=subprocess.PIPE,
-          cwd=tmp_dir,
-          env=custom_env,
-          text=True,
+      conn.execute(
+          """
+          CREATE VIRTUAL TABLE scars_fts USING fts5(
+              id UNINDEXED,
+              title,
+              category,
+              applies_when,
+              wound,
+              trap,
+              reflex,
+              socratic_probe,
+              source UNINDEXED,
+              original_id UNINDEXED
+          )
+          """
       )
-      try:
-        send_rpc(
-            p_env,
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
-        )
-        env_resp = send_rpc(
-            p_env,
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "workflow_get_config",
-                    "arguments": {"workspaceDir": empty_ws},
-                },
+      conn.execute(
+          "INSERT INTO scars VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          (
+              "SCAR-SE-01",
+              "Simple English Query Test",
+              "Architecture",
+              "architecture",
+              "public",
+              json.dumps(["T20"]),
+              "Testing Simple English MCP query",
+              "graduated",
+              "Verbose raw wound.",
+              "Verbose raw trap.",
+              "Verbose raw circuit breaker.",
+              "Verbose raw reflex.",
+              "hash-se-01",
+              "Clear Simple English wound.",
+              "Clear Simple English trap.",
+              "If check fails, stop.",
+              "Run the test first.",
+              "Did you run the test before editing code?",
+              "upstream",
+              None,
+          ),
+      )
+      conn.execute(
+          "INSERT INTO scars_fts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          (
+              "SCAR-SE-01",
+              "Simple English Query Test",
+              "Architecture",
+              "Testing Simple English MCP query",
+              "Clear Simple English wound.",
+              "Clear Simple English trap.",
+              "Run the test first.",
+              "Did you run the test before editing code?",
+              "upstream",
+              None,
+          ),
+      )
+      conn.commit()
+    finally:
+      conn.close()
+
+    q_resp = send_rpc(
+        p,
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_query_scars",
+                "arguments": {"query": "Simple English", "dbPath": se_db},
             },
-        )
-        env_data = json.loads(env_resp["result"]["content"][0]["text"])
-        self.assertEqual(
-            env_data["models"].get("synthetic-scar-importer"), "flash_lite"
-        )
-        self.assertEqual(
-            env_data["agyModelTiers"].get("synthetic-scar-importer"),
-            "flash_lite",
-        )
-      finally:
-        p_env.kill()
-        p_env.wait()
+        },
+    )
+    q_data = json.loads(q_resp["result"]["content"][0]["text"])
+    self.assertEqual(q_data["status"], "OK")
+    self.assertEqual(len(q_data["scars"]), 1)
+    scar = q_data["scars"][0]
+    self.assertEqual(scar["wound"], "Clear Simple English wound.")
+    self.assertEqual(scar["trap"], "Clear Simple English trap.")
+    self.assertEqual(scar["circuitBreaker"], "If check fails, stop.")
+    self.assertEqual(scar["reflex"], "Run the test first.")
+    self.assertEqual(
+        scar["socraticProbe"],
+        "Did you run the test before editing code?",
+    )
+
+    # 4. Environment variable MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL override
+    custom_env = dict(os.environ)
+    custom_env["MAKEFILE_WORKFLOW_SCAR_IMPORTER_MODEL"] = "flash_lite"
+    p_env = _start_mcp_server(self, tmp_dir, env=custom_env)
+    send_rpc(
+        p_env,
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+    )
+    env_resp = send_rpc(
+        p_env,
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_get_config",
+                "arguments": {"workspaceDir": empty_ws},
+            },
+        },
+    )
+    env_data = json.loads(env_resp["result"]["content"][0]["text"])
+    self.assertEqual(
+        env_data["models"].get("synthetic-scar-importer"), "flash_lite"
+    )
+    self.assertEqual(
+        env_data["agyModelTiers"].get("synthetic-scar-importer"),
+        "flash_lite",
+    )
 
 
 class TestGateEvidenceKeysEnumeration(unittest.TestCase):

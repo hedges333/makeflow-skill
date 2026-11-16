@@ -11,6 +11,7 @@ Verifies:
 """
 
 import ast
+import importlib
 import os
 import subprocess
 import sys
@@ -368,6 +369,208 @@ class TestMakeTestDiscovery(unittest.TestCase):
       self.assertIn("[SCAR-ID: TEST-09]", proc.stderr)
       self.assertIn("TEST_DISCOVERY_SUITE_FAILED", proc.stderr)
       self.assertNotIn("Testing file structure and skill context budget...", proc.stdout)
+
+  def test_makefile_test_mcp_runs_unittest_verbose_fail_fast(self):
+    """Hermetic make test-mcp TESTS_DIR=<tmp> runs unittest with verbose per-method output (GH-216)."""
+    makefile_path = os.path.join(REPO_ROOT, "Makefile")
+    with tempfile.TemporaryDirectory() as tmp_tests:
+      test_file = os.path.join(tmp_tests, "test_mcp_server.py")
+      with open(test_file, "w", encoding="utf-8") as f:
+        f.write(
+            '"""Hermetic passing MCP fixture (GH-216)."""\n\n'
+            "import unittest\n\n\n"
+            "class TestHermeticMcpPass(unittest.TestCase):\n"
+            '  """Two passing methods."""\n\n'
+            "  def test_alpha(self):\n"
+            "    self.assertEqual(1 + 1, 2)\n\n"
+            "  def test_beta(self):\n"
+            "    self.assertTrue(True)\n\n\n"
+            'if __name__ == "__main__":\n'
+            "  unittest.main()\n"
+        )
+
+      proc = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              makefile_path,
+              "test-mcp",
+              f"TESTS_DIR={tmp_tests}",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=REPO_ROOT,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      combined = proc.stdout + "\n" + proc.stderr
+      self.assertEqual(
+          proc.returncode,
+          0,
+          f"Expected make test-mcp exit 0, got {proc.returncode}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
+      )
+      self.assertIn("test_alpha", combined)
+      self.assertIn("test_beta", combined)
+      self.assertIn("... ok", combined)
+      self.assertIn("Ran 2 tests", combined)
+
+  def test_makefile_test_mcp_fails_fast_with_scar_git_25_reflex(self):
+    """Hermetic make test-mcp stops on first failure (-f) and emits SCAR-GIT-25 exit 2 (GH-216)."""
+    makefile_path = os.path.join(REPO_ROOT, "Makefile")
+    with tempfile.TemporaryDirectory() as tmp_tests:
+      first_marker = os.path.join(tmp_tests, "first_ran.txt")
+      after_marker = os.path.join(tmp_tests, "after_ran.txt")
+      test_file = os.path.join(tmp_tests, "test_mcp_server.py")
+      with open(test_file, "w", encoding="utf-8") as f:
+        f.write(
+            '"""Hermetic fail-fast MCP fixture (GH-216)."""\n\n'
+            "import unittest\n\n\n"
+            "class TestHermeticMcpFailFast(unittest.TestCase):\n"
+            '  """Verifies -f halts after test_01_fail."""\n\n'
+            "  def test_01_fail(self):\n"
+            f"    with open({first_marker!r}, 'w', encoding='utf-8') as out:\n"
+            "      out.write('ran\\n')\n"
+            "    self.fail('deliberate fail-fast check for GH-216')\n\n"
+            "  def test_02_after(self):\n"
+            f"    with open({after_marker!r}, 'w', encoding='utf-8') as out:\n"
+            "      out.write('ran\\n')\n\n\n"
+            'if __name__ == "__main__":\n'
+            "  unittest.main()\n"
+        )
+
+      proc = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              makefile_path,
+              "test-mcp",
+              f"TESTS_DIR={tmp_tests}",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=REPO_ROOT,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(
+          proc.returncode,
+          2,
+          f"Expected make test-mcp exit 2, got {proc.returncode}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}",
+      )
+      self.assertTrue(
+          os.path.isfile(first_marker),
+          "test_01_fail did not run inside make test-mcp",
+      )
+      self.assertFalse(
+          os.path.isfile(after_marker),
+          "test_02_after ran despite -f fail-fast flag",
+      )
+      self.assertIn("FAIL: test_01_fail", proc.stderr)
+      self.assertIn("Ran 1 test", proc.stderr)
+      self.assertIn("[SCAR-ID: GIT-25]", proc.stderr)
+      self.assertIn("MCP_SERVER_SUITE_FAILED", proc.stderr)
+      self.assertIn("-m unittest -v -f", proc.stderr)
+
+  def test_ci_workflow_runs_mcp_tests_via_unittest_runner(self):
+    """Verifies .github/workflows/ci.yml runs tests/test_mcp_server.py via unittest -v -f (GH-216)."""
+    ci_path = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+    with open(ci_path, "r", encoding="utf-8") as f:
+      ci_text = f.read()
+    self.assertIn(
+        "python3 -m unittest -v -f tests/test_mcp_server.py",
+        ci_text,
+    )
+
+  def test_mcp_server_module_has_discrete_testcase_methods_without_premature_banner(self):
+    """Verifies tests/test_mcp_server.py splits run_test() into discrete TestMcpServer methods (GH-216)."""
+    mcp_test_path = os.path.join(TESTS_DIR, "test_mcp_server.py")
+    with open(mcp_test_path, "r", encoding="utf-8") as f:
+      source = f.read()
+    tree = ast.parse(source, filename=mcp_test_path)
+
+    top_level_funcs = [
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    self.assertNotIn("run_test", top_level_funcs)
+
+    banner_literals = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and "All MCP Server test cases passed." in node.value
+    ]
+    self.assertEqual(
+        banner_literals,
+        [],
+        f"Premature banner string still present: {banner_literals}",
+    )
+
+    test_mcp_server_cls = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "TestMcpServer"
+        ),
+        None,
+    )
+    self.assertIsNotNone(test_mcp_server_cls, "Missing TestMcpServer class")
+
+    discrete_methods = [
+        item.name
+        for item in test_mcp_server_cls.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and item.name.startswith("test_")
+    ]
+    self.assertGreaterEqual(
+        len(discrete_methods),
+        8,
+        f"Expected >= 8 discrete test_* methods on TestMcpServer, found {discrete_methods}",
+    )
+
+    raw_asserts = [
+        node
+        for node in ast.walk(test_mcp_server_cls)
+        if isinstance(node, ast.Assert)
+    ]
+    self.assertEqual(
+        raw_asserts,
+        [],
+        f"Found {len(raw_asserts)} raw assert statements inside TestMcpServer",
+    )
+
+    import tests.test_mcp_server as mcp_test_mod
+
+    mcp_test_mod = importlib.reload(mcp_test_mod)
+    loader = unittest.TestLoader()
+    loaded_suite = loader.loadTestsFromModule(mcp_test_mod)
+
+    methods_by_class: dict[str, list[str]] = {}
+
+    def _walk_suite(suite: unittest.TestSuite):
+      for item in suite:
+        if isinstance(item, unittest.TestSuite):
+          _walk_suite(item)
+        else:
+          cls_name = item.__class__.__name__
+          methods_by_class.setdefault(cls_name, []).append(item._testMethodName)
+
+    _walk_suite(loaded_suite)
+
+    self.assertGreaterEqual(
+        len(methods_by_class.get("TestMcpServer", [])),
+        8,
+        f"TestLoader discovered unexpected TestMcpServer methods: {methods_by_class.get('TestMcpServer')}",
+    )
+    self.assertEqual(
+        len(methods_by_class.get("TestMcpDualEraProtocolAndScarsSchema", [])),
+        7,
+        f"Expected 7 methods on TestMcpDualEraProtocolAndScarsSchema, got {methods_by_class.get('TestMcpDualEraProtocolAndScarsSchema')}",
+    )
 
 
 if __name__ == "__main__":

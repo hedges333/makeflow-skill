@@ -27,3 +27,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 
 - Route feature commits touching `CHANGELOG.md` to Target 50 instead of Target 90.
 - Allow `ci.quiescenceSeconds=0` and `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0` across hooks, configuration loaders, and `workflow_poll_ci`.
+- Run MCP server tests through the `unittest` runner in `make test-mcp` and CI workflows, and split `TestMcpServer` into discrete methods.

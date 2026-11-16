@@ -26,7 +26,7 @@ jobs:
       run: python3 -m unittest -v tests/test_compat_cwd.py
 
     - name: Test MCP server JSON-RPC
-      run: python3 tests/test_mcp_server.py
+      run: python3 -m unittest -v -f tests/test_mcp_server.py
 
     - name: Test lifecycle hooks
       run: python3 tests/test_hooks.py

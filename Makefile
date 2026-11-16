@@ -120,12 +120,12 @@ test-signal-trap:
 
 test-mcp:
 	@echo "Testing MCP server JSON-RPC protocol..."
-	@$(PYTHON) "$(TESTS_DIR)/test_mcp_server.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@$(PYTHON) -m unittest discover -s "$(TESTS_DIR)" -p "test_mcp_server.py" -v -f || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id GIT-25 \
 		--code MCP_SERVER_SUITE_FAILED \
 		--trigger "tests/test_mcp_server.py failed." \
 		--rejected "Breaking MCP state transition, tree check, or safety guard contracts." \
-		--reflex "Run $(PYTHON) tests/test_mcp_server.py directly, inspect failing JSON-RPC case, and fix mcp/server.py."
+		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_mcp_server.py, inspect failing JSON-RPC case, and fix mcp/server.py."
 
 test-sync-scars:
 	@echo "Testing synthetic scars SQLite sync and query..."
