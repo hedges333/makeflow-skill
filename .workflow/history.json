@@ -2330,5 +2330,24 @@
     "scars_earned": [
       "SCAR-ARCH-09: Upstream Root-Cause Remediation Over Downstream Workarounds"
     ]
+  },
+  {
+    "id": "GH-212",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/212",
+    "title": "[FEAT] Clarify optional query description in workflow_query_scars MCP schema",
+    "request": "Update the workflow_query_scars query schema description in mcp/server.py so callers know query is optional when filters are provided, keep the existing empty filterless call check, and verify with tests.",
+    "branch": "feat/212-clarify-query-scars-schema",
+    "subprojects": [
+      "mcp",
+      "tests"
+    ],
+    "started_at": "2026-11-16T20:00:19Z",
+    "completed_at": "2026-11-16T20:58:00Z",
+    "commit_sha": "5e199177bdf65decc3ad9aa6e6d78bab00aa6c38",
+    "pr_number": 236,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/236",
+    "closes_issue": true,
+    "tests_added": 1,
+    "scars_earned": []
   }
 ]

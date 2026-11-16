@@ -24,6 +24,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - Set author metadata in `./plugin.json` to Mark Hedges.
 - Align hook and MCP commit gates on `docs(changelog):`, `docs(release):`, `chore(release):`, and `docs(scars):`.
 - Change terminal titles to start with the bare directory name and trailing slash instead of the project name.
+- GH-212: Clarify optional query description when callers provide filters in workflow_query_scars MCP schema.
 
 ### Fixed
 
