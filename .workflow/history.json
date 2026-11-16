@@ -2266,5 +2266,25 @@
     "closes_issue": true,
     "tests_added": 12,
     "scars_earned": []
+  },
+  {
+    "id": "GH-216",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/216",
+    "title": "[BUG] Run TestMcpDualEraProtocolAndScarsSchema and sibling MCP TestCase classes via unittest runner in make test-mcp",
+    "request": "Update Makefile test-mcp and CI workflow to run tests/test_mcp_server.py via unittest with verbose and fail-fast flags, split the legacy run_test wrapper in tests/test_mcp_server.py into discrete TestMcpServer methods using addCleanup pipe closure without premature pass banners, and add hermetic make test-mcp and discovery tests in tests/test_make_test_discovery.py.",
+    "branch": "fix/216-mcp-unittest-runner",
+    "subprojects": [
+      ".github",
+      "Makefile",
+      "tests"
+    ],
+    "started_at": "2026-11-15T20:20:42Z",
+    "completed_at": "2026-11-16T02:43:31Z",
+    "commit_sha": "405516c108a4e94cd932529ef9d211741bc95b5e",
+    "pr_number": 230,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/230",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
