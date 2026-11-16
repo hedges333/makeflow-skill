@@ -968,7 +968,7 @@ def handle_tools_list(request_id):
               "properties": {
                   "query": {
                       "type": "string",
-                      "description": "Keyword or scar ID search query (e.g. 'BaseScript', 'SCAR-ARCH-05')",
+                      "description": "Optional keyword or scar ID search query when at least one filter is provided (e.g. 'BaseScript', 'SCAR-ARCH-05')",
                   },
                   "category": {
                       "type": "string",

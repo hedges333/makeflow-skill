@@ -2621,65 +2621,83 @@ class TestMcpMainSyncTransitions(unittest.TestCase):
       self.assertFalse(resp_t50_t60_override["result"].get("isError"))
 
 
+def _load_mcp_server_module():
+  """Imports mcp.server after adding REPO_ROOT to sys.path.
+
+  Returns:
+    Imported mcp.server module.
+  """
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  import mcp.server as mcp_server
+
+  return mcp_server
+
+
+def _build_scars_fixture_db(db_path):
+  """Creates a temporary SQLite FTS5 database with one Python Target 30 scar.
+
+  Args:
+    db_path: Filesystem path where the temporary fixture DB will be created.
+  """
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+
+  script = SyncSyntheticScarsScript()
+  script.db_path = db_path
+  script._init_db_schema()
+  cur = script.conn.cursor()
+  cur.execute(
+      """
+      INSERT INTO scars (
+          id, ss_id, title, category, category_slug, visibility,
+          workflow_phases, ss_targets, mf_targets, applies_when,
+          graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+          raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
+          socratic_probe, source, original_id
+      ) VALUES (
+          'SCAR-LANG-PYTHON-TEST-0099',
+          'SCAR-TEST-99',
+          'Hermetic JSON-RPC Framing Guard',
+          'TEST',
+          'test',
+          'public',
+          '["Target 30: tdd", "Target 40: review"]',
+          '["Target 3", "Target 4"]',
+          '[30, 40]',
+          'Writing Python MCP server tests',
+          'graduated',
+          'Raw wound.',
+          'Raw trap.',
+          'If null id frame appears, stop.',
+          'Keep JSON-RPC responses correlated in Python.',
+          'hash-framing-guard',
+          'Simple wound.',
+          'Simple trap.',
+          'If null id frame appears, stop.',
+          'Keep JSON-RPC responses correlated in Python.',
+          'Did you verify response id correlation?',
+          'upstream',
+          NULL
+      )
+      """
+  )
+  script.conn.commit()
+  script.conn.close()
+  enrich_scars_database(db_path)
+
+
 class TestMcpDualEraProtocolAndScarsSchema(unittest.TestCase):
   """Tests dual-era MCP JSON-RPC framing and scars schema behavior."""
 
   def _load_mcp_server(self):
     """Imports mcp.server after adding REPO_ROOT to sys.path."""
-    if REPO_ROOT not in sys.path:
-      sys.path.insert(0, REPO_ROOT)
-    import mcp.server as mcp_server
-
-    return mcp_server
+    return _load_mcp_server_module()
 
   def _build_scars_fixture_db(self, db_path):
     """Creates a temporary SQLite FTS5 database with one Python Target 30 scar."""
-    if REPO_ROOT not in sys.path:
-      sys.path.insert(0, REPO_ROOT)
-    from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
-
-    script = SyncSyntheticScarsScript()
-    script.db_path = db_path
-    script._init_db_schema()
-    cur = script.conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO scars (
-            id, ss_id, title, category, category_slug, visibility,
-            workflow_phases, ss_targets, mf_targets, applies_when,
-            graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
-            raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
-            socratic_probe, source, original_id
-        ) VALUES (
-            'SCAR-LANG-PYTHON-TEST-0099',
-            'SCAR-TEST-99',
-            'Hermetic JSON-RPC Framing Guard',
-            'TEST',
-            'test',
-            'public',
-            '["Target 30: tdd", "Target 40: review"]',
-            '["Target 3", "Target 4"]',
-            '[30, 40]',
-            'Writing Python MCP server tests',
-            'graduated',
-            'Raw wound.',
-            'Raw trap.',
-            'If null id frame appears, stop.',
-            'Keep JSON-RPC responses correlated in Python.',
-            'hash-framing-guard',
-            'Simple wound.',
-            'Simple trap.',
-            'If null id frame appears, stop.',
-            'Keep JSON-RPC responses correlated in Python.',
-            'Did you verify response id correlation?',
-            'upstream',
-            NULL
-        )
-        """
-    )
-    script.conn.commit()
-    script.conn.close()
-    enrich_scars_database(db_path)
+    _build_scars_fixture_db(db_path)
 
   def test_protocol_constants_and_server_discover(self):
     """Checks SUPPORTED_PROTOCOL_VERSIONS and stateless server/discover."""
@@ -3780,6 +3798,91 @@ class TestMcpCiQuiescenceZeroAndValidation(unittest.TestCase):
             self.assertEqual(res["ciStatus"], "SUCCESS")
             self.assertIs(res["quiescenceSatisfied"], True)
             self.assertIs(res["readyToLand"], True)
+
+
+class TestMcpQueryScarsDescriptionClarification(unittest.TestCase):
+  """Tests workflow_query_scars query wording and filter fallback (GH-212)."""
+
+  def test_workflow_query_scars_query_description_clarifies_filters(self):
+    """Checks optional query description wording and filter fallback (GH-212)."""
+    mcp_server = _load_mcp_server_module()
+    tools_resp = mcp_server.handle_tools_list(1)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    scars_schema = tools["workflow_query_scars"]["inputSchema"]
+    self.assertNotIn("required", scars_schema)
+
+    props = scars_schema["properties"]
+    query_desc = props["query"]["description"]
+    self.assertTrue(
+        query_desc.startswith("Optional"),
+        f"Expected query description to start with 'Optional', got {query_desc!r}",
+    )
+    self.assertIn("when at least one filter", query_desc.lower())
+
+    for prop_name in (
+        "category",
+        "language",
+        "framework",
+        "diagnosticCode",
+        "workflowPhase",
+        "mfTarget",
+        "source",
+        "workspaceDir",
+        "dbPath",
+    ):
+      self.assertTrue(
+          props[prop_name]["description"].startswith("Optional "),
+          f"Expected {prop_name} description to start with 'Optional '",
+      )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "scars_fixture.db")
+      _build_scars_fixture_db(db_path)
+
+      for idx, filter_args in enumerate(
+          (
+              {
+                  "category": "TEST",
+                  "dbPath": db_path,
+                  "workspaceDir": tmp_dir,
+                  "refreshLoaded": True,
+              },
+              {
+                  "query": "   ",
+                  "category": "TEST",
+                  "dbPath": db_path,
+                  "workspaceDir": tmp_dir,
+                  "refreshLoaded": True,
+              },
+          ),
+          start=701,
+      ):
+        resp = mcp_server.handle_tools_call(
+            idx, "workflow_query_scars", filter_args
+        )
+        self.assertEqual(resp["id"], idx)
+        self.assertFalse(resp["result"].get("isError"))
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["totalResults"], 1)
+        self.assertEqual(payload["scars"][0]["id"], "SCAR-LANG-PYTHON-TEST-0099")
+
+      expected_error = (
+          "Missing required argument 'query' or filter. Provide a search query"
+          " or at least one filter (category, language, source, framework,"
+          " diagnosticCode, workflowPhase, mfTarget)."
+      )
+      for idx, empty_args in enumerate(
+          ({}, {"query": "   ", "workspaceDir": tmp_dir}), start=710
+      ):
+        empty_resp = mcp_server.handle_tools_call(
+            idx, "workflow_query_scars", empty_args
+        )
+        self.assertEqual(empty_resp["id"], idx)
+        self.assertIs(empty_resp["result"].get("isError"), True)
+        self.assertEqual(
+            empty_resp["result"]["content"][0]["text"], expected_error
+        )
 
 
 if __name__ == "__main__":
