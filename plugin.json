@@ -1,7 +1,7 @@
 {
   "name": "makeflow",
   "displayName": "Makefile Workflow for AI Agents",
-  "version": "1.4.1",
+  "version": "0.0.1",
   "description": "Compaction-immune, DAG-based ticket resolution workflow with hardware hooks, cross-agent MCP server, human pause gates, 27-language polyglot TDD, design pattern guides, and adversarial review. Implements Randal Schwartz's Synthetic Scars methodology.",
   "author": {
     "name": "Mark Hedges",
