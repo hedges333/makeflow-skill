@@ -2286,5 +2286,27 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-228",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/228",
+    "title": "[FEAT] changelog in target 90 should reference ticket number",
+    "request": "Add extensible Strategy and Registry ticket-type changelog formatting, parsing, validation, and ## [Unreleased] insertion in lib/changelog.py and scripts/changelog.py (supporting GH-<N>, LOCAL-<N>, and future types such as Jira), update Target 90 guidance across SKILL.md, 12_request_history_ledger.md, 03_tdd_and_code_quality.md, 04_six_pillars_adversarial_review.md, README.md, and CHANGELOG.md, and add tests in tests/test_changelog.py, tests/test_base_script.py, and tests/test_cross_agent_compatibility.py.",
+    "branch": "feat/228-changelog-ticket-number",
+    "subprojects": [
+      "Makefile",
+      "lib",
+      "scripts",
+      "skills/makeflow",
+      "tests"
+    ],
+    "started_at": "2026-11-15T20:19:50Z",
+    "completed_at": "2026-11-16T18:29:53Z",
+    "commit_sha": "b4e4da01ca924fa3ff1821e56bec4a1c5d36f5ae",
+    "pr_number": 231,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/231",
+    "closes_issue": true,
+    "tests_added": 26,
+    "scars_earned": []
   }
 ]
