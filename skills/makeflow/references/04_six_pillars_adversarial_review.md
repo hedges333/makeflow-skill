@@ -126,7 +126,7 @@ The critic evaluates the diff against six engineering pillars. Every pillar must
 ### 1. Intent
 - **Requirement Completeness**: Does the diff fulfill all issue requirements without scope creep, unneeded refactorings, or piggybacking?
 - **Project-Adaptive Documentation Standard & Documentation Tree (Progressive Disclosure) (`SCAR-PROC-159`, `SCAR-DOC-16`)**: Does the diff follow the planned project or language documentation standard from `skills/makeflow/references/polyglot/<lang>.md`? Does it satisfy dual-audience documentation with operational instructions for maintainers and clear guides for end consumers organized as a progressive disclosure tree?
-- **Changelog and Release Hygiene**: If user-facing behavior changed, did the author update `## [Unreleased]` in `CHANGELOG.md` without bumping release versions prematurely?
+- **Changelog and Release Hygiene**: If user-facing behavior changed, did the author add a ticket-prefixed entry under `## [Unreleased]` in `CHANGELOG.md` without bumping release versions prematurely?
 - **Socratic Probe**: Does this diff contain any edit that is not strictly required to resolve the ticket?
 
 ### 2. Verification
