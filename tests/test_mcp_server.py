@@ -3340,27 +3340,27 @@ class TestMcpDynamicVersionAndTarget90Parity(unittest.TestCase):
       self.assertEqual(get_plugin_version(custom_manifest), "9.8.7")
 
       missing_manifest = os.path.join(td, "missing.json")
-      self.assertEqual(get_plugin_version(missing_manifest), "1.4.1")
+      self.assertEqual(get_plugin_version(missing_manifest), "0.0.1")
 
       corrupt_manifest = os.path.join(td, "corrupt.json")
       with open(corrupt_manifest, "w", encoding="utf-8") as f:
         f.write("{invalid json")
-      self.assertEqual(get_plugin_version(corrupt_manifest), "1.4.1")
+      self.assertEqual(get_plugin_version(corrupt_manifest), "0.0.1")
 
       list_manifest = os.path.join(td, "list.json")
       with open(list_manifest, "w", encoding="utf-8") as f:
         json.dump(["1.5.0"], f)
-      self.assertEqual(get_plugin_version(list_manifest), "1.4.1")
+      self.assertEqual(get_plugin_version(list_manifest), "0.0.1")
 
       blank_manifest = os.path.join(td, "blank.json")
       with open(blank_manifest, "w", encoding="utf-8") as f:
         json.dump({"name": "makeflow", "version": "   "}, f)
-      self.assertEqual(get_plugin_version(blank_manifest), "1.4.1")
+      self.assertEqual(get_plugin_version(blank_manifest), "0.0.1")
 
       int_manifest = os.path.join(td, "int.json")
       with open(int_manifest, "w", encoding="utf-8") as f:
         json.dump({"name": "makeflow", "version": 123}, f)
-      self.assertEqual(get_plugin_version(int_manifest), "1.4.1")
+      self.assertEqual(get_plugin_version(int_manifest), "0.0.1")
 
   def test_workflow_safety_check_target90_changelog_and_release_parity(self):
     if REPO_ROOT not in sys.path:

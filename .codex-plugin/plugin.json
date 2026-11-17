@@ -1,6 +1,6 @@
 {
   "name": "makeflow",
-  "version": "1.4.1",
+  "version": "0.0.1",
   "description": "Compaction-immune, DAG-based ticket resolution workflow with MCP server, human pause gates, subagent isolation, 27-language polyglot TDD, design pattern guides, and adversarial review.",
   "author": "hedges333",
   "repository": "https://github.com/hedges333/makeflow-skill",
