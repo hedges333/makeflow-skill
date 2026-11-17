@@ -2349,5 +2349,26 @@
     "closes_issue": true,
     "tests_added": 1,
     "scars_earned": []
+  },
+  {
+    "id": "GH-237",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/237",
+    "title": "[BUG] [P1] Align .claude-plugin/plugin.json, .codex-plugin/plugin.json, and MCP fallback version to 0.0.1",
+    "request": "Align .claude-plugin/plugin.json and .codex-plugin/plugin.json version fields to 0.0.1 to match plugin.json, update DEFAULT_PLUGIN_VERSION and its fallback tests in mcp/server.py and tests/test_mcp_server.py to 0.0.1, and exclude untagged 0.0.1 from active release bumps with a negative falsification test in tests/test_cross_agent_compatibility.py.",
+    "branch": "fix/237-align-manifest-versions-0-0-1",
+    "subprojects": [
+      ".claude-plugin",
+      ".codex-plugin",
+      "mcp",
+      "tests"
+    ],
+    "started_at": "2026-11-16T21:23:49Z",
+    "completed_at": "2026-11-17T03:19:10Z",
+    "commit_sha": "cc90315d9b30a9d0214befd7f14f4964f15859f5",
+    "pr_number": 238,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/238",
+    "closes_issue": true,
+    "tests_added": 1,
+    "scars_earned": []
   }
 ]
