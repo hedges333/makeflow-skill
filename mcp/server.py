@@ -96,7 +96,7 @@ from lib.target90_guard import (
     iter_subcommand_tokens_with_target90,
 )
 
-DEFAULT_PLUGIN_VERSION = "1.4.1"
+DEFAULT_PLUGIN_VERSION = "0.0.1"
 
 
 def get_plugin_version(plugin_path=None):

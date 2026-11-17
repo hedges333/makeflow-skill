@@ -9313,7 +9313,7 @@ def check_target_90_changelog_and_release_invariants(
     is_active_release_bump = (
         canonical_ver is not None
         and rel_ver == canonical_ver
-        and (canonical_ver != "1.4.1" or is_tagged)
+        and (canonical_ver not in ("0.0.1", "1.4.1") or is_tagged)
     )
     if not is_tagged and not is_active_release_bump:
       errs.append(
@@ -9537,6 +9537,16 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
     self.assertTrue(
         any("fabricated release version heading" in e for e in errs_fab),
         f"Expected fabricated release heading rejection, got: {errs_fab}",
+    )
+
+    mut_fab_001 = dict(base)
+    mut_fab_001["CHANGELOG.md"] += (
+        "\n## [0.0.1] - 2026-01-01\n- Initial notes.\n"
+    )
+    errs_fab_001 = check_target_90_changelog_and_release_invariants(mut_fab_001)
+    self.assertTrue(
+        any("fabricated release version heading" in e for e in errs_fab_001),
+        f"Expected fabricated 0.0.1 heading rejection, got: {errs_fab_001}",
     )
 
     # 4. Over-25-word sentence and contraction in CHANGELOG.md
