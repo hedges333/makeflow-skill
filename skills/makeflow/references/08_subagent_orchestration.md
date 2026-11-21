@@ -15,8 +15,8 @@ The main orchestrator agent runs at Depth 0 as a `make` supervisor:
 Five subagent roles handle isolated phases of the workflow:
 
 - `archaeology-worker` (Target 15): Scans languages, subprojects, sibling APIs, and existing tests with read-only tools. Default tier: `inherit`.
-- `tdd-worker` (Target 30): Writes failing tests first, writes minimal feature code, and runs subproject test loops. Default tier: `inherit`.
-- `adversarial-critic` (Target 40): Audits the Git tree diff in an isolated read-only context without authoring bias. Default tier: `inherit`.
+- `tdd-worker` (Target 30): Writes failing tests first, writes minimal feature code, runs targeted loops, and verifies full active subproject regressions via `verify-regression`. Default tier: `inherit`.
+- `adversarial-critic` (Target 40): Audits the Git tree diff in an isolated read-only context without authoring bias (optional read-only hermetic tests only when `review.allowCriticHermeticTests: true`). Default tier: `inherit`.
 - `triage-worker` (Target 70): Polls remote CI checks and review bot comments through 180 seconds of quiet time. Default tier: `inherit`.
 - `synthetic-scar-importer` (Registry Sync): Transforms one pending synthetic scar at a time into Simple English with a Socratic Probe. Default tier: `inherit`.
 

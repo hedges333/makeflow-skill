@@ -8,7 +8,7 @@ Follow the Makefile Workflow lifecycle when assisting in this repository:
 4. Point tests to `*_test` databases, configured `database.testDatabases`, in-memory databases, or mock fixtures. Never connect to production databases.
 5. Keep edits small and favor object composition. If large datasets outgrow an ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
 6. Audit every diff against the Six Pillars: Intent, Verification (TDD, failure falsification, boundary limits), Architecture, Blast Radius (mandatory canary), Reviewer Defense (intentional non-changes, Simple English), and Immune Defenses & Crash Antibodies.
-7. In multi-language repositories, run tests in the affected subproject first, then run the full suite before commit.
+7. Run targeted tests in the affected subproject first. Before Target 40, run `verify-regression` to seal `.workflow/state/30_regression_receipt.json` for that subproject. Run the full repository suite before commit. Keep `review.allowCriticHermeticTests` set to `false` by default.
 8. Stop and wait for explicit user approval at all six pause gates: Target 20 (plan), Target 42 (blocker triage), Target 45 (review), Target 50 (commit), Target 60 (push), and Target 75 (landing). Never declare or approve gates yourself under SCAR-PROC-102. Forbid agent self-approval.
 9. Write commit messages, documentation, and pull request summaries in Simple English: short sentences, active voice, and clear terms. Forbid `closes #` on local session commits.
 10. If `.workflow/config.json` or `~/.gemini/config/makeflow.json` exists, read it to load user configuration.

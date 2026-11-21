@@ -17,7 +17,7 @@ This repository uses the Makefile Workflow. Follow these rules for every coding 
    - Target 60: Push approval.
    - Target 75: Pull request merge approval.
    Agents must never declare or approve gates themselves. Forbid agent self-approval.
-7. Run targeted subproject tests at Target 30, and run the full repository test suite at Target 50 and Target 75.
+7. Run targeted subproject tests during Target 30 loops. Before Target 40, run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json`. Run the full repository test suite at Target 50 and Target 75. Keep `review.allowCriticHermeticTests` set to `false` by default.
 8. Write documentation, commit messages, and pull request summaries in Simple English with short sentences and active voice.
 9. Intercept POSIX signals (`SIGTERM` and `SIGINT`) in long-running workers and clean up lockfiles under `SCAR-SYS-07`.
 10. If shell commands require complex string escaping or multiple quoting layers, write the script to a file in a temporary directory. Pass the path to the runtime interpreter under `SCAR-SH-01`.
@@ -43,7 +43,7 @@ claude -p --model claude-3-opus-20240229 "Run Six-Pillar review on $(git merge-b
 - `T10`: Record ticket scope and create branch `feat/<id>-<slug>`, `fix/<id>-<slug>`, or `feat/local-<n>-<slug>` for local tasks.
 - `T15`: Scan subprojects, detect languages, and build the Belnap fact table.
 - `T20`: Write `.workflow/state/20_plan.md`, state test changes, and wait for Target 20 plan approval.
-- `T30`: Run Red-Green-Refactor test-driven development and targeted subproject tests.
+- `T30`: Run Red-Green-Refactor TDD and targeted subproject loops. Seal `.workflow/state/30_regression_receipt.json` via `verify-regression` before Target 40.
 - `T40`: Run the Six Pillars code review.
 - `T42`: Present blockers and wait for triage approval.
 - `T45`: Present zero-blocker review and wait for sign-off.

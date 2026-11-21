@@ -29,7 +29,7 @@ The review invariant is universal across all agent runtimes. The execution mecha
 
 ### Tier 3: Dedicated Subagent (Antigravity Orchestrator)
 When running in an orchestrator that supports subagents, launch `adversarial-critic` with `Model: "pro"` (Asymmetric Cognitive Tiering).
-- **Tool Permissions**: `agents/adversarial-critic.md` mounts `run_command` via `tools:` (prompt-restricted strictly to read-only Git commands: `git diff`, `git log`, `git status`). Mutating commands and file edits are strictly prohibited.
+- **Tool Permissions**: `agents/adversarial-critic.md` mounts `run_command` via `tools:` (prompt-restricted strictly to read-only Git commands: `git diff`, `git log`, `git status`). Mutating commands and file edits are strictly prohibited. If `.workflow/config.json` sets `review.allowCriticHermeticTests: true` without an automated `T30 -> T40` gate, the critic may run read-only hermetic unit tests.
 - **Tool Restrictions**: `write_file`, `edit_file`, and subagent creation tools remain unmounted.
 - **Cognitive Tiering**: Always assign high-capacity reasoning compute (`Model: "pro"`) so the critic catches subtle concurrency and logic defects.
 
@@ -76,13 +76,14 @@ If a Tier 3 or Tier 2 subagent fails due to transient network or transport error
 
 ## 3. Target 40: Adversarial Review Protocol
 
-### 3.1 Lock the Merkle Tree (`SCAR-GIT-23`, `SCAR-DIFF-05`)
-Stage all workspace changes, record the Git Merkle tree hash, and enter Target 40:
+### 3.1 Verify Regression Receipt and Lock the Merkle Tree (`SCAR-GIT-23`, `SCAR-DIFF-05`, `SCAR-TEST-12`)
+Run the full active subproject regression sweep first. Stage all changes, record the Git Merkle tree hash, and enter Target 40:
 ```bash
+make -f .workflow/state/Makefile verify-regression
 git add -A && git write-tree > .workflow/state/approved_tree.txt
 make -f .workflow/state/Makefile adversarial-review
 ```
-Verify that zero untracked files remain (`git status --porcelain` is clean). The tree hash provides an immutable cryptographic anchor.
+Verify that `.workflow/state/30_regression_receipt.json` matches `.workflow/state/approved_tree.txt` and that zero untracked files remain (`git status --porcelain` is clean). The tree hash and regression receipt provide an immutable cryptographic anchor.
 
 ### 3.2 Model Picker Configuration Bypass and Interactive Turn Pause (GH-81)
 If `.workflow/config.json` specifies models or "inherit", bypass the model picker prompt. The workflow honors configured model tiers automatically.

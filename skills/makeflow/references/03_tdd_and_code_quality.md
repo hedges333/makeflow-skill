@@ -34,26 +34,30 @@ In multi-agent runtimes, fork `tdd-worker` via `invoke_subagent` and enforce Imm
 
 ### Anchored TDD Receipts (`SCAR-TEST-12`)
 
-The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, all test files, and core governance modules (`scripts/tdd_guard.py`, `scripts/workflow_gates.py`, `scripts/emit_reflex.py`, `lib/base_script.py`, `lib/tdd_guard.py`, `lib/workflow_gates.py`, `lib/reflex.py`). The tree hash covers untracked fixtures such as `conftest.py` and ignores cache folders such as `__pycache__` and `.pytest_cache`. The `verify-green` gate compares the receipt seal, Git `HEAD`, test tree hash, and governance toolchain integrity before it replays the sealed command. It also verifies that `.workflow/state/Makefile` matches the canonical template. Tampering attempts return a Vector 4 Reflex (a runtime recovery directive) with exit code `2` and append to `forensic_log`.
+The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, and test files. The seal also hashes core governance files: `scripts/tdd_guard.py`, `scripts/workflow_gates.py`, `scripts/emit_reflex.py`, `lib/base_script.py`, `lib/regression_gate.py`, `lib/tdd_guard.py`, `lib/workflow_gates.py`, and `lib/reflex.py`. The tree hash covers untracked fixtures such as `conftest.py` and ignores cache folders such as `__pycache__` and `.pytest_cache`. The `verify-green` gate verifies the receipt seal, Git `HEAD`, test tree hash, and governance toolchain before replaying the command. It also verifies that `.workflow/state/Makefile` matches the canonical template. Tampering returns a Vector 4 Reflex (a runtime recovery directive) with exit code `2` and appends to `forensic_log`.
+
+The `verify-regression` gate in `lib/regression_gate.py` runs the full active subproject regression suite. It seals `.workflow/state/30_regression_receipt.json` over the live working-tree hash, Git `HEAD`, command, toolchain hash, and Makefile digest. If tests fail or mutate workspace files, `verify-regression` exits with code `2` and removes stale receipts. Before Target 40, `check-regression` verifies the sealed receipt against live ground truth and `.workflow/state/approved_tree.txt`.
 
 The `verify-citation` gate reads cited specification lines directly from immutable Git blobs at witnessed `HEAD`. It also verifies governance toolchain integrity. If a cited file does not exist in the witnessed `HEAD` commit, the gate rejects it with `UNCOMMITTED_WITNESS_FILE`. If a citation points to a blank line or comment line, the gate rejects it with `TRIVIAL_WITNESS_LINE`. Both violations return exit code `2` and roll back Green verification.
 
-The `scripts/pre_tool_guard.py` hook blocks direct tool writes and shell commands attempting output redirection (`>`, `>>`), truncation (`truncate`), in-place editing (`sed -i`), or deletion (`rm`, `unlink`) targeting makeflow governance files (`lib/state_machine.py`), `.workflow/state/active_target.json`, `.workflow/state/active_subagent.json`, or `.workflow/state/Makefile`.
+The `scripts/pre_tool_guard.py` hook blocks direct writes to protected governance files. It also blocks shell redirection (`>`, `>>`), `truncate`, `sed -i`, `rm`, and `unlink` on them. Protected targets include `lib/regression_gate.py`, `lib/state_machine.py`, `.workflow/state/30_regression_receipt.json`, `.workflow/state/active_target.json`, `.workflow/state/active_subagent.json`, and `.workflow/state/Makefile`.
 
 ### Phase 3: Refactor
 
 1. Remove duplicate logic, keep function interfaces clear, and verify one-way layer boundaries (`entrypoints -> library`, `SCAR-ARCH-08`).
 2. Run the code formatter and linter on the modified files.
 3. Re-run the targeted test command to make sure that tests stay green.
+4. Run `make -f .workflow/state/Makefile verify-regression` to execute the full active subproject regression suite and seal `.workflow/state/30_regression_receipt.json`.
 
 ## 3. Targeted Subproject Test Loops and Pre-Flight Checks (`SCAR-PROC-104`, `SCAR-TEST-09`, `SCAR-TEST-10`)
 
 In repositories with multiple subprojects (for example `backend/`, `frontend/`, and `scripts/`), keep inner loops fast:
 
 1. Run fast pre-flight structural static analysis before you execute functional tests (`SCAR-TEST-10`). Catch syntax errors and undefined symbols early using `ruff`, `flake8`, or standard library AST parsers.
-2. Run tests only inside the modified subproject directory during Target 30 (`SCAR-PROC-104`).
+2. Run inner Red-Green loops only inside the modified subproject directory during Target 30 (`SCAR-PROC-104`).
 3. Run targeted tests in tight loops with fail-fast flags (`pytest path/to/test.py::test_name -v -x` or script equivalent) until green (`SCAR-TEST-09`).
-4. Save the full repository test sweep for Target 50 before commit.
+4. Before Target 40, run `make -f .workflow/state/Makefile verify-regression` to catch regressions inside the active subproject.
+5. Save cross-subproject full repository test sweeps for Target 50 before commit.
 
 ## 4. Documentation Tree (Progressive Disclosure) (`SCAR-DOC-16`)
 
@@ -64,4 +68,4 @@ Update documentation alongside code across four progressive disclosure tree leve
 - **Branch Guides and Examples**: Update usage examples and tutorials when flags or APIs change.
 - **Root Overview and Changelogs**: If behavior changes, update top-level overview indexes and add ticket-prefixed entries (`- GH-1234:` or `- LOCAL-1234:`) under `## [Unreleased]` in `CHANGELOG.md` (`SCAR-DOC-16`, `SCAR-PROC-159`).
 
-When targeted tests and docs are complete, lock `.workflow/state/approved_tree.txt` and run `make -f .workflow/state/Makefile adversarial-review` to enter Target 40.
+When full subproject regression tests pass and `.workflow/state/30_regression_receipt.json` is sealed, lock `.workflow/state/approved_tree.txt` and run `make -f .workflow/state/Makefile adversarial-review` to enter Target 40.

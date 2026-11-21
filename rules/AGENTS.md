@@ -139,7 +139,7 @@ When you reference plugin files, use these repository paths:
 1. Root manifests: `./hooks.json`, `./plugin.json`, `./mcp_config.json`, and `./default_config.json` live at the repository root.
 2. MCP server: `./mcp/server.py` implements the workflow MCP server.
 3. CLI entrypoints: `./scripts/*.py` holds executable entrypoints including `scripts/pre_tool_guard.py`, `scripts/workflow_gates.py`, `scripts/tdd_guard.py`, `scripts/emit_reflex.py`, and `scripts/session_start.py`.
-4. Shared libraries: `./lib/*.py` holds shared logic including `lib/workflow_gates.py`, `lib/shell_safety.py`, and `lib/config.py`.
+4. Shared libraries: `./lib/*.py` holds shared logic including `lib/workflow_gates.py`, `lib/regression_gate.py`, `lib/shell_safety.py`, and `lib/config.py`.
 5. Hook delegation: `scripts/pre_tool_guard.py` delegates shell and config checks to `lib/shell_safety.py` and `lib/config.py`.
 6. Rules and skill docs: `./rules/AGENTS.md` holds plugin rules, and `./skills/makeflow/SKILL.md` indexes manuals in `skills/makeflow/references/`.
 7. Non-existent paths: No `hooks/` directory or `lib/pre_tool_guard.py` file exists in this repository.
@@ -176,7 +176,7 @@ Keep each code change small and within ticket scope.
 1. Review before edit (`SCAR-PROC-104`): Read target files and their type contracts before you edit them.
 2. Apply minimal edits that solve the active ticket. Favor object composition over deep class inheritance.
 3. Run pre-flight structural static analysis (`SCAR-TEST-10`): If you modify code, run fast structural checks before functional test suites. Check syntax errors and undefined symbols with `ruff`, `flake8`, or standard library AST parsers.
-4. Run fail-fast targeted test loops (`SCAR-PROC-104`, `SCAR-TEST-09`): Execute targeted subproject test commands in tight loops with fail-fast flags (`pytest path/to/test.py::test_name -v -x` or script equivalent) until green before running full regression suites.
+4. Run fail-fast targeted test loops (`SCAR-PROC-104`, `SCAR-TEST-09`): Run targeted tests with `-v -x` until green. Before Target 40, run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json` (`SCAR-TEST-12`). Keep `review.allowCriticHermeticTests` set to `false` by default in `./default_config.json`.
 5. Use an ORM (a library that maps database rows to objects) by default. If large datasets slow down the ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
 6. If you find unrelated defects during a ticket, do not edit them. Record them in ticket notes for a separate task.
 7. Anti-speculative defenses and caller grounding (`SCAR-ARCH-07`): Defend only against inputs and states reachable by verified, real callers. Do not add speculative defense layers, multi-source regex heuristics, or unrequested CLI flag-order handling for internal scripts invoked only by deterministic targets. Balance "the problem could occur" against "the problem will occur": if an edge case is certain to occur for actual callers, address it; if it is merely hypothetical problem-hunting without observed failures, defer defense until a bug is observed or reported.

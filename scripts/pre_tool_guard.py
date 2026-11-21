@@ -451,6 +451,7 @@ def evaluate_git_command(cmd, has_review, state_dir=None, transcript_path=""):
 STATE_GOVERNANCE_RELPATHS = frozenset({
     ".workflow/state/Makefile",
     ".workflow/state/30_tdd_receipt.json",
+    ".workflow/state/30_regression_receipt.json",
     ".workflow/state/gate_entry.json",
     ".workflow/state/active_target.json",
     ".workflow/state/active_subagent.json",
@@ -462,6 +463,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
     "lib/base_script.py",
+    "lib/regression_gate.py",
     "lib/tdd_guard.py",
     "lib/workflow_gates.py",
     "lib/state_machine.py",

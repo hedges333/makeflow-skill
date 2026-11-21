@@ -206,6 +206,7 @@ CORE_GOVERNANCE_FILES = (
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
     "lib/base_script.py",
+    "lib/regression_gate.py",
     "lib/tdd_guard.py",
     "lib/workflow_gates.py",
     "lib/reflex.py",
