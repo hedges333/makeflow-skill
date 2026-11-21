@@ -137,7 +137,7 @@ DEFAULT_TARGETS_CONFIG = {
         "gatedCommands": [],
     },
     "T50": {
-        "next": ["T60"],
+        "next": ["T60", "T70"],
         "recoveryNext": ["T30"],
         "pauseGate": True,
         "evidenceKey": "humanCommitApproved",

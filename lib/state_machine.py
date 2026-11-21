@@ -29,6 +29,7 @@ from lib.turn_boundary import (
     verify_mcp_gate_exit,
 )
 from lib.workflow_gates import (
+    _run_repo_git,
     fetch_and_inspect_main_sync,
     inspect_main_sync,
 )
@@ -131,6 +132,91 @@ _NA_TICKET_RE = re.compile(
 )
 _NA_BRANCH_RE = re.compile(r"(?m)^-\s*Branch:\s*`?([^`\n]+)`?\s*$")
 _LEFTOVER_CARD_RE = re.compile(r"^(?:[1-8][0-9]_.*|approved_tree\.txt$)")
+_HOSTING_MODE_GITHUB_RE = re.compile(
+    r"(?im)^(?:[-*]\s+)?(?:\*\*)?HOSTING_MODE(?:\*\*)?:\s*`?GITHUB`?\b"
+)
+_TARGET_ORDER_INDEX: Dict[str, int] = {
+    tid: idx for idx, (tid, _, _) in enumerate(_MILESTONE_ORDER)
+}
+
+
+def list_git_remotes(repo_root: str) -> List[str]:
+  """Lists configured Git remote names for repo_root.
+
+  Args:
+    repo_root: Git repository root directory.
+
+  Returns:
+    List of configured remote names, or empty list when none exist.
+  """
+  if not repo_root or not os.path.isdir(repo_root):
+    return []
+  proc = _run_repo_git(repo_root, "remote", timeout=5)
+  if proc.returncode != 0:
+    return []
+  return [
+      line.strip() for line in (proc.stdout or "").splitlines() if line.strip()
+  ]
+
+
+def has_git_remote(repo_root: str) -> bool:
+  """Returns True when repo_root has one or more configured Git remotes.
+
+  Args:
+    repo_root: Git repository root directory.
+
+  Returns:
+    True if at least one remote is configured, otherwise False.
+  """
+  return bool(list_git_remotes(repo_root))
+
+
+def _resolve_effective_workspace(
+    workspace_dir: str,
+    state_dir: str = "",
+    *,
+    require_git: bool = True,
+) -> str:
+  """Resolves the effective workspace root from explicit path or state_dir.
+
+  Args:
+    workspace_dir: Explicit repository root directory, or empty string.
+    state_dir: Optional .workflow/state directory path.
+    require_git: When True, requires .git existence on state_dir ancestor.
+
+  Returns:
+    Resolved workspace directory path, or empty string when unavailable.
+  """
+  if workspace_dir:
+    return workspace_dir
+  if not state_dir:
+    return ""
+  cand_ws = os.path.dirname(os.path.dirname(os.path.abspath(state_dir)))
+  if not require_git or os.path.exists(os.path.join(cand_ws, ".git")):
+    return cand_ws
+  return ""
+
+
+def _receipt_declares_github_mode(state_dir: str) -> bool:
+  """Returns True when 15_archaeology_receipt.md explicitly declares GITHUB mode.
+
+  Args:
+    state_dir: Path to .workflow/state directory.
+
+  Returns:
+    True when 15_archaeology_receipt.md declares HOSTING_MODE: GITHUB.
+  """
+  if not state_dir or not os.path.isdir(state_dir):
+    return False
+  receipt_path = os.path.join(state_dir, "15_archaeology_receipt.md")
+  if not os.path.isfile(receipt_path):
+    return False
+  try:
+    with open(receipt_path, "r", encoding="utf-8", errors="replace") as f:
+      content = f.read()
+  except OSError:
+    return False
+  return bool(_HOSTING_MODE_GITHUB_RE.search(content))
 
 
 @dataclass(frozen=True)
@@ -143,6 +229,7 @@ class RenderCardSpec:
     previous_target: Prior target ID before transition.
     workspace_dir: Optional Git repository root directory.
     complete: True when rendering final Target 90 completion state.
+    skipped_targets: Tuple of skipped target IDs (such as T60 in Pure Git Mode).
   """
 
   state_dir: str
@@ -150,6 +237,7 @@ class RenderCardSpec:
   previous_target: str = ""
   workspace_dir: str = ""
   complete: bool = False
+  skipped_targets: Tuple[str, ...] = ()
 
 
 def _sanitize_active_text(value: str) -> str:
@@ -421,8 +509,54 @@ def _format_ticket_bullet(
   return f"- Ticket: [{ticket_id}: {title}] (In Progress)"
 
 
+def _resolve_skipped_targets(
+    state_dir: str,
+    active_target: str,
+    previous_target: str = "",
+) -> Tuple[str, ...]:
+  """Computes persisted skipped target IDs for a transition or state restore.
+
+  Args:
+    state_dir: Path to .workflow/state directory.
+    active_target: Current or destination canonical target ID.
+    previous_target: Optional prior target ID.
+
+  Returns:
+    Ordered tuple of skipped canonical target IDs.
+  """
+  if (previous_target, active_target) == ("T50", "T70"):
+    return ("T60",)
+  t60_idx = _TARGET_ORDER_INDEX.get("T60", 9)
+  active_idx = _TARGET_ORDER_INDEX.get(active_target, -1)
+  if 0 <= active_idx <= t60_idx:
+    return ()
+
+  existing = read_active_target(state_dir)
+  if existing and isinstance(existing.get("skippedTargets"), list):
+    seen: List[str] = []
+    for item in existing["skippedTargets"]:
+      if isinstance(item, str) and item in ALL_TARGETS and item not in seen:
+        seen.append(item)
+    return tuple(seen)
+
+  na_path = (
+      os.path.join(state_dir, NEXT_ACTION_FILENAME) if state_dir else ""
+  )
+  if na_path and os.path.isfile(na_path):
+    try:
+      with open(na_path, "r", encoding="utf-8", errors="replace") as f:
+        if "- [-] T60:" in f.read():
+          return ("T60",)
+    except OSError:
+      pass
+  return ()
+
+
 def _build_milestone_lines(
-    active_target: str, previous_target: str, complete: bool
+    active_target: str,
+    previous_target: str,
+    complete: bool,
+    skipped_targets: Tuple[str, ...] = (),
 ) -> List[str]:
   """Builds ordered milestone checklist lines for 99_next_action.md.
 
@@ -430,6 +564,7 @@ def _build_milestone_lines(
     active_target: Canonical target ID (T00..T90).
     previous_target: Prior target ID.
     complete: True when all milestones are complete.
+    skipped_targets: Optional tuple of skipped target IDs.
 
   Returns:
     List of formatted markdown checklist lines.
@@ -443,8 +578,12 @@ def _build_milestone_lines(
   active_idx = next(
       (i for i, item in enumerate(items) if item[0] == active_target), 0
   )
+  skipped_set = set(skipped_targets or ())
   lines: List[str] = []
   for idx, (tid, label, note) in enumerate(items):
+    if tid in skipped_set:
+      lines.append(f"- [-] {tid}: {label} (Skipped in Pure Git Mode)")
+      continue
     suffix = f" ({note})" if note else ""
     if complete or idx < active_idx:
       mark = "x"
@@ -478,15 +617,28 @@ def _render_active_lines(
         "- Gate Status: AWAITING_DECLARATION"
         " (Stop tool calls and wait for explicit human approval)"
     )
-  next_summary = _NEXT_ACTION_SUMMARIES.get(
-      spec.active_target, "Continue workflow"
+  is_pure_git_t70 = spec.active_target == "T70" and (
+      "T60" in (spec.skipped_targets or ())
+      or (
+          bool(spec.workspace_dir)
+          and os.path.exists(os.path.join(spec.workspace_dir, ".git"))
+          and not has_git_remote(spec.workspace_dir)
+      )
+  )
+  next_summary = (
+      "Run local verification suite (make all) and write 70_bot_triage.md"
+      if is_pure_git_t70
+      else _NEXT_ACTION_SUMMARIES.get(spec.active_target, "Continue workflow")
   )
   lines.extend([
       f"- Next Action: {_sanitize_active_text(next_summary)}",
       "",
       "## Milestone Progress",
       *_build_milestone_lines(
-          spec.active_target, spec.previous_target, complete=False
+          spec.active_target,
+          spec.previous_target,
+          complete=False,
+          skipped_targets=spec.skipped_targets,
       ),
   ])
   return lines
@@ -523,7 +675,12 @@ def render_next_action_card(
         "- Active Target: None (Ready for Target 10 intake)",
         "",
         "## Milestone Progress",
-        *_build_milestone_lines("T90", spec.previous_target, complete=True),
+        *_build_milestone_lines(
+            "T90",
+            spec.previous_target,
+            complete=True,
+            skipped_targets=spec.skipped_targets,
+        ),
     ]
   else:
     lines = _render_active_lines(spec, meta, branch, t_label)
@@ -691,8 +848,20 @@ def _validate_transition_inputs(
     next_t: str,
     ev: Dict[str, Any],
     state_dir: str,
+    workspace_dir: str = "",
 ) -> Optional[str]:
-  """Validates target IDs, DAG edges, evidence keys, and required state cards."""
+  """Validates target IDs, DAG edges, evidence keys, and required state cards.
+
+  Args:
+    current: Source target ID.
+    next_t: Destination target ID.
+    ev: Transition evidence dictionary.
+    state_dir: Path to .workflow/state directory.
+    workspace_dir: Optional repository root directory for Pure Git remote checks.
+
+  Returns:
+    BLOCKED error string when invalid, or None when valid.
+  """
   if current not in VALID_TRANSITIONS:
     return f"BLOCKED: Unknown currentTarget '{current}'. Use T00 through T90."
   if next_t not in ALL_TARGETS:
@@ -709,6 +878,27 @@ def _validate_transition_inputs(
         f"BLOCKED: Transition {current} -> {next_t} is not valid in the"
         f" Makefile DAG. Allowed next targets from {current}: {allowed}."
     )
+
+  if (current, next_t) == ("T50", "T70"):
+    eff_ws = _resolve_effective_workspace(workspace_dir, state_dir)
+    eff_state = state_dir or (
+        os.path.join(eff_ws, ".workflow", "state") if eff_ws else ""
+    )
+    if eff_ws and os.path.isdir(eff_ws):
+      remotes = list_git_remotes(eff_ws)
+      if remotes:
+        remotes_str = ", ".join(remotes)
+        return (
+            f"BLOCKED: [SCAR-GIT-30] Transition T50 -> T70 is only allowed in"
+            f" remote-less Pure Git Mode. Repository has configured Git"
+            f" remote(s) [{remotes_str}]; advance T50 -> T60 (push) instead."
+        )
+    if _receipt_declares_github_mode(eff_state):
+      return (
+          "BLOCKED: [SCAR-GIT-30] Transition T50 -> T70 is blocked because"
+          " 15_archaeology_receipt.md declares HOSTING_MODE: GITHUB. Advance"
+          " T50 -> T60 (push) instead."
+      )
 
   gate_key = GATE_EVIDENCE_KEYS.get((current, next_t))
   if gate_key and not ev.get(gate_key):
@@ -731,9 +921,10 @@ def _finalize_completed_ticket(
     workspace_dir: Optional Git repository root directory.
     previous_target: Target preceding finish.
   """
-  ws = workspace_dir or os.path.dirname(
-      os.path.dirname(os.path.abspath(state_dir))
+  ws = _resolve_effective_workspace(
+      workspace_dir, state_dir, require_git=False
   )
+  skipped_targets = _resolve_skipped_targets(state_dir, "T90", previous_target)
   meta = _parse_metadata_from_files(state_dir)
   ticket_id = meta.get("ticket_id", "")
   cfg = resolve_workflow_config(workspace_dir=ws if os.path.isdir(ws) else None)
@@ -793,6 +984,7 @@ def _finalize_completed_ticket(
           previous_target=previous_target,
           workspace_dir=ws,
           complete=True,
+          skipped_targets=skipped_targets,
       ),
       ticket_meta=meta,
   )
@@ -816,6 +1008,31 @@ def _finalize_completed_ticket(
       pass
 
 
+def _build_active_target_payload(
+    previous_target: str,
+    active_target: str,
+    skipped_targets: Tuple[str, ...] = (),
+) -> Dict[str, Any]:
+  """Builds the serialized payload written to active_target.json.
+
+  Args:
+    previous_target: Prior canonical target ID.
+    active_target: Current canonical target ID.
+    skipped_targets: Optional tuple of skipped canonical target IDs.
+
+  Returns:
+    Dictionary ready for write_active_target.
+  """
+  payload: Dict[str, Any] = {
+      "previousTarget": previous_target,
+      "target": active_target,
+      "targetName": TARGET_ID_TO_NAME[active_target],
+  }
+  if skipped_targets:
+    payload["skippedTargets"] = list(skipped_targets)
+  return payload
+
+
 def _persist_active_transition(
     spec: RenderCardSpec,
     gate_key: Optional[str],
@@ -833,11 +1050,9 @@ def _persist_active_transition(
     clear_gate_entry(spec.state_dir, spec.previous_target)
   write_active_target(
       spec.state_dir,
-      {
-          "previousTarget": spec.previous_target,
-          "target": spec.active_target,
-          "targetName": TARGET_ID_TO_NAME[spec.active_target],
-      },
+      _build_active_target_payload(
+          spec.previous_target, spec.active_target, spec.skipped_targets
+      ),
   )
   render_next_action_card(spec)
 
@@ -873,13 +1088,10 @@ def _restore_active_session_state(
         except (OSError, UnicodeDecodeError):
           pass
 
+  skipped_targets = _resolve_skipped_targets(state_dir, current, prev_t)
   write_active_target(
       state_dir,
-      {
-          "previousTarget": prev_t,
-          "target": current,
-          "targetName": TARGET_ID_TO_NAME[current],
-      },
+      _build_active_target_payload(prev_t, current, skipped_targets),
   )
   render_next_action_card(
       RenderCardSpec(
@@ -888,6 +1100,7 @@ def _restore_active_session_state(
           previous_target=prev_t,
           workspace_dir=workspace_dir,
           complete=False,
+          skipped_targets=skipped_targets,
       )
   )
 
@@ -924,11 +1137,7 @@ def restore_session_state(
   if current == "T00":
     return True, "SUCCESS: State directory is clean and ready for Target 10 intake."
 
-  eff_ws = workspace_dir
-  if not eff_ws:
-    cand_ws = os.path.dirname(os.path.dirname(os.path.abspath(state_dir)))
-    if os.path.exists(os.path.join(cand_ws, ".git")):
-      eff_ws = cand_ws
+  eff_ws = _resolve_effective_workspace(workspace_dir, state_dir)
   _restore_active_session_state(state_dir, current, eff_ws)
   return True, f"SUCCESS: Target 00 (read-init-d) restored active target {current}."
 
@@ -953,15 +1162,13 @@ def advance_workflow_target(
     Tuple of (ok, status_or_error_message).
   """
   ev = dict(evidence) if isinstance(evidence, dict) else {}
-  err = _validate_transition_inputs(current, next_t, ev, state_dir)
+  err = _validate_transition_inputs(
+      current, next_t, ev, state_dir, workspace_dir=workspace_dir
+  )
   if err is not None:
     return False, err
 
-  eff_ws = workspace_dir
-  if not eff_ws and state_dir:
-    cand_ws = os.path.dirname(os.path.dirname(os.path.abspath(state_dir)))
-    if os.path.exists(os.path.join(cand_ws, ".git")):
-      eff_ws = cand_ws
+  eff_ws = _resolve_effective_workspace(workspace_dir, state_dir)
 
   sync_ok, sync_msg = _evaluate_upstream_sync(current, next_t, eff_ws, ev)
   if not sync_ok:
@@ -980,12 +1187,14 @@ def advance_workflow_target(
     if bool(ev.get("complete")) and next_t == "T90":
       _finalize_completed_ticket(state_dir, eff_ws, current)
     else:
+      skipped_targets = _resolve_skipped_targets(state_dir, next_t, current)
       _persist_active_transition(
           RenderCardSpec(
               state_dir=state_dir,
               active_target=next_t,
               previous_target=current,
               workspace_dir=eff_ws,
+              skipped_targets=skipped_targets,
           ),
           gate_key,
           transcript_path,
@@ -1124,7 +1333,9 @@ def run_makefile_advance(
     Tuple of (ok, status_or_blocked_message).
   """
   ev = dict(evidence) if isinstance(evidence, dict) else {}
-  err = _validate_transition_inputs(current, next_t, ev, state_dir)
+  err = _validate_transition_inputs(
+      current, next_t, ev, state_dir, workspace_dir=workspace_dir
+  )
   if err is not None:
     return False, err
 
@@ -1138,8 +1349,8 @@ def run_makefile_advance(
         state_dir=state_dir,
     )
 
-  ws = workspace_dir or os.path.dirname(
-      os.path.dirname(os.path.abspath(state_dir))
+  ws = _resolve_effective_workspace(
+      workspace_dir, state_dir, require_git=False
   )
   target_name = (
       "finish"

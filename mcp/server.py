@@ -789,7 +789,7 @@ def handle_tools_list(request_id):
                           " humanPlanApproved (T20->T30),"
                           " humanBlockerTriageApproved (T42->T30),"
                           " humanReviewApproved (T45->T50),"
-                          " humanCommitApproved (T50->T60),"
+                          " humanCommitApproved (T50->T60 or T50->T70 in Pure Git Mode),"
                           " humanPushApproved (T60->T70), and"
                           " humanLandingApproved (T75->T80), plus integer"
                           " blockersCount (T40->T42 and T40->T45) and optional"
