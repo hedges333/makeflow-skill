@@ -10,12 +10,15 @@ Tests:
 6. CLI execution lifecycle (CommitMsgScript validate and format subcommands).
 """
 
+import builtins
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
@@ -579,6 +582,474 @@ class TestWorkflowGatesCommitMsgIntegration(unittest.TestCase):
       self.assertEqual(code, 2)
       self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", err.getvalue())
       self.assertIn("Ticket: GH-", err.getvalue())
+
+
+def _init_github_repo(repo_dir: str, branch: str = "fix/257-test") -> str:
+  """Initializes a hermetic GitHub-origin repository in repo_dir and returns state_dir."""
+  subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+  subprocess.run(
+      ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+      cwd=repo_dir,
+      check=True,
+  )
+  subprocess.run(
+      ["git", "checkout", "-q", "-b", branch],
+      cwd=repo_dir,
+      check=True,
+  )
+  subprocess.run(
+      [
+          "git",
+          "-c",
+          "user.name=Makeflow Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "-q",
+          "--allow-empty",
+          "-m",
+          "chore: initial test commit",
+      ],
+      cwd=repo_dir,
+      check=True,
+  )
+  state_dir = os.path.join(repo_dir, ".workflow", "state")
+  os.makedirs(state_dir, exist_ok=True)
+  return state_dir
+
+
+_PROSE_QUOTING_GITHUB_RECEIPT = (
+    "# Target 15 Archaeology Receipt: GH-257\n\n"
+    "- **Ticket**: `GH-257`\n"
+    "- **Session Hosting Mode**: GITHUB (origin = git@github.com:owner/repo.git)\n\n"
+    "## Problem Analysis\n"
+    "- Problem: mentions `HOSTING_MODE: PURE_GIT` in prose.\n"
+    '- Quote: "HOSTING_MODE: PURE_GIT" caused false classification.\n'
+    "- `HOSTING_MODE: PURE_GIT` caused false positives.\n"
+    "HOSTING_MODE: PURE_GIT triggers false classification in unanchored checks.\n\n"
+    "| Mode | Token |\n"
+    "| :--- | :--- |\n"
+    "| Pure Git | `HOSTING_MODE: PURE_GIT` |\n\n"
+    "```markdown\n"
+    "HOSTING_MODE: PURE_GIT\n"
+    "```\n\n"
+    "~~~\n"
+    "- Hosting Mode: `HOSTING_MODE: PURE_GIT`\n"
+    "~~~\n\n"
+    "    HOSTING_MODE: PURE_GIT\n"
+)
+
+
+class TestCommitMsgHostingModeBoundary(unittest.TestCase):
+  """Boundary tests for CommitMsgScript hosting-mode detection (GH-257, SCAR-TOOL-15)."""
+
+  def test_cli_validate_and_format_ignore_prose_mentions_in_github_receipt(self):
+    """Prose and code-block PURE_GIT mentions must not force local mode in GitHub receipts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(
+          tmpdir, branch="fix/257-anchored-pure-git-hosting-mode"
+      )
+      receipt_file = os.path.join(state_dir, "15_archaeology_receipt.md")
+      with open(receipt_file, "w", encoding="utf-8") as f:
+        f.write(_PROSE_QUOTING_GITHUB_RECEIPT)
+
+      msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write(
+            "fix(commit-msg): anchor hosting mode detection (closes #257)\n\n"
+            "Ignores prose and fenced code block citations.\n\n"
+            "Issue: #257\n"
+        )
+
+      out_val = io.StringIO()
+      err_val = io.StringIO()
+      code_val = CommitMsgScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "validate",
+              "--file",
+              msg_file,
+              "--ticket",
+              "GH-257",
+          ],
+          stdout=out_val,
+          stderr=err_val,
+      )
+      self.assertEqual(
+          code_val,
+          0,
+          f"Expected remote validate 0, got {code_val}. stderr: {err_val.getvalue()}",
+      )
+
+      out_fmt = io.StringIO()
+      err_fmt = io.StringIO()
+      code_fmt = CommitMsgScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "format",
+              "--type",
+              "fix",
+              "--scope",
+              "commit-msg",
+              "--desc",
+              "anchor hosting mode detection",
+              "--issue",
+              "257",
+          ],
+          stdout=out_fmt,
+          stderr=err_fmt,
+      )
+      self.assertEqual(
+          code_fmt,
+          0,
+          f"Expected format 0, got {code_fmt}. stderr: {err_fmt.getvalue()}",
+      )
+      formatted = out_fmt.getvalue()
+      self.assertIn("Issue: #257", formatted)
+      self.assertIn("(closes #257)", formatted)
+      self.assertNotIn("Ticket: LOCAL-", formatted)
+
+  def test_cli_validate_via_cwd_without_repo_root_ignores_prose_mentions(self):
+    """Default cwd resolution without --repo-root must honor anchored GitHub receipt."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(
+          tmpdir, branch="fix/257-anchored-pure-git-hosting-mode"
+      )
+      receipt_file = os.path.join(state_dir, "15_archaeology_receipt.md")
+      with open(receipt_file, "w", encoding="utf-8") as f:
+        f.write(
+            "# Receipt\n"
+            "- **HOSTING_MODE**: GITHUB\n\n"
+            '- Quotes "HOSTING_MODE: PURE_GIT" and `HOSTING_MODE: PURE_GIT`.\n'
+        )
+
+      msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write(
+            "fix(commit-msg): validate via cwd resolution\n\n"
+            "Issue: #257\n"
+        )
+
+      prev_cwd = os.getcwd()
+      try:
+        os.chdir(tmpdir)
+        out = io.StringIO()
+        err = io.StringIO()
+        code = CommitMsgScript().execute(
+            args=["validate", "--file", msg_file, "--ticket", "GH-257"],
+            stdout=out,
+            stderr=err,
+        )
+      finally:
+        os.chdir(prev_cwd)
+
+      self.assertEqual(
+          code,
+          0,
+          f"Expected cwd validate 0, got {code}. stderr: {err.getvalue()}",
+      )
+
+  def test_cli_validate_and_format_still_enforce_genuine_pure_git_receipt(self):
+    """Explicit PURE_GIT metadata declaration in receipt must still enforce LOCAL-<N>."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(tmpdir, branch="feat/offline-mirror")
+      receipt_file = os.path.join(state_dir, "15_archaeology_receipt.md")
+      with open(receipt_file, "w", encoding="utf-8") as f:
+        f.write("# Receipt\n- **HOSTING_MODE**: PURE_GIT\n")
+
+      msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write("feat: pure git task\n\ncloses #257\nTicket: LOCAL-1\n")
+
+      err_bad = io.StringIO()
+      code_bad = CommitMsgScript().execute(
+          args=["--repo-root", tmpdir, "validate", "--file", msg_file],
+          stdout=io.StringIO(),
+          stderr=err_bad,
+      )
+      self.assertEqual(code_bad, 2)
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", err_bad.getvalue())
+
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write("feat: pure git task\n\nTicket: LOCAL-1\n")
+
+      err_ok = io.StringIO()
+      code_ok = CommitMsgScript().execute(
+          args=["--repo-root", tmpdir, "validate", "--file", msg_file],
+          stdout=io.StringIO(),
+          stderr=err_ok,
+      )
+      self.assertEqual(
+          code_ok, 0, f"Expected 0 for LOCAL-1, got {code_ok}. {err_ok.getvalue()}"
+      )
+
+      out_fmt = io.StringIO()
+      err_fmt = io.StringIO()
+      code_fmt = CommitMsgScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "format",
+              "--type",
+              "feat",
+              "--desc",
+              "pure git task",
+              "--ticket",
+              "LOCAL-3",
+              "--issue",
+              "257",
+          ],
+          stdout=out_fmt,
+          stderr=err_fmt,
+      )
+      self.assertEqual(code_fmt, 0, err_fmt.getvalue())
+      self.assertIn("Ticket: LOCAL-3", out_fmt.getvalue())
+      self.assertNotIn("Issue: #", out_fmt.getvalue())
+      self.assertNotIn("closes #", out_fmt.getvalue())
+
+
+class TestWorkflowGatesHostingModeBoundary(unittest.TestCase):
+  """Boundary tests for WorkflowGatesScript commit-msg receipt parsing (GH-257)."""
+
+  def test_workflow_gates_commit_msg_accepts_remote_when_github_receipt_quotes_pure_git(
+      self,
+  ):
+    """GitHub receipt quoting HOSTING_MODE: PURE_GIT must allow remote closes #257."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(
+          tmpdir, branch="fix/257-anchored-pure-git-hosting-mode"
+      )
+      receipt_file = os.path.join(state_dir, "15_archaeology_receipt.md")
+      with open(receipt_file, "w", encoding="utf-8") as f:
+        f.write(_PROSE_QUOTING_GITHUB_RECEIPT)
+
+      msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write(
+            "fix(gates): anchor pure git mode detection (closes #257)\n\n"
+            "Issue: #257\n"
+            "Reviewed-by: adversarial-critic\n"
+        )
+
+      out = io.StringIO()
+      err = io.StringIO()
+      code = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "commit-msg"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(
+          code, 0, f"Expected 0, got {code}. stderr: {err.getvalue()}"
+      )
+
+  def test_workflow_gates_commit_msg_enforces_genuine_pure_git_receipt(self):
+    """Explicit PURE_GIT metadata declaration in receipt enforces LOCAL-<N> in commit-msg gate."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(tmpdir, branch="feat/my-change")
+      receipt_file = os.path.join(state_dir, "15_archaeology_receipt.md")
+      with open(receipt_file, "w", encoding="utf-8") as f:
+        f.write("- Hosting Mode: `HOSTING_MODE: PURE_GIT`\n")
+
+      msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write("feat: pure git change\n\ncloses #57\nTicket: LOCAL-1\n")
+
+      err_bad = io.StringIO()
+      code_bad = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "commit-msg"],
+          stdout=io.StringIO(),
+          stderr=err_bad,
+      )
+      self.assertEqual(code_bad, 2)
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", err_bad.getvalue())
+
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write("feat: pure git change\n\nTicket: LOCAL-1\n")
+
+      err_ok = io.StringIO()
+      code_ok = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "commit-msg"],
+          stdout=io.StringIO(),
+          stderr=err_ok,
+      )
+      self.assertEqual(code_ok, 0, err_ok.getvalue())
+
+  def test_workflow_gates_commit_msg_handles_unreadable_receipt_oserror(self):
+    """Unreadable 15_archaeology_receipt.md must degrade safely instead of failing with OSError."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(
+          tmpdir, branch="fix/257-anchored-pure-git-hosting-mode"
+      )
+      receipt_file = os.path.join(state_dir, "15_archaeology_receipt.md")
+      with open(receipt_file, "w", encoding="utf-8") as f:
+        f.write("- **HOSTING_MODE**: GITHUB\n")
+
+      msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_file, "w", encoding="utf-8") as f:
+        f.write(
+            "fix(gates): handle unreadable receipt safely\n\n"
+            "Issue: #257\n"
+        )
+
+      real_open = builtins.open
+
+      def _fail_receipt_open(path, *args, **kwargs):
+        if os.path.basename(str(path)) == "15_archaeology_receipt.md":
+          raise OSError("Permission denied")
+        return real_open(path, *args, **kwargs)
+
+      out = io.StringIO()
+      err = io.StringIO()
+      with mock.patch("builtins.open", side_effect=_fail_receipt_open):
+        code = WorkflowGatesScript().execute(
+            args=["--repo-root", tmpdir, "commit-msg"],
+            stdout=out,
+            stderr=err,
+        )
+
+      self.assertEqual(
+          code,
+          0,
+          f"Expected 0 on OSError fallback, got {code}. stderr: {err.getvalue()}",
+      )
+      self.assertEqual(err.getvalue(), "")
+
+
+class TestReceiptHostingModeParsing(unittest.TestCase):
+  """Unit tests for anchored receipt hosting-mode parser helpers (GH-257, SCAR-TOOL-15)."""
+
+  def test_valid_pure_git_metadata_declarations(self):
+    """Anchored PURE_GIT metadata declarations across supported Markdown variants return PURE_GIT."""
+    from lib.commit_msg import parse_receipt_hosting_mode
+
+    cases = [
+        "HOSTING_MODE: PURE_GIT",
+        "- HOSTING_MODE: PURE_GIT",
+        "* HOSTING_MODE: PURE_GIT",
+        "- **HOSTING_MODE**: PURE_GIT",
+        "- **HOSTING_MODE:** PURE_GIT",
+        "**HOSTING_MODE**: PURE_GIT",
+        "**HOSTING_MODE:** PURE_GIT",
+        "HOSTING_MODE: `PURE_GIT`",
+        "- **HOSTING_MODE**: `PURE_GIT`",
+        "- **Hosting Mode**: **PURE_GIT**",
+        "- Hosting Mode: `HOSTING_MODE: PURE_GIT`",
+        "Session Hosting Mode: PURE_GIT",
+        "- **Session Hosting Mode**: PURE_GIT (no remote)",
+        "* Session Hosting Mode: `HOSTING_MODE: PURE_GIT` (offline bare repo)",
+        "  - HOSTING_MODE: PURE_GIT",
+    ]
+    for content in cases:
+      with self.subTest(content=content):
+        self.assertEqual(parse_receipt_hosting_mode(content), "PURE_GIT")
+
+  def test_valid_github_metadata_declarations(self):
+    """Anchored GITHUB metadata declarations across supported Markdown variants return GITHUB."""
+    from lib.commit_msg import parse_receipt_hosting_mode
+
+    cases = [
+        "HOSTING_MODE: GITHUB",
+        "- HOSTING_MODE: GITHUB",
+        "* **HOSTING_MODE**: GITHUB",
+        "- **HOSTING_MODE:** `GITHUB`",
+        "Hosting Mode: GITHUB",
+        "- Hosting Mode: `HOSTING_MODE: GITHUB`",
+        "Session Hosting Mode: GITHUB",
+        "- **Session Hosting Mode**: GITHUB (`origin` = `git@github.com:o/r.git`)",
+        "- **Hosting Mode**: GITHUB (previously tripped on `HOSTING_MODE: PURE_GIT`)",
+    ]
+    for content in cases:
+      with self.subTest(content=content):
+        self.assertEqual(parse_receipt_hosting_mode(content), "GITHUB")
+
+  def test_non_metadata_mentions_and_code_blocks_rejected(self):
+    """Inline quotes, backticks, prose, narrative lines, tables, and code blocks return None."""
+    from lib.commit_msg import parse_receipt_hosting_mode
+
+    cases = [
+        "",
+        "   \n\n",
+        '"HOSTING_MODE: PURE_GIT"',
+        "'HOSTING_MODE: PURE_GIT'",
+        "`HOSTING_MODE: PURE_GIT`",
+        'See "HOSTING_MODE: PURE_GIT" in receipt.',
+        "- Problem: mentions `HOSTING_MODE: PURE_GIT` in prose",
+        "- `HOSTING_MODE: PURE_GIT` caused false positives",
+        "- **HOSTING_MODE: PURE_GIT**",
+        "HOSTING_MODE: PURE_GIT triggers false classification",
+        "Hosting Mode: `HOSTING_MODE: PURE_GIT` caused false positives",
+        "## HOSTING_MODE: PURE_GIT",
+        "> HOSTING_MODE: PURE_GIT",
+        "> - **HOSTING_MODE**: PURE_GIT",
+        "```markdown\nHOSTING_MODE: PURE_GIT\n```",
+        "```\n- Hosting Mode: `HOSTING_MODE: PURE_GIT`\n```",
+        "~~~\n- HOSTING_MODE: PURE_GIT\n~~~",
+        "~~~~\n```\nHOSTING_MODE: PURE_GIT\n~~~~",
+        "    HOSTING_MODE: PURE_GIT",
+        "\tHOSTING_MODE: PURE_GIT",
+        "    - HOSTING_MODE: PURE_GIT",
+        "| Mode | `HOSTING_MODE: PURE_GIT` |",
+        "| HOSTING_MODE: PURE_GIT | local |",
+    ]
+    for content in cases:
+      with self.subTest(content=content):
+        self.assertIsNone(parse_receipt_hosting_mode(content))
+
+  def test_inline_triple_backticks_do_not_hide_subsequent_metadata(self):
+    """Single-line inline triple-backtick spans must not swallow real metadata lines below."""
+    from lib.commit_msg import parse_receipt_hosting_mode
+
+    content = "```HOSTING_MODE: PURE_GIT```\n- **Session Hosting Mode**: GITHUB\n"
+    self.assertEqual(parse_receipt_hosting_mode(content), "GITHUB")
+
+    pure_content = "```example```\n- **HOSTING_MODE**: PURE_GIT\n"
+    self.assertEqual(parse_receipt_hosting_mode(pure_content), "PURE_GIT")
+
+  def test_explicit_github_precedence_over_prose_and_stray_pure_git(self):
+    """Explicit GITHUB metadata declaration always wins over prose or stray PURE_GIT lines."""
+    from lib.commit_msg import parse_receipt_hosting_mode
+
+    with_prose = (
+        "- **Session Hosting Mode**: GITHUB\n"
+        "- Bug: `HOSTING_MODE: PURE_GIT` matched prose.\n"
+    )
+    self.assertEqual(parse_receipt_hosting_mode(with_prose), "GITHUB")
+
+    with_stray_after = (
+        "Session Hosting Mode: GITHUB\n"
+        "HOSTING_MODE: PURE_GIT\n"
+    )
+    self.assertEqual(parse_receipt_hosting_mode(with_stray_after), "GITHUB")
+
+    with_stray_before = (
+        "HOSTING_MODE: PURE_GIT\n"
+        "HOSTING_MODE: GITHUB\n"
+    )
+    self.assertEqual(parse_receipt_hosting_mode(with_stray_before), "GITHUB")
+
+  def test_receipt_declares_pure_git_file_and_error_handling(self):
+    """receipt_declares_pure_git handles missing files, directories, OSError, and valid receipts."""
+    from lib.commit_msg import receipt_declares_pure_git
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      missing_path = os.path.join(tmpdir, "missing.md")
+      self.assertFalse(receipt_declares_pure_git(""))
+      self.assertFalse(receipt_declares_pure_git(missing_path))
+      self.assertFalse(receipt_declares_pure_git(tmpdir))
+
+      receipt_path = os.path.join(tmpdir, "15_archaeology_receipt.md")
+      with open(receipt_path, "w", encoding="utf-8") as f:
+        f.write(_PROSE_QUOTING_GITHUB_RECEIPT)
+      self.assertFalse(receipt_declares_pure_git(receipt_path))
+
+      with open(receipt_path, "w", encoding="utf-8") as f:
+        f.write("- Hosting Mode: `HOSTING_MODE: PURE_GIT`\n")
+      self.assertTrue(receipt_declares_pure_git(receipt_path))
+
+      with mock.patch("builtins.open", side_effect=OSError("I/O error")):
+        self.assertFalse(receipt_declares_pure_git(receipt_path))
 
 
 if __name__ == "__main__":

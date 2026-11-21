@@ -16,7 +16,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
-from lib.commit_msg import validate_commit_message
+from lib.commit_msg import receipt_declares_pure_git, validate_commit_message
 from lib.reflex import emit_reflex
 from lib.repo_tree import (
     DEFAULT_REPO_TREE_THRESHOLD,
@@ -1656,10 +1656,8 @@ class WorkflowGatesScript(BaseScript):
     receipt_card = os.path.join(
         self.repo_root, ".workflow", "state", "15_archaeology_receipt.md"
     )
-    if os.path.isfile(receipt_card):
-      with open(receipt_card, "r", encoding="utf-8", errors="replace") as f:
-        if "HOSTING_MODE: PURE_GIT" in f.read():
-          is_local = True
+    if receipt_declares_pure_git(receipt_card):
+      is_local = True
 
     ticket_id = f"LOCAL-{local_num}" if local_num else None
     validation = validate_commit_message(

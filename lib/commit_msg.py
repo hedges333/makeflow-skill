@@ -52,6 +52,26 @@ _REMOTE_ISSUE_TRAILER_RE = re.compile(
 _INLINE_CLOSES_RE = re.compile(
     r"(?i)\((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\d+\)"
 )
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_RECEIPT_HOSTING_MODE_RE = re.compile(
+    r"^ {0,3}(?:[-*]\s+)?"
+    r"(?:"
+    r"(?:\*\*HOSTING_MODE\*\*:|\*\*HOSTING_MODE:\*\*|HOSTING_MODE:)"
+    r"\s*"
+    r"(?:`(?P<direct_bt>GITHUB|PURE_GIT)`"
+    r"|\*\*(?P<direct_bold>GITHUB|PURE_GIT)\*\*"
+    r"|(?P<direct_plain>GITHUB|PURE_GIT))"
+    r"|"
+    r"(?:\*\*(?:Session\s+)?Hosting\s+Mode\*\*:|\*\*(?:Session\s+)?Hosting\s+Mode:\*\*|(?:Session\s+)?Hosting\s+Mode:)"
+    r"\s*"
+    r"(?:`(?:HOSTING_MODE:\s*)?(?P<label_bt>GITHUB|PURE_GIT)`"
+    r"|\*\*(?:HOSTING_MODE:\s*)?(?P<label_bold>GITHUB|PURE_GIT)\*\*"
+    r"|(?:HOSTING_MODE:\s*)?(?P<label_plain>GITHUB|PURE_GIT))"
+    r")"
+    r"(?:\s*\([^()]*(?:\([^()]*\)[^()]*)*\))?"
+    r"\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -112,6 +132,99 @@ def parse_commit_header(line: str) -> Optional[HeaderInfo]:
       description=clean_desc,
       raw=clean,
   )
+
+
+def parse_receipt_hosting_mode(content: str) -> Optional[str]:
+  """Parses explicit hosting mode metadata from an archaeology receipt.
+
+  Skips fenced (`` ``` `` or ``~~~``) and indented (4+ spaces or leading tab)
+  code blocks, and matches only anchored metadata declaration lines. When any
+  valid metadata declaration specifies ``GITHUB``, ``"GITHUB"`` takes
+  precedence over any ``PURE_GIT`` declaration.
+
+  Args:
+    content: Raw Markdown contents of ``15_archaeology_receipt.md``.
+
+  Returns:
+    ``"GITHUB"`` when an explicit GitHub metadata declaration is present,
+    ``"PURE_GIT"`` when an explicit Pure Git metadata declaration is present
+    without an overriding GitHub declaration, or ``None`` otherwise.
+  """
+  if not content:
+    return None
+
+  found_pure_git = False
+  in_fence = False
+  fence_char = ""
+  fence_len = 0
+
+  for raw_line in content.splitlines():
+    line = raw_line.rstrip("\r")
+    fence_match = _FENCE_RE.match(line)
+    if in_fence:
+      if (
+          fence_match
+          and fence_match.group(1)[0] == fence_char
+          and len(fence_match.group(1)) >= fence_len
+          and not fence_match.group(2).strip()
+      ):
+        in_fence = False
+        fence_char = ""
+        fence_len = 0
+      continue
+
+    if fence_match:
+      marker = fence_match.group(1)
+      info = fence_match.group(2)
+      # Single-line inline triple-backtick spans contain a closing backtick on the same line.
+      if not (marker[0] == "`" and "`" in info):
+        in_fence = True
+        fence_char = marker[0]
+        fence_len = len(marker)
+      continue
+
+    if line.startswith(("    ", "\t")):
+      continue
+
+    match = _RECEIPT_HOSTING_MODE_RE.match(line)
+    if not match:
+      continue
+
+    mode = (
+        match.group("direct_bt")
+        or match.group("direct_bold")
+        or match.group("direct_plain")
+        or match.group("label_bt")
+        or match.group("label_bold")
+        or match.group("label_plain")
+    )
+    if mode and mode.upper() == "GITHUB":
+      return "GITHUB"
+    if mode and mode.upper() == "PURE_GIT":
+      found_pure_git = True
+
+  return "PURE_GIT" if found_pure_git else None
+
+
+def receipt_declares_pure_git(receipt_path: str) -> bool:
+  """Returns True when an archaeology receipt explicitly declares PURE_GIT mode.
+
+  Args:
+    receipt_path: Path to ``15_archaeology_receipt.md`` or equivalent receipt.
+
+  Returns:
+    True when the receipt metadata explicitly declares ``PURE_GIT`` without an
+    overriding ``GITHUB`` declaration, or False when the file is missing,
+    unreadable, or does not declare Pure Git mode.
+  """
+  if not receipt_path or not os.path.isfile(receipt_path):
+    return False
+  try:
+    with open(receipt_path, "r", encoding="utf-8", errors="replace") as f:
+      content = f.read()
+  except OSError:
+    return False
+  return parse_receipt_hosting_mode(content) == "PURE_GIT"
 
 
 def _parse_changed_files_section(
@@ -623,13 +736,8 @@ class CommitMsgScript(BaseScript):
     receipt_card = os.path.join(
         self.repo_root, ".workflow", "state", "15_archaeology_receipt.md"
     )
-    if os.path.isfile(receipt_card):
-      try:
-        with open(receipt_card, "r", encoding="utf-8", errors="replace") as f:
-          if "HOSTING_MODE: PURE_GIT" in f.read():
-            return True
-      except OSError:
-        pass
+    if receipt_declares_pure_git(receipt_card):
+      return True
 
     return False
 
