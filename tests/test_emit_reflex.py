@@ -1710,7 +1710,27 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
       for scan_dir in ("lib", "scripts", "mcp", "tests"):
         self.assertIn(f"--src-dir {scan_dir} --strict", synth_mk_text)
 
-      # 1. check-intake fails (exit 2) before .workflow/state/ is git-excluded
+      # 1. init-makefile auto-populates .git/info/exclude so check-intake exits 0 immediately
+      p_intake_auto = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              ".workflow/state/Makefile",
+              "check-intake",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=consumer_dir,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_intake_auto.returncode, 0, p_intake_auto.stderr)
+
+      # Clearing .git/info/exclude still triggers UNCLEAN_INTAKE_STATE (exit 2)
+      excl_file = os.path.join(consumer_dir, ".git", "info", "exclude")
+      with open(excl_file, "w", encoding="utf-8") as f:
+        f.write("")
       p_intake_fail = subprocess.run(
           [
               "make",
@@ -1730,7 +1750,7 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
           "[SCAR-ID: GIT-25] UNCLEAN_INTAKE_STATE", p_intake_fail.stderr
       )
 
-      # Exclude workflow dirs -> check-intake exits 0
+      # Re-exclude workflow dirs -> check-intake exits 0
       _exclude_workflow_dirs(consumer_dir)
       p_intake_ok = subprocess.run(
           [

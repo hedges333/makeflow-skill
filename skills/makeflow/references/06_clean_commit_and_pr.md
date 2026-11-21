@@ -27,11 +27,11 @@ Never push a branch that conflicts with the remote default branch.
    make test-static
    ```
 8. Re-dispatch `adversarial-critic` with explicit manual path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) before push.
-9. Advance target from `T60` to `T40` to complete the fresh review.
+9. Run `make -f .workflow/state/Makefile adversarial-review FROM=T60` to advance from `T60` to `T40` and complete the fresh review.
 
 ### 1.1 Early Upstream Sync Across Target Transitions
 
-The `workflow_advance_target` MCP tool also checks `origin/main` at each target transition:
+Both `.workflow/state/Makefile` targets and the `workflow_advance_target` MCP tool check `origin/main` at each target transition:
 
 1. From Target 10 through Target 40, if `origin/main` advances without conflicts, offer an operator-approved `git rebase origin/main` (`SCAR-GIT-25`).
 2. At Target 45 and Target 50, preserve `.workflow/state/approved_tree.txt` (`SCAR-GIT-23`) when `origin/main` has zero conflicts.
@@ -43,8 +43,8 @@ The `workflow_advance_target` MCP tool also checks `origin/main` at each target 
 
 Target 60 is a mandatory human pause gate.
 
-1. Print the branch name, remote repository name, and local `HEAD` commit hash in chat.
-2. Set `.workflow/state/99_next_action.md` to `AWAITING_DECLARATION (human-push-approval)`.
+1. Run `make -f .workflow/state/Makefile push APPROVED=1` to run `check-main-sync` and render `AWAITING_DECLARATION (human-push-approval)` in `.workflow/state/99_next_action.md`.
+2. Print the branch name, remote repository name, and local `HEAD` commit hash in chat.
 3. Stop tool calls (`tool_calls: []`) and wait for explicit user approval before running `git push`.
 
 ## 3. Push Branch and Open Pull Request
@@ -62,5 +62,5 @@ After the user approves the push, run these steps:
    - Blast radius review.
    - Readability notes.
    - Error handling and edge cases covered.
-3. If in Pure Git Mode (`SCAR-GIT-30`), record `HOSTING_MODE: PURE_GIT` in `.workflow/state/99_next_action.md` and skip `gh pr create`.
-4. Advance to Target 70 with `humanPushApproved: true`.
+3. If in Pure Git Mode (`SCAR-GIT-30`), record `HOSTING_MODE: PURE_GIT` in `.workflow/state/15_archaeology_receipt.md` and skip `gh pr create`.
+4. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (or `humanPushApproved: true`) to advance to Target 70.

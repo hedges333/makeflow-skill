@@ -605,9 +605,8 @@ class TestWorkspaceMutex(unittest.TestCase):
       content = f.read()
     self.assertIn("TICKET ?=", content)
     self.assertIn("ALLOW_BLOCKED ?=", content)
-    self.assertIn("export TICKET", content)
-    self.assertIn("--ticket $(TICKET)", content)
-    self.assertIn("$(if $(ALLOW_BLOCKED),--allow-blocked,)", content)
+    self.assertIn("export TICKET ALLOW_BLOCKED", content)
+    self.assertIn("intake --make-env", content)
 
   def test_acquire_toctou_delayed_session_json(self):
     """TestCase 20: acquire retries reading session.json before declaring lock stale."""

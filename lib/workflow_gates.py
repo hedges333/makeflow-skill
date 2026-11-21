@@ -309,6 +309,127 @@ def fetch_and_inspect_main_sync(repo_root: str) -> Dict[str, Any]:
   return inspect_main_sync(repo_root)
 
 
+def ensure_git_exclude_workflow_dirs(repo_root: str) -> bool:
+  """Ensures .workflow/state/ and .workflow/archive/ are in Git info/exclude.
+
+  Args:
+    repo_root: Repository or linked worktree root directory.
+
+  Returns:
+    True when inside a Git repository and exclude entries are present.
+  """
+  if not repo_root or not os.path.isdir(repo_root):
+    return False
+  proc = _run_repo_git(repo_root, "rev-parse", "--git-path", "info/exclude")
+  if proc.returncode != 0:
+    return False
+  raw_excl = (proc.stdout or "").strip()
+  if not raw_excl:
+    return False
+  excl_path = (
+      raw_excl
+      if os.path.isabs(raw_excl)
+      else os.path.join(repo_root, raw_excl)
+  )
+  try:
+    os.makedirs(os.path.dirname(excl_path), exist_ok=True)
+    existing_text = ""
+    if os.path.isfile(excl_path):
+      with open(excl_path, "r", encoding="utf-8", errors="replace") as f:
+        existing_text = f.read()
+    existing_lines = {
+        ln.strip() for ln in existing_text.splitlines() if ln.strip()
+    }
+    missing = [
+        entry
+        for entry in (".workflow/state/", ".workflow/archive/")
+        if entry not in existing_lines
+    ]
+    if missing:
+      prefix = (
+          ""
+          if (not existing_text or existing_text.endswith("\n"))
+          else "\n"
+      )
+      with open(excl_path, "a", encoding="utf-8") as f:
+        f.write(prefix + "\n".join(missing) + "\n")
+    return True
+  except OSError:
+    return False
+
+
+def refresh_state_makefile_if_ignored(repo_root: str) -> bool:
+  """Writes or updates .workflow/state/Makefile only when .workflow/state/ is ignored.
+
+  Args:
+    repo_root: Candidate workspace root directory.
+
+  Returns:
+    True when .workflow/ exists, .workflow/state/ is Git-ignored, and Makefile
+    is up to date; False otherwise without touching disk.
+  """
+  if not repo_root or not os.path.isdir(os.path.join(repo_root, ".workflow")):
+    return False
+  ign_proc = _run_repo_git(repo_root, "check-ignore", "-q", ".workflow/state/")
+  if ign_proc.returncode != 0:
+    return False
+
+  state_dir = os.path.join(repo_root, ".workflow", "state")
+  mk_path = os.path.join(state_dir, "Makefile")
+  expected = generate_state_makefile(repo_root)
+  try:
+    if os.path.isfile(mk_path):
+      with open(mk_path, "r", encoding="utf-8") as f:
+        if f.read() == expected:
+          return True
+    os.makedirs(state_dir, exist_ok=True)
+    with open(mk_path, "w", encoding="utf-8") as f:
+      f.write(expected)
+    return True
+  except OSError:
+    return False
+
+
+def _env_truthy(name: str) -> bool:
+  """Returns True when environment variable name has a non-falsey value."""
+  return os.environ.get(name, "").strip().lower() not in (
+      "",
+      "0",
+      "false",
+      "no",
+  )
+
+
+def _workflow_target_recipes(gates_script: str, quoted_root: str) -> str:
+  """Builds the read-init-d gate, 14 DAG target recipes, and generic advance."""
+  base = f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} advance"
+  specs = (
+      ("ticket-assigned", "", "--to T10"),
+      ("archaeology-verified", "", "--to T15"),
+      ("approved-plan", "", "--to T20"),
+      ("implementation-diff", "", "--to T30"),
+      ("adversarial-review", " check-approved-tree", "--to T40"),
+      ("triaged-blockers", "", "--to T42"),
+      ("approved-review", " check-approved-tree", "--to T45"),
+      ("commit", " check-approved-tree check-commit-msg", "--to T50"),
+      ("push", " check-main-sync", "--to T60"),
+      ("bot-quiescence", "", "--to T70"),
+      ("ready-to-land", "", "--to T75"),
+      ("land", "", "--to T80"),
+      ("codified-scars-consolidated", "", "--to T90"),
+      ("finish", "", "--to T90 --complete"),
+  )
+  blocks = [
+      f"read-init-d:\n\t@$(PYTHON) {gates_script} --repo-root {quoted_root} read-init-d --make-env\n"
+  ]
+  blocks.extend(
+      f"{name}:{prereqs}\n{base} {flag} --make-env\n"
+      for name, prereqs, flag in specs
+  )
+  blocks.append(f"advance:\n{base} --make-env\n")
+  return "\n".join(blocks)
+
+
 def generate_state_makefile(repo_root: str) -> str:
   """Returns the canonical content of .workflow/state/Makefile for repo_root."""
   abs_root = os.path.abspath(repo_root)
@@ -322,28 +443,46 @@ def generate_state_makefile(repo_root: str) -> str:
       os.path.abspath(os.path.join(_SCRIPTS_DIR, "ast_scrub.py"))
   ).replace("$", "$$")
   quoted_root = shlex.quote(abs_root).replace("$", "$$")
+  phony = (
+      "read-init-d ticket-assigned archaeology-verified approved-plan "
+      "implementation-diff adversarial-review triaged-blockers approved-review "
+      "commit push bot-quiescence ready-to-land land "
+      "codified-scars-consolidated finish advance "
+      "check-intake release-intake check-approved-tree check-commit-msg "
+      "check-main-sync witness-red verify-green verify-citation ast-lint"
+  )
+  recipes = _workflow_target_recipes(gates_script, quoted_root)
   return (
       "# Synthesized by workflow_gates.py init-makefile (SCAR-ARCH-06, SCAR-TEST-12)\n"
       "PYTHON ?= python3\n"
+      "FROM ?=\n"
+      "TO ?=\n"
+      "APPROVED ?=\n"
+      "BLOCKERS ?=\n"
+      "ALLOW_MAIN_CONFLICT ?=\n"
+      "NO_FETCH ?=\n"
+      "TRANSCRIPT ?=\n"
       "TICKET ?=\n"
       "ALLOW_BLOCKED ?=\n"
+      "FILE ?=\n"
       "TEST_DIR =\n"
       "TEST_CMD =\n"
       "ALLOW_HEAD_MOVE =\n"
       "CITE =\n"
-      "export TICKET ALLOW_BLOCKED\n"
+      "export TICKET ALLOW_BLOCKED FROM TO APPROVED BLOCKERS ALLOW_MAIN_CONFLICT NO_FETCH TRANSCRIPT FILE\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
-      ".PHONY: check-intake release-intake check-approved-tree check-commit-msg check-main-sync witness-red verify-green verify-citation ast-lint\n\n"
+      f".PHONY: {phony}\n\n"
+      f"{recipes}\n"
       "check-intake:\n"
-      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake $(if $(TICKET),--ticket $(TICKET),) $(if $(ALLOW_BLOCKED),--allow-blocked,)\n\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake --make-env\n\n"
       "release-intake:\n"
-      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake $(if $(TICKET),--ticket $(TICKET),)\n\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake --make-env\n\n"
       "check-approved-tree:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
       "check-commit-msg:\n"
-      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg\n\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg --make-env\n\n"
       "check-main-sync:\n"
-      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} main-sync\n\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} main-sync --make-env\n\n"
       "witness-red:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
       "verify-green:\n"
@@ -376,6 +515,15 @@ class WorkflowGatesScript(BaseScript):
     self.allow_blocked: bool = False
     self.no_fetch: bool = False
     self.fail_on_behind: bool = False
+    self.allow_conflict: bool = False
+    self.adv_from: str = ""
+    self.adv_to: str = ""
+    self.adv_approved: Optional[str] = None
+    self.adv_blockers: Optional[Any] = None
+    self.allow_main_conflict: bool = False
+    self.adv_transcript: str = ""
+    self.adv_complete: bool = False
+    self.make_env: bool = False
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -406,6 +554,12 @@ class WorkflowGatesScript(BaseScript):
         action="store_true",
         dest="as_json",
         help="Emit Vector 4 Reflex errors as JSON.",
+    )
+    parser.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="make_env",
+        help="Hydrate gate arguments from exported GNU Make environment variables.",
     )
 
     subparsers = parser.add_subparsers(
@@ -492,6 +646,12 @@ class WorkflowGatesScript(BaseScript):
         dest="sub_json",
         help="Emit errors as JSON.",
     )
+    p_intake.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate TICKET and ALLOW_BLOCKED from environment.",
+    )
 
     p_rel = subparsers.add_parser(
         "release-intake",
@@ -517,6 +677,12 @@ class WorkflowGatesScript(BaseScript):
         dest="sub_json",
         help="Emit errors as JSON.",
     )
+    p_rel.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate TICKET from environment.",
+    )
 
     p_rel_lock = subparsers.add_parser(
         "release-lock",
@@ -541,6 +707,12 @@ class WorkflowGatesScript(BaseScript):
         action="store_true",
         dest="sub_json",
         help="Emit errors as JSON.",
+    )
+    p_rel_lock.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate TICKET from environment.",
     )
 
     p_tree = subparsers.add_parser(
@@ -575,6 +747,12 @@ class WorkflowGatesScript(BaseScript):
         action="store_true",
         dest="sub_json",
         help="Emit errors as JSON.",
+    )
+    p_msg.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate FILE from environment.",
     )
 
     p_title = subparsers.add_parser(
@@ -631,23 +809,41 @@ class WorkflowGatesScript(BaseScript):
         help="Exit 2 with UPSTREAM_MAIN_BEHIND when origin/main is ahead even without conflicts.",
     )
     p_sync.add_argument(
+        "--allow-conflict",
+        action="store_true",
+        dest="allow_conflict",
+        help="Exit 0 with warning when operator explicitly overrides upstream main conflicts.",
+    )
+    p_sync.add_argument(
         "--json",
         action="store_true",
         dest="sub_json",
         help="Emit output or Vector 4 Reflex errors as JSON.",
     )
+    p_sync.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate NO_FETCH and ALLOW_MAIN_CONFLICT from environment.",
+    )
+
+    self._register_advance_subparser(subparsers)
+    self._register_read_init_subparser(subparsers)
 
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
           "intake, approved-tree, commit-msg, main-sync, terminal-title, "
-          "release-intake, or release-lock."
+          "release-intake, release-lock, read-init-d, or advance."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
     self.lock_dir = getattr(ns, "sub_lock_dir", None) or getattr(ns, "lock_dir", None)
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
+    self.make_env = bool(
+        getattr(ns, "make_env", False) or getattr(ns, "sub_make_env", False)
+    )
     self.gate = ns.gate
     if ns.gate == "skill-budget":
       if ns.max_bytes <= 0:
@@ -658,12 +854,124 @@ class WorkflowGatesScript(BaseScript):
     elif ns.gate == "main-sync":
       self.no_fetch = bool(getattr(ns, "no_fetch", False))
       self.fail_on_behind = bool(getattr(ns, "fail_on_behind", False))
+      self.allow_conflict = bool(getattr(ns, "allow_conflict", False))
+    elif ns.gate == "read-init-d":
+      self.adv_from = str(getattr(ns, "adv_from", "") or "").strip()
+    elif ns.gate == "advance":
+      self.adv_from = str(getattr(ns, "adv_from", "") or "").strip()
+      self.adv_to = str(getattr(ns, "adv_to", "") or "").strip()
+      self.adv_approved = getattr(ns, "adv_approved", None)
+      self.adv_blockers = getattr(ns, "adv_blockers", None)
+      self.allow_main_conflict = bool(getattr(ns, "allow_main_conflict", False))
+      self.no_fetch = bool(getattr(ns, "no_fetch", False))
+      self.adv_transcript = str(getattr(ns, "adv_transcript", "") or "").strip()
+      self.adv_complete = bool(getattr(ns, "adv_complete", False))
     elif ns.gate in ("terminal-title", "intake", "release-intake", "release-lock"):
       self.ticket = getattr(ns, "ticket", None)
       self.directory = getattr(ns, "directory", None)
       self.title = getattr(ns, "title", None)
       self.issue_tag = getattr(ns, "issue_tag", None)
       self.allow_blocked = bool(getattr(ns, "allow_blocked", False))
+
+    if self.make_env:
+      self._hydrate_from_make_env()
+
+  def _hydrate_from_make_env(self) -> None:
+    """Populates unset gate fields from exported GNU Make environment variables."""
+    if not self.ticket and os.environ.get("TICKET", "").strip():
+      self.ticket = os.environ["TICKET"].strip()
+    if not self.allow_blocked and _env_truthy("ALLOW_BLOCKED"):
+      self.allow_blocked = True
+    if not self.commit_msg_file and os.environ.get("FILE", "").strip():
+      self.commit_msg_file = os.environ["FILE"].strip()
+    if not self.no_fetch and _env_truthy("NO_FETCH"):
+      self.no_fetch = True
+    if _env_truthy("ALLOW_MAIN_CONFLICT"):
+      self.allow_main_conflict = True
+      self.allow_conflict = True
+    if not self.adv_from and os.environ.get("FROM", "").strip():
+      self.adv_from = os.environ["FROM"].strip()
+    if not self.adv_to and os.environ.get("TO", "").strip():
+      self.adv_to = os.environ["TO"].strip()
+    if self.adv_approved is None and os.environ.get("APPROVED", "").strip():
+      self.adv_approved = os.environ["APPROVED"].strip()
+    if self.adv_blockers is None and os.environ.get("BLOCKERS", "").strip():
+      self.adv_blockers = os.environ["BLOCKERS"].strip()
+    if not self.adv_transcript and os.environ.get("TRANSCRIPT", "").strip():
+      self.adv_transcript = os.environ["TRANSCRIPT"].strip()
+
+  @staticmethod
+  def _register_read_init_subparser(subparsers: Any) -> None:
+    """Registers the Target 00 read-init-d inspection/reconciliation subparser."""
+    p_init_d = subparsers.add_parser(
+        "read-init-d",
+        help="Inspect and reconcile Target 00 session state on disk.",
+        description="Reconcile active session state without mutating clean or completed workspaces.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . read-init-d",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_init_d.add_argument("--from", dest="adv_from", default="", help="Optional source target ID.")
+    p_init_d.add_argument("--json", action="store_true", dest="sub_json", help="Emit errors as JSON.")
+    p_init_d.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate FROM from environment.",
+    )
+
+  @staticmethod
+  def _register_advance_subparser(subparsers: Any) -> None:
+    """Registers the advance subcommand parser on subparsers."""
+    p_adv = subparsers.add_parser(
+        "advance",
+        help="Validate and execute a Makefile DAG target transition.",
+        description="Execute a deterministic Makefile DAG target transition and update 99_next_action.md.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . advance --to T15",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_adv.add_argument("--from", dest="adv_from", default="", help="Source target ID.")
+    p_adv.add_argument("--to", dest="adv_to", default="", help="Destination target ID.")
+    p_adv.add_argument(
+        "--approved",
+        dest="adv_approved",
+        nargs="?",
+        const="1",
+        default=None,
+        help="Human pause-gate approval flag (1/true or 0/false).",
+    )
+    p_adv.add_argument(
+        "--blockers", dest="adv_blockers", default=None, help="Critic blocker count."
+    )
+    p_adv.add_argument(
+        "--allow-main-conflict",
+        action="store_true",
+        dest="allow_main_conflict",
+        help="Allow advancing despite upstream main conflicts.",
+    )
+    p_adv.add_argument(
+        "--no-fetch",
+        action="store_true",
+        dest="no_fetch",
+        help="Inspect local remote-tracking ref without running git fetch.",
+    )
+    p_adv.add_argument(
+        "--transcript", dest="adv_transcript", default="", help="Transcript JSONL path."
+    )
+    p_adv.add_argument(
+        "--complete",
+        action="store_true",
+        dest="adv_complete",
+        help="Complete Target 90 (finish) and clean intermediate state cards.",
+    )
+    p_adv.add_argument(
+        "--json", action="store_true", dest="sub_json", help="Emit errors as JSON."
+    )
+    p_adv.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate FROM, TO, APPROVED, BLOCKERS, and TRANSCRIPT from environment.",
+    )
 
   def _fail(
       self, scar_id: str, code: str, trigger: str, rejected: str, reflex: str
@@ -706,6 +1014,7 @@ class WorkflowGatesScript(BaseScript):
           reflex="Pass an existing Git repository path via --repo-root before running init-makefile.",
       )
 
+    ensure_git_exclude_workflow_dirs(self.repo_root)
     state_dir = os.path.join(self.repo_root, ".workflow", "state")
     mk_path = os.path.join(state_dir, "Makefile")
     content = generate_state_makefile(self.repo_root)
@@ -973,7 +1282,21 @@ class WorkflowGatesScript(BaseScript):
 
   def _cleanup_tdd_receipt(self, ticket_id: str) -> None:
     """Archives or unlinks 30_tdd_receipt.json and loaded_scars.json on intake release."""
+    from lib.config import is_ticket_active
+
     state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    transients = (
+        ("gate_entry.json",)
+        if is_ticket_active(state_dir)
+        else ("gate_entry.json", "active_target.json")
+    )
+    for transient in transients:
+      transient_path = os.path.join(state_dir, transient)
+      if os.path.isfile(transient_path):
+        try:
+          os.unlink(transient_path)
+        except OSError:
+          pass
     json_artifacts = ("30_tdd_receipt.json", "loaded_scars.json")
     existing = [
         name
@@ -1223,6 +1546,15 @@ class WorkflowGatesScript(BaseScript):
 
     if status == "CONFLICT":
       files_str = ", ".join(conflicting_files) or "unknown files"
+      if self.allow_conflict:
+        if self.as_json:
+          self.stdout.write(json.dumps(sync) + "\n")
+        else:
+          self.stdout.write(
+              f"MAIN_SYNC_WARNING: Proceeding with operator conflict override "
+              f"against {upstream_ref} ({files_str}).\n"
+          )
+        return 0
       return self._fail(
           scar_id="GIT-20",
           code="UPSTREAM_MAIN_CONFLICT",
@@ -1269,6 +1601,129 @@ class WorkflowGatesScript(BaseScript):
       self.stdout.write(json.dumps(sync) + "\n")
     return 0
 
+  def _emit_advance_reflex(self, msg: str) -> int:
+    """Emits a Vector 4 Reflex with exit code 2 for a blocked transition."""
+    if "SCAR-PROC-102" in msg:
+      return self._fail(
+          scar_id="PROC-102",
+          code="PAUSE_GATE_TURN_BOUNDARY_VIOLATION",
+          trigger=msg,
+          rejected="Advancing past a human pause gate without explicit human approval in a new turn.",
+          reflex="Stop tool calls, present the proposal in chat, and wait for a human USER_INPUT turn.",
+      )
+    if "UPSTREAM_MAIN_CONFLICT" in msg:
+      return self._fail(
+          scar_id="GIT-20",
+          code="UPSTREAM_MAIN_CONFLICT",
+          trigger=msg,
+          rejected="Advancing a branch with unresolved 3-way merge conflicts against upstream main.",
+          reflex="Stop tool calls without altering Git state (SCAR-GIT-25) and ask the operator before rebasing or merging.",
+      )
+    if "Required state card" in msg:
+      return self._fail(
+          scar_id="ARCH-06",
+          code="MISSING_REQUIRED_STATE_CARD",
+          trigger=msg,
+          rejected="Advancing to the next Makefile target before writing its prerequisite state card.",
+          reflex="Write the required prerequisite state card in .workflow/state/ and re-run the target.",
+      )
+    return self._fail(
+        scar_id="ARCH-06",
+        code="INVALID_TARGET_TRANSITION",
+        trigger=msg,
+        rejected="Executing an out-of-order or unapproved transition in .workflow/state/Makefile.",
+        reflex="Inspect .workflow/state/99_next_action.md and run a valid target transition with required approvals.",
+    )
+
+  def _build_advance_evidence(
+      self, current: str, next_t: str, complete: bool
+  ) -> Dict[str, Any]:
+    """Constructs the transition evidence dictionary from CLI flags."""
+    from lib.state_machine import GATE_EVIDENCE_KEYS
+
+    ev: Dict[str, Any] = {}
+    if complete:
+      ev["complete"] = True
+    gate_key = GATE_EVIDENCE_KEYS.get((current, next_t))
+    approved_str = (self.adv_approved or "").strip().lower()
+    if gate_key and approved_str in ("1", "true", "yes"):
+      ev[gate_key] = True
+    if self.adv_blockers is not None:
+      if isinstance(self.adv_blockers, str):
+        raw_b = self.adv_blockers.strip()
+        ev["blockersCount"] = (
+            int(raw_b) if re.fullmatch(r"[+-]?\d+", raw_b) else raw_b
+        )
+      else:
+        ev["blockersCount"] = self.adv_blockers
+    if self.allow_main_conflict:
+      ev["allowMainConflict"] = True
+    if self.no_fetch:
+      ev["skipMainFetch"] = True
+    if self.adv_transcript:
+      ev["transcriptPath"] = self.adv_transcript
+    return ev
+
+  def _advance(self) -> int:
+    """Executes the advance subcommand and renders 99_next_action.md."""
+    from lib.state_machine import (
+        TARGET_NAME_TO_ID,
+        advance_workflow_target,
+        infer_current_target,
+    )
+
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+
+    raw_to = self.adv_to
+    complete = self.adv_complete or (raw_to == "finish")
+    next_t = TARGET_NAME_TO_ID.get(raw_to, raw_to)
+    raw_from = self.adv_from
+    current = (
+        TARGET_NAME_TO_ID.get(raw_from, raw_from)
+        if raw_from
+        else infer_current_target(state_dir, next_target=next_t)
+    )
+
+    if next_t in ("T40", "T45", "T50"):
+      rc_tree = self._check_approved_tree()
+      if rc_tree != 0:
+        return rc_tree
+    if next_t == "T50":
+      rc_msg = self._check_commit_msg()
+      if rc_msg != 0:
+        return rc_msg
+
+    ev = self._build_advance_evidence(current, next_t, complete)
+    ok, msg = advance_workflow_target(
+        current,
+        next_t,
+        evidence=ev,
+        workspace_dir=self.repo_root,
+        state_dir=state_dir,
+    )
+    if not ok:
+      return self._emit_advance_reflex(msg)
+    self.stdout.write(msg + "\n")
+    return 0
+
+  def _read_init_d(self) -> int:
+    """Executes the Target 00 read-init-d inspection and reconciliation gate."""
+    from lib.state_machine import TARGET_NAME_TO_ID, restore_session_state
+
+    if self.adv_from:
+      src = TARGET_NAME_TO_ID.get(self.adv_from, self.adv_from)
+      if src != "T00":
+        return self._emit_advance_reflex(
+            f"BLOCKED: Transition {src} -> T00 is not valid in the Makefile DAG."
+        )
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    ok, msg = restore_session_state(state_dir, workspace_dir=self.repo_root)
+    if not ok:
+      return self._emit_advance_reflex(msg)
+    self.stdout.write(msg + "\n")
+    return 0
+
   def run(self) -> int:
     if self.gate == "init-makefile":
       return self._init_makefile()
@@ -1288,4 +1743,8 @@ class WorkflowGatesScript(BaseScript):
       return self._gate_terminal_title()
     if self.gate in ("release-intake", "release-lock"):
       return self._release_intake()
+    if self.gate == "read-init-d":
+      return self._read_init_d()
+    if self.gate == "advance":
+      return self._advance()
     raise ValueError(f"Unsupported gate: {self.gate}")

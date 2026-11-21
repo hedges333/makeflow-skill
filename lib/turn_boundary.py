@@ -12,8 +12,34 @@ import os
 import time
 
 from lib.reflex import emit_reflex
+from lib.shell_safety import (
+    ENV_ASSIGN_RE,
+    _expand_shell_subcommands,
+    _tokenize_subcommand,
+    _unwrap_command_tokens,
+)
 
 GATE_ENTRY_FILENAME = "gate_entry.json"
+
+_MAKE_GOAL_TO_TARGET = {
+    "ticket-assigned": "T10",
+    "archaeology-verified": "T15",
+    "approved-plan": "T20",
+    "implementation-diff": "T30",
+    "adversarial-review": "T40",
+    "triaged-blockers": "T42",
+    "approved-review": "T45",
+    "commit": "T50",
+    "push": "T60",
+    "bot-quiescence": "T70",
+    "ready-to-land": "T75",
+    "land": "T80",
+    "codified-scars-consolidated": "T90",
+    "finish": "T90",
+}
+_GOAL_OR_INIT_TO_TARGET = {"read-init-d": "T00", **_MAKE_GOAL_TO_TARGET}
+
+_SHELL_TOOL_NAMES = frozenset({"run_command", "Bash", "bash", "shell"})
 
 DEFAULT_TARGETS_CONFIG = {
     "T00": {
@@ -226,7 +252,335 @@ def load_transcript_steps(transcript_path):
   return steps
 
 
-def extract_advance_target_calls(tool_calls):
+def _infer_shell_current_target(
+    resolved_state_dir, prior_target="", next_target=""
+):
+  """Infers currentTarget for a shell advance call when FROM is omitted."""
+  if prior_target:
+    return prior_target
+  if not resolved_state_dir:
+    return "T00"
+
+  entry = read_gate_entry(resolved_state_dir)
+  if entry and next_target and entry.get("gate") == next_target:
+    from_t = str(entry.get("fromTarget") or "").strip()
+    if from_t:
+      return from_t
+
+  try:
+    from lib.state_machine import infer_current_target
+
+    inferred = infer_current_target(resolved_state_dir, next_target=next_target)
+    if inferred and inferred != "T00":
+      return inferred
+  except ImportError:
+    infer_current_target = None
+
+  if entry and entry.get("gate") and entry.get("gate") != next_target:
+    return str(entry["gate"]).strip()
+
+  if infer_current_target is not None:
+    return infer_current_target(resolved_state_dir, next_target=next_target)
+  return "T00"
+
+
+def _resolve_shell_state_dirs(makefile_arg, dir_arg, default_state_dir):
+  """Resolves (workspace_dir, state_dir) from make -f / -C flags."""
+  raw_mf = (makefile_arg or "").replace("\\", "/")
+  raw_dir = (dir_arg or "").replace("\\", "/").rstrip("/")
+  mf_norm = os.path.normpath(raw_mf).replace("\\", "/") if raw_mf else ""
+  dir_norm = os.path.normpath(raw_dir).replace("\\", "/") if raw_dir else ""
+  is_state_mk = (
+      mf_norm == ".workflow/state/Makefile"
+      or mf_norm.endswith("/.workflow/state/Makefile")
+      or (
+          mf_norm in ("", ".", "Makefile")
+          and (
+              dir_norm == ".workflow/state"
+              or dir_norm.endswith("/.workflow/state")
+          )
+      )
+  )
+  if not is_state_mk:
+    return None, None
+
+  if mf_norm == ".workflow/state/Makefile" or mf_norm.endswith(
+      "/.workflow/state/Makefile"
+  ):
+    if os.path.isabs(mf_norm):
+      st_dir = os.path.dirname(mf_norm)
+      return os.path.dirname(os.path.dirname(st_dir)), st_dir
+    if dir_norm:
+      st_dir = os.path.normpath(os.path.join(dir_norm, os.path.dirname(mf_norm)))
+      return os.path.dirname(os.path.dirname(st_dir)), st_dir
+  elif (
+      dir_norm == ".workflow/state" or dir_norm.endswith("/.workflow/state")
+  ) and os.path.isabs(dir_norm):
+    return os.path.dirname(os.path.dirname(dir_norm)), dir_norm
+
+  ws_dir = (
+      os.path.dirname(os.path.dirname(os.path.abspath(default_state_dir)))
+      if default_state_dir
+      else ""
+  )
+  return ws_dir, default_state_dir
+
+
+def _parse_make_tokens(rem):
+  """Extracts (makefile_arg, dir_arg, make_vars, goals) from make tokens."""
+  makefile_arg = ""
+  dir_arg = ""
+  make_vars = {}
+  goals = []
+  idx = 0
+  while idx < len(rem):
+    tok = rem[idx]
+    if tok in ("-f", "--file", "--makefile") and idx + 1 < len(rem):
+      makefile_arg = rem[idx + 1]
+      idx += 2
+      continue
+    if tok.startswith("-f") and len(tok) > 2:
+      makefile_arg = tok[2:]
+    elif tok.startswith(("--file=", "--makefile=")):
+      makefile_arg = tok.split("=", 1)[1]
+    elif tok in ("-C", "--directory") and idx + 1 < len(rem):
+      dir_arg = rem[idx + 1]
+      idx += 2
+      continue
+    elif tok.startswith("-C") and len(tok) > 2:
+      dir_arg = tok[2:]
+    elif tok.startswith("--directory="):
+      dir_arg = tok.split("=", 1)[1]
+    elif tok in ("-I", "--include-dir", "-W", "--what-if", "-o", "--old-file"):
+      idx += 2
+      continue
+    elif not tok.startswith("-") and "=" in tok:
+      key, val = tok.split("=", 1)
+      make_vars[key.strip()] = val.strip()
+    elif not tok.startswith("-"):
+      goals.append(tok.strip())
+    idx += 1
+  return makefile_arg, dir_arg, make_vars, goals
+
+
+def _build_shell_adv_record(curr_t, next_t, approved_raw, complete, dirs):
+  """Builds a normalized advance-call dict from parsed shell parameters."""
+  ws_dir, st_dir = dirs
+  ev = {}
+  if complete:
+    ev["complete"] = True
+  gate_key = PAUSE_GATE_EXITS.get((curr_t, next_t))
+  if gate_key and str(approved_raw or "").strip().lower() in (
+      "1",
+      "true",
+      "yes",
+  ):
+    ev[gate_key] = True
+  return {
+      "currentTarget": curr_t,
+      "nextTarget": next_t,
+      "evidence": ev,
+      "workspaceDir": ws_dir or "",
+      "stateDir": st_dir or "",
+  }
+
+
+def _consume_workflow_gates_entry(exe, args):
+  """Strips python/module wrapper tokens if invocation targets workflow_gates."""
+  base = os.path.basename(exe).lower()
+  if base.startswith("python"):
+    is_mod = False
+    while args and args[0].startswith("-"):
+      flag = args.pop(0)
+      if flag == "-m":
+        is_mod = True
+        break
+      if flag.startswith("-m") and len(flag) > 2:
+        args.insert(0, flag[2:])
+        is_mod = True
+        break
+    if not args:
+      return False
+    target = args.pop(0).replace("\\", "/")
+    if is_mod:
+      return target in (
+          "scripts.workflow_gates",
+          "lib.workflow_gates",
+          "workflow_gates",
+      )
+    return target.endswith("workflow_gates.py")
+  return base == "workflow_gates.py"
+
+
+def _parse_workflow_gates_cli_advance(exe, rem, cwd_dir, default_state_dir, ctx):
+  """Extracts an advance record from direct workflow_gates.py CLI tokens."""
+  args = list(rem)
+  if not _consume_workflow_gates_entry(exe, args) or "advance" not in args:
+    return None
+  prior, prefix_env = ctx if isinstance(ctx, tuple) else (str(ctx or ""), {})
+
+  repo_root = cwd_dir or ""
+  raw_from, raw_to, approved = "", "", ""
+  complete, use_make_env = False, False
+  idx = 0
+  while idx < len(args):
+    tok = args[idx]
+    if tok == "--repo-root" and idx + 1 < len(args):
+      repo_root, idx = args[idx + 1], idx + 2
+      continue
+    if tok.startswith("--repo-root="):
+      repo_root = tok.split("=", 1)[1]
+    elif tok == "--from" and idx + 1 < len(args):
+      raw_from, idx = args[idx + 1], idx + 2
+      continue
+    elif tok.startswith("--from="):
+      raw_from = tok.split("=", 1)[1]
+    elif tok == "--to" and idx + 1 < len(args):
+      raw_to, idx = args[idx + 1], idx + 2
+      continue
+    elif tok.startswith("--to="):
+      raw_to = tok.split("=", 1)[1]
+    elif tok == "--approved":
+      if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+        approved, idx = args[idx + 1], idx + 2
+      else:
+        approved, idx = "1", idx + 1
+      continue
+    elif tok.startswith("--approved="):
+      approved = tok.split("=", 1)[1]
+    elif tok == "--complete":
+      complete = True
+    elif tok == "--make-env":
+      use_make_env = True
+    idx += 1
+
+  if use_make_env and prefix_env:
+    raw_from = raw_from or prefix_env.get("FROM", "")
+    raw_to = raw_to or prefix_env.get("TO", "")
+    approved = approved or prefix_env.get("APPROVED", "")
+
+  eff_root = "" if repo_root in ("", ".") else repo_root
+  st_dir = (
+      os.path.join(eff_root, ".workflow", "state")
+      if eff_root
+      else default_state_dir
+  )
+  next_t = _GOAL_OR_INIT_TO_TARGET.get(raw_to, raw_to)
+  if raw_to == "finish":
+    complete = True
+  if not next_t:
+    return None
+  curr_t = (
+      _GOAL_OR_INIT_TO_TARGET.get(raw_from, raw_from)
+      if raw_from
+      else _infer_shell_current_target(st_dir, prior, next_target=next_t)
+  )
+  return _build_shell_adv_record(
+      curr_t, next_t, approved, complete, (eff_root, st_dir)
+  )
+
+
+def _unwrap_tokens_preserving_env(tokens):
+  """Unwraps command tokens while capturing leading KEY=VALUE assignments."""
+  exe, rem = _unwrap_command_tokens(tokens)
+  if not exe or exe == "SHELL_C":
+    return exe, rem, {}
+  prefix_end = max(0, len(tokens) - len(rem) - 1)
+  env_vars = {}
+  idx = 0
+  while idx < prefix_end:
+    tok = tokens[idx]
+    if tok in ("-i", "--ignore-environment"):
+      env_vars.clear()
+    elif tok in ("-u", "--unset") and idx + 1 < prefix_end:
+      env_vars.pop(tokens[idx + 1], None)
+      idx += 2
+      continue
+    elif tok in (
+        "-C",
+        "--chdir",
+        "-g",
+        "-D",
+        "-h",
+        "-p",
+        "-r",
+        "-t",
+        "-T",
+        "-U",
+    ):
+      idx += 2
+      continue
+    elif ENV_ASSIGN_RE.match(tok):
+      key, val = tok.split("=", 1)
+      env_vars[key.strip()] = val.strip()
+    idx += 1
+  return exe, rem, env_vars
+
+
+def _extract_shell_advance_calls(cmd_str, default_state_dir=""):
+  """Extracts Makeflow target advance calls from a shell command string."""
+  if not cmd_str or not isinstance(cmd_str, str):
+    return []
+  extracted = []
+  cwd_override = ""
+  prior_target = ""
+
+  for subcmd in _expand_shell_subcommands(cmd_str):
+    for tokens in _tokenize_subcommand(subcmd):
+      exe, rem, prefix_env = _unwrap_tokens_preserving_env(tokens)
+      if not exe:
+        continue
+      base_exe = os.path.basename(exe).lower()
+      if base_exe == "cd" and rem:
+        cwd_override = rem[0]
+        continue
+
+      if base_exe in ("make", "gmake"):
+        mf_arg, dir_arg, make_arg_vars, goals = _parse_make_tokens(rem)
+        mvars = {**prefix_env, **make_arg_vars}
+        ws_dir, st_dir = _resolve_shell_state_dirs(
+            mf_arg, dir_arg or cwd_override, default_state_dir
+        )
+        if st_dir is None and ws_dir is None:
+          continue
+        for goal in goals:
+          complete = goal == "finish"
+          if goal in _MAKE_GOAL_TO_TARGET:
+            next_t = _MAKE_GOAL_TO_TARGET[goal]
+          elif goal == "advance":
+            raw_to = mvars.get("TO", "")
+            complete = complete or (raw_to == "finish")
+            next_t = _GOAL_OR_INIT_TO_TARGET.get(raw_to, raw_to)
+          else:
+            continue
+          if not next_t:
+            continue
+          raw_from = mvars.get("FROM", "")
+          curr_t = (
+              _GOAL_OR_INIT_TO_TARGET.get(raw_from, raw_from)
+              if raw_from
+              else _infer_shell_current_target(
+                  st_dir, prior_target, next_target=next_t
+              )
+          )
+          rec = _build_shell_adv_record(
+              curr_t, next_t, mvars.get("APPROVED"), complete, (ws_dir, st_dir)
+          )
+          extracted.append(rec)
+          prior_target = next_t
+        continue
+
+      cli_rec = _parse_workflow_gates_cli_advance(
+          exe, rem, cwd_override, default_state_dir, (prior_target, prefix_env)
+      )
+      if cli_rec is not None:
+        extracted.append(cli_rec)
+        prior_target = cli_rec["nextTarget"]
+
+  return extracted
+
+
+def extract_advance_target_calls(tool_calls, default_state_dir=""):
   """Extracts normalized workflow_advance_target calls from a list of tool_calls."""
   if not isinstance(tool_calls, list):
     return []
@@ -237,6 +591,18 @@ def extract_advance_target_calls(tool_calls):
     name = _unwrap_json_val(tc.get("name", ""))
     raw_args = _unwrap_json_val(tc.get("args", {}))
     if not isinstance(raw_args, dict):
+      continue
+
+    if name in _SHELL_TOOL_NAMES:
+      cmd_line = _unwrap_json_val(
+          raw_args.get("CommandLine")
+          or raw_args.get("command")
+          or raw_args.get("cmd")
+          or ""
+      )
+      results.extend(
+          _extract_shell_advance_calls(str(cmd_line), default_state_dir)
+      )
       continue
 
     inner_args = None
@@ -329,14 +695,25 @@ def step_enters_or_presents_gate(step, gate, check_content_prompt=False):
 
 
 def detect_latest_target(steps, state_dir=None):
-  """Returns the latest target reached in transcript steps or gate_entry.json."""
+  """Returns the latest target reached in transcript steps, active_target.json, or gate_entry.json."""
   latest = ""
   for st in steps or ():
     if not isinstance(st, dict):
       continue
-    for adv in extract_advance_target_calls(st.get("tool_calls") or []):
+    for adv in extract_advance_target_calls(
+        st.get("tool_calls") or [], default_state_dir=state_dir or ""
+    ):
       if adv["nextTarget"]:
         latest = adv["nextTarget"]
+  if not latest and state_dir:
+    try:
+      from lib.state_machine import read_active_target
+
+      active = read_active_target(state_dir)
+      if active and active.get("target"):
+        latest = str(active["target"])
+    except ImportError:
+      pass
   if not latest and state_dir:
     entry = read_gate_entry(state_dir)
     if entry and entry.get("gate"):
@@ -368,24 +745,43 @@ def record_gate_entry(state_dir, from_target, gate_target, transcript_path=""):
       or gate_target not in PAUSE_GATE_TARGETS
   ):
     return
-  steps = load_transcript_steps(transcript_path) if transcript_path else []
-  last_step_idx = -1
-  user_count = 0
-  for idx, st in enumerate(steps):
-    s_idx = st.get("step_index")
-    last_step_idx = s_idx if isinstance(s_idx, int) else idx
-    if is_human_approval_step(st, gate_target):
-      user_count += 1
 
-  payload = {
-      "gate": gate_target,
-      "fromTarget": from_target,
-      "enteredAt": time.time(),
-      "entryStepIndex": last_step_idx,
-      "userInputCountAtEntry": user_count,
-      "transcriptPath": transcript_path or "",
-      "humanTurnVerified": False,
-  }
+  existing = read_gate_entry(state_dir)
+  if (
+      not transcript_path
+      and existing
+      and existing.get("gate") == gate_target
+      and existing.get("transcriptPath")
+  ):
+    payload = {
+        "gate": gate_target,
+        "fromTarget": from_target or existing.get("fromTarget", ""),
+        "enteredAt": existing.get("enteredAt", time.time()),
+        "entryStepIndex": existing.get("entryStepIndex", -1),
+        "userInputCountAtEntry": existing.get("userInputCountAtEntry", 0),
+        "transcriptPath": existing["transcriptPath"],
+        "humanTurnVerified": bool(existing.get("humanTurnVerified", False)),
+    }
+  else:
+    steps = load_transcript_steps(transcript_path) if transcript_path else []
+    last_step_idx = -1
+    user_count = 0
+    for idx, st in enumerate(steps):
+      s_idx = st.get("step_index")
+      last_step_idx = s_idx if isinstance(s_idx, int) else idx
+      if is_human_approval_step(st, gate_target):
+        user_count += 1
+
+    payload = {
+        "gate": gate_target,
+        "fromTarget": from_target,
+        "enteredAt": time.time(),
+        "entryStepIndex": last_step_idx,
+        "userInputCountAtEntry": user_count,
+        "transcriptPath": transcript_path or "",
+        "humanTurnVerified": False,
+    }
+
   path = os.path.join(state_dir, GATE_ENTRY_FILENAME)
   try:
     with open(path, "w", encoding="utf-8") as f:
@@ -429,6 +825,16 @@ def clear_gate_entry(state_dir, gate_target=None):
 def _has_user_turn_since_entry(steps, gate, entry):
   """Checks whether steps contain a human approval turn after entry."""
   entry_step_idx = entry.get("entryStepIndex", -1)
+  if not isinstance(entry_step_idx, int) or entry_step_idx < 0:
+    last_entry_idx = -1
+    last_user_idx = -1
+    for idx, st in enumerate(steps):
+      if is_human_approval_step(st, gate):
+        last_user_idx = idx
+      if step_enters_gate(st, gate):
+        last_entry_idx = idx
+    return last_entry_idx != -1 and last_user_idx > last_entry_idx
+
   entry_user_count = entry.get("userInputCountAtEntry", 0)
   user_count = 0
   has_after_idx = False
@@ -491,7 +897,9 @@ def evaluate_advance_target_turn_boundary(
             " same autonomous turn without an intervening human USER_INPUT"
             " step (SCAR-PROC-102).",
         )
-      for adv in extract_advance_target_calls(st.get("tool_calls") or []):
+      for adv in extract_advance_target_calls(
+          st.get("tool_calls") or [], default_state_dir=state_dir or ""
+      ):
         if (adv["currentTarget"], adv["nextTarget"]) != (
             current_target,
             next_target,

@@ -15,6 +15,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, TextIO, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
+from lib.config import is_ticket_active
 
 _TICKET_CARD_RE = re.compile(
     r"(?i)(?:-\s*\*\*)?Ticket\s*ID(?:\*\*)?:\s*([A-Za-z0-9_-]+)"
@@ -341,15 +342,18 @@ def detect_ticket_id(
       if gh_num:
         return f"GH-{gh_num}"
 
-  # 3. Next action readerboard .workflow/state/99_next_action.md
-  card_99 = os.path.join(root, ".workflow", "state", "99_next_action.md")
-  if os.path.isfile(card_99):
+  # 3. Next action readerboard .workflow/state/99_next_action.md (active tickets only)
+  state_dir = os.path.join(root, ".workflow", "state")
+  card_99 = os.path.join(state_dir, "99_next_action.md")
+  if os.path.isfile(card_99) and is_ticket_active(state_dir):
     try:
       with open(card_99, "r", encoding="utf-8") as f:
-        content = f.read()
-      m = _NEXT_ACTION_RE.search(content)
-      if m:
-        return m.group(1).strip()
+        for line in f:
+          if line.rstrip().endswith("(Completed)"):
+            continue
+          m = _NEXT_ACTION_RE.search(line)
+          if m:
+            return m.group(1).strip()
     except (OSError, UnicodeDecodeError):
       pass
 
@@ -397,17 +401,20 @@ def detect_issue_tag(
     except (OSError, UnicodeDecodeError):
       pass
 
-  # 2. Readerboard .workflow/state/99_next_action.md
-  card_99 = os.path.join(root, ".workflow", "state", "99_next_action.md")
-  if os.path.isfile(card_99):
+  # 2. Readerboard .workflow/state/99_next_action.md (active tickets only)
+  state_dir = os.path.join(root, ".workflow", "state")
+  card_99 = os.path.join(state_dir, "99_next_action.md")
+  if os.path.isfile(card_99) and is_ticket_active(state_dir):
     try:
       with open(card_99, "r", encoding="utf-8") as f:
-        content = f.read()
-      m_bullet = _CARD_ISSUE_BULLET_RE.search(content)
-      if m_bullet:
-        candidate = _clean_tag(m_bullet.group(1))
-        if candidate:
-          return candidate
+        for line in f:
+          if line.rstrip().endswith("(Completed)"):
+            continue
+          m_bullet = _CARD_ISSUE_BULLET_RE.search(line)
+          if m_bullet:
+            candidate = _clean_tag(m_bullet.group(1))
+            if candidate:
+              return candidate
     except (OSError, UnicodeDecodeError):
       pass
 

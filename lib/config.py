@@ -391,6 +391,11 @@ def is_ticket_active(state_dir):
           or "make finish satisfied" in content
       ):
         return False
+      if state_files == ["99_next_action.md"] and (
+          "- Ticket: Unassigned" in content
+          or "- Active Target: Target 00" in content
+      ):
+        return False
     except (OSError, UnicodeDecodeError):
       pass
 

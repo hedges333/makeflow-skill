@@ -38,7 +38,7 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 
 The `verify-citation` gate reads cited specification lines directly from immutable Git blobs at witnessed `HEAD`. It also verifies governance toolchain integrity. If a cited file does not exist in the witnessed `HEAD` commit, the gate rejects it with `UNCOMMITTED_WITNESS_FILE`. If a citation points to a blank line or comment line, the gate rejects it with `TRIVIAL_WITNESS_LINE`. Both violations return exit code `2` and roll back Green verification.
 
-The `scripts/pre_tool_guard.py` hook blocks shell commands attempting output redirection (`>`, `>>`), truncation (`truncate`), in-place editing (`sed -i`), or deletion (`rm`, `unlink`) targeting makeflow governance files or `.workflow/state/Makefile`.
+The `scripts/pre_tool_guard.py` hook blocks direct tool writes and shell commands attempting output redirection (`>`, `>>`), truncation (`truncate`), in-place editing (`sed -i`), or deletion (`rm`, `unlink`) targeting makeflow governance files (`lib/state_machine.py`), `.workflow/state/active_target.json`, or `.workflow/state/Makefile`.
 
 ### Phase 3: Refactor
 
@@ -64,4 +64,4 @@ Update documentation alongside code across four progressive disclosure tree leve
 - **Branch Guides and Examples**: Update usage examples and tutorials when flags or APIs change.
 - **Root Overview and Changelogs**: If behavior changes, update top-level overview indexes and add ticket-prefixed entries (`- GH-1234:` or `- LOCAL-1234:`) under `## [Unreleased]` in `CHANGELOG.md` (`SCAR-DOC-16`, `SCAR-PROC-159`).
 
-When targeted tests and docs are complete, update `.workflow/state/99_next_action.md` and advance to Target 40.
+When targeted tests and docs are complete, lock `.workflow/state/approved_tree.txt` and run `make -f .workflow/state/Makefile adversarial-review` to enter Target 40.

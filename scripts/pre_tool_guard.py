@@ -19,6 +19,7 @@ from lib.config import (
     _normalize_str_list,
     _parse_csv_env,
     is_plugin_dir,
+    is_ticket_active,
     load_database_config,
     resolve_state_dir,
 )
@@ -59,12 +60,14 @@ from lib.shell_safety import (
 from lib.turn_boundary import (
     PAUSE_GATE_EXITS,
     PAUSE_GATE_TARGETS,
+    VALID_TRANSITIONS,
     clear_gate_entry,
     evaluate_advance_target_turn_boundary,
     evaluate_ask_question_turn_boundary,
     evaluate_command_turn_boundary,
     extract_advance_target_calls,
     mark_gate_human_verified,
+    read_gate_entry,
     record_gate_entry,
 )
 
@@ -444,6 +447,13 @@ def evaluate_git_command(cmd, has_review, state_dir=None, transcript_path=""):
   return {"decision": "allow"}
 
 
+STATE_GOVERNANCE_RELPATHS = frozenset({
+    ".workflow/state/Makefile",
+    ".workflow/state/30_tdd_receipt.json",
+    ".workflow/state/gate_entry.json",
+    ".workflow/state/active_target.json",
+})
+
 GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/tdd_guard.py",
     "scripts/pre_tool_guard.py",
@@ -452,15 +462,14 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/base_script.py",
     "lib/tdd_guard.py",
     "lib/workflow_gates.py",
+    "lib/state_machine.py",
     "lib/reflex.py",
     "lib/config.py",
     "lib/shell_safety.py",
     "lib/target90_guard.py",
     "lib/turn_boundary.py",
     "hooks.json",
-    ".workflow/state/Makefile",
-    ".workflow/state/30_tdd_receipt.json",
-    ".workflow/state/gate_entry.json",
+    *STATE_GOVERNANCE_RELPATHS,
 })
 
 
@@ -712,59 +721,221 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
   return True, ""
 
 
+def _is_state_governance_target(raw_token):
+  """Returns True when raw_token targets a runtime .workflow/state governance file."""
+  token = _normalize_gov_path(raw_token)
+  if not token:
+    return False
+  if token in STATE_GOVERNANCE_RELPATHS:
+    return True
+  return any(token.endswith("/" + rel) for rel in STATE_GOVERNANCE_RELPATHS)
+
+
+_KNOWN_PLUGIN_CACHE_PREFIXES = tuple(
+    os.path.abspath(os.path.expanduser(p))
+    for p in (
+        "~/.gemini/config/plugins",
+        "~/.gemini/plugins",
+        "~/.claude/plugins",
+    )
+)
+
+
+def _find_makeflow_plugin_root(abs_target):
+  """Returns ancestor directory containing makeflow plugin.json, or None."""
+  curr = os.path.dirname(os.path.abspath(abs_target))
+  while curr and curr != os.path.dirname(curr):
+    pj = os.path.join(curr, "plugin.json")
+    if os.path.isfile(pj):
+      try:
+        with open(pj, "r", encoding="utf-8") as f:
+          data = json.load(f)
+        if isinstance(data, dict) and data.get("name") == "makeflow":
+          return curr
+      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    curr = os.path.dirname(curr)
+  return None
+
+
+def _resolve_direct_target_paths(target_path, workspace_paths):
+  """Resolves absolute candidate paths for a write_file/edit_file target."""
+  expanded = os.path.expanduser(target_path)
+  if os.path.isabs(expanded):
+    return [os.path.abspath(expanded)]
+  if workspace_paths:
+    return [
+        os.path.abspath(os.path.join(os.path.expanduser(ws), target_path))
+        for ws in workspace_paths
+        if ws
+    ]
+  return [os.path.abspath(target_path)]
+
+
+def _check_direct_file_governance(tool_name, args, workspace_paths, state_dir):
+  """Checks write_file/edit_file calls against protected governance paths."""
+  if tool_name not in (
+      "write_file",
+      "edit_file",
+      "ReplaceFileContent",
+      "MultiReplaceFileContent",
+  ):
+    return None
+  target_path = str(args.get("Path") or args.get("TargetFile") or "").strip()
+  if not target_path:
+    return None
+  deny_resp = {
+      "decision": "deny",
+      "reason": (
+          "Blocked self-modification attempt on makeflow governance file"
+          f" '{target_path}' ({tool_name})."
+      ),
+  }
+  if _is_state_governance_target(target_path):
+    return deny_resp
+
+  norm_workspaces = {
+      os.path.abspath(os.path.expanduser(ws))
+      for ws in (workspace_paths or [])
+      if ws
+  }
+  for abs_target in _resolve_direct_target_paths(target_path, workspace_paths):
+    if any(
+        abs_target == pref or abs_target.startswith(pref + os.sep)
+        for pref in _KNOWN_PLUGIN_CACHE_PREFIXES
+    ):
+      return deny_resp
+    plugin_root = _find_makeflow_plugin_root(abs_target)
+    if plugin_root is None:
+      continue
+    if not os.path.exists(os.path.join(plugin_root, ".git")):
+      return deny_resp
+    rel_to_plugin = os.path.relpath(abs_target, plugin_root).replace(
+        os.sep, "/"
+    )
+    if rel_to_plugin in GOVERNANCE_FILE_RELPATHS:
+      checkout_state = os.path.join(plugin_root, ".workflow", "state")
+      active = is_ticket_active(checkout_state) or (
+          plugin_root in norm_workspaces
+          and bool(state_dir)
+          and is_ticket_active(state_dir)
+      )
+      if not active:
+        return deny_resp
+  return None
+
+
+def _resolve_adv_state_dir(adv, default_state_dir):
+  """Resolves effective state directory for an extracted advance call."""
+  if adv["stateDir"]:
+    return (
+        adv["stateDir"]
+        if os.path.isabs(adv["stateDir"]) or not adv["workspaceDir"]
+        else os.path.join(adv["workspaceDir"], adv["stateDir"])
+    )
+  if adv["workspaceDir"]:
+    return os.path.join(adv["workspaceDir"], ".workflow", "state")
+  return default_state_dir
+
+
+def _validate_advance_calls_guard(adv_calls, default_state_dir, transcript_path):
+  """Validates turn boundaries and pause-gate bundling without mutating disk."""
+  entered_gates = set()
+  for adv in adv_calls:
+    curr_t = adv["currentTarget"]
+    next_t = adv["nextTarget"]
+    eff_state_dir = _resolve_adv_state_dir(adv, default_state_dir)
+    if curr_t in entered_gates or (
+        len(adv_calls) > 1 and (curr_t, next_t) in PAUSE_GATE_EXITS
+    ):
+      return {
+          "decision": "deny",
+          "reason": (
+              f"BLOCKED: [SCAR-PROC-102] Cannot bundle pause-gate entry and"
+              f" exit ({curr_t} -> {next_t}) in a single command without an"
+              " intervening human USER_INPUT turn."
+          ),
+      }
+    if (curr_t, next_t) in PAUSE_GATE_EXITS:
+      ok, reason = evaluate_advance_target_turn_boundary(
+          curr_t, next_t, transcript_path, state_dir=eff_state_dir
+      )
+      if not ok:
+        return {"decision": "deny", "reason": reason}
+    if next_t in PAUSE_GATE_TARGETS:
+      entered_gates.add(next_t)
+  return None
+
+
+def _commit_advance_calls_state(adv_calls, default_state_dir, transcript_path):
+  """Persists gate_entry.json transitions after all PreToolUse guards pass."""
+  for adv in adv_calls:
+    curr_t = adv["currentTarget"]
+    next_t = adv["nextTarget"]
+    ev = adv.get("evidence") if isinstance(adv.get("evidence"), dict) else {}
+    is_valid_finish = (
+        next_t == "T90"
+        and bool(ev.get("complete"))
+        and curr_t in ("T80", "T90")
+    )
+    if (
+        next_t not in VALID_TRANSITIONS.get(curr_t, set())
+        and not is_valid_finish
+    ):
+      continue
+    eff_state_dir = _resolve_adv_state_dir(adv, default_state_dir)
+    if not eff_state_dir:
+      continue
+    req_exit_key = PAUSE_GATE_EXITS.get((curr_t, next_t))
+    exit_approved = (not req_exit_key) or bool(ev.get(req_exit_key))
+    if (curr_t, next_t) in PAUSE_GATE_EXITS and exit_approved:
+      mark_gate_human_verified(
+          eff_state_dir, curr_t, transcript_path=transcript_path
+      )
+    if next_t in PAUSE_GATE_TARGETS:
+      if exit_approved or read_gate_entry(eff_state_dir) is None:
+        record_gate_entry(
+            eff_state_dir, curr_t, next_t, transcript_path=transcript_path
+        )
+    elif (
+        curr_t in PAUSE_GATE_TARGETS
+        and (curr_t, next_t) not in PAUSE_GATE_EXITS
+    ):
+      clear_gate_entry(eff_state_dir, curr_t)
+
+
 def evaluate_tool_call(payload):
   tool_call = payload.get("toolCall", {})
   tool_name = tool_call.get("name", "")
   args = tool_call.get("args", {})
   transcript_path = payload.get("transcriptPath") or ""
+  workspace_paths = payload.get("workspacePaths") or []
   state_dir = resolve_state_dir(payload)
 
-  if tool_name != "run_command":
+  if tool_name not in ("run_command", "Bash", "bash", "shell"):
     if tool_name == "ask_question":
       ok, reason = evaluate_ask_question_turn_boundary(transcript_path)
       if not ok:
         return {"decision": "deny", "reason": reason}
       return {"decision": "allow"}
-    adv_calls = extract_advance_target_calls([tool_call])
+    gov_deny = _check_direct_file_governance(
+        tool_name, args, workspace_paths, state_dir
+    )
+    if gov_deny is not None:
+      return gov_deny
+    adv_calls = extract_advance_target_calls(
+        [tool_call], default_state_dir=state_dir
+    )
     if adv_calls:
-      adv = adv_calls[0]
-      curr_t = adv["currentTarget"]
-      next_t = adv["nextTarget"]
-      if adv["stateDir"]:
-        eff_state_dir = (
-            adv["stateDir"]
-            if os.path.isabs(adv["stateDir"]) or not adv["workspaceDir"]
-            else os.path.join(adv["workspaceDir"], adv["stateDir"])
-        )
-      elif adv["workspaceDir"]:
-        eff_state_dir = os.path.join(adv["workspaceDir"], ".workflow", "state")
-      else:
-        eff_state_dir = state_dir
-
-      if (curr_t, next_t) in PAUSE_GATE_EXITS:
-        ok, reason = evaluate_advance_target_turn_boundary(
-            curr_t, next_t, transcript_path, state_dir=eff_state_dir
-        )
-        if not ok:
-          return {"decision": "deny", "reason": reason}
-        if eff_state_dir:
-          mark_gate_human_verified(
-              eff_state_dir, curr_t, transcript_path=transcript_path
-          )
-      if next_t in PAUSE_GATE_TARGETS and eff_state_dir:
-        record_gate_entry(
-            eff_state_dir, curr_t, next_t, transcript_path=transcript_path
-        )
-      elif (
-          curr_t in PAUSE_GATE_TARGETS
-          and next_t not in PAUSE_GATE_TARGETS
-          and (curr_t, next_t) not in PAUSE_GATE_EXITS
-          and eff_state_dir
-      ):
-        clear_gate_entry(eff_state_dir, curr_t)
+      deny = _validate_advance_calls_guard(adv_calls, state_dir, transcript_path)
+      if deny is not None:
+        return deny
+      _commit_advance_calls_state(adv_calls, state_dir, transcript_path)
     return {"decision": "allow"}
 
-  cmd = args.get("CommandLine", "").strip()
+  cmd = str(
+      args.get("CommandLine") or args.get("command") or args.get("cmd") or ""
+  ).strip()
   if not cmd:
     return {"decision": "allow"}
 
@@ -778,7 +949,6 @@ def evaluate_tool_call(payload):
     }
 
   # 2. Self-modification guard
-  workspace_paths = payload.get("workspacePaths") or []
   self_safe, self_reason = evaluate_self_modification_safety(
       cmd, workspace_paths
   )
@@ -788,12 +958,41 @@ def evaluate_tool_call(payload):
         "reason": self_reason,
     }
 
-  # 3. Destructive Git guards and milestone pause gates
+  # 3. Shell Makeflow advance turn-boundary and pause-gate bundling guard (read-only)
+  shell_adv_calls = extract_advance_target_calls(
+      [tool_call], default_state_dir=state_dir
+  )
+  if shell_adv_calls:
+    adv_deny = _validate_advance_calls_guard(
+        shell_adv_calls, state_dir, transcript_path
+    )
+    if adv_deny is not None:
+      return adv_deny
+
+  # 4. Destructive Git guards and milestone pause gates
   review_card = os.path.join(state_dir, "45_review_approved.md") if state_dir else ""
   has_review = bool(review_card and os.path.isfile(review_card))
-  return evaluate_git_command(
+  git_res = evaluate_git_command(
       cmd, has_review, state_dir=state_dir, transcript_path=transcript_path
   )
+  if git_res.get("decision") == "deny":
+    return git_res
+  if (
+      shell_adv_calls
+      and git_res.get("decision") == "force_ask"
+      and any(a["nextTarget"] in PAUSE_GATE_TARGETS for a in shell_adv_calls)
+  ):
+    return {
+        "decision": "deny",
+        "reason": (
+            "BLOCKED: [SCAR-PROC-102] Cannot bundle pause-gate entry with a"
+            " gated Git command in the same shell invocation. Stop tool calls"
+            " and wait for explicit human approval."
+        ),
+    }
+  if shell_adv_calls:
+    _commit_advance_calls_state(shell_adv_calls, state_dir, transcript_path)
+  return git_res
 
 
 def main():
