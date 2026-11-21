@@ -9,13 +9,13 @@ Historical ticket records before the first tagged release live in `.workflow/his
 ### Added
 
 - GH-219: Add `lib/state_machine.py` to execute 15 Makefile workflow targets and auto-render `.workflow/state/99_next_action.md`.
-- Add `CHANGELOG.md` and the two-stage Target 90 release workflow.
-- Add `lib/target90_guard.py` for shared hook and MCP Target 90 gating.
-- Add interactive Target 90 release prompting for SemVer patch, minor, or major cuts.
-- Add Target 90 ticket resolution comments for GitHub issues and local tickets.
-- Add 21 polyglot TDD guides, code documentation standards, and tree verification checks.
-- Add stacked SQLite Synthetic Scars search (`workflow_query_scars`) and local scar capture.
-- Add AST scrubbing, cryptographically sealed TDD receipts (`witness-red`, `verify-green`), and turn boundary guards.
+- GH-211: Add `CHANGELOG.md` and the two-stage Target 90 release workflow.
+- GH-211: Add `lib/target90_guard.py` for shared hook and MCP Target 90 gating.
+- GH-211: Add interactive Target 90 release prompting for SemVer patch, minor, or major cuts.
+- GH-211: Add Target 90 ticket resolution comments for GitHub issues and local tickets.
+- GH-211: Add 21 polyglot TDD guides, code documentation standards, and tree verification checks.
+- GH-211: Add stacked SQLite Synthetic Scars search (`workflow_query_scars`) and local scar capture.
+- GH-211: Add AST scrubbing, cryptographically sealed TDD receipts (`witness-red`, `verify-green`), and turn boundary guards.
 - GH-228: Enforce ticket-ID prefixes on Target 90 changelog bullets with extensible Strategy and Registry support.
 - GH-232: Add SCAR-ARCH-09 upstream root-cause scar, SCAR-ARCH-0009 SQLite row, and planning, TDD, and review directives.
 - GH-220: Enforce deterministic SCAR-PROC-95 supervisory halt airlock in ./hooks.json, lib/turn_boundary.py, scripts/pre_tool_guard.py, and workflow manuals while phase subagents run.
@@ -27,17 +27,17 @@ Historical ticket records before the first tagged release live in `.workflow/his
 
 - GH-219: Configure `.git/info/exclude` during `init-makefile` in `scripts/workflow_gates.py` and refresh `.workflow/state/Makefile` in `scripts/session_start.py`.
 - GH-219: Route `workflow_advance_target` in `mcp/server.py` through GNU Make and enforce `lib/turn_boundary.py` across shell and Make transitions.
-- Load `serverInfo.version` dynamically from `./plugin.json` in `mcp/server.py`.
-- Set author metadata in `./plugin.json` to Mark Hedges.
-- Align hook and MCP commit gates on `docs(changelog):`, `docs(release):`, `chore(release):`, and `docs(scars):`.
-- Change terminal titles to start with the bare directory name and trailing slash instead of the project name.
+- GH-211: Load `serverInfo.version` dynamically from `./plugin.json` in `mcp/server.py`.
+- GH-211: Set author metadata in `./plugin.json` to Mark Hedges.
+- GH-211: Align hook and MCP commit gates on `docs(changelog):`, `docs(release):`, `chore(release):`, and `docs(scars):`.
+- GH-224: Change terminal titles to start with the bare directory name and trailing slash instead of the project name.
 - GH-212: Clarify optional query description when callers provide filters in workflow_query_scars MCP schema.
 
 ### Fixed
 
-- Route feature commits touching `CHANGELOG.md` to Target 50 instead of Target 90.
-- Allow `ci.quiescenceSeconds=0` and `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0` across hooks, configuration loaders, and `workflow_poll_ci`.
-- Run MCP server tests through the `unittest` runner in `make test-mcp` and CI workflows, and split `TestMcpServer` into discrete methods.
+- GH-211: Route feature commits touching `CHANGELOG.md` to Target 50 instead of Target 90.
+- GH-217: Allow `ci.quiescenceSeconds=0` and `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0` across hooks, configuration loaders, and `workflow_poll_ci`.
+- GH-216: Run MCP server tests through the `unittest` runner in `make test-mcp` and CI workflows, and split `TestMcpServer` into discrete methods.
 - GH-237: Align .claude-plugin/plugin.json, .codex-plugin/plugin.json, and MCP fallback version to 0.0.1.
 - GH-235: Resolve outer ancestor PTY and emulator hints before TERM=dumb, simplify title formats without backticks, and reset titles on finish.
 - GH-248: Bypass Target 60 push pause in Pure Git Mode and align Target 80 squash-merge `git branch -D` cleanup with SCAR-GIT-25.

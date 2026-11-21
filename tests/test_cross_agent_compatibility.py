@@ -9302,6 +9302,7 @@ def check_target_90_changelog_and_release_invariants(
   if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
   from lib.scar_candidate import (
+      _CONTRACTION_RE,
       count_words_in_sentence,
       mask_code_and_math_spans,
       split_into_sentences,
@@ -9399,7 +9400,7 @@ def check_target_90_changelog_and_release_invariants(
       continue
     errs.extend(_check_prose_punctuation("CHANGELOG.md", stripped))
     no_code = re.sub(r"`[^`]*`", "", stripped)
-    cmatch = _POLYGLOT_CONTRACTION_RE.search(no_code)
+    cmatch = _CONTRACTION_RE.search(no_code)
     if cmatch:
       errs.append(
           f"CHANGELOG.md contains forbidden contraction '{cmatch.group(0)}' in prose"
@@ -9449,6 +9450,19 @@ def check_target_90_changelog_and_release_invariants(
             f"{skill_rel} Target 90 step 6 must include ticket-prefixed"
             f" CHANGELOG.md example '{prefix_tok}'"
         )
+    if "make test" not in step6_lines[0]:
+      errs.append(
+          f"{skill_rel} Target 90 step 6 must require running 'make test'"
+          " before committing or pushing ledger and CHANGELOG.md updates"
+      )
+    elif "push `origin main`" in step6_lines[0] and (
+        step6_lines[0].index("make test")
+        > step6_lines[0].index("push `origin main`")
+    ):
+      errs.append(
+          f"{skill_rel} Target 90 step 6 must require 'make test' before"
+          " pushing `origin main`"
+      )
 
   # 4. 12_request_history_ledger.md two-stage changelog & release prompt
   ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
@@ -9475,6 +9489,40 @@ def check_target_90_changelog_and_release_invariants(
   if "docs(changelog):" not in mode1_sec:
     errs.append(f"{ledger_rel} Mode 1 must reference 'docs(changelog):'")
 
+  mode2_match = re.search(
+      r"(?m)^### Mode 2: Pull Request Mode with Direct Push Allowed\b.*?(?=^### Mode 3:|\Z)",
+      ledger_text,
+      re.DOTALL,
+  )
+  mode2_sec = mode2_match.group(0) if mode2_match else ""
+  if "make test" not in mode2_sec:
+    errs.append(
+        f"{ledger_rel} Mode 2 must require running 'make test' before committing and pushing to main"
+    )
+  elif "git commit" in mode2_sec and (
+      mode2_sec.index("make test") > mode2_sec.index("git commit")
+  ):
+    errs.append(
+        f"{ledger_rel} Mode 2 must require 'make test' before 'git commit'"
+    )
+
+  mode3_match = re.search(
+      r"(?m)^### Mode 3: Pure Git Mode\b.*?(?=^## 4\.|\Z)",
+      ledger_text,
+      re.DOTALL,
+  )
+  mode3_sec = mode3_match.group(0) if mode3_match else ""
+  if "make test" not in mode3_sec:
+    errs.append(
+        f"{ledger_rel} Mode 3 must require running 'make test' before committing and pushing to main"
+    )
+  elif "git commit" in mode3_sec and (
+      mode3_sec.index("make test") > mode3_sec.index("git commit")
+  ):
+    errs.append(
+        f"{ledger_rel} Mode 3 must require 'make test' before 'git commit'"
+    )
+
   sec4 = _extract_markdown_h2_section(
       ledger_text, "## 4. Update Steps at Target 90"
   )
@@ -9495,9 +9543,20 @@ def check_target_90_changelog_and_release_invariants(
   ):
     if req_tok not in sec4:
       errs.append(f"{ledger_rel} Section 4 must reference '{req_tok}'")
+  history_commit_tok = 'git commit -m "docs(history):'
+  if history_commit_tok not in sec4:
+    errs.append(
+        f"{ledger_rel} Section 4 must reference '{history_commit_tok}'"
+    )
+  else:
+    pre_history_commit = sec4.split(history_commit_tok, 1)[0]
+    if "make test" not in pre_history_commit:
+      errs.append(
+          f"{ledger_rel} Section 4 must require running 'make test' before '{history_commit_tok}'"
+      )
   if sec4.count('git commit -m "docs(release): cut vX.Y.Z"') < 2:
     errs.append(
-        f"{ledger_rel} Section 4 Step 15 must specify 'git commit -m \"docs(release): cut vX.Y.Z\"' for both Mode 1 and Mode 2/3"
+        f"{ledger_rel} Section 4 release step must specify 'git commit -m \"docs(release): cut vX.Y.Z\"' for both Mode 1 and Mode 2/3"
     )
 
   # 5. Sibling docs & rules alignment
@@ -9625,15 +9684,25 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
         f"Expected >25-word rejection in CHANGELOG.md, got: {errs_verbose}",
     )
 
-    mut_contraction = dict(base)
-    mut_contraction["CHANGELOG.md"] += "\n- We don't break existing commands.\n"
-    errs_contraction = check_target_90_changelog_and_release_invariants(
-        mut_contraction
-    )
-    self.assertTrue(
-        any("contraction" in e for e in errs_contraction),
-        f"Expected contraction rejection in CHANGELOG.md, got: {errs_contraction}",
-    )
+    for bad_line, expected_tok in (
+        ("\n- We don't break existing commands.\n", "contraction"),
+        ("\n- We cannot't break existing commands.\n", "contraction"),
+        ("\n- We didn't skip existing checks.\n", "contraction"),
+        ("\n- Validate bullets; reject invalid lines.\n", "semicolon"),
+        ("\n- Validate bullets\u2014reject invalid lines.\n", "em-dash"),
+    ):
+      mut_prose = dict(base)
+      mut_prose["CHANGELOG.md"] += bad_line
+      errs_prose = check_target_90_changelog_and_release_invariants(mut_prose)
+      self.assertTrue(
+          any(expected_tok in e for e in errs_prose),
+          f"Expected {expected_tok} rejection for {bad_line!r} in CHANGELOG.md, got: {errs_prose}",
+      )
+
+    from lib.scar_candidate import _CONTRACTION_RE
+
+    self.assertIsNotNone(_CONTRACTION_RE.search("cannot't"))
+    self.assertIsNotNone(_CONTRACTION_RE.search("didn't"))
 
     # 5. Wrong plugin.json author or mismatched manifest version
     mut_author = dict(base)
@@ -9668,7 +9737,7 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
         f"Expected manifest version divergence rejection, got: {errs_mismatch}",
     )
 
-    # 6. Omitting ask_question, release/v, docs(changelog):, or ticket-prefix guidance in 12_request_history_ledger.md
+    # 6. Omitting ask_question, release/v, docs(changelog):, ticket-prefix, or make test guidance in 12_request_history_ledger.md
     ledger_rel = "skills/makeflow/references/12_request_history_ledger.md"
     for bad_tok in (
         "ask_question",
@@ -9688,7 +9757,93 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
           f"Expected '{bad_tok}' rejection, got: {errs_ledger}",
       )
 
-    # 7. Omitting CHANGELOG.md or ticket-prefix examples from SKILL.md Step 6
+    # 6b. Omitting or deferring make test in Mode 2, Mode 3, or Section 4 before ledger commit
+    mode2_match = re.search(
+        r"(?ms)^### Mode 2: Pull Request Mode with Direct Push Allowed\b.*?(?=^### Mode 3:|\Z)",
+        base[ledger_rel],
+    )
+    self.assertIsNotNone(mode2_match)
+    mut_mode2_missing = dict(base)
+    mut_mode2_missing[ledger_rel] = base[ledger_rel].replace(
+        mode2_match.group(0),
+        mode2_match.group(0).replace("make test", "lint"),
+    )
+    errs_mode2_missing = check_target_90_changelog_and_release_invariants(
+        mut_mode2_missing
+    )
+    self.assertTrue(
+        any("Mode 2" in e and "make test" in e for e in errs_mode2_missing),
+        f"Expected Mode 2 missing make test rejection, got: {errs_mode2_missing}",
+    )
+
+    mut_mode2_order = dict(base)
+    mut_mode2_order[ledger_rel] = base[ledger_rel].replace(
+        mode2_match.group(0),
+        "### Mode 2: Pull Request Mode with Direct Push Allowed\n\n"
+        "1. Commit the updates with `git commit -m \"docs(history): record <id>\"`.\n"
+        "2. Run `make test`.\n"
+        "3. Push with `git push origin main`.\n\n",
+    )
+    errs_mode2_order = check_target_90_changelog_and_release_invariants(
+        mut_mode2_order
+    )
+    self.assertTrue(
+        any("Mode 2" in e and "before 'git commit'" in e for e in errs_mode2_order),
+        f"Expected Mode 2 ordering rejection, got: {errs_mode2_order}",
+    )
+
+    mode3_match = re.search(
+        r"(?ms)^### Mode 3: Pure Git Mode\b.*?(?=^## 4\.|\Z)",
+        base[ledger_rel],
+    )
+    self.assertIsNotNone(mode3_match)
+    mut_mode3_missing = dict(base)
+    mut_mode3_missing[ledger_rel] = base[ledger_rel].replace(
+        mode3_match.group(0),
+        mode3_match.group(0).replace("make test", "lint"),
+    )
+    errs_mode3_missing = check_target_90_changelog_and_release_invariants(
+        mut_mode3_missing
+    )
+    self.assertTrue(
+        any("Mode 3" in e and "make test" in e for e in errs_mode3_missing),
+        f"Expected Mode 3 missing make test rejection, got: {errs_mode3_missing}",
+    )
+
+    mut_mode3_order = dict(base)
+    mut_mode3_order[ledger_rel] = base[ledger_rel].replace(
+        mode3_match.group(0),
+        "### Mode 3: Pure Git Mode\n\n"
+        "1. Commit the updates with `git commit -m \"docs(history): record <id>\"`.\n"
+        "2. Run `make test`.\n"
+        "3. Push `main` with `git push origin main`.\n\n",
+    )
+    errs_mode3_order = check_target_90_changelog_and_release_invariants(
+        mut_mode3_order
+    )
+    self.assertTrue(
+        any("Mode 3" in e and "before 'git commit'" in e for e in errs_mode3_order),
+        f"Expected Mode 3 ordering rejection, got: {errs_mode3_order}",
+    )
+
+    sec4_idx = base[ledger_rel].index("## 4. Update Steps at Target 90")
+    hist_commit_tok = 'git commit -m "docs(history):'
+    hist_commit_idx = base[ledger_rel].index(hist_commit_tok, sec4_idx)
+    mut_sec4_pre = dict(base)
+    mut_sec4_pre[ledger_rel] = (
+        base[ledger_rel][:sec4_idx]
+        + base[ledger_rel][sec4_idx:hist_commit_idx].replace("make test", "lint")
+        + base[ledger_rel][hist_commit_idx:]
+    )
+    errs_sec4_pre = check_target_90_changelog_and_release_invariants(
+        mut_sec4_pre
+    )
+    self.assertTrue(
+        any("Section 4" in e and "make test" in e for e in errs_sec4_pre),
+        f"Expected Section 4 pre-commit make test rejection, got: {errs_sec4_pre}",
+    )
+
+    # 7. Omitting CHANGELOG.md, ticket-prefix examples, or make test from SKILL.md Step 6
     skill_rel = "skills/makeflow/SKILL.md"
     mut_no_skill_cl = dict(base)
     mut_no_skill_cl[skill_rel] = mut_no_skill_cl[skill_rel].replace(
@@ -9714,6 +9869,35 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
           any(skill_rel in e and prefix_tok in e for e in errs_skill_prefix),
           f"Expected SKILL.md '{prefix_tok}' rejection, got: {errs_skill_prefix}",
       )
+
+    mut_skill_no_test = dict(base)
+    mut_skill_no_test[skill_rel] = mut_skill_no_test[skill_rel].replace(
+        "make test", "lint"
+    )
+    errs_skill_no_test = check_target_90_changelog_and_release_invariants(
+        mut_skill_no_test
+    )
+    self.assertTrue(
+        any(skill_rel in e and "make test" in e for e in errs_skill_no_test),
+        f"Expected SKILL.md missing make test rejection, got: {errs_skill_no_test}",
+    )
+
+    mut_skill_order = dict(base)
+    step6_prefix = "6. At Target 90,"
+    step6_pos = mut_skill_order[skill_rel].index(step6_prefix)
+    step6_end = mut_skill_order[skill_rel].index("\n", step6_pos)
+    mut_skill_order[skill_rel] = (
+        mut_skill_order[skill_rel][:step6_pos]
+        + "6. At Target 90, update `CHANGELOG.md` (`- GH-1:` or `- LOCAL-1:`), push `origin main`, run `make test`, and prompt for a release."
+        + mut_skill_order[skill_rel][step6_end:]
+    )
+    errs_skill_order = check_target_90_changelog_and_release_invariants(
+        mut_skill_order
+    )
+    self.assertTrue(
+        any(skill_rel in e and "before pushing" in e for e in errs_skill_order),
+        f"Expected SKILL.md make test ordering rejection, got: {errs_skill_order}",
+    )
 
     # 8. Omitting CHANGELOG.md from sibling docs and summary adapters
     for sibling_rel in (

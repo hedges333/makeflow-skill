@@ -607,7 +607,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (AstScrubScript, 1),
         (SyncSyntheticScarsScript, 2),
         (SignalTrapScript, 1),
-        (ChangelogScript, 1),
+        (ChangelogScript, 2),
     ]
 
     for cls, expected_code in expected_exit_codes:
