@@ -21,6 +21,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-220: Enforce deterministic SCAR-PROC-95 supervisory halt airlock in ./hooks.json, lib/turn_boundary.py, scripts/pre_tool_guard.py, and workflow manuals while phase subagents run.
 - GH-233: Add `lib/regression_gate.py` and `verify-regression` to enforce full active subproject regression sweeps before Target 40.
 - GH-246: Add lib/repo_tree.py, repo-tree Makefile target, workflow_repo_tree MCP tool, and Target 15 file tree dispatch contracts.
+- GH-215: Add SCAR-TEST-45 ephemeral temp isolation, SCAR-TEST-0045 registry row, UNSAFE_TEMP_FIXTURE AST lint rule, and TemporaryDirectory fixture migrations.
 
 ### Changed
 

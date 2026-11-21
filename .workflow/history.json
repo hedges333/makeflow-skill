@@ -2540,5 +2540,28 @@
     "closes_issue": true,
     "tests_added": 14,
     "scars_earned": []
+  },
+  {
+    "id": "GH-215",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/215",
+    "title": "[FEAT] Codify tempfile.TemporaryDirectory test isolation guideline and migrate legacy test fixtures",
+    "request": "Codify SCAR-TEST-45 ephemeral temporary directory isolation and expand SCAR-TEST-22 behavioral test naming across manuals, agent definitions, and bundled scars_registry.db (SCAR-TEST-0045), add UNSAFE_TEMP_FIXTURE AST check in lib/ast_scrub.py, and migrate all 18 legacy temporary fixture sites and socratic-probe-writer.md to TemporaryDirectory() or mktemp -d with trap cleanup.",
+    "branch": "feat/215-tempdir-test-isolation",
+    "subprojects": [
+      "lib",
+      "skills",
+      "agents",
+      "tests"
+    ],
+    "started_at": "2026-11-21T18:51:06Z",
+    "completed_at": "2026-11-21T20:54:15Z",
+    "commit_sha": "0f873269b1519b49e0933be7150da0c6a014fb2c",
+    "pr_number": 262,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/262",
+    "closes_issue": true,
+    "tests_added": 12,
+    "scars_earned": [
+      "SCAR-TEST-45: Mandate unique OS ephemeral temporary directories and forbid fixed /tmp/<slug> paths or manual cleanup"
+    ]
   }
 ]
