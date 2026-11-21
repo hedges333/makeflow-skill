@@ -2533,5 +2533,224 @@ class TestTddGuardScript(unittest.TestCase):
       self.assertEqual(collisions[0].get("scar_id"), "SCAR-ARCH-06")
 
 
+class TestTddGuardMakeEnvSanitization(unittest.TestCase):
+  """Tests GNU Make recursion and Makeflow export sanitization in TddGuardScript (GH-258)."""
+
+  _MAKE_RECURSION_VARS = (
+      "MAKEFLAGS",
+      "MFLAGS",
+      "MAKEOVERRIDES",
+      "MAKELEVEL",
+      "GNUMAKEFLAGS",
+  )
+  _MAKEFLOW_EXPORTS = (
+      "TICKET",
+      "ALLOW_BLOCKED",
+      "FROM",
+      "TO",
+      "APPROVED",
+      "BLOCKERS",
+      "ALLOW_MAIN_CONFLICT",
+      "NO_FETCH",
+      "TRANSCRIPT",
+      "FILE",
+      "TEST_DIR",
+      "TEST_CMD",
+      "ALLOW_HEAD_MOVE",
+      "CITE",
+      "REGRESSION_CMD",
+      "SUBPROJECT",
+      "PATH_PREFIX",
+      "TREE_LIMIT",
+      "NO_LIMIT",
+      "COUNT_ONLY",
+  )
+
+  def _polluted_vars(self) -> dict:
+    """Returns polluted Make recursion and Makeflow export variables."""
+    polluted = {k: f"polluted_{k}" for k in self._MAKE_RECURSION_VARS}
+    for k in self._MAKEFLOW_EXPORTS:
+      polluted[k] = f"polluted_{k}"
+    polluted["MAKEFLAGS"] = "s -- TEST_CMD=false REGRESSION_CMD=make\\ broken"
+    polluted["MAKELEVEL"] = "3"
+    polluted["USER_CUSTOM_ENV"] = "preserved-value"
+    return polluted
+
+  def test_run_shell_cmd_strips_make_recursion_and_makeflow_exports(self):
+    """TddGuardScript._run_shell_cmd passes sanitized env excluding 25 Make/Makeflow vars (GH-258)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      guard = TddGuardScript()
+      guard.repo_root = tmpdir
+      guard.timeout = 10.0
+
+      polluted = self._polluted_vars()
+      with mock.patch.dict(os.environ, polluted, clear=False):
+        with mock.patch("lib.tdd_guard.subprocess.Popen") as popen_mock:
+          dummy_proc = mock.MagicMock()
+          dummy_proc.communicate.return_value = ("ok", "")
+          dummy_proc.returncode = 0
+          dummy_proc.poll.return_value = 0
+          dummy_proc.stdout = None
+          dummy_proc.stderr = None
+          popen_mock.return_value = dummy_proc
+
+          proc, err = guard._run_shell_cmd("true")
+
+      self.assertIsNotNone(proc)
+      self.assertEqual(err, "")
+      passed_env = popen_mock.call_args.kwargs.get("env")
+      self.assertIsNotNone(
+          passed_env,
+          "Expected TddGuardScript._run_shell_cmd to pass sanitized env to Popen",
+      )
+      for var in self._MAKE_RECURSION_VARS + self._MAKEFLOW_EXPORTS:
+        self.assertNotIn(var, passed_env, f"{var} leaked into child test env")
+      self.assertEqual(passed_env["USER_CUSTOM_ENV"], "preserved-value")
+
+  def test_witness_red_and_verify_green_with_make_test_target_isolate_env(self):
+    """Real GNU Make witness-red and verify-green with TEST_CMD='make test-target' isolate child env (GH-258)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      repo = os.path.join(tmpdir, "repo")
+      capture_dir = os.path.join(tmpdir, "capture")
+      os.makedirs(repo)
+      os.makedirs(capture_dir)
+
+      _init_fixture_repo(repo)
+      py_bin = shlex.quote(sys.executable)
+      capture_snippet = (
+          "import json, os, sys; "
+          "p = os.path.join(os.environ['CAPTURE_LOG_DIR'], 'capture.jsonl'); "
+          "open(p, 'a', encoding='utf-8').write("
+          "json.dumps({'make_test_cmd': sys.argv[1], 'env': dict(os.environ)}) + '\\n')"
+      )
+      with open(os.path.join(repo, "Makefile"), "w", encoding="utf-8") as f:
+        f.write(
+            "TEST_CMD ?= clean-default\n"
+            "test-target:\n"
+            f"\t@{py_bin} -c {shlex.quote(capture_snippet)} \"$(TEST_CMD)\"\n"
+            f"\t@{py_bin} -m unittest discover -s tests -p 'test_*.py'\n"
+        )
+      subprocess.run(
+          ["git", "add", "Makefile"],
+          cwd=repo,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: add Makefile test-target"],
+          cwd=repo,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      init_code = WorkflowGatesScript().execute(
+          args=["--repo-root", repo, "init-makefile"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(init_code, 0)
+
+      red_env = dict(os.environ)
+      red_env.update({
+          "MAKEOVERRIDES": "TEST_CMD=broken",
+          "MAKELEVEL": "4",
+          "GNUMAKEFLAGS": "--no-print-directory",
+          "REGRESSION_CMD": "make bogus",
+          "APPROVED": "1",
+          "TICKET": "GH-999",
+          "SUBPROJECT": "bad",
+          "TREE_LIMIT": "25",
+          "CAPTURE_LOG_DIR": capture_dir,
+          "CAPTURE_USER_VAR": "kept-in-red",
+      })
+
+      p_red = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              os.path.join(".workflow", "state", "Makefile"),
+              "witness-red",
+              "TEST_DIR=tests",
+              "TEST_CMD=make test-target",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo,
+          env=red_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_red.returncode, 0, p_red.stderr + p_red.stdout)
+
+      capture_file = os.path.join(capture_dir, "capture.jsonl")
+      self.assertTrue(os.path.isfile(capture_file))
+      with open(capture_file, "r", encoding="utf-8") as f:
+        red_capture = json.loads(f.read().splitlines()[0])
+
+      self.assertEqual(red_capture["make_test_cmd"], "clean-default")
+      red_child_env = red_capture["env"]
+      self.assertEqual(red_child_env.get("MAKELEVEL"), "1")
+      self.assertEqual(red_child_env.get("MAKEFLAGS"), "")
+      self.assertEqual(red_child_env.get("MFLAGS"), "")
+      self.assertNotIn("MAKEOVERRIDES", red_child_env)
+      self.assertNotIn("GNUMAKEFLAGS", red_child_env)
+      for var in self._MAKEFLOW_EXPORTS:
+        self.assertNotIn(var, red_child_env, f"{var} leaked during witness-red")
+      self.assertEqual(red_child_env.get("CAPTURE_USER_VAR"), "kept-in-red")
+
+      _fix_calc_bug(repo)
+      green_env = dict(os.environ)
+      green_env.update({
+          "MAKEFLAGS": " -- REGRESSION_CMD=make\\ bogus",
+          "MFLAGS": "-w",
+          "MAKEOVERRIDES": "REGRESSION_CMD=make\\ bogus",
+          "MAKELEVEL": "4",
+          "GNUMAKEFLAGS": "--no-print-directory",
+          "REGRESSION_CMD": "make bogus",
+          "APPROVED": "1",
+          "TICKET": "GH-999",
+          "SUBPROJECT": "bad",
+          "CAPTURE_LOG_DIR": capture_dir,
+          "CAPTURE_USER_VAR": "kept-in-green",
+      })
+
+      p_green = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              os.path.join(".workflow", "state", "Makefile"),
+              "verify-green",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo,
+          env=green_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_green.returncode, 0, p_green.stderr + p_green.stdout)
+
+      with open(capture_file, "r", encoding="utf-8") as f:
+        captures = [json.loads(ln) for ln in f.read().splitlines() if ln.strip()]
+      self.assertEqual(len(captures), 2)
+      green_capture = captures[1]
+      self.assertEqual(green_capture["make_test_cmd"], "clean-default")
+      green_child_env = green_capture["env"]
+      self.assertEqual(green_child_env.get("MAKELEVEL"), "1")
+      self.assertEqual(green_child_env.get("MAKEFLAGS"), "")
+      self.assertEqual(green_child_env.get("MFLAGS"), "")
+      self.assertNotIn("MAKEOVERRIDES", green_child_env)
+      self.assertNotIn("GNUMAKEFLAGS", green_child_env)
+      for var in self._MAKEFLOW_EXPORTS:
+        self.assertNotIn(
+            var, green_child_env, f"{var} leaked during verify-green"
+        )
+      self.assertEqual(green_child_env.get("CAPTURE_USER_VAR"), "kept-in-green")
+
+
 if __name__ == "__main__":
   unittest.main()

@@ -2567,5 +2567,150 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
       self.assertIn("T60", msg_rec)
 
 
+class TestMakeAdvanceEnvSanitization(unittest.TestCase):
+  """Tests GNU Make and Makeflow environment sanitization in lib/state_machine.py (GH-258)."""
+
+  _MAKE_RECURSION_VARS = (
+      "MAKEFLAGS",
+      "MFLAGS",
+      "MAKEOVERRIDES",
+      "MAKELEVEL",
+      "GNUMAKEFLAGS",
+  )
+  _MAKEFLOW_EXPORTS = (
+      "TICKET",
+      "ALLOW_BLOCKED",
+      "FROM",
+      "TO",
+      "APPROVED",
+      "BLOCKERS",
+      "ALLOW_MAIN_CONFLICT",
+      "NO_FETCH",
+      "TRANSCRIPT",
+      "FILE",
+      "TEST_DIR",
+      "TEST_CMD",
+      "ALLOW_HEAD_MOVE",
+      "CITE",
+      "REGRESSION_CMD",
+      "SUBPROJECT",
+      "PATH_PREFIX",
+      "TREE_LIMIT",
+      "NO_LIMIT",
+      "COUNT_ONLY",
+  )
+
+  def test_build_make_advance_env_strips_make_and_makeflow_vars(self) -> None:
+    """_build_make_advance_env strips all 5 Make recursion and 20 Makeflow vars before setting transition vars (GH-258)."""
+    from lib.state_machine import _build_make_advance_env
+
+    polluted = {k: f"stale_{k}" for k in self._MAKE_RECURSION_VARS}
+    for k in self._MAKEFLOW_EXPORTS:
+      polluted[k] = f"stale_{k}"
+    polluted["MAKEFLAGS"] = " -- REGRESSION_CMD=make\\ broken APPROVED=1"
+    polluted["MAKELEVEL"] = "4"
+    polluted["USER_APP_VAR"] = "preserved"
+
+    with mock.patch.dict(os.environ, polluted, clear=False):
+      env = _build_make_advance_env("T10", "T15", {"skipMainFetch": True})
+      for var in self._MAKE_RECURSION_VARS:
+        self.assertNotIn(var, env, f"{var} leaked into Make advance env")
+      expected_set = {"FROM", "TO", "APPROVED", "NO_FETCH"}
+      for var in self._MAKEFLOW_EXPORTS:
+        if var not in expected_set:
+          self.assertNotIn(var, env, f"{var} leaked into Make advance env")
+      self.assertEqual(env["FROM"], "T10")
+      self.assertEqual(env["TO"], "T15")
+      self.assertEqual(env["APPROVED"], "0")
+      self.assertEqual(env["NO_FETCH"], "1")
+      self.assertEqual(env["PYTHON"], sys.executable)
+      self.assertEqual(env["USER_APP_VAR"], "preserved")
+
+      env_reg = _build_make_advance_env(
+          "T30",
+          "T40",
+          {"regressionCmd": "make unit", "subproject": "."},
+      )
+      for var in self._MAKE_RECURSION_VARS:
+        self.assertNotIn(var, env_reg)
+      self.assertEqual(env_reg["FROM"], "T30")
+      self.assertEqual(env_reg["TO"], "T40")
+      self.assertEqual(env_reg["REGRESSION_CMD"], "make unit")
+      self.assertEqual(env_reg["SUBPROJECT"], ".")
+      for var in ("TEST_DIR", "TEST_CMD", "ALLOW_HEAD_MOVE", "CITE", "TICKET"):
+        self.assertNotIn(var, env_reg)
+
+  def test_run_makefile_advance_ignores_inherited_makeflags_and_makelevel(
+      self,
+  ) -> None:
+    """run_makefile_advance('T30', 'T40', ...) ignores inherited MAKEFLAGS, MFLAGS, and MAKELEVEL (GH-258)."""
+    from lib.state_machine import read_active_target, run_makefile_advance
+    from lib.workflow_gates import WorkflowGatesScript
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo, branch="feat/258-make-advance")
+      _write_file(
+          os.path.join(repo, "app.py"),
+          "def add(a, b):\n  return a + b\n",
+      )
+      _write_file(
+          os.path.join(repo, "tests", "test_app.py"),
+          "import unittest\n"
+          "from app import add\n\n"
+          "class TestApp(unittest.TestCase):\n"
+          "  def test_add(self):\n"
+          "    self.assertEqual(add(2, 3), 5)\n",
+      )
+      WorkflowGatesScript().execute(
+          ["--repo-root", repo, "init-makefile"]
+      )
+      state_dir = os.path.join(repo, ".workflow", "state")
+      _write_file(os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n")
+      _write_file(
+          os.path.join(state_dir, "active_target.json"),
+          json.dumps({
+              "previousTarget": "T20",
+              "target": "T30",
+              "targetName": "implementation-diff",
+          }),
+      )
+      _lock_approved_tree(repo)
+
+      unittest_cmd = (
+          f"{sys.executable} -m unittest discover -s tests -p 'test_*.py'"
+      )
+      polluted = {
+          "MAKEFLAGS": " -- REGRESSION_CMD=make\\ broken APPROVED=1",
+          "MFLAGS": "-s",
+          "MAKEOVERRIDES": "REGRESSION_CMD=make\\ broken",
+          "MAKELEVEL": "4",
+          "GNUMAKEFLAGS": "--no-print-directory",
+          "TEST_CMD": "false",
+          "APPROVED": "1",
+      }
+      with mock.patch.dict(os.environ, polluted, clear=False):
+        ok, msg = run_makefile_advance(
+            "T30",
+            "T40",
+            evidence={
+                "skipMainFetch": True,
+                "regressionCmd": unittest_cmd,
+                "subproject": ".",
+            },
+            workspace_dir=repo,
+            state_dir=state_dir,
+        )
+
+      self.assertTrue(ok, msg)
+      self.assertIn("SUCCESS:", msg)
+      self.assertEqual(read_active_target(state_dir)["target"], "T40")
+      receipt_path = os.path.join(state_dir, "30_regression_receipt.json")
+      self.assertTrue(os.path.isfile(receipt_path))
+      with open(receipt_path, "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+      self.assertTrue(receipt["verified"])
+      self.assertEqual(receipt["regression_cmd"], unittest_cmd)
+
+
 if __name__ == "__main__":
   unittest.main()
