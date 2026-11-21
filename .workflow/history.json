@@ -2415,5 +2415,27 @@
     "scars_earned": [
       "SCAR-PROC-95: Enforce deterministic supervisory halt airlock while Makeflow phase subagents run"
     ]
+  },
+  {
+    "id": "GH-233",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/233",
+    "title": "[FEAT] Enforce full subproject regression sweep in Target 30 before Target 40 adversarial review",
+    "request": "Add lib/regression_gate.py and verify-regression / check-regression gates in .workflow/state/Makefile so Target 30 seals .workflow/state/30_regression_receipt.json against live Git HEAD, working-tree hash, toolchain hash, and Makefile digest before Target 40; align T40 timeouts and POSIX process-group cleanup in lib/state_machine.py; add review.allowCriticHermeticTests and testing configuration defaults; protect 30_regression_receipt.json and lib/regression_gate.py in scripts/pre_tool_guard.py; and update agents, manuals, rules, CHANGELOG.md, and all five cross-agent adapters.",
+    "branch": "feat/233-enforce-t30-full-regression-sweep",
+    "subprojects": [
+      "agents",
+      "lib",
+      "scripts",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-21T03:34:37Z",
+    "completed_at": "2026-11-21T18:41:11Z",
+    "commit_sha": "1b1f026d4ca77032988e25c37599b7f8da3328c1",
+    "pr_number": 250,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/250",
+    "closes_issue": true,
+    "tests_added": 16,
+    "scars_earned": []
   }
 ]
