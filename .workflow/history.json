@@ -2456,5 +2456,29 @@
     "closes_issue": true,
     "tests_added": 13,
     "scars_earned": []
+  },
+  {
+    "id": "GH-246",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/246",
+    "title": "[FEAT] Include repository Git file tree index in archaeology-worker dispatch to eliminate blind read_file probing",
+    "request": "Add stdlib object-oriented lib/repo_tree.py (RepoTreeIndex and RepoTreeCollector), wire the repo-tree gate and Makefile target in lib/workflow_gates.py, expose read-only workflow_repo_tree in mcp/server.py with SCAR-TOOL-16 volume triage, and update agents/archaeology-worker.md, skills/makeflow/SKILL.md, references/02 and 08, rules/AGENTS.md, and all five cross-agent adapters.",
+    "branch": "feat/246-archaeology-file-tree-index",
+    "subprojects": [
+      "adapters",
+      "agents",
+      "lib",
+      "mcp",
+      "rules",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-21T18:52:13Z",
+    "completed_at": "2026-11-21T19:52:45Z",
+    "commit_sha": "354fe7bcc45acac188d0858168083d8ab0a5bd02",
+    "pr_number": 254,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/254",
+    "closes_issue": true,
+    "tests_added": 16,
+    "scars_earned": []
   }
 ]

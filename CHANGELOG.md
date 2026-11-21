@@ -20,6 +20,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-232: Add SCAR-ARCH-09 upstream root-cause scar, SCAR-ARCH-0009 SQLite row, and planning, TDD, and review directives.
 - GH-220: Enforce deterministic SCAR-PROC-95 supervisory halt airlock in ./hooks.json, lib/turn_boundary.py, scripts/pre_tool_guard.py, and workflow manuals while phase subagents run.
 - GH-233: Add `lib/regression_gate.py` and `verify-regression` to enforce full active subproject regression sweeps before Target 40.
+- GH-246: Add lib/repo_tree.py, repo-tree Makefile target, workflow_repo_tree MCP tool, and Target 15 file tree dispatch contracts.
 
 ### Changed
 
