@@ -24,6 +24,7 @@ This repository uses the Makefile Workflow. Follow these rules for every coding 
 11. Encapsulate script logic in testable classes using the BaseScript Template Method pattern under `SCAR-ARCH-05`. Separate library modules in `lib/` without shebangs, thin CLI wrappers in `scripts/`, and unit tests in `tests/`. Enforce polyglot layer separation (`entrypoints -> library`) and Target 20 structural debt triage under `SCAR-ARCH-08`.
 12. Use atomic directory creation (`mkdir`) for mutual exclusion locks under `SCAR-SYS-08`.
 13. Never arbitrarily impose `--limit` or truncation flags before assessing the full dataset. If output volume threatens context limits, halt tool execution immediately. Interview the user to select a triage path under `SCAR-TOOL-16`.
+14. Enforce Immediate Supervisory Halt (`tool_calls: []`) while phase subagents run (`SCAR-PROC-95`). Defer live bug reproduction to Target 30 instead of Target 15.
 
 ## Model Selection and Configuration
 

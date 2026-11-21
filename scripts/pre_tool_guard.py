@@ -65,6 +65,7 @@ from lib.turn_boundary import (
     evaluate_advance_target_turn_boundary,
     evaluate_ask_question_turn_boundary,
     evaluate_command_turn_boundary,
+    evaluate_subagent_airlock,
     extract_advance_target_calls,
     mark_gate_human_verified,
     read_gate_entry,
@@ -452,6 +453,7 @@ STATE_GOVERNANCE_RELPATHS = frozenset({
     ".workflow/state/30_tdd_receipt.json",
     ".workflow/state/gate_entry.json",
     ".workflow/state/active_target.json",
+    ".workflow/state/active_subagent.json",
 })
 
 GOVERNANCE_FILE_RELPATHS = frozenset({
@@ -911,6 +913,10 @@ def evaluate_tool_call(payload):
   transcript_path = payload.get("transcriptPath") or ""
   workspace_paths = payload.get("workspacePaths") or []
   state_dir = resolve_state_dir(payload)
+
+  airlock_ok, airlock_reason = evaluate_subagent_airlock(payload, state_dir)
+  if not airlock_ok:
+    return {"decision": "deny", "reason": airlock_reason}
 
   if tool_name not in ("run_command", "Bash", "bash", "shell"):
     if tool_name == "ask_question":

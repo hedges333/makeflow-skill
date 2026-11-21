@@ -55,10 +55,10 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 
 ### SCAR-PROC-95: Depth-0 Supervisor and Subagent Isolation
 
-- **Wound**: A supervisor that runs large file searches and test suites directly hits token limits, compresses history, and drops rules.
-- **Trap**: Running heavy shell commands directly inside the main conversation turn for convenience.
-- **Permanent Reflex**: Keep the orchestrator as a Depth-0 supervisor and delegate searches, TDD loops, reviews, and CI polling to child subagents.
-- **Socratic Probe**: If the supervisor runs broad searches or test suites directly, will context compression lose earlier rules and other information? Should you delegate this exploratory workload to an isolated subagent instead?
+- **Wound**: A supervisor that runs parallel file reads or commands while a phase subagent executes duplicates work, bloats context, and drops rules.
+- **Trap**: Bundling extra supervisor reads or shell commands alongside `invoke_subagent` instead of halting until the worker `<SYSTEM_MESSAGE>` wakeup arrives.
+- **Permanent Reflex**: Delegate phase work to `archaeology-worker`, `tdd-worker`, `adversarial-critic`, and `triage-worker`, then enforce Immediate Supervisory Halt (`tool_calls: []`). The `scripts/pre_tool_guard.py` airlock records `.workflow/state/active_subagent.json` via `./hooks.json` and denies concurrent supervisor calls until wakeup or `USER_INPUT`.
+- **Socratic Probe**: Did you halt supervisor tool calls (`tool_calls: []`) after `invoke_subagent`? Will parallel supervisor reads duplicate subagent work and inflate context?
 
 ### SCAR-PROC-99: Single-Page SKILL.md Size Ceiling
 

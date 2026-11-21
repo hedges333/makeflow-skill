@@ -144,6 +144,18 @@ When you reference plugin files, use these repository paths:
 6. Rules and skill docs: `./rules/AGENTS.md` holds plugin rules, and `./skills/makeflow/SKILL.md` indexes manuals in `skills/makeflow/references/`.
 7. Non-existent paths: No `hooks/` directory or `lib/pre_tool_guard.py` file exists in this repository.
 
+### 1.13 Immediate Supervisory Halt During Subagent Execution (SCAR-PROC-95)
+
+When the Depth-0 supervisor dispatches a Makeflow phase subagent (`archaeology-worker`, `tdd-worker`, `adversarial-critic`, or `triage-worker`):
+
+1. Enforce Immediate Supervisory Halt (`tool_calls: []`) right after `invoke_subagent` across Target 15, Target 30, Target 40, and Target 70.
+2. Never bundle or run concurrent supervisor reads, edits, or shell commands while a phase subagent executes.
+3. The `PreToolUse` hook in `./hooks.json` and `scripts/pre_tool_guard.py` writes `.workflow/state/active_subagent.json` and blocks concurrent supervisor calls until `<SYSTEM_MESSAGE>` wakeup.
+4. Child subagent tool calls (`conversationId != supervisorConversationId`) pass the airlock while safety guards stay active.
+5. If a human `USER_INPUT` step arrives before wakeup, supervisor inspection tools are allowed while mutating tools stay blocked.
+6. Never run live CLI or shell bug-reproduction experiments in the supervisor during Target 15. Direct live bug reproduction to `tdd-worker` at Target 30.
+7. On `archaeology-worker` wakeup, write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
+
 ## 2. Production Data Protection Rules
 
 Never connect tests or agent commands to live systems.

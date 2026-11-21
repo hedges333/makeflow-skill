@@ -1233,6 +1233,13 @@ class WorkflowGatesScript(BaseScript):
 
       mutex.register_signal_trap(ticket_id)
 
+    if os.path.isdir(state_dir):
+      stale_subagent = os.path.join(state_dir, "active_subagent.json")
+      if os.path.isfile(stale_subagent):
+        try:
+          os.unlink(stale_subagent)
+        except OSError:
+          pass
     return 0
 
   def _release_intake(self) -> int:
@@ -1286,9 +1293,9 @@ class WorkflowGatesScript(BaseScript):
 
     state_dir = os.path.join(self.repo_root, ".workflow", "state")
     transients = (
-        ("gate_entry.json",)
+        ("gate_entry.json", "active_subagent.json")
         if is_ticket_active(state_dir)
-        else ("gate_entry.json", "active_target.json")
+        else ("gate_entry.json", "active_target.json", "active_subagent.json")
     )
     for transient in transients:
       transient_path = os.path.join(state_dir, transient)

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from lib.config import is_ticket_active, resolve_workflow_config
 from lib.safe_copy import safe_copy_file
 from lib.turn_boundary import (
+    ACTIVE_SUBAGENT_FILENAME,
     GATE_EVIDENCE_KEYS,
     PAUSE_GATE_TARGETS,
     TARGETS_CONFIG,
@@ -757,7 +758,11 @@ def _finalize_completed_ticket(
     except OSError:
       pass
 
-  for transient in ("gate_entry.json", ACTIVE_TARGET_FILENAME):
+  for transient in (
+      "gate_entry.json",
+      ACTIVE_TARGET_FILENAME,
+      ACTIVE_SUBAGENT_FILENAME,
+  ):
     t_path = os.path.join(state_dir, transient)
     if os.path.isfile(t_path):
       try:

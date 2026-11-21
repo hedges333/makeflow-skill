@@ -3,14 +3,27 @@
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
+from lib.turn_boundary import (
+    ACTIVE_SUBAGENT_FILENAME,
+    MAKEFLOW_PHASE_WORKERS,
+    SUPERVISOR_INSPECTION_TOOLS,
+    clear_active_subagent,
+    evaluate_subagent_airlock,
+    is_human_user_input_step,
+    is_subagent_wakeup_step,
+    read_active_subagent,
+    record_active_subagent,
+)
 from scripts.pre_tool_guard import (
     GOVERNANCE_FILE_RELPATHS,
     evaluate_self_modification_safety,
@@ -34,7 +47,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     pre_hooks = data["makeflow-guard"]["PreToolUse"]
     self.assertEqual(len(pre_hooks), 1)
     self.assertEqual(
-        pre_hooks[0]["matcher"], "run_command|call_mcp_tool|ask_question"
+        pre_hooks[0]["matcher"],
+        "invoke_subagent|read_file|write_file|edit_file|run_command|call_mcp_tool|manage_subagents|ask_question",
     )
 
   def test_gh145_same_turn_t70_t75_t80_and_merge_denied(self):
@@ -1110,6 +1124,715 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     self.assertIn("`PLANNER_RESPONSE`", sec_1_2)
     self.assertIn("`file://`", sec_1_2)
     self.assertIn("in chat first", sec_1_2.lower())
+
+
+class TestSubagentHaltAirlock(unittest.TestCase):
+  """Hermetic unit and boundary tests for SCAR-PROC-95 subagent halt airlock (GH-220)."""
+
+  def _guarded_supervisor_calls(self, ws_dir):
+    return [
+        ("read_file", {"Path": os.path.join(ws_dir, "README.md")}),
+        (
+            "write_file",
+            {"Path": os.path.join(ws_dir, "notes.txt"), "Content": "hello"},
+        ),
+        (
+            "edit_file",
+            {
+                "Path": os.path.join(ws_dir, "notes.txt"),
+                "Target": "a",
+                "Replacement": "b",
+            },
+        ),
+        ("run_command", {"CommandLine": "git status --short"}),
+        (
+            "call_mcp_tool",
+            {
+                "ServerName": "makeflow_makeflow",
+                "ToolName": "workflow_get_state",
+                "Arguments": {},
+            },
+        ),
+        ("manage_subagents", {"Action": "list"}),
+        (
+            "ask_question",
+            {
+                "Questions": [
+                    {"Header": "Check", "Question": "Continue?"},
+                ]
+            },
+        ),
+        (
+            "invoke_subagent",
+            {"TypeName": "tdd-worker", "Task": "Duplicate phase worker"},
+        ),
+    ]
+
+  def test_phase_workers_record_active_subagent_lock(self):
+    expected_workers = {
+        "archaeology-worker",
+        "tdd-worker",
+        "adversarial-critic",
+        "triage-worker",
+    }
+    self.assertEqual(MAKEFLOW_PHASE_WORKERS, expected_workers)
+    self.assertEqual(ACTIVE_SUBAGENT_FILENAME, "active_subagent.json")
+
+    for worker in sorted(expected_workers):
+      with self.subTest(worker=worker):
+        with tempfile.TemporaryDirectory() as ws_dir:
+          state_dir = os.path.join(ws_dir, ".workflow", "state")
+          os.makedirs(state_dir)
+          transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+          _write_transcript(
+              transcript_path,
+              [
+                  {"step_index": 9, "type": "USER_INPUT", "content": "Go"},
+                  {
+                      "step_index": 10,
+                      "type": "PLANNER_RESPONSE",
+                      "content": f"Dispatching {worker}.",
+                  },
+              ],
+          )
+          res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "invoke_subagent",
+                  "args": {"TypeName": worker, "Task": "Execute phase"},
+              },
+          })
+          self.assertEqual(res["decision"], "allow")
+          lock_path = os.path.join(state_dir, "active_subagent.json")
+          self.assertTrue(os.path.isfile(lock_path))
+          lock_data = read_active_subagent(state_dir)
+          self.assertIsNotNone(lock_data)
+          self.assertEqual(lock_data["supervisorConversationId"], "sup-1")
+          self.assertEqual(lock_data["typeName"], worker)
+          self.assertEqual(lock_data["dispatchedStepIdx"], 10)
+          self.assertIsInstance(lock_data["dispatchedAt"], (int, float))
+          self.assertEqual(lock_data["transcriptPath"], transcript_path)
+
+  def test_non_phase_worker_and_missing_state_dir_do_not_write_lock(self):
+    for non_phase in ("synthetic-scar-importer", "helper-agent", ""):
+      with self.subTest(worker=non_phase):
+        with tempfile.TemporaryDirectory() as ws_dir:
+          state_dir = os.path.join(ws_dir, ".workflow", "state")
+          os.makedirs(state_dir)
+          transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+          _write_transcript(
+              transcript_path,
+              [{"step_index": 3, "type": "USER_INPUT", "content": "Import"}],
+          )
+          res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "invoke_subagent",
+                  "args": {"TypeName": non_phase, "Task": "Helper work"},
+              },
+          })
+          self.assertEqual(res["decision"], "allow")
+          self.assertFalse(
+              os.path.exists(os.path.join(state_dir, "active_subagent.json"))
+          )
+
+    with tempfile.TemporaryDirectory() as non_makeflow_ws:
+      res_no_state = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "workspacePaths": [non_makeflow_ws],
+          "toolCall": {
+              "name": "invoke_subagent",
+              "args": {"TypeName": "archaeology-worker", "Task": "Scan"},
+          },
+      })
+      self.assertEqual(res_no_state["decision"], "allow")
+      self.assertFalse(
+          os.path.exists(os.path.join(non_makeflow_ws, ".workflow", "state"))
+      )
+
+  def test_same_turn_bundling_denied_across_all_guarded_tools(self):
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 9, "type": "USER_INPUT", "content": "Start T15"},
+              {
+                  "step_index": 10,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Forking archaeology-worker with [10_ticket.md](file:///tmp/10_ticket.md).",
+              },
+          ],
+      )
+      dispatch_res = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "invoke_subagent",
+              "args": {"TypeName": "archaeology-worker", "Task": "Scan"},
+          },
+      })
+      self.assertEqual(dispatch_res["decision"], "allow")
+
+      for tool_name, tool_args in self._guarded_supervisor_calls(ws_dir):
+        for cid in ("sup-1", ""):
+          with self.subTest(tool=tool_name, cid=cid):
+            res = evaluate_tool_call({
+                "conversationId": cid,
+                "transcriptPath": transcript_path,
+                "workspacePaths": [ws_dir],
+                "toolCall": {"name": tool_name, "args": tool_args},
+            })
+            self.assertEqual(res["decision"], "deny")
+            reason = res.get("reason", "")
+            self.assertIn("SCAR-PROC-95", reason)
+            self.assertIn("[SCAR-ID: PROC-95]", reason)
+            self.assertIn("CONCURRENT_SUPERVISOR_TOOL_CALL", reason)
+            self.assertIn("SOCRATIC PROBE:", reason)
+
+  def test_subsequent_concurrent_step_and_reminder_nudge_denied(self):
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 10, "type": "PLANNER_RESPONSE", "content": "Fork"},
+          ],
+      )
+      record_active_subagent(
+          state_dir, "sup-1", "tdd-worker", transcript_path=transcript_path
+      )
+
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 10, "type": "PLANNER_RESPONSE", "content": "Fork"},
+              {
+                  "step_index": 11,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Let me read [f.py](file:///tmp/f.py) in parallel.",
+              },
+              {
+                  "step_index": 12,
+                  "type": "SYSTEM_MESSAGE",
+                  "content": "Reminder: follow Simple English.",
+              },
+              {
+                  "step_index": 13,
+                  "type": "USER_INPUT",
+                  "source": "SYSTEM",
+                  "content": "Reminder: check background tasks.",
+              },
+          ],
+      )
+
+      for tool_name, tool_args in self._guarded_supervisor_calls(ws_dir):
+        with self.subTest(tool=tool_name):
+          res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": tool_name, "args": tool_args},
+          })
+          self.assertEqual(res["decision"], "deny")
+          self.assertIn("SCAR-PROC-95", res.get("reason", ""))
+          self.assertIn(
+              "CONCURRENT_SUPERVISOR_TOOL_CALL", res.get("reason", "")
+          )
+          self.assertIsNotNone(read_active_subagent(state_dir))
+
+  def test_child_subagent_passthrough_preserves_downstream_safety_guards(self):
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      record_active_subagent(
+          state_dir,
+          "sup-1",
+          "tdd-worker",
+          transcript_path=os.path.join(ws_dir, "missing_sup_transcript.jsonl"),
+      )
+
+      for tool_name, tool_args in (
+          ("read_file", {"Path": os.path.join(ws_dir, "src", "app.py")}),
+          (
+              "write_file",
+              {
+                  "Path": os.path.join(ws_dir, "src", "app.py"),
+                  "Content": "x = 1\n",
+              },
+          ),
+          ("run_command", {"CommandLine": "python3 -m unittest"}),
+      ):
+        with self.subTest(allowed_worker_tool=tool_name):
+          res = evaluate_tool_call({
+              "conversationId": "worker-2",
+              "transcriptPath": os.path.join(
+                  ws_dir, "unreadable_nonexistent.jsonl"
+              ),
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": tool_name, "args": tool_args},
+          })
+          self.assertEqual(res["decision"], "allow")
+
+      for bad_name, bad_args in (
+          (
+              "write_file",
+              {
+                  "Path": os.path.join(state_dir, "active_subagent.json"),
+                  "Content": "{}",
+              },
+          ),
+          (
+              "run_command",
+              {"CommandLine": "rm .workflow/state/30_tdd_receipt.json"},
+          ),
+          ("run_command", {"CommandLine": "git reset --hard"}),
+      ):
+        with self.subTest(denied_worker_tool=bad_name, args=bad_args):
+          deny_res = evaluate_tool_call({
+              "conversationId": "worker-2",
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": bad_name, "args": bad_args},
+          })
+          self.assertEqual(deny_res["decision"], "deny")
+          self.assertNotIn("SCAR-PROC-95", deny_res.get("reason", ""))
+
+  def test_human_user_input_override_allows_inspection_blocks_mutations_and_clears_on_kill(
+      self,
+  ):
+    self.assertEqual(
+        SUPERVISOR_INSPECTION_TOOLS,
+        {
+            "read_file",
+            "manage_subagents",
+            "ask_question",
+            "call_mcp_tool",
+            "run_command",
+        },
+    )
+    user_steps = [
+        {"step_index": 11, "type": "USER_INPUT", "content": "Check worker"},
+        {
+            "step_index": 11,
+            "source": "USER_EXPLICIT",
+            "content": "Inspect progress",
+        },
+    ]
+    for user_step in user_steps:
+      with self.subTest(user_step=user_step):
+        with tempfile.TemporaryDirectory() as ws_dir:
+          state_dir = os.path.join(ws_dir, ".workflow", "state")
+          os.makedirs(state_dir)
+          transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+          _write_transcript(
+              transcript_path,
+              [{"step_index": 10, "type": "PLANNER_RESPONSE", "content": "Go"}],
+          )
+          record_active_subagent(
+              state_dir, "sup-1", "triage-worker", transcript_path=transcript_path
+          )
+          _write_transcript(
+              transcript_path,
+              [
+                  {
+                      "step_index": 10,
+                      "type": "PLANNER_RESPONSE",
+                      "content": "Go",
+                  },
+                  user_step,
+                  {
+                      "step_index": 12,
+                      "type": "PLANNER_RESPONSE",
+                      "content": (
+                          "Worker status details in"
+                          " [10_ticket.md](file:///tmp/10_ticket.md)."
+                      ),
+                  },
+              ],
+          )
+
+          for insp_name, insp_args in (
+              ("read_file", {"Path": os.path.join(ws_dir, "README.md")}),
+              ("manage_subagents", {"Action": "list"}),
+              (
+                  "ask_question",
+                  {"Questions": [{"Header": "Op", "Question": "Kill?"}]},
+              ),
+              (
+                  "call_mcp_tool",
+                  {
+                      "ServerName": "makeflow_makeflow",
+                      "ToolName": "workflow_get_state",
+                      "Arguments": {},
+                  },
+              ),
+              ("run_command", {"CommandLine": "git status --short"}),
+          ):
+            res_insp = evaluate_tool_call({
+                "conversationId": "sup-1",
+                "transcriptPath": transcript_path,
+                "workspacePaths": [ws_dir],
+                "toolCall": {"name": insp_name, "args": insp_args},
+            })
+            self.assertEqual(res_insp["decision"], "allow")
+            self.assertIsNotNone(read_active_subagent(state_dir))
+
+          for mut_name, mut_args in (
+              (
+                  "write_file",
+                  {"Path": os.path.join(ws_dir, "a.txt"), "Content": "x"},
+              ),
+              (
+                  "edit_file",
+                  {
+                      "Path": os.path.join(ws_dir, "a.txt"),
+                      "Target": "x",
+                      "Replacement": "y",
+                  },
+              ),
+              (
+                  "invoke_subagent",
+                  {"TypeName": "tdd-worker", "Task": "Duplicate"},
+              ),
+          ):
+            res_mut = evaluate_tool_call({
+                "conversationId": "sup-1",
+                "transcriptPath": transcript_path,
+                "workspacePaths": [ws_dir],
+                "toolCall": {"name": mut_name, "args": mut_args},
+            })
+            self.assertEqual(res_mut["decision"], "deny")
+            self.assertIn("SCAR-PROC-95", res_mut.get("reason", ""))
+            self.assertIsNotNone(read_active_subagent(state_dir))
+
+          for kill_action in ("kill", "kill_all"):
+            _write_transcript(
+                transcript_path,
+                [
+                    {
+                        "step_index": 10,
+                        "type": "PLANNER_RESPONSE",
+                        "content": "Go",
+                    }
+                ],
+            )
+            record_active_subagent(
+                state_dir,
+                "sup-1",
+                "triage-worker",
+                transcript_path=transcript_path,
+            )
+            _write_transcript(
+                transcript_path,
+                [
+                    {
+                        "step_index": 10,
+                        "type": "PLANNER_RESPONSE",
+                        "content": "Go",
+                    },
+                    user_step,
+                    {
+                        "step_index": 12,
+                        "type": "PLANNER_RESPONSE",
+                        "content": (
+                            "Worker status details in"
+                            " [10_ticket.md](file:///tmp/10_ticket.md)."
+                        ),
+                    },
+                ],
+            )
+            res_kill = evaluate_tool_call({
+                "conversationId": "sup-1",
+                "transcriptPath": transcript_path,
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "manage_subagents",
+                    "args": {"Action": kill_action, "SubagentId": "sub-9"},
+                },
+            })
+            self.assertEqual(res_kill["decision"], "allow")
+            self.assertIsNone(read_active_subagent(state_dir))
+
+  def test_system_message_wakeup_clears_lock_and_boolean_step_index_guard(self):
+    self.assertTrue(
+        is_subagent_wakeup_step(
+            {"type": "SYSTEM_MESSAGE", "content": "[Message] worker done"}
+        )
+    )
+    self.assertFalse(
+        is_subagent_wakeup_step(
+            {"type": "SYSTEM_MESSAGE", "content": "Reminder: stay concise"}
+        )
+    )
+    self.assertTrue(
+        is_subagent_wakeup_step({
+            "type": "USER_INPUT",
+            "source": "SYSTEM",
+            "content": "<SYSTEM_MESSAGE>\n[Message] sender=w1",
+        })
+    )
+    self.assertFalse(
+        is_human_user_input_step({
+            "type": "USER_INPUT",
+            "source": "SYSTEM",
+            "content": "<SYSTEM_MESSAGE>\n[Message] sender=w1",
+        })
+    )
+
+    # Boolean step_index: True at idx=0 must NOT be treated as int 1 > dispatchedStepIdx 0
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {
+                  "step_index": True,
+                  "type": "SYSTEM_MESSAGE",
+                  "content": "[Message] prior wakeup before dispatch",
+              },
+          ],
+      )
+      record_active_subagent(
+          state_dir,
+          "sup-1",
+          "archaeology-worker",
+          transcript_path=transcript_path,
+      )
+      self.assertEqual(
+          read_active_subagent(state_dir)["dispatchedStepIdx"], 0
+      )
+      bool_res = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {"name": "read_file", "args": {"Path": "README.md"}},
+      })
+      self.assertEqual(bool_res["decision"], "deny")
+      self.assertIn("SCAR-PROC-95", bool_res.get("reason", ""))
+
+    wakeup_steps = [
+        {
+            "step_index": 11,
+            "type": "SYSTEM_MESSAGE",
+            "content": "[Message] sender=arch-1 findings complete",
+        },
+        {
+            "step_index": 11,
+            "type": "USER_INPUT",
+            "source": "SYSTEM",
+            "content": "<SYSTEM_MESSAGE>\n[Message] sender=arch-1 done",
+        },
+    ]
+    for wakeup in wakeup_steps:
+      with self.subTest(wakeup=wakeup):
+        with tempfile.TemporaryDirectory() as ws_dir:
+          state_dir = os.path.join(ws_dir, ".workflow", "state")
+          os.makedirs(state_dir)
+          transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+          _write_transcript(
+              transcript_path,
+              [{"step_index": 10, "type": "PLANNER_RESPONSE", "content": "Go"}],
+          )
+          record_active_subagent(
+              state_dir,
+              "sup-1",
+              "archaeology-worker",
+              transcript_path=transcript_path,
+          )
+          _write_transcript(
+              transcript_path,
+              [
+                  {
+                      "step_index": 10,
+                      "type": "PLANNER_RESPONSE",
+                      "content": "Go",
+                  },
+                  wakeup,
+              ],
+          )
+          res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "write_file",
+                  "args": {
+                      "Path": os.path.join(
+                          state_dir, "15_archaeology_receipt.md"
+                      ),
+                      "Content": "# Receipt\n",
+                  },
+              },
+          })
+          self.assertEqual(res["decision"], "allow")
+          self.assertIsNone(read_active_subagent(state_dir))
+
+          # Also verify wakeup followed immediately by next phase worker dispatch records new lock
+          record_active_subagent(
+              state_dir,
+              "sup-1",
+              "archaeology-worker",
+              transcript_path=transcript_path,
+          )
+          _write_transcript(
+              transcript_path,
+              [
+                  {
+                      "step_index": 10,
+                      "type": "PLANNER_RESPONSE",
+                      "content": "Go",
+                  },
+                  {
+                      "step_index": 12,
+                      "type": "SYSTEM_MESSAGE",
+                      "content": "[Message] arch done",
+                  },
+                  {
+                      "step_index": 13,
+                      "type": "PLANNER_RESPONSE",
+                      "content": "Now dispatching tdd-worker",
+                  },
+              ],
+          )
+          res_next = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "invoke_subagent",
+                  "args": {"TypeName": "tdd-worker", "Task": "Run TDD"},
+              },
+          })
+          self.assertEqual(res_next["decision"], "allow")
+          new_lock = read_active_subagent(state_dir)
+          self.assertIsNotNone(new_lock)
+          self.assertEqual(new_lock["typeName"], "tdd-worker")
+          self.assertEqual(new_lock["dispatchedStepIdx"], 13)
+          clear_active_subagent(state_dir)
+          self.assertIsNone(read_active_subagent(state_dir))
+
+  def test_fast_early_exit_without_active_lock_skips_transcript_under_2ms(self):
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      payload = {
+          "conversationId": "sup-1",
+          "transcriptPath": ws_dir,  # Directory path: opening as file would fail
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "read_file",
+              "args": {"Path": os.path.join(ws_dir, "README.md")},
+          },
+      }
+      # Warmup once, then measure median across 5 calls (< 2ms budget)
+      self.assertEqual(evaluate_tool_call(payload)["decision"], "allow")
+      samples = []
+      for _ in range(5):
+        t0 = time.perf_counter()
+        ok, reason = evaluate_subagent_airlock(payload, state_dir)
+        dt = time.perf_counter() - t0
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+        samples.append(dt)
+      samples.sort()
+      self.assertLess(
+          samples[2],
+          0.002,
+          f"Expected fast early-exit < 2ms, got median {samples[2] * 1000:.3f}ms",
+      )
+
+  def test_active_subagent_json_protected_by_governance_guards(self):
+    self.assertIn(
+        ".workflow/state/active_subagent.json", GOVERNANCE_FILE_RELPATHS
+    )
+    ok_rm, reason_rm = evaluate_self_modification_safety(
+        "rm -f .workflow/state/active_subagent.json"
+    )
+    self.assertFalse(ok_rm)
+    self.assertIn("active_subagent.json", reason_rm)
+
+    ok_redir, reason_redir = evaluate_self_modification_safety(
+        "echo '{}' > .workflow/state/active_subagent.json"
+    )
+    self.assertFalse(ok_redir)
+    self.assertIn("active_subagent.json", reason_redir)
+
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      for cid in ("sup-1", "worker-2"):
+        for tool_name in ("write_file", "edit_file"):
+          res = evaluate_tool_call({
+              "conversationId": cid,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": tool_name,
+                  "args": {
+                      "Path": os.path.join(state_dir, "active_subagent.json"),
+                      "Content": "{}",
+                      "Target": "a",
+                      "Replacement": "b",
+                  },
+              },
+          })
+          self.assertEqual(res["decision"], "deny")
+          self.assertIn("active_subagent.json", res.get("reason", ""))
+
+  def test_cli_wire_smoke_denies_concurrent_supervisor_call(self):
+    guard_script = os.path.join(REPO_ROOT, "scripts", "pre_tool_guard.py")
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {
+                  "step_index": 10,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Dispatching adversarial-critic",
+              }
+          ],
+      )
+      record_active_subagent(
+          state_dir,
+          "sup-wire",
+          "adversarial-critic",
+          transcript_path=transcript_path,
+      )
+      wire_payload = {
+          "conversationId": "sup-wire",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "read_file",
+              "args": {"Path": os.path.join(ws_dir, "README.md")},
+          },
+      }
+      proc = subprocess.run(
+          [sys.executable, guard_script],
+          input=json.dumps(wire_payload),
+          text=True,
+          capture_output=True,
+          cwd=REPO_ROOT,
+          check=False,
+      )
+      self.assertEqual(proc.returncode, 0, proc.stderr)
+      out = json.loads(proc.stdout)
+      self.assertEqual(out["decision"], "deny")
+      self.assertIn("SCAR-PROC-95", out["reason"])
+      self.assertIn("CONCURRENT_SUPERVISOR_TOOL_CALL", out["reason"])
 
 
 if __name__ == "__main__":
