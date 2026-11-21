@@ -45,3 +45,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-244: Stage and validate only the 13-item runtime plugin allowlist in Makefile and install.sh, excluding repository artifacts and Python bytecode.
 - GH-260: Enforce Simple English rules and exit code 2 in `lib/changelog.py` without legacy exemptions, and require `make test` before Target 90 commits.
 - GH-258: Sanitize MAKEFLAGS, GNU Make recursion flags, and Makeflow exports in child regression, TDD, and Make advance subprocesses.
+- GH-257: Anchor receipt hosting mode detection in lib/commit_msg.py and lib/workflow_gates.py to ignore prose quotes.

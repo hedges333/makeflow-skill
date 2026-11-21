@@ -2602,5 +2602,24 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-257",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/257",
+    "title": "[BUG] Unanchored substring check for \"HOSTING_MODE: PURE_GIT\" in 15_archaeology_receipt.md misclassifies GitHub sessions as local-only",
+    "request": "Replace unanchored substring checks for HOSTING_MODE: PURE_GIT in lib/commit_msg.py and lib/workflow_gates.py with a shared anchored metadata parser (parse_receipt_hosting_mode and receipt_declares_pure_git) that skips code blocks, respects explicit GITHUB precedence, handles OSError safely, and adds 12 hermetic unit and boundary tests.",
+    "branch": "fix/257-anchored-pure-git-hosting-mode",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-21T21:01:18Z",
+    "completed_at": "2026-11-21T22:51:59Z",
+    "commit_sha": "19d136f51c56c11ea47c41e605190816a1f14ed8",
+    "pr_number": 266,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/266",
+    "closes_issue": true,
+    "tests_added": 12,
+    "scars_earned": []
   }
 ]
