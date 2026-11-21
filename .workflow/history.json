@@ -2521,5 +2521,24 @@
     "closes_issue": true,
     "tests_added": 15,
     "scars_earned": []
+  },
+  {
+    "id": "GH-244",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/244",
+    "title": "[BUG] make install and install.sh copy repo-only development files (.workflow/, tests/, .github/, notes/) into ~/.gemini/config/plugins/makeflow",
+    "request": "Replace the open-ended tar blocklist in Makefile and install.sh with a shared 13-item runtime allowlist, exclude __pycache__ and bytecode artifacts, run agy plugin validate --strict on staged directories across local, dry-run, and remote curl installs, remove downstream .workflow cleanup workarounds, update GH-182 install fixtures, and add 14 hermetic packaging tests.",
+    "branch": "fix/244-install-runtime-allowlist",
+    "subprojects": [
+      "root",
+      "tests"
+    ],
+    "started_at": "2026-11-21T18:53:10Z",
+    "completed_at": "2026-11-21T20:35:17Z",
+    "commit_sha": "9ce025c87d4ee6d694e1855ed91d653ad9f77311",
+    "pr_number": 261,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/261",
+    "closes_issue": true,
+    "tests_added": 14,
+    "scars_earned": []
   }
 ]
