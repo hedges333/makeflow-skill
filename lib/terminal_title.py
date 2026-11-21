@@ -16,34 +16,10 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
-from lib.config import is_ticket_active
+from lib.ticket_state import TicketStateStore
 
-_TICKET_CARD_RE = re.compile(
-    r"(?i)(?:-\s*\*\*)?Ticket\s*ID(?:\*\*)?:\s*`?([A-Za-z0-9_-]+)`?"
-)
-_TICKET_INTAKE_RE = re.compile(
-    r"(?i)#\s*(?:Ticket\s*Intake|10_ticket):\s*`?([A-Za-z0-9_-]+)`?"
-)
-_TICKET_BULLET_RE = re.compile(
-    r"(?i)-\s*Ticket:\s*\[([A-Za-z0-9_-]+):"
-)
-_NEXT_ACTION_RE = re.compile(
-    r"(?i)-\s*Ticket:\s*\[([A-Za-z0-9_-]+):"
-)
 _BRANCH_TICKET_RE = re.compile(
     r"^(?:feat|fix|ticket)/(?:local-([1-9][0-9]*)|([1-9][0-9]*))(?:-|$)"
-)
-_CARD_ISSUE_BULLET_RE = re.compile(
-    r"(?i)-\s*Ticket:\s*\[[A-Za-z0-9_-]+:\s*(.+?)(?:\]\([^\)\n]*\)|\](?:\s*\(|\s*$))"
-)
-_CARD_TITLE_RE = re.compile(
-    r"(?im)^-\s*\*\*Title\*\*:\s*(.+)$"
-)
-_CARD_INTAKE_HEADER_RE = re.compile(
-    r"(?i)#\s*Ticket\s*Intake:\s*[A-Za-z0-9_-]+:\s*([^\n]+)"
-)
-_CARD_DESC_RE = re.compile(
-    r"(?i)##\s*Description\s*\n+([^\n#]+)"
 )
 _BRANCH_SLUG_RE = re.compile(
     r"^(?:feat|fix|ticket)/(?:local-[1-9][0-9]*|[1-9][0-9]*)-(.*)$"
@@ -357,23 +333,15 @@ def detect_ticket_id(
     branch: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
 ) -> str:
-  """Detects active ticket ID from state cards, Git branch name, or next action card."""
+  """Detects active ticket ID from 10_ticket.json or Git branch name."""
   root = os.path.abspath(repo_root or os.getcwd())
 
-  # 1. State card .workflow/state/10_ticket.md
-  card_10 = os.path.join(root, ".workflow", "state", "10_ticket.md")
-  if os.path.isfile(card_10):
-    try:
-      with open(card_10, "r", encoding="utf-8") as f:
-        content = f.read()
-      for regex in (_TICKET_CARD_RE, _TICKET_BULLET_RE, _TICKET_INTAKE_RE):
-        m = regex.search(content)
-        if m:
-          return m.group(1).strip()
-    except (OSError, UnicodeDecodeError):
-      pass
+  # 1. Structured JSON state .workflow/state/10_ticket.json
+  meta = TicketStateStore.from_repo_root(root).load()
+  if meta is not None and meta.ticket_id:
+    return meta.ticket_id
 
-  # 2. Git branch
+  # 2. Git branch fallback
   current_branch = branch
   if current_branch is None:
     try:
@@ -399,21 +367,6 @@ def detect_ticket_id(
       if gh_num:
         return f"GH-{gh_num}"
 
-  # 3. Next action readerboard .workflow/state/99_next_action.md (active tickets only)
-  state_dir = os.path.join(root, ".workflow", "state")
-  card_99 = os.path.join(state_dir, "99_next_action.md")
-  if os.path.isfile(card_99) and is_ticket_active(state_dir):
-    try:
-      with open(card_99, "r", encoding="utf-8") as f:
-        for line in f:
-          if line.rstrip().endswith("(Completed)"):
-            continue
-          m = _NEXT_ACTION_RE.search(line)
-          if m:
-            return m.group(1).strip()
-    except (OSError, UnicodeDecodeError):
-      pass
-
   return ""
 
 
@@ -422,7 +375,7 @@ def detect_issue_tag(
     branch: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
 ) -> str:
-  """Extracts active issue tag/description from state cards or Git branch slug."""
+  """Extracts active issue tag from 10_ticket.json or Git branch slug."""
   root = os.path.abspath(repo_root or os.getcwd())
 
   def _clean_tag(raw: str) -> str:
@@ -434,44 +387,16 @@ def detect_issue_tag(
       tag = without_type
     return tag.strip(" -_")
 
-  # 1. State card .workflow/state/10_ticket.md
-  card_10 = os.path.join(root, ".workflow", "state", "10_ticket.md")
-  if os.path.isfile(card_10):
-    try:
-      with open(card_10, "r", encoding="utf-8") as f:
-        content = f.read()
-      for regex in (
-          _CARD_ISSUE_BULLET_RE,
-          _CARD_TITLE_RE,
-          _CARD_INTAKE_HEADER_RE,
-          _CARD_DESC_RE,
-      ):
-        match = regex.search(content)
-        if match:
-          candidate = _clean_tag(match.group(1))
-          if candidate:
-            return candidate
-    except (OSError, UnicodeDecodeError):
-      pass
+  # 1. Structured JSON state .workflow/state/10_ticket.json
+  meta = TicketStateStore.from_repo_root(root).load()
+  if meta is not None and meta.has_distinct_title():
+    candidate = _clean_tag(meta.title)
+    if candidate and (
+        not meta.ticket_id or candidate.lower() != meta.ticket_id.strip().lower()
+    ):
+      return candidate
 
-  # 2. Readerboard .workflow/state/99_next_action.md (active tickets only)
-  state_dir = os.path.join(root, ".workflow", "state")
-  card_99 = os.path.join(state_dir, "99_next_action.md")
-  if os.path.isfile(card_99) and is_ticket_active(state_dir):
-    try:
-      with open(card_99, "r", encoding="utf-8") as f:
-        for line in f:
-          if line.rstrip().endswith("(Completed)"):
-            continue
-          m_bullet = _CARD_ISSUE_BULLET_RE.search(line)
-          if m_bullet:
-            candidate = _clean_tag(m_bullet.group(1))
-            if candidate:
-              return candidate
-    except (OSError, UnicodeDecodeError):
-      pass
-
-  # 3. Git branch slug
+  # 2. Git branch slug fallback
   current_branch = branch
   if current_branch is None:
     try:
@@ -514,9 +439,10 @@ def format_terminal_title(
     issue_tag: Optional short issue description tag.
 
   Returns:
-    '{dir_name}/: {ticket_id} {issue_tag}' (or without tag if empty) when
-    both dir_name and ticket_id are present, '{dir_name}/' when dir_name is
-    present without ticket_id, or '' when dir_name is empty.
+    '{dir_name}/: {ticket_id} {issue_tag}' (or without tag if empty or
+    identical to ticket_id) when both dir_name and ticket_id are present,
+    '{dir_name}/' when dir_name is present without ticket_id, or '' when
+    dir_name is empty.
   """
   t = sanitize_terminal_title(ticket_id)
   d = sanitize_terminal_title(dir_name).rstrip("/\\").strip()
@@ -525,7 +451,7 @@ def format_terminal_title(
   if not t:
     return f"{d}/"
   tag = sanitize_terminal_title(issue_tag) if issue_tag else ""
-  if tag:
+  if tag and tag.lower() != t.lower():
     return f"{d}/: {t} {tag}"
   return f"{d}/: {t}"
 

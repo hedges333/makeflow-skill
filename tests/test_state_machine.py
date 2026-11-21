@@ -2,6 +2,7 @@
 """Hermetic unit and GNU Make integration tests for lib/state_machine.py (GH-219)."""
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -264,13 +265,19 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
   """Tests end-to-end GNU Make execution across all 15 targets and readers."""
 
   def _prepare_ticket_cards(self, state_dir: str) -> None:
-    """Writes initial 10_ticket.md containing uppercase COMPLETE to test sanitization."""
+    """Writes initial 10_ticket.json containing uppercase COMPLETE to test sanitization."""
     _write_file(
-        os.path.join(state_dir, "10_ticket.md"),
-        "# 10_ticket: GH-219\n\n"
-        "- **Ticket ID**: GH-219\n"
-        "- **Title**: [FEAT] Execute COMPLETE Makefile DAG transitions\n"
-        "- **URL**: https://github.com/hedges333/makeflow-skill/issues/219\n",
+        os.path.join(state_dir, "10_ticket.json"),
+        json.dumps(
+            {
+                "ticket_id": "GH-219",
+                "title": "[FEAT] Execute COMPLETE Makefile DAG transitions",
+                "url": "https://github.com/hedges333/makeflow-skill/issues/219",
+                "source": "github",
+            },
+            indent=2,
+        )
+        + "\n",
     )
 
   def _assert_active_readers(self, repo: str, state_dir: str) -> str:
@@ -480,13 +487,13 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
           )
       )
       self.assertIsNone(read_active_target(state_dir))
-      self.assertFalse(os.path.exists(os.path.join(state_dir, "10_ticket.md")))
+      self.assertFalse(os.path.exists(os.path.join(state_dir, "10_ticket.json")))
       self.assertFalse(
           os.path.exists(os.path.join(state_dir, "approved_tree.txt"))
       )
       self.assertTrue(
           os.path.isfile(
-              os.path.join(repo, ".workflow", "archive", "GH-219", "10_ticket.md")
+              os.path.join(repo, ".workflow", "archive", "GH-219", "10_ticket.json")
           )
       )
 
@@ -499,10 +506,16 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       _init_git_repo(tmp, branch="feat/local-7-cleanup")
       state_dir = os.path.join(tmp, ".workflow", "state")
       _write_file(
-          os.path.join(state_dir, "10_ticket.md"),
-          "# 10_ticket: LOCAL-7\n\n"
-          "- **Ticket ID**: LOCAL-7\n"
-          "- **Title**: Local offline cleanup task\n",
+          os.path.join(state_dir, "10_ticket.json"),
+          json.dumps(
+              {
+                  "ticket_id": "LOCAL-7",
+                  "title": "Local offline cleanup task",
+                  "source": "local",
+              },
+              indent=2,
+          )
+          + "\n",
       )
       ok, msg = advance_workflow_target(
           "T00",
@@ -531,7 +544,7 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
           evidence={"complete": True, "skipMainFetch": True},
       )
       self.assertTrue(ok_fin)
-      self.assertFalse(os.path.exists(os.path.join(state_dir, "10_ticket.md")))
+      self.assertFalse(os.path.exists(os.path.join(state_dir, "10_ticket.json")))
       self.assertFalse(os.path.exists(os.path.join(tmp, ".workflow", "archive")))
 
   def test_finalize_completed_ticket_gh235_resets_terminal_title(self) -> None:
@@ -628,11 +641,16 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       lock_dir = os.path.join(tmp, "locks")
       url = "https://github.com/hedges333/makeflow-skill/issues/219"
       _write_file(
-          os.path.join(state_dir, "10_ticket.md"),
-          "# 10_ticket: `GH-219`\n\n"
-          "- **Ticket ID**: `GH-219`\n"
-          "- **Title**: [FEAT] Execute [DAG] transitions\n"
-          f"- **URL**: {url}\n",
+          os.path.join(state_dir, "10_ticket.json"),
+          json.dumps(
+              {
+                  "ticket_id": "GH-219",
+                  "title": "[FEAT] Execute [DAG] transitions",
+                  "url": url,
+              },
+              indent=2,
+          )
+          + "\n",
       )
       ok1, msg1 = advance_workflow_target(
           "T00",
@@ -651,8 +669,7 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       ) as f:
         self.assertIn(expected_bullet, f.read())
 
-      # Remove 10_ticket.md while keeping an active card so _NA_TICKET_RE round-trips
-      os.unlink(os.path.join(state_dir, "10_ticket.md"))
+      # Keep 10_ticket.json across T15 -> T20 and confirm full structured metadata persists
       _write_file(
           os.path.join(state_dir, "15_archaeology_receipt.md"), "# Receipt\n"
       )
@@ -678,6 +695,283 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
           0,
       )
       self.assertEqual(read_active_target(state_dir)["target"], "T20")
+
+  def test_gh240_ticket_json_prereqs_non_duplicate_bullets_and_t10_title_refresh(
+      self,
+  ) -> None:
+    """GH-240: 10_ticket.json satisfies T10->T15, suppresses duplicate ID bullets, refreshes title."""
+    from lib.state_machine import (
+        _format_ticket_bullet,
+        advance_workflow_target,
+        infer_current_target,
+    )
+
+    # 1. _format_ticket_bullet never duplicates ticket_id as title
+    self.assertEqual(
+        _format_ticket_bullet(
+            {"ticket_id": "GH-233", "title": "", "url": "https://example.com/233"},
+            complete=False,
+        ),
+        "- Ticket: [GH-233](https://example.com/233) (In Progress)",
+    )
+    self.assertEqual(
+        _format_ticket_bullet(
+            {"ticket_id": "GH-233", "title": "gh-233", "url": ""},
+            complete=False,
+        ),
+        "- Ticket: [GH-233] (In Progress)",
+    )
+    self.assertEqual(
+        _format_ticket_bullet(
+            {"ticket_id": "GH-233", "title": "GH-233", "url": "https://example.com/233"},
+            complete=True,
+        ),
+        "- Completed Ticket: [GH-233](https://example.com/233) (Completed)",
+    )
+    self.assertEqual(
+        _format_ticket_bullet(
+            {"ticket_id": "GH-233", "title": "", "url": ""},
+            complete=True,
+        ),
+        "- Completed Ticket: [GH-233] (Completed)",
+    )
+
+    # 2. 10_ticket.json alone satisfies T10 -> T15 and refreshes title on T10 for non-temp workspace
+    with tempfile.TemporaryDirectory(prefix="makeflow_gh240_sm_") as parent:
+      repo = os.path.join(parent, "makeflow-skill-dir3")
+      os.makedirs(repo)
+      _init_git_repo(repo, branch="fix/240-terminal-title-formatting")
+      state_dir = os.path.join(repo, ".workflow", "state")
+      _write_file(
+          os.path.join(state_dir, "10_ticket.json"),
+          json.dumps(
+              {
+                  "ticket_id": "GH-240",
+                  "title": "[BUG] terminal title formatting",
+                  "url": "https://github.com/hedges333/makeflow-skill/issues/240",
+              }
+          )
+          + "\n",
+      )
+      self.assertEqual(infer_current_target(state_dir), "T10")
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "makeflow-skill-dir3/: GH-240 terminal title formatting"),
+      ) as mock_set_title:
+        ok_t10, msg_t10 = advance_workflow_target(
+            "T00",
+            "T10",
+            workspace_dir=repo,
+            state_dir=state_dir,
+            evidence={"skipMainFetch": True},
+        )
+      self.assertTrue(ok_t10, msg_t10)
+      mock_set_title.assert_called_once_with(repo_root=repo)
+
+      ok_t15, msg_t15 = advance_workflow_target(
+          "T10",
+          "T15",
+          workspace_dir=repo,
+          state_dir=state_dir,
+          evidence={"skipMainFetch": True},
+      )
+      self.assertTrue(ok_t15, msg_t15)
+
+  def test_gh240_check_intake_auto_saves_ticket_json_for_github_local_and_offline(
+      self,
+  ) -> None:
+    """GH-240: check-intake persists 10_ticket.json from GitHub, LocalTicketStore, or fallback."""
+    from lib.local_tickets import LocalTicketStore
+    from lib.ticket_state import TicketStateStore
+    from lib.workflow_gates import WorkflowGatesScript
+
+    # 1. GitHub issue mode: check_remote fetches full metadata and saves 10_ticket.json before title refresh
+    with tempfile.TemporaryDirectory() as tmp:
+      repo = os.path.join(tmp, "repo-gh")
+      os.makedirs(repo)
+      _init_git_repo(repo, branch="main")
+      _git(
+          repo,
+          "remote",
+          "add",
+          "origin",
+          "https://github.com/hedges333/makeflow-skill.git",
+      )
+      WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
+      lock_dir = os.path.join(tmp, "locks")
+
+      gh_issue = {
+          "number": 240,
+          "title": "[BUG] terminal title formatting",
+          "url": "https://github.com/hedges333/makeflow-skill/issues/240",
+          "assignees": [],
+          "labels": [{"name": "bug"}],
+      }
+      title_saw_json = []
+
+      def _fake_set_title(repo_root=None, **_kwargs):
+        loaded = TicketStateStore.from_repo_root(repo_root).load()
+        title_saw_json.append(loaded)
+        return True, "ok"
+
+      def _fake_subprocess_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["gh", "issue", "view"]:
+          self.assertIn("number,title,url,assignees,labels", cmd)
+          return subprocess.CompletedProcess(
+              args=cmd, returncode=0, stdout=json.dumps(gh_issue), stderr=""
+          )
+        if cmd[:3] == ["gh", "api", "graphql"]:
+          return subprocess.CompletedProcess(
+              args=cmd, returncode=0, stdout=json.dumps({}), stderr=""
+          )
+        if cmd[:3] == ["gh", "issue", "edit"]:
+          return subprocess.CompletedProcess(
+              args=cmd, returncode=0, stdout="", stderr=""
+          )
+        return real_run(cmd, *args, **kwargs)
+
+      real_run = subprocess.run
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          side_effect=_fake_set_title,
+      ):
+        with mock.patch("subprocess.run", side_effect=_fake_subprocess_run):
+          rc = WorkflowGatesScript().execute(
+              [
+                  "--repo-root",
+                  repo,
+                  "--lock-dir",
+                  lock_dir,
+                  "intake",
+                  "--ticket",
+                  "GH-240",
+              ]
+          )
+        self.assertEqual(rc, 0)
+        saved = TicketStateStore.from_repo_root(repo).load()
+        self.assertIsNotNone(saved)
+        assert saved is not None
+        self.assertEqual(saved.ticket_id, "GH-240")
+        self.assertEqual(saved.title, "[BUG] terminal title formatting")
+        self.assertEqual(
+            saved.url, "https://github.com/hedges333/makeflow-skill/issues/240"
+        )
+        self.assertEqual(saved.labels, ("bug",))
+        self.assertEqual(saved.source, "github")
+        self.assertEqual(len(title_saw_json), 1)
+        self.assertEqual(title_saw_json[0], saved)
+
+        # Reentrant check-intake for the SAME ticket succeeds and preserves rich metadata
+        rc_reentrant = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "GH-240",
+            ]
+        )
+        self.assertEqual(rc_reentrant, 0)
+        self.assertEqual(TicketStateStore.from_repo_root(repo).load(), saved)
+        self.assertEqual(len(title_saw_json), 2)
+        self.assertEqual(title_saw_json[1], saved)
+
+        # Leftover 10_ticket.json for a DIFFERENT ticket or omitted --ticket is still blocked
+        err_diff = io.StringIO()
+        rc_diff = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "GH-241",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_diff,
+        )
+        self.assertEqual(rc_diff, 2)
+        self.assertIn("UNCLEAN_INTAKE_STATE", err_diff.getvalue())
+
+        err_omitted = io.StringIO()
+        rc_omitted = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_omitted,
+        )
+        self.assertEqual(rc_omitted, 2)
+        self.assertIn("UNCLEAN_INTAKE_STATE", err_omitted.getvalue())
+        self.assertEqual(len(title_saw_json), 2)
+
+        # 2. LocalTicketStore mode: check-intake saves 10_ticket.json from .workflow/tickets/LOCAL-5.json
+        repo_local = os.path.join(tmp, "repo-local")
+        os.makedirs(repo_local)
+        _init_git_repo(repo_local, branch="main")
+        WorkflowGatesScript().execute(["--repo-root", repo_local, "init-makefile"])
+        LocalTicketStore(repo_root=repo_local, lock_dir=lock_dir).create_ticket(
+            title="Offline JSON intake test",
+            priority="P1",
+            labels=["offline"],
+            ticket_id="LOCAL-5",
+        )
+        _git(repo_local, "add", ".workflow/tickets/LOCAL-5.json")
+        _git(repo_local, "commit", "-q", "-m", "chore: seed local ticket")
+        rc_local = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo_local,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "LOCAL-5",
+            ]
+        )
+        self.assertEqual(rc_local, 0)
+        saved_local = TicketStateStore.from_repo_root(repo_local).load()
+        self.assertIsNotNone(saved_local)
+        assert saved_local is not None
+        self.assertEqual(saved_local.ticket_id, "LOCAL-5")
+        self.assertEqual(saved_local.title, "Offline JSON intake test")
+        self.assertEqual(saved_local.labels, ("offline",))
+        self.assertEqual(saved_local.source, "local")
+        self.assertEqual(len(title_saw_json), 3)
+        self.assertEqual(title_saw_json[2], saved_local)
+
+        # 3. Offline fallback when gh fails: saves minimal TicketMetadata
+        repo_off = os.path.join(tmp, "repo-offline")
+        os.makedirs(repo_off)
+        _init_git_repo(repo_off, branch="main")
+        WorkflowGatesScript().execute(["--repo-root", repo_off, "init-makefile"])
+        rc_off = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo_off,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "GH-999",
+            ]
+        )
+        self.assertEqual(rc_off, 0)
+        saved_off = TicketStateStore.from_repo_root(repo_off).load()
+        self.assertIsNotNone(saved_off)
+        assert saved_off is not None
+        self.assertEqual(saved_off.ticket_id, "GH-999")
+        self.assertEqual(saved_off.title, "")
+        self.assertEqual(saved_off.source, "fallback")
+        self.assertEqual(len(title_saw_json), 4)
+        self.assertEqual(title_saw_json[3], saved_off)
 
 
 class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
@@ -2019,11 +2313,16 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       self.assertEqual(_run_make(repo, "check-intake").returncode, 0)
       _git(repo, "checkout", "-q", "-b", "feat/219-first")
       _write_file(
-          os.path.join(state_dir, "10_ticket.md"),
-          "# 10_ticket: `GH-219`\n\n"
-          "- **Ticket ID**: `GH-219`\n"
-          "- **Title**: [FEAT] Lifecycle matrix verification\n"
-          "- **URL**: https://github.com/hedges333/makeflow-skill/issues/219\n",
+          os.path.join(state_dir, "10_ticket.json"),
+          json.dumps(
+              {
+                  "ticket_id": "GH-219",
+                  "title": "[FEAT] Lifecycle matrix verification",
+                  "url": "https://github.com/hedges333/makeflow-skill/issues/219",
+              },
+              indent=2,
+          )
+          + "\n",
       )
       self.assertEqual(
           _run_make(repo, "ticket-assigned", "NO_FETCH=1").returncode, 0

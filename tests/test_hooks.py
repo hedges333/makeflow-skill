@@ -1779,6 +1779,14 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
       with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
         self.assertTrue(self.session_start.is_ticket_active(td))
 
+  def test_is_ticket_active_recognizes_ticket_json_card(self):
+    """GH-240: is_ticket_active returns True when only 10_ticket.json exists."""
+    with tempfile.TemporaryDirectory() as td:
+      self.assertFalse(self.session_start.is_ticket_active(td))
+      with open(os.path.join(td, "10_ticket.json"), "w", encoding="utf-8") as f:
+        json.dump({"ticket_id": "GH-240", "title": "[BUG] terminal title formatting"}, f)
+      self.assertTrue(self.session_start.is_ticket_active(td))
+
   def test_is_ticket_active_does_not_suppress_unrelated_exceptions(self):
     with tempfile.TemporaryDirectory() as td:
       card = os.path.join(td, "99_next_action.md")

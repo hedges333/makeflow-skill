@@ -25,6 +25,7 @@ from lib.config import (  # noqa: E402
     is_ticket_active,
     load_default_config,
 )
+from lib.ticket_state import TICKET_JSON_FILENAME  # noqa: E402
 from lib.workflow_gates import refresh_state_makefile_if_ignored  # noqa: E402
 
 
@@ -73,7 +74,11 @@ def main():
 
     notes = []
     if is_ticket_active(state_dir):
-      state_files = sorted(f for f in os.listdir(state_dir) if f.endswith(".md"))
+      state_files = sorted(
+          f
+          for f in os.listdir(state_dir)
+          if f.endswith(".md") or f == TICKET_JSON_FILENAME
+      )
       notes.append(
           f"Makefile Workflow found {len(state_files)} state card(s) in {state_dir}. "
           "Read all state cards at Target 00 (read-init-d) before taking new action."

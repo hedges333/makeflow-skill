@@ -141,6 +141,7 @@ class TestEmitReflexScript(unittest.TestCase):
         "ARCH-06",
         "ARCH-08",
         "ARCH-09",
+        "ARCH-10",
     ]
     for scar_id in core_gate_scar_ids:
       probe = resolve_core_scar_probe(scar_id, repo_root=_REPO_ROOT)
@@ -217,6 +218,51 @@ class TestEmitReflexScript(unittest.TestCase):
     payload = json.loads(out_json.getvalue())
     self.assertEqual(payload["scar_id"], "SCAR-ARCH-09")
     self.assertEqual(payload["short_id"], "ARCH-09")
+    self.assertEqual(payload["socratic_probe"], probe)
+    self.assertEqual(payload["exit_code"], 2)
+
+  def test_emit_reflex_arch_10_structured_data_probe(self):
+    """Verifies ARCH-10 Socratic Probe resolution, Simple English compliance, and emit_reflex output (GH-240)."""
+    from lib.reflex import emit_reflex, resolve_core_scar_probe
+    from lib.scar_candidate import validate_socratic_probe
+
+    probe = resolve_core_scar_probe("ARCH-10", repo_root=_REPO_ROOT)
+    self.assertEqual(
+        validate_socratic_probe(probe, scar_id="SCAR-ARCH-10"),
+        [],
+        f"Expected valid Socratic Probe for SCAR-ARCH-10, got: {probe!r}",
+    )
+
+    err_txt = io.StringIO()
+    exit_code = emit_reflex(
+        scar_id="ARCH-10",
+        code="LOSSY_PROSE_ROUNDTRIP",
+        trigger="Scraped Markdown prose for structured JSON ticket fields.",
+        rejected="Using regex parsers over prose instead of persisted JSON.",
+        reflex="Read structured ticket fields from lib/ticket_state.py.",
+        output_json=False,
+        stream=err_txt,
+    )
+    self.assertEqual(exit_code, 2)
+    rendered = err_txt.getvalue()
+    self.assertIn("[SCAR-ID: ARCH-10] LOSSY_PROSE_ROUNDTRIP", rendered)
+    self.assertIn("SOCRATIC PROBE:", rendered)
+    self.assertIn(probe, rendered)
+
+    out_json = io.StringIO()
+    json_code = emit_reflex(
+        scar_id="ARCH-10",
+        code="LOSSY_PROSE_ROUNDTRIP",
+        trigger="Scraped Markdown prose for structured JSON ticket fields.",
+        rejected="Using regex parsers over prose instead of persisted JSON.",
+        reflex="Read structured ticket fields from lib/ticket_state.py.",
+        output_json=True,
+        stream=out_json,
+    )
+    self.assertEqual(json_code, 2)
+    payload = json.loads(out_json.getvalue())
+    self.assertEqual(payload["scar_id"], "SCAR-ARCH-10")
+    self.assertEqual(payload["short_id"], "ARCH-10")
     self.assertEqual(payload["socratic_probe"], probe)
     self.assertEqual(payload["exit_code"], 2)
 

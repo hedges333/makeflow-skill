@@ -68,7 +68,7 @@ At turn start or after context compaction (automatic chat history compression), 
 | ID | State Condition | Target Name | Immediate Action |
 | :--- | :--- | :--- | :--- |
 | `00` | `.workflow/state/*.md` unread | `read-init-d` | Read state cards in lexical order and run `make -f .workflow/state/Makefile read-init-d`. |
-| `10` | No ticket branch | `ticket-assigned` | Run `init-makefile`, `check-intake`, create branch, write `10_ticket.md`, and run `ticket-assigned`. |
+| `10` | No ticket branch | `ticket-assigned` | Run `init-makefile`, `check-intake` (saves `10_ticket.json`), create branch, write optional `10_ticket.md`, run `ticket-assigned`. |
 | `15` | No `15_archaeology_receipt.md` | `archaeology-verified` | Run `archaeology-verified`, fork `archaeology-worker`, scan stack, write receipt. |
 | `20` | No `20_plan_approved.md` | `approved-plan` | Write `20_plan.md`, run `approved-plan`, and pause for `human-plan-approval`. |
 | `30` | Plan approved, diff incomplete | `implementation-diff` | Run `implementation-diff APPROVED=1`, fork `tdd-worker`, run Red-Green-Refactor TDD, and run `verify-regression`. |
@@ -94,8 +94,8 @@ Memento state files (numbered markdown progress cards on disk) preserve task pro
 2. Label GitHub issues `GH-<N>` and local tasks `LOCAL-<N>` (or list `P0`..`P3` in Mode B). Ingest comments with `gh issue view <n> --comments` (`SCAR-PROC-107`).
 3. Clear stale `10_`..`80_` cards and `approved_tree.txt`.
 4. Run `python3 <plugin_root>/scripts/workflow_gates.py --repo-root . init-makefile` to configure `.git/info/exclude` and write `.workflow/state/Makefile`.
-5. Run `make -f .workflow/state/Makefile check-intake` before you create a branch.
-6. Create branch `feat/<id>-<slug>` or `fix/<id>-<slug>` (`feat/local-<n>-<slug>` for local tasks), write `10_ticket.md`, and run `make -f .workflow/state/Makefile ticket-assigned`.
+5. Run `make -f .workflow/state/Makefile check-intake TICKET=<id>` before you create a branch to lock the ticket and save `10_ticket.json`.
+6. Create branch `feat/<id>-<slug>` or `fix/<id>-<slug>` (`feat/local-<n>-<slug>` for local tasks), optionally write `10_ticket.md`, and run `make -f .workflow/state/Makefile ticket-assigned`.
 
 ### Target 15: `archaeology-verified`
 

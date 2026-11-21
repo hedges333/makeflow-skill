@@ -12,6 +12,8 @@ import os
 import re
 from typing import Dict, Mapping, Optional
 
+from lib.ticket_state import TICKET_JSON_FILENAME
+
 ENV_MAPPINGS = {
     "MAKEFILE_WORKFLOW_CRITIC_MODEL": "adversarial-critic",
     "MAKEFILE_WORKFLOW_WORKER_MODEL": "archaeology-worker",
@@ -496,7 +498,11 @@ def is_ticket_active(state_dir):
   """Checks whether an active in-progress ticket exists in state_dir."""
   if not state_dir or not os.path.isdir(state_dir):
     return False
-  state_files = [f for f in os.listdir(state_dir) if f.endswith(".md")]
+  state_files = [
+      f
+      for f in os.listdir(state_dir)
+      if f.endswith(".md") or f == TICKET_JSON_FILENAME
+  ]
   if not state_files:
     return False
 

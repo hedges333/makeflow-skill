@@ -168,6 +168,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 - **Structural Decoupling**: Are user interfaces, business logic controllers, and runtime entry points cleanly separated?
 - **Polyglot Layer Separation and Structural Debt Triage (`SCAR-ARCH-08`)**: Does the diff respect `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`)? Treat new layer-boundary violations introduced in the diff as Pillar 3 Blockers. Treat pre-existing structural debt in adjacent legacy files as Non-Blocking Observations (`SCAR-PROC-108`) to prevent unapproved mid-ticket directory reorganizations.
 - **Upstream Root-Cause Remediation (`SCAR-ARCH-09`)**: Does the diff fix defects upstream at the earliest safe boundary instead of adding downstream workarounds? Can downstream defensive branches be removed when fixing the upstream contract keeps other subsystems safe?
+- **Preserve Structured Data (`SCAR-ARCH-10`)**: Does the diff preserve structured JSON or typed records instead of serializing fields into Markdown prose and scraping them back with regexes? Can downstream consumers read one shared structured store?
 - **Socratic Probe**: Does this design create tight coupling or premature abstractions that will complicate future maintenance?
 
 ### 4. Blast Radius

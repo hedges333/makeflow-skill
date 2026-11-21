@@ -27,6 +27,7 @@ from lib.scar_ontology import (
     parse_upstream_targets,
     resolve_category_filter_tokens,
 )
+from lib.ticket_state import TicketStateStore
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REGISTRY_URL = "https://syntheticscars.org/registry.json"
@@ -184,21 +185,11 @@ _IN_MEMORY_LOADED_SCARS: Dict[str, Set[str]] = {}
 
 
 def detect_active_ticket_id(state_dir: Optional[str]) -> str:
-  """Extracts the active ticket ID from <state_dir>/10_ticket.md if present."""
+  """Extracts the active ticket ID from <state_dir>/10_ticket.json if present."""
   if not state_dir or not os.path.isdir(state_dir):
     return ""
-  ticket_card = os.path.join(state_dir, "10_ticket.md")
-  if not os.path.isfile(ticket_card):
-    return ""
-  try:
-    with open(ticket_card, "r", encoding="utf-8") as f:
-      text = f.read()
-    m = re.search(r"\b((?:GH|LOCAL)-[A-Za-z0-9_-]+)\b", text)
-    if m:
-      return m.group(1)
-  except OSError:
-    pass
-  return ""
+  meta = TicketStateStore(state_dir).load()
+  return meta.ticket_id if meta is not None else ""
 
 
 def load_session_scars(

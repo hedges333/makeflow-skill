@@ -45,7 +45,7 @@ Write the implementation plan to `.workflow/state/20_plan.md`.
 
 ### 2.1 Socratic Pre-Planning Deliberation
 
-Do not draft implementation plans from passive checklists. Before writing `.workflow/state/20_plan.md`, interrogate your proposed solution with these eight Socratic questions:
+Do not draft implementation plans from passive checklists. Before writing `.workflow/state/20_plan.md`, interrogate your proposed solution with these nine Socratic questions:
 
 1. **Targeted Test Loops (`SCAR-PROC-104`, `SCAR-TEST-09`)**: Will running targeted test loops with fail-fast flags (`-v -x`) isolate failures before running full test suites?
 2. **Hermetic Test Isolation (`SCAR-TEST-08`)**: Can tests run in memory, in temporary directories, or against mock fixtures without touching live databases or systems?
@@ -55,6 +55,7 @@ Do not draft implementation plans from passive checklists. Before writing `.work
 6. **Two-Tier Scar Discovery**: Did you check Tier 1 core scars (`skills/makeflow/references/scars/`), Tier 2 project-local scars (`.workflow/scars/`), and stacked SQLite registries via `workflow_query_scars` (`workflowPhase: "Target 20: plan"`) for relevant failure reflexes?
 7. **Code Structure and Layer Separation (`SCAR-ARCH-08`)**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?
 8. **Upstream Root-Cause Remediation (`SCAR-ARCH-09`)**: Would fixing the root cause upstream keep code simplest without harming other subsystems? Can you remove downstream workarounds instead of patching symptoms further down the control flow?
+9. **Preserve Structured Data (`SCAR-ARCH-10`)**: Does this module scrape prose with regexes for data that already exists as structured JSON upstream? Can consumers read one shared structured store instead?
 
 ### 2.2 Socratic Invariant Audit Table
 

@@ -203,15 +203,42 @@ class TestWorkspaceMutex(unittest.TestCase):
       self.assertTrue(check2["conflict"])
       self.assertEqual(check2["labels"], ["in-progress"])
 
-    # 3. Clean issue (no assignees, no in-progress label)
+    # 3. Clean issue (no assignees, no in-progress label) retains last_remote_issue
+    clean_payload = {
+        "number": 100,
+        "title": "[FEAT] Multi-workspace mutex",
+        "url": "https://github.com/example/repo/issues/100",
+        "assignees": [],
+        "labels": [{"name": "bug"}],
+    }
     mock_clean = MagicMock(
         returncode=0,
-        stdout=json.dumps({"assignees": [], "labels": [{"name": "bug"}]}),
+        stdout=json.dumps(clean_payload),
         stderr="",
     )
-    with patch("subprocess.run", return_value=mock_clean):
+    with patch("subprocess.run", return_value=mock_clean) as mock_run:
       check3 = mutex.check_remote("GH-100", hosting_mode="GITHUB")
       self.assertFalse(check3["conflict"])
+      self.assertEqual(mutex.last_remote_issue, clean_payload)
+      called_cmd = mock_run.call_args[0][0]
+      self.assertIn("number,title,url,assignees,labels", called_cmd)
+
+    # 4. Failed check resets last_remote_issue to None
+    mock_err = MagicMock(returncode=1, stdout="", stderr="network error")
+    with patch("subprocess.run", return_value=mock_err):
+      check4 = mutex.check_remote("GH-100", hosting_mode="GITHUB")
+      self.assertFalse(check4["conflict"])
+      self.assertIsNone(mutex.last_remote_issue)
+
+    # 5. Non-dict JSON payload from gh degrades cleanly without AttributeError
+    for raw_non_dict in ("[]", "null", '"unexpected"'):
+      mock_non_dict = MagicMock(returncode=0, stdout=raw_non_dict, stderr="")
+      with patch("subprocess.run", return_value=mock_non_dict):
+        check5 = mutex.check_remote("GH-100", hosting_mode="GITHUB")
+        self.assertFalse(check5["conflict"])
+        self.assertEqual(check5["hosting_mode"], "GITHUB")
+        self.assertIn("error", check5)
+        self.assertIsNone(mutex.last_remote_issue)
 
   def test_remote_pure_git_branch_exists(self):
     """TestCase 7: Remote Pure Git check flags existing remote branches."""
@@ -454,7 +481,7 @@ class TestWorkspaceMutex(unittest.TestCase):
     self.assertTrue(res2.get("reentrant"))
 
   def test_acquire_collision_cross_workspace_active_ticket(self):
-    """TestCase 14: Cross-workspace collision with active 10_ticket.md even if PID is dead."""
+    """TestCase 14: Cross-workspace collision with active 10_ticket.json even if PID is dead."""
     mutex1 = WorkspaceMutex(repo_root=self.other_root, lock_dir=self.lock_dir)
     acquire1 = mutex1.acquire(
         ticket_id="GH-100",
@@ -464,11 +491,13 @@ class TestWorkspaceMutex(unittest.TestCase):
     )
     self.assertTrue(acquire1["acquired"])
 
-    # Create active .workflow/state/10_ticket.md in other_root
+    # Create active .workflow/state/10_ticket.json in other_root
     other_state = os.path.join(self.other_root, ".workflow", "state")
     os.makedirs(other_state, exist_ok=True)
-    with open(os.path.join(other_state, "10_ticket.md"), "w", encoding="utf-8") as f:
-      f.write("# 10_ticket\n- **Ticket ID**: GH-100\n")
+    with open(
+        os.path.join(other_state, "10_ticket.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"ticket_id": "GH-100", "title": "Mutex test"}, f)
     with open(os.path.join(other_state, "99_next_action.md"), "w", encoding="utf-8") as f:
       f.write("# 99_next_action\nActive Target: Target 30\n")
 
@@ -500,8 +529,10 @@ class TestWorkspaceMutex(unittest.TestCase):
     # Create completed .workflow/state/99_next_action.md in other_root
     other_state = os.path.join(self.other_root, ".workflow", "state")
     os.makedirs(other_state, exist_ok=True)
-    with open(os.path.join(other_state, "10_ticket.md"), "w", encoding="utf-8") as f:
-      f.write("# 10_ticket\n- **Ticket ID**: GH-100\n")
+    with open(
+        os.path.join(other_state, "10_ticket.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"ticket_id": "GH-100", "title": "Mutex test"}, f)
     with open(os.path.join(other_state, "99_next_action.md"), "w", encoding="utf-8") as f:
       f.write("# 99_next_action\nStatus: COMPLETE\n")
 

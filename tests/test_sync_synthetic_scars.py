@@ -2307,7 +2307,7 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM scars")
     total_scars = cur.fetchone()[0]
-    self.assertEqual(total_scars, 598)
+    self.assertEqual(total_scars, 599)
 
     cur.execute("SELECT COUNT(*) FROM scars_fts")
     fts_scars = cur.fetchone()[0]
@@ -2488,6 +2488,37 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
       )
 
     for query_term in (
+        "SCAR-ARCH-10",
+        "SCAR-ARCH-0010",
+        "lossy prose",
+    ):
+      arch10_matches = query_scars(bundled_db, query=query_term, limit=10)
+      arch10_row = next(
+          (m for m in arch10_matches if m["id"] == "SCAR-ARCH-0010"), None
+      )
+      self.assertIsNotNone(
+          arch10_row,
+          f"Expected SCAR-ARCH-0010 in query_scars({query_term!r}), got {[m['id'] for m in arch10_matches]}",
+      )
+      self.assertEqual(arch10_row["source"], "makeflow")
+      self.assertIsNone(arch10_row.get("ssId"))
+      self.assertEqual(arch10_row.get("originalId"), "SCAR-ARCH-10")
+      self.assertEqual(arch10_row["category"], "ARCH")
+      self.assertEqual(arch10_row["languages"], ["universal"])
+      self.assertEqual(arch10_row["mfTargets"], [15, 20, 30, 40])
+      self.assertEqual(
+          arch10_row["ssTargets"],
+          ["Target 20: plan", "Target 30: tdd", "Target 40: review"],
+      )
+      self.assertGreaterEqual(len(arch10_row["keywords"]), 1)
+      self.assertEqual(
+          validate_socratic_probe(
+              arch10_row["socraticProbe"], scar_id="SCAR-ARCH-0010"
+          ),
+          [],
+      )
+
+    for query_term in (
         "SCAR-TEST-45",
         "SCAR-TEST-0045",
         "ephemeral temporary directory",
@@ -2555,6 +2586,45 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
         self.assertEqual(matched["source"], "makeflow")
         self.assertIsNone(matched.get("ssId"))
         self.assertEqual(matched.get("originalId"), "SCAR-ARCH-09")
+
+  def test_sync_preserves_bundled_scar_arch_0010_when_omitted_upstream(self):
+    """Verifies SyncSyntheticScarsScript preserves Makeflow-sourced SCAR-ARCH-0010 across upstream syncs (GH-240)."""
+    bundled_db = os.path.join(
+        _REPO_ROOT, "skills", "makeflow", "data", "scars_registry.db"
+    )
+    self.assertTrue(os.path.isfile(bundled_db))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      tmp_db = os.path.join(tmpdir, "scars_registry.db")
+      shutil.copyfile(bundled_db, tmp_db)
+
+      upstream_payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+      script = SyncSyntheticScarsScript()
+      with patch(
+          "urllib.request.urlopen",
+          return_value=MockHTTPResponse(
+              upstream_payload, etag='"etag-preserve-arch10"'
+          ),
+      ):
+        code = script.execute(
+            args=["--db-path", tmp_db, "--force"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+      self.assertEqual(code, 0)
+
+      for query_term in ("SCAR-ARCH-10", "SCAR-ARCH-0010"):
+        matches = query_scars(tmp_db, query=query_term, limit=5)
+        matched = next(
+            (m for m in matches if m["id"] == "SCAR-ARCH-0010"), None
+        )
+        self.assertIsNotNone(
+            matched,
+            f"SCAR-ARCH-0010 lost after sync on query {query_term!r}",
+        )
+        self.assertEqual(matched["source"], "makeflow")
+        self.assertIsNone(matched.get("ssId"))
+        self.assertEqual(matched.get("originalId"), "SCAR-ARCH-10")
 
   def test_sync_preserves_bundled_scar_test_0045_when_omitted_upstream(self):
     """Verifies SyncSyntheticScarsScript preserves Makeflow-sourced SCAR-TEST-0045 across upstream syncs (GH-215)."""
@@ -2819,9 +2889,14 @@ class TestMultiPathStackingAndSessionLedger(unittest.TestCase):
 
     state_dir = os.path.join(self.temp_dir.name, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
-    ticket_card = os.path.join(state_dir, "10_ticket.md")
+    ticket_card = os.path.join(state_dir, "10_ticket.json")
     with open(ticket_card, "w", encoding="utf-8") as f:
-      f.write("# Ticket: GH-192\n\n- **Title**: Stack scar queries\n")
+      json.dump({"ticket_id": "GH-192", "title": "Stack scar queries"}, f)
+    # Quoted ticket ID in 10_ticket.md prose must not hijack detect_active_ticket_id
+    with open(
+        os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write("See GH-999 before GH-192.\n")
 
     self.assertEqual(detect_active_ticket_id(state_dir), "GH-192")
     self.assertEqual(load_session_scars(state_dir=state_dir), set())
@@ -2921,9 +2996,9 @@ class TestMultiPathStackingAndSessionLedger(unittest.TestCase):
     self.assertTrue(all("wound" in s for s in scars_ref))
     self.assertEqual(already_ref, [])
 
-    # 5. Changing active ticket in 10_ticket.md resets loaded scars automatically
+    # 5. Changing active ticket in 10_ticket.json resets loaded scars automatically
     with open(ticket_card, "w", encoding="utf-8") as f:
-      f.write("# Ticket: GH-193\n")
+      json.dump({"ticket_id": "GH-193", "title": "Next ticket"}, f)
     self.assertEqual(load_session_scars(state_dir=state_dir), set())
 
 
