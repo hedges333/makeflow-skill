@@ -785,6 +785,24 @@ def _finalize_completed_ticket(
       ticket_meta=meta,
   )
 
+  if ws and os.path.isdir(ws):
+    try:
+      from lib.terminal_title import (
+          detect_directory_name,
+          format_terminal_title,
+          is_temporary_directory_name,
+          set_terminal_title,
+      )
+
+      if not is_temporary_directory_name(ws):
+        dir_name = detect_directory_name(repo_root=ws)
+        if dir_name and not is_temporary_directory_name(dir_name):
+          restored_title = format_terminal_title("", dir_name)
+          if restored_title:
+            set_terminal_title(title=restored_title, repo_root=ws)
+    except (ImportError, OSError):
+      pass
+
 
 def _persist_active_transition(
     spec: RenderCardSpec,

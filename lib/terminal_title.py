@@ -9,19 +9,20 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
-from typing import Any, Dict, List, Optional, TextIO, Tuple
+from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.config import is_ticket_active
 
 _TICKET_CARD_RE = re.compile(
-    r"(?i)(?:-\s*\*\*)?Ticket\s*ID(?:\*\*)?:\s*([A-Za-z0-9_-]+)"
+    r"(?i)(?:-\s*\*\*)?Ticket\s*ID(?:\*\*)?:\s*`?([A-Za-z0-9_-]+)`?"
 )
 _TICKET_INTAKE_RE = re.compile(
-    r"(?i)#\s*Ticket\s*Intake:\s*([A-Za-z0-9_-]+)"
+    r"(?i)#\s*(?:Ticket\s*Intake|10_ticket):\s*`?([A-Za-z0-9_-]+)`?"
 )
 _TICKET_BULLET_RE = re.compile(
     r"(?i)-\s*Ticket:\s*\[([A-Za-z0-9_-]+):"
@@ -34,6 +35,9 @@ _BRANCH_TICKET_RE = re.compile(
 )
 _CARD_ISSUE_BULLET_RE = re.compile(
     r"(?i)-\s*Ticket:\s*\[[A-Za-z0-9_-]+:\s*(.+?)(?:\]\([^\)\n]*\)|\](?:\s*\(|\s*$))"
+)
+_CARD_TITLE_RE = re.compile(
+    r"(?im)^-\s*\*\*Title\*\*:\s*(.+)$"
 )
 _CARD_INTAKE_HEADER_RE = re.compile(
     r"(?i)#\s*Ticket\s*Intake:\s*[A-Za-z0-9_-]+:\s*([^\n]+)"
@@ -53,10 +57,48 @@ _TEMP_PATTERN_RE = re.compile(
 _TEMP_IN_STRING_RE = re.compile(
     r"(?:^|[/\\]|\btmp)tmp(?:[a-z0-5]{8}|[a-z0-9_]{6,})\b", re.IGNORECASE
 )
+_PTY_DEVICE_RE = re.compile(
+    r"^/dev/(?:pts/\d+|ttys\d+|pty[p-za-e][0-9a-f])$"
+)
+
+
+def _has_temp_segment_under_root(candidate: str, temp_root: str) -> bool:
+  """Checks whether candidate lies beneath temp_root with a tmp-prefixed segment.
+
+  Args:
+    candidate: Normalized candidate path.
+    temp_root: Normalized system temporary root path.
+
+  Returns:
+    True if any path component under temp_root begins with 'tmp', else False.
+  """
+  if not candidate or not temp_root:
+    return False
+  if not os.path.isabs(candidate) or not os.path.isabs(temp_root):
+    return False
+  norm_cand = os.path.normpath(candidate)
+  norm_root = os.path.normpath(temp_root)
+  try:
+    if os.path.commonpath([norm_root, norm_cand]) != norm_root:
+      return False
+  except ValueError:
+    return False
+  if norm_cand == norm_root:
+    return False
+  rel = os.path.relpath(norm_cand, norm_root)
+  parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
+  return any(part.lower().startswith("tmp") for part in parts)
 
 
 def is_temporary_directory_name(path_or_name: str) -> bool:
-  """Detects whether a directory path or name matches temporary directory patterns."""
+  """Detects whether a directory path or name matches temporary directory patterns.
+
+  Args:
+    path_or_name: Directory path or basename candidate.
+
+  Returns:
+    True when path_or_name points to or lives inside a temporary directory.
+  """
   if not path_or_name:
     return False
   clean = str(path_or_name).strip()
@@ -68,8 +110,14 @@ def is_temporary_directory_name(path_or_name: str) -> bool:
   if norm_fwd.startswith("/tmp/tmp") or "/tmp/tmp" in norm_fwd:
     return True
   temp_dir = tempfile.gettempdir()
-  if (norm.startswith(temp_dir) or norm.startswith(os.path.realpath(temp_dir))) and base.startswith("tmp"):
-    return True
+  real_temp = os.path.realpath(temp_dir)
+  candidates = [norm]
+  if os.path.isabs(norm):
+    candidates.append(os.path.realpath(norm))
+  for cand in candidates:
+    for t_root in (temp_dir, real_temp):
+      if _has_temp_segment_under_root(cand, t_root):
+        return True
   return False
 
 
@@ -77,13 +125,20 @@ _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def sanitize_terminal_title(title: str) -> str:
-  """Removes control characters, newlines, and escape sequences from title."""
+  """Removes control characters, newlines, escapes, and backticks from title.
+
+  Args:
+    title: Raw terminal title or component string.
+
+  Returns:
+    Sanitized single-line string safe for terminal escape sequences.
+  """
   if not title:
     return ""
   # Replace line breaks, carriage returns, and tabs with a single space
   cleaned = re.sub(r"[\r\n\t]+", " ", str(title))
-  # Remove remaining C0 and C1 control characters (including \x07 BEL and \x1b ESC)
-  cleaned = _CONTROL_CHAR_RE.sub("", cleaned)
+  # Remove C0/C1 control characters and markdown backticks
+  cleaned = _CONTROL_CHAR_RE.sub("", cleaned).replace("`", "")
   # Collapse multiple consecutive whitespace characters and strip
   return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -117,10 +172,14 @@ def detect_terminal_capability(
 ) -> Tuple[bool, str]:
   """Detects if terminal window or tab title can be changed and returns mechanism.
 
+  Args:
+    stream: Optional output stream to check for TTY status.
+    env: Optional environment variable mapping override.
+
   Returns:
-      Tuple of (can_change: bool, mechanism: str).
-      Possible mechanisms: 'xterm_osc', 'tmux', 'screen', or rejection reasons
-      ('non_tty', 'disabled', 'dumb_term', 'unsupported_term', 'missing_term', 'unrecognized_term').
+    Tuple of (can_change, mechanism). Possible mechanisms are 'xterm_osc',
+    'tmux', 'screen', or rejection reasons ('non_tty', 'disabled',
+    'dumb_term', 'unsupported_term', 'missing_term', 'unrecognized_term').
   """
   target_env = os.environ if env is None else env
 
@@ -136,16 +195,10 @@ def detect_terminal_capability(
       return False, "non_tty"
 
   term = target_env.get("TERM", "").strip()
-  if not term:
-    return False, "missing_term"
-
-  if term == "dumb":
-    return False, "dumb_term"
-
   if term in ("linux", "cons25"):
     return False, "unsupported_term"
 
-  # Multiplexer detection
+  # Multiplexer detection (checked before TERM=dumb in case subshell clamps TERM)
   if target_env.get("TMUX") or term.startswith("tmux"):
     return True, "tmux"
 
@@ -165,16 +218,20 @@ def detect_terminal_capability(
   ):
     return True, "xterm_osc"
 
-  if target_env.get("WT_SESSION"):
-    return True, "xterm_osc"
-
   if (
-      target_env.get("KITTY_WINDOW_ID")
+      target_env.get("WT_SESSION")
+      or target_env.get("KITTY_WINDOW_ID")
       or target_env.get("ALACRITTY_LOG")
       or target_env.get("KONSOLE_VERSION")
       or target_env.get("VTE_VERSION")
   ):
     return True, "xterm_osc"
+
+  if not term:
+    return False, "missing_term"
+
+  if term == "dumb":
+    return False, "dumb_term"
 
   # Known standard XTerm-compatible terminals
   if term.startswith((
@@ -383,21 +440,17 @@ def detect_issue_tag(
     try:
       with open(card_10, "r", encoding="utf-8") as f:
         content = f.read()
-      m_bullet = _CARD_ISSUE_BULLET_RE.search(content)
-      if m_bullet:
-        candidate = _clean_tag(m_bullet.group(1))
-        if candidate:
-          return candidate
-      m_intake = _CARD_INTAKE_HEADER_RE.search(content)
-      if m_intake:
-        candidate = _clean_tag(m_intake.group(1))
-        if candidate:
-          return candidate
-      m_desc = _CARD_DESC_RE.search(content)
-      if m_desc:
-        candidate = _clean_tag(m_desc.group(1))
-        if candidate:
-          return candidate
+      for regex in (
+          _CARD_ISSUE_BULLET_RE,
+          _CARD_TITLE_RE,
+          _CARD_INTAKE_HEADER_RE,
+          _CARD_DESC_RE,
+      ):
+        match = regex.search(content)
+        if match:
+          candidate = _clean_tag(match.group(1))
+          if candidate:
+            return candidate
     except (OSError, UnicodeDecodeError):
       pass
 
@@ -453,7 +506,7 @@ def format_terminal_title(
     dir_name: str = "",
     issue_tag: Optional[str] = None,
 ) -> str:
-  """Formats title string as '{dir_name}/: {ticket_id} {issue_tag}'.
+  """Formats title string using the simplified two-format contract.
 
   Args:
     ticket_id: Active ticket identifier (for example 'GH-224').
@@ -461,18 +514,311 @@ def format_terminal_title(
     issue_tag: Optional short issue description tag.
 
   Returns:
-    Formatted terminal title string with trailing slash after directory name.
+    '{dir_name}/: {ticket_id} {issue_tag}' (or without tag if empty) when
+    both dir_name and ticket_id are present, '{dir_name}/' when dir_name is
+    present without ticket_id, or '' when dir_name is empty.
   """
   t = sanitize_terminal_title(ticket_id)
   d = sanitize_terminal_title(dir_name).rstrip("/\\").strip()
-  tag = sanitize_terminal_title(issue_tag) if issue_tag else ""
-
-  body = " ".join(part for part in (t, tag) if part)
-  if d and body:
-    return f"{d}/: {body}"
-  if d:
+  if not d:
+    return ""
+  if not t:
     return f"{d}/"
-  return body
+  tag = sanitize_terminal_title(issue_tag) if issue_tag else ""
+  if tag:
+    return f"{d}/: {t} {tag}"
+  return f"{d}/: {t}"
+
+
+def _parse_proc_stat_entry(stat_text: str) -> Optional[Tuple[int, int]]:
+  """Extracts (ppid, tty_nr) from a Linux /proc/<pid>/stat line.
+
+  Args:
+    stat_text: Raw contents of /proc/<pid>/stat.
+
+  Returns:
+    Tuple of (ppid, tty_nr) or None if malformed.
+  """
+  if not stat_text:
+    return None
+  rp = stat_text.rfind(")")
+  if rp == -1:
+    return None
+  fields = stat_text[rp + 1 :].split()
+  if len(fields) < 5:
+    return None
+  try:
+    return int(fields[1]), int(fields[4])
+  except ValueError:
+    return None
+
+
+def _decode_tty_nr(tty_nr: int) -> Optional[str]:
+  """Decodes a Linux /proc tty_nr device number into a device path.
+
+  Args:
+    tty_nr: Raw tty_nr integer from /proc/<pid>/stat.
+
+  Returns:
+    Decoded device path (such as '/dev/pts/8' or '/dev/tty2'), or None.
+  """
+  if tty_nr <= 0 or not hasattr(os, "major") or not hasattr(os, "minor"):
+    return None
+  major = os.major(tty_nr)
+  minor = os.minor(tty_nr)
+  if 136 <= major <= 143:
+    return f"/dev/pts/{(major - 136) * 256 + minor}"
+  if major == 4 and 0 <= minor < 64:
+    return f"/dev/tty{minor}"
+  return None
+
+
+def _parse_ps_entry(ps_text: str) -> Optional[Tuple[int, Optional[str]]]:
+  """Extracts (ppid, tty_path) from `ps -p <pid> -o ppid=,tty=` output.
+
+  Args:
+    ps_text: Standard output from POSIX ps command.
+
+  Returns:
+    Tuple of (ppid, device_path_or_none) or None if unparseable.
+  """
+  if not ps_text:
+    return None
+  parts = ps_text.strip().split()
+  if len(parts) < 2:
+    return None
+  try:
+    ppid = int(parts[0])
+  except ValueError:
+    return None
+  tty = parts[1].strip()
+  if tty in ("", "?", "??", "-"):
+    return ppid, None
+  dev_path = tty if tty.startswith("/dev/") else f"/dev/{tty}"
+  return ppid, dev_path
+
+
+def _is_safe_pty_device(
+    path: str,
+    uid: int,
+    lstat_fn: Callable[[str], os.stat_result],
+) -> bool:
+  """Validates pseudo-terminal path regex, character device mode, and UID ownership.
+
+  Args:
+    path: Candidate device path.
+    uid: Required owning UID.
+    lstat_fn: Stat lookup function (os.lstat in production).
+
+  Returns:
+    True if path is a safe same-UID pseudo-terminal character device.
+  """
+  if not path or not _PTY_DEVICE_RE.match(path):
+    return False
+  try:
+    st = lstat_fn(path)
+  except OSError:
+    return False
+  return stat.S_ISCHR(st.st_mode) and st.st_uid == uid
+
+
+def find_ancestor_pty(
+    start_pid: Optional[int] = None,
+    *,
+    max_depth: int = 32,
+    proc_dir: str = "/proc",
+    stat_reader: Optional[Callable[[int], Optional[str]]] = None,
+    ps_runner: Optional[Callable[[int], Optional[str]]] = None,
+    lstat_fn: Optional[Callable[[str], os.stat_result]] = None,
+    uid: Optional[int] = None,
+) -> Optional[str]:
+  """Finds a safe same-UID outer ancestor pseudo-terminal device path.
+
+  Args:
+    start_pid: Starting process ID (defaults to os.getpid()).
+    max_depth: Maximum number of ancestor hops to inspect.
+    proc_dir: Root procfs directory path (defaults to '/proc').
+    stat_reader: Optional callback returning /proc/<pid>/stat text for tests.
+    ps_runner: Optional callback returning `ps` output text for tests.
+    lstat_fn: Optional stat callback replacing os.lstat for tests.
+    uid: Optional expected owning UID (defaults to os.getuid()).
+
+  Returns:
+    Validated outer pseudo-terminal path (for example '/dev/pts/8'), or None.
+  """
+  if os.name != "posix":
+    return None
+  if uid is None and not hasattr(os, "getuid"):
+    return None
+  current_uid = os.getuid() if uid is None else uid
+  lstat_cb = os.lstat if lstat_fn is None else lstat_fn
+  pid = os.getpid() if start_pid is None else start_pid
+  if pid <= 0 or max_depth <= 0:
+    return None
+
+  use_proc = stat_reader is not None or os.path.isdir(proc_dir)
+
+  def _read_entry(target_pid: int) -> Optional[Tuple[int, Optional[str]]]:
+    if use_proc:
+      raw_stat: Optional[str] = None
+      if stat_reader is not None:
+        raw_stat = stat_reader(target_pid)
+      else:
+        stat_path = os.path.join(proc_dir, str(target_pid), "stat")
+        try:
+          with open(stat_path, "r", encoding="utf-8") as f:
+            raw_stat = f.read()
+        except (OSError, UnicodeDecodeError):
+          return None
+      parsed = _parse_proc_stat_entry(raw_stat or "")
+      if parsed is None:
+        return None
+      ppid, tty_nr = parsed
+      return ppid, _decode_tty_nr(tty_nr)
+
+    raw_ps: Optional[str] = None
+    if ps_runner is not None:
+      raw_ps = ps_runner(target_pid)
+    else:
+      try:
+        proc = subprocess.run(
+            ["ps", "-p", str(target_pid), "-o", "ppid=,tty="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+        if proc.returncode == 0:
+          raw_ps = proc.stdout
+      except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_ps_entry(raw_ps or "")
+
+  start_info = _read_entry(pid)
+  if start_info is None:
+    return None
+  next_pid, own_tty_path = start_info
+  visited = {pid}
+
+  for _ in range(max_depth):
+    if next_pid <= 1 or next_pid in visited:
+      break
+    visited.add(next_pid)
+    info = _read_entry(next_pid)
+    if info is None:
+      break
+    ppid, dev_path = info
+    if (
+        dev_path
+        and dev_path != own_tty_path
+        and _is_safe_pty_device(dev_path, current_uid, lstat_cb)
+    ):
+      return dev_path
+    next_pid = ppid
+
+  return None
+
+
+def _is_unmocked_os_stream(stream: Optional[TextIO]) -> bool:
+  """Returns True when stream targets unmocked OS stdio rather than test doubles.
+
+  Args:
+    stream: Stream passed by caller or wrapped inside StreamProxy.
+
+  Returns:
+    True if stream is None (with unmocked OS TTYs) or wraps sys.__stderr__ /
+    sys.__stdout__ without forced TTY mocking.
+  """
+  if stream is None:
+    if (
+        sys.stderr is not sys.__stderr__
+        and getattr(sys.stderr, "isatty", lambda: False)()
+    ):
+      return False
+    if (
+        sys.stdout is not sys.__stdout__
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    ):
+      return False
+    return True
+  raw = stream
+  if isinstance(stream, StreamProxy):
+    if stream._force_isatty:
+      return False
+    raw = stream._stream
+  if raw is None:
+    return True
+  return raw is sys.__stderr__ or raw is sys.__stdout__
+
+
+def _resolve_capability_and_ancestor_pty(
+    stream: Optional[TextIO],
+    env: Dict[str, str],
+) -> Tuple[bool, str, Optional[str]]:
+  """Resolves terminal capability and outer ancestor PTY path when applicable.
+
+  Args:
+    stream: Optional output stream or StreamProxy.
+    env: Environment variable mapping.
+
+  Returns:
+    Tuple of (can_change, mechanism, ancestor_pty_path_or_none).
+  """
+  can_change, mechanism = detect_terminal_capability(stream=stream, env=env)
+  if mechanism in ("disabled", "unsupported_term") or not _is_unmocked_os_stream(
+      stream
+  ):
+    return can_change, mechanism, None
+
+  ancestor_pty = find_ancestor_pty()
+  if not ancestor_pty:
+    return can_change, mechanism, None
+
+  if not can_change and mechanism == "non_tty":
+    can_change, mechanism = detect_terminal_capability(stream=None, env=env)
+  if not can_change and mechanism in ("dumb_term", "missing_term"):
+    if env.get("TMUX"):
+      mechanism = "tmux"
+    elif env.get("STY"):
+      mechanism = "screen"
+    else:
+      mechanism = "xterm_osc"
+    can_change = True
+  return can_change, mechanism, ancestor_pty
+
+
+def _write_escape_to_pty(path: str, seq: str) -> bool:
+  """Opens an ancestor PTY non-blockingly, checks isatty, and writes seq.
+
+  Args:
+    path: Validated pseudo-terminal device path.
+    seq: Escape sequence text to encode and write.
+
+  Returns:
+    True if the complete sequence was written to a TTY descriptor, else False.
+  """
+  fd: Optional[int] = None
+  try:
+    fd = os.open(path, os.O_WRONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    if not os.isatty(fd):
+      return False
+    payload = seq.encode("utf-8")
+    view = memoryview(payload)
+    total_written = 0
+    while total_written < len(payload):
+      written = os.write(fd, view[total_written:])
+      if written <= 0:
+        return False
+      total_written += written
+    return True
+  except (OSError, UnicodeEncodeError):
+    return False
+  finally:
+    if fd is not None:
+      try:
+        os.close(fd)
+      except OSError:
+        pass
 
 
 def set_terminal_title(
@@ -501,10 +847,19 @@ def set_terminal_title(
   target_env = os.environ if env is None else env
   root = os.path.abspath(repo_root or os.getcwd())
 
-  final_title = title
-  if not final_title:
-    t_id = ticket_id if ticket_id is not None else detect_ticket_id(repo_root=root, env=target_env)
-    d_name = dir_name if dir_name is not None else detect_directory_name(repo_root=root)
+  if title:
+    final_title = sanitize_terminal_title(title)
+  else:
+    t_id = (
+        ticket_id
+        if ticket_id is not None
+        else detect_ticket_id(repo_root=root, env=target_env)
+    )
+    d_name = (
+        dir_name
+        if dir_name is not None
+        else detect_directory_name(repo_root=root)
+    )
     i_tag = issue_tag
     if i_tag is None and ticket_id is None:
       i_tag = detect_issue_tag(repo_root=root, env=target_env)
@@ -515,6 +870,21 @@ def set_terminal_title(
 
   # Refuse temporary directory patterns in title
   if is_temporary_directory_name(final_title) or _TEMP_IN_STRING_RE.search(final_title):
+    return False, ""
+
+  can_change, mechanism, ancestor_pty = _resolve_capability_and_ancestor_pty(
+      stream=stream, env=target_env
+  )
+  if not can_change:
+    return False, ""
+
+  seq = generate_escape_sequence(final_title, mechanism)
+  if not seq:
+    return False, ""
+
+  if ancestor_pty is not None:
+    if _write_escape_to_pty(ancestor_pty, seq):
+      return True, final_title
     return False, ""
 
   opened_file = None
@@ -532,14 +902,7 @@ def set_terminal_title(
         target_stream = None
 
   try:
-    can_change, mechanism = detect_terminal_capability(
-        stream=target_stream, env=target_env
-    )
-    if not can_change:
-      return False, ""
-
-    seq = generate_escape_sequence(final_title, mechanism)
-    if not seq or target_stream is None:
+    if target_stream is None:
       return False, ""
 
     target_stream.write(seq)
@@ -742,10 +1105,15 @@ class TerminalTitleScript(BaseScript):
     self.title = getattr(ns, "title", None)
 
   def run(self) -> int:
+    """Executes the selected terminal title subcommand.
+
+    Returns:
+      Process exit code (0 on handled subcommands, 1 on unknown command).
+    """
     env = self.env_override if self.env_override is not None else os.environ
     stream_to_check = StreamProxy(self.stderr, force_isatty=self.mock_tty)
 
-    can_change, mechanism = detect_terminal_capability(
+    can_change, mechanism, _ = _resolve_capability_and_ancestor_pty(
         stream=stream_to_check, env=env
     )
 
@@ -805,8 +1173,10 @@ class TerminalTitleScript(BaseScript):
     issue_tag = self.issue_tag
     if issue_tag is None and self.ticket is None:
       issue_tag = detect_issue_tag(repo_root=self.repo_root, env=env)
-    title = self.title or format_terminal_title(
-        ticket_id, dir_name, issue_tag
+    title = (
+        sanitize_terminal_title(self.title)
+        if self.title is not None
+        else format_terminal_title(ticket_id, dir_name, issue_tag)
     )
 
     if self.command == "info":
@@ -831,12 +1201,15 @@ class TerminalTitleScript(BaseScript):
       return 0
 
     if self.command == "set":
-      ok, applied = set_terminal_title(
-          title=title,
-          repo_root=self.repo_root,
-          stream=stream_to_check,
-          env=env,
-      )
+      ok = False
+      applied = ""
+      if title:
+        ok, applied = set_terminal_title(
+            title=title,
+            repo_root=self.repo_root,
+            stream=stream_to_check,
+            env=env,
+        )
       if self.as_json:
         self.stdout.write(
             json.dumps(
