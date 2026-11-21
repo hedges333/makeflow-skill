@@ -9,10 +9,12 @@ and local dependency blocker detection at Target 10 intake.
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
@@ -550,6 +552,560 @@ class TestLocalTickets(unittest.TestCase):
         test_recipe,
         "Makefile test: recipe must discover tests across $(TESTS_DIR)",
     )
+
+
+class TestLocalTicketsSubparserRepoRootGH243(unittest.TestCase):
+  """Hermetic tests for subparser --repo-root and --lock-dir resolution (GH-243)."""
+
+  def setUp(self):
+    """Create isolated temporary repo and lock directories without git clones."""
+    self.temp_dir = tempfile.TemporaryDirectory()
+    self.target_repo = os.path.join(self.temp_dir.name, "target_repo")
+    self.cwd_repo = os.path.join(self.temp_dir.name, "cwd_repo")
+    self.other_repo = os.path.join(self.temp_dir.name, "other_repo")
+    self.locks_dir = os.path.join(self.temp_dir.name, "locks")
+    self.parent_locks_dir = os.path.join(self.temp_dir.name, "parent_locks")
+    self.env_locks_dir = os.path.join(self.temp_dir.name, "env_locks")
+    for directory in (
+        self.target_repo,
+        self.cwd_repo,
+        self.other_repo,
+        self.locks_dir,
+        self.parent_locks_dir,
+        self.env_locks_dir,
+    ):
+      os.makedirs(directory, exist_ok=True)
+    self._default_tickets_dir = os.path.join(_REPO_ROOT, ".workflow", "tickets")
+    self._default_tickets_existed = os.path.isdir(self._default_tickets_dir)
+    self._default_tickets_before = (
+        set(os.listdir(self._default_tickets_dir))
+        if self._default_tickets_existed
+        else set()
+    )
+
+  def tearDown(self):
+    """Remove any stray default-repo ticket writes and clean temporary directories."""
+    if os.path.isdir(self._default_tickets_dir):
+      for entry in os.listdir(self._default_tickets_dir):
+        if entry not in self._default_tickets_before:
+          stray_path = os.path.join(self._default_tickets_dir, entry)
+          if os.path.isdir(stray_path):
+            shutil.rmtree(stray_path)
+          else:
+            os.unlink(stray_path)
+      if not self._default_tickets_existed and not os.listdir(
+          self._default_tickets_dir
+      ):
+        os.rmdir(self._default_tickets_dir)
+    self.temp_dir.cleanup()
+
+  def _run_cli(self, args, cwd=None):
+    """Execute LocalTicketScript in-process with patched os.getcwd and WORKFLOW_LOCK_DIR.
+
+    Args:
+      args: CLI argument list passed to LocalTicketScript.execute().
+      cwd: Optional working directory path for os.getcwd mock.
+
+    Returns:
+      Tuple of (exit_code, stdout_text, stderr_text).
+    """
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with (
+        mock.patch("os.getcwd", return_value=cwd or self.cwd_repo),
+        mock.patch.dict(os.environ, {"WORKFLOW_LOCK_DIR": self.env_locks_dir}),
+    ):
+      code = LocalTicketScript().execute(args=args, stdout=stdout, stderr=stderr)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+  def _read_ticket_json(self, repo_root, ticket_id):
+    """Read a persisted ticket JSON file directly from disk.
+
+    Args:
+      repo_root: Repository root containing .workflow/tickets/.
+      ticket_id: Ticket ID stem (for example 'LOCAL-1').
+
+    Returns:
+      Parsed JSON dictionary for the ticket file.
+    """
+    path = os.path.join(repo_root, ".workflow", "tickets", f"{ticket_id}.json")
+    self.assertTrue(os.path.isfile(path), f"Expected ticket file on disk: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+      return json.load(f)
+
+  def _assert_no_default_repo_writes(self):
+    """Assert that _DEFAULT_REPO_ROOT/.workflow/tickets was never modified."""
+    if not self._default_tickets_existed:
+      self.assertFalse(
+          os.path.exists(self._default_tickets_dir),
+          f"Unexpected writes in plugin default tickets dir: {self._default_tickets_dir}",
+      )
+      return
+    after = set(os.listdir(self._default_tickets_dir))
+    self.assertEqual(
+        after,
+        self._default_tickets_before,
+        "Unexpected writes in plugin default tickets dir.",
+    )
+
+  def _assert_full_lifecycle(
+      self,
+      build_args,
+      expected_repo,
+      title,
+      comment,
+      untouched_repos=(),
+  ):
+    """Exercise next-id, create, list, view, and close against expected_repo.
+
+    Args:
+      build_args: Callable taking subcommand arg list and returning full CLI args.
+      expected_repo: Repository root where ticket JSON files must persist.
+      title: Ticket title for the created ticket.
+      comment: Resolution comment for closing the ticket.
+      untouched_repos: Iterable of repo paths that must have no .workflow/tickets dir.
+    """
+    code_next, out_next, err_next = self._run_cli(build_args(["next-id", "--json"]))
+    self.assertEqual(code_next, 0, err_next)
+    self.assertEqual(json.loads(out_next)["ticket_id"], "LOCAL-1")
+
+    code_create, out_create, err_create = self._run_cli(
+        build_args(
+            ["create", "--title", title, "--priority", "P1", "--json"]
+        )
+    )
+    self.assertEqual(code_create, 0, err_create)
+    created = json.loads(out_create)
+    self.assertEqual(created["id"], "LOCAL-1")
+    disk_created = self._read_ticket_json(expected_repo, "LOCAL-1")
+    self.assertEqual(disk_created["id"], "LOCAL-1")
+    self.assertEqual(disk_created["title"], title)
+    self.assertEqual(disk_created["status"], "OPEN")
+    self.assertEqual(disk_created["priority"], "P1")
+
+    code_list, out_list, err_list = self._run_cli(build_args(["list", "--json"]))
+    self.assertEqual(code_list, 0, err_list)
+    listed = json.loads(out_list)
+    self.assertEqual([t["id"] for t in listed], ["LOCAL-1"])
+
+    code_view, out_view, err_view = self._run_cli(
+        build_args(["view", "--ticket", "LOCAL-1", "--json"])
+    )
+    self.assertEqual(code_view, 0, err_view)
+    viewed = json.loads(out_view)
+    self.assertEqual(viewed["id"], "LOCAL-1")
+    self.assertEqual(viewed["title"], title)
+
+    code_close, out_close, err_close = self._run_cli(
+        build_args(
+            ["close", "--ticket", "LOCAL-1", "--comment", comment, "--json"]
+        )
+    )
+    self.assertEqual(code_close, 0, err_close)
+    closed = json.loads(out_close)
+    self.assertEqual(closed["status"], "CLOSED")
+    disk_closed = self._read_ticket_json(expected_repo, "LOCAL-1")
+    self.assertEqual(disk_closed["status"], "CLOSED")
+    self.assertEqual(disk_closed["resolution_comment"], comment)
+
+    for untouched in untouched_repos:
+      self.assertFalse(
+          os.path.exists(os.path.join(untouched, ".workflow", "tickets")),
+          f"Unexpected writes in untouched repo: {untouched}",
+      )
+    self._assert_no_default_repo_writes()
+
+  def _make_arg_builder(self, repo_root, lock_dir, position):
+    """Return a CLI arg builder placing --repo-root and --lock-dir pre- or post-subcommand.
+
+    Args:
+      repo_root: Target repository root path.
+      lock_dir: Target workspace mutex lock directory.
+      position: Either 'pre' (before subcommand) or 'post' (after subcommand).
+
+    Returns:
+      Callable accepting subcommand arg list and returning full CLI args.
+    """
+    flags = ["--repo-root", repo_root, "--lock-dir", lock_dir]
+
+    def _build(sub_args):
+      if position == "pre":
+        return [*flags, *sub_args]
+      return [*sub_args, *flags]
+
+    return _build
+
+  def test_initial_repo_root_matches_cwd_gh243(self):
+    """LocalTicketScript initializes self.repo_root from os.getcwd() rather than plugin root (GH-243)."""
+    with mock.patch("os.getcwd", return_value=self.cwd_repo):
+      script = LocalTicketScript()
+    self.assertEqual(script.repo_root, os.path.abspath(self.cwd_repo))
+    self.assertNotEqual(script.repo_root, _REPO_ROOT)
+
+  def test_pre_and_post_subcommand_repo_root_all_subcommands_gh243(self):
+    """Pre- and post-subcommand --repo-root target the specified repo across all 5 subcommands (GH-243)."""
+    cwd_store = LocalTicketStore(repo_root=self.cwd_repo, lock_dir=self.locks_dir)
+    cwd_store.create_ticket(title="CWD sentinel", ticket_id="LOCAL-9")
+
+    post_repo = os.path.join(self.temp_dir.name, "post_target_repo")
+    os.makedirs(post_repo, exist_ok=True)
+
+    modes = (
+        ("pre", self.target_repo, "Pre-subcommand ticket", "Closed pre-subcommand"),
+        ("post", post_repo, "Post-subcommand ticket", "Closed post-subcommand"),
+    )
+
+    for mode, expected_repo, title, comment in modes:
+      with self.subTest(mode=mode):
+        self._assert_full_lifecycle(
+            build_args=self._make_arg_builder(expected_repo, self.locks_dir, mode),
+            expected_repo=expected_repo,
+            title=title,
+            comment=comment,
+        )
+        cwd_tickets = os.listdir(os.path.join(self.cwd_repo, ".workflow", "tickets"))
+        self.assertEqual(cwd_tickets, ["LOCAL-9.json"])
+        self.assertEqual(
+            self._read_ticket_json(self.cwd_repo, "LOCAL-9")["status"],
+            "OPEN",
+        )
+
+  def test_omitted_repo_root_defaults_to_cwd_all_subcommands_gh243(self):
+    """Omitting --repo-root resolves to os.getcwd() across all 5 subcommands (GH-243)."""
+    code_bare, out_bare, err_bare = self._run_cli(["next-id", "--json"])
+    self.assertEqual(code_bare, 0, err_bare)
+    self.assertEqual(json.loads(out_bare)["ticket_id"], "LOCAL-1")
+
+    self._assert_full_lifecycle(
+        build_args=lambda sub: [*sub, "--lock-dir", self.locks_dir],
+        expected_repo=self.cwd_repo,
+        title="CWD default ticket",
+        comment="Closed in cwd",
+        untouched_repos=(self.target_repo,),
+    )
+
+  def test_pre_and_post_subcommand_lock_dir_all_subcommands_gh243(self):
+    """Pre- and post-subcommand --lock-dir honor WorkspaceMutex locks across all 5 subcommands (GH-243)."""
+    for mode in ("pre", "post"):
+      with self.subTest(mode=mode):
+        mode_repo = os.path.join(self.temp_dir.name, f"lock_{mode}_repo")
+        mode_locks = os.path.join(self.temp_dir.name, f"lock_{mode}_dir")
+        os.makedirs(mode_repo, exist_ok=True)
+        os.makedirs(mode_locks, exist_ok=True)
+
+        store = LocalTicketStore(repo_root=mode_repo, lock_dir=mode_locks)
+        store.create_ticket(title="Unlocked open", ticket_id="LOCAL-1")
+        store.create_ticket(title="Locked open", ticket_id="LOCAL-2")
+
+        mutex = WorkspaceMutex(repo_root=mode_repo, lock_dir=mode_locks)
+        mutex.acquire(
+            ticket_id="LOCAL-2",
+            workspace_path=mode_repo,
+            branch_name="feat/local-2-active",
+            pid=os.getpid(),
+        )
+        mutex.acquire(
+            ticket_id="LOCAL-10",
+            workspace_path=mode_repo,
+            branch_name="feat/local-10-active",
+            pid=os.getpid(),
+        )
+        WorkspaceMutex(
+            repo_root=mode_repo, lock_dir=self.env_locks_dir
+        ).acquire(
+            ticket_id="LOCAL-50",
+            workspace_path=mode_repo,
+            branch_name="feat/local-50-env",
+            pid=os.getpid(),
+        )
+
+        build_args = self._make_arg_builder(mode_repo, mode_locks, mode)
+
+        code_next, out_next, err_next = self._run_cli(
+            build_args(["next-id", "--json"])
+        )
+        self.assertEqual(code_next, 0, err_next)
+        self.assertEqual(json.loads(out_next)["ticket_id"], "LOCAL-11")
+
+        code_list, out_list, err_list = self._run_cli(
+            build_args(["list", "--json"])
+        )
+        self.assertEqual(code_list, 0, err_list)
+        self.assertEqual(
+            [t["id"] for t in json.loads(out_list)],
+            ["LOCAL-1"],
+        )
+
+        code_create, out_create, err_create = self._run_cli(
+            build_args(["create", "--title", "Lock aware task", "--json"])
+        )
+        self.assertEqual(code_create, 0, err_create)
+        created = json.loads(out_create)
+        self.assertEqual(created["id"], "LOCAL-11")
+        self.assertEqual(
+            self._read_ticket_json(mode_repo, "LOCAL-11")["title"],
+            "Lock aware task",
+        )
+
+        code_view, out_view, err_view = self._run_cli(
+            build_args(["view", "--ticket", "LOCAL-11", "--json"])
+        )
+        self.assertEqual(code_view, 0, err_view)
+        self.assertEqual(json.loads(out_view)["title"], "Lock aware task")
+
+        code_close, out_close, err_close = self._run_cli(
+            build_args(
+                [
+                    "close",
+                    "--ticket",
+                    "LOCAL-11",
+                    "--comment",
+                    "Lock aware close",
+                    "--json",
+                ]
+            )
+        )
+        self.assertEqual(code_close, 0, err_close)
+        self.assertEqual(json.loads(out_close)["status"], "CLOSED")
+        self.assertEqual(
+            self._read_ticket_json(mode_repo, "LOCAL-11")["status"],
+            "CLOSED",
+        )
+        self.assertFalse(
+            os.path.exists(os.path.join(self.cwd_repo, ".workflow", "tickets"))
+        )
+        self._assert_no_default_repo_writes()
+
+  def test_subcommand_repo_root_and_lock_dir_precedence_gh243(self):
+    """Subcommand --repo-root and --lock-dir override parent flags without clobbering sibling parent flags (GH-243)."""
+    mix_repo = os.path.join(self.temp_dir.name, "mix_repo")
+    mix_locks = os.path.join(self.temp_dir.name, "mix_locks")
+    os.makedirs(mix_repo, exist_ok=True)
+    os.makedirs(mix_locks, exist_ok=True)
+
+    mix_store = LocalTicketStore(repo_root=mix_repo, lock_dir=mix_locks)
+    mix_store.create_ticket(title="Mix open", ticket_id="LOCAL-1")
+    mix_store.create_ticket(title="Mix locked", ticket_id="LOCAL-2")
+    mix_mutex = WorkspaceMutex(repo_root=mix_repo, lock_dir=mix_locks)
+    mix_mutex.acquire(
+        ticket_id="LOCAL-2",
+        workspace_path=mix_repo,
+        branch_name="feat/local-2-mix",
+        pid=os.getpid(),
+    )
+    mix_mutex.acquire(
+        ticket_id="LOCAL-10",
+        workspace_path=mix_repo,
+        branch_name="feat/local-10-mix",
+        pid=os.getpid(),
+    )
+
+    code_mix_next, out_mix_next, err_mix_next = self._run_cli(
+        [
+            "--repo-root",
+            mix_repo,
+            "--json",
+            "next-id",
+            "--lock-dir",
+            mix_locks,
+        ]
+    )
+    self.assertEqual(code_mix_next, 0, err_mix_next)
+    self.assertEqual(json.loads(out_mix_next)["ticket_id"], "LOCAL-11")
+
+    code_mix_list, out_mix_list, err_mix_list = self._run_cli(
+        [
+            "--lock-dir",
+            mix_locks,
+            "list",
+            "--repo-root",
+            mix_repo,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_mix_list, 0, err_mix_list)
+    self.assertEqual(
+        [t["id"] for t in json.loads(out_mix_list)],
+        ["LOCAL-1"],
+    )
+
+    other_store = LocalTicketStore(
+        repo_root=self.other_repo, lock_dir=self.locks_dir
+    )
+    other_store.create_ticket(title="Parent repo sentinel", ticket_id="LOCAL-20")
+
+    code_create, out_create, err_create = self._run_cli(
+        [
+            "--repo-root",
+            self.other_repo,
+            "create",
+            "--title",
+            "Subcommand wins",
+            "--repo-root",
+            self.target_repo,
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_create, 0, err_create)
+    self.assertEqual(json.loads(out_create)["id"], "LOCAL-1")
+    self.assertEqual(
+        self._read_ticket_json(self.target_repo, "LOCAL-1")["title"],
+        "Subcommand wins",
+    )
+    self.assertEqual(
+        os.listdir(os.path.join(self.other_repo, ".workflow", "tickets")),
+        ["LOCAL-20.json"],
+    )
+
+    code_next, out_next, err_next = self._run_cli(
+        [
+            "--repo-root",
+            self.other_repo,
+            "next-id",
+            "--repo-root",
+            self.target_repo,
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_next, 0, err_next)
+    self.assertEqual(json.loads(out_next)["ticket_id"], "LOCAL-2")
+
+    code_list, out_list, err_list = self._run_cli(
+        [
+            "--repo-root",
+            self.other_repo,
+            "list",
+            "--repo-root",
+            self.target_repo,
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_list, 0, err_list)
+    self.assertEqual([t["id"] for t in json.loads(out_list)], ["LOCAL-1"])
+
+    code_view, out_view, err_view = self._run_cli(
+        [
+            "--repo-root",
+            self.other_repo,
+            "view",
+            "--ticket",
+            "LOCAL-1",
+            "--repo-root",
+            self.target_repo,
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_view, 0, err_view)
+    self.assertEqual(json.loads(out_view)["title"], "Subcommand wins")
+
+    code_close, out_close, err_close = self._run_cli(
+        [
+            "--repo-root",
+            self.other_repo,
+            "close",
+            "--ticket",
+            "LOCAL-1",
+            "--repo-root",
+            self.target_repo,
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_close, 0, err_close)
+    self.assertEqual(json.loads(out_close)["status"], "CLOSED")
+    self.assertEqual(
+        self._read_ticket_json(self.target_repo, "LOCAL-1")["status"],
+        "CLOSED",
+    )
+    self.assertEqual(
+        self._read_ticket_json(self.other_repo, "LOCAL-20")["status"],
+        "OPEN",
+    )
+
+    prec_lock_repo = os.path.join(self.temp_dir.name, "prec_lock_repo")
+    os.makedirs(prec_lock_repo, exist_ok=True)
+    prec_store = LocalTicketStore(
+        repo_root=prec_lock_repo, lock_dir=self.locks_dir
+    )
+    prec_store.create_ticket(title="Ticket one", ticket_id="LOCAL-1")
+    prec_store.create_ticket(title="Ticket two", ticket_id="LOCAL-2")
+
+    parent_mutex = WorkspaceMutex(
+        repo_root=prec_lock_repo, lock_dir=self.parent_locks_dir
+    )
+    parent_mutex.acquire(
+        ticket_id="LOCAL-2",
+        workspace_path=prec_lock_repo,
+        branch_name="feat/local-2-parent",
+        pid=os.getpid(),
+    )
+    parent_mutex.acquire(
+        ticket_id="LOCAL-40",
+        workspace_path=prec_lock_repo,
+        branch_name="feat/local-40-parent",
+        pid=os.getpid(),
+    )
+
+    sub_mutex = WorkspaceMutex(repo_root=prec_lock_repo, lock_dir=self.locks_dir)
+    sub_mutex.acquire(
+        ticket_id="LOCAL-1",
+        workspace_path=prec_lock_repo,
+        branch_name="feat/local-1-sub",
+        pid=os.getpid(),
+    )
+    sub_mutex.acquire(
+        ticket_id="LOCAL-20",
+        workspace_path=prec_lock_repo,
+        branch_name="feat/local-20-sub",
+        pid=os.getpid(),
+    )
+
+    code_lock_next, out_lock_next, err_lock_next = self._run_cli(
+        [
+            "--repo-root",
+            prec_lock_repo,
+            "--lock-dir",
+            self.parent_locks_dir,
+            "next-id",
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_lock_next, 0, err_lock_next)
+    self.assertEqual(json.loads(out_lock_next)["ticket_id"], "LOCAL-21")
+
+    code_lock_list, out_lock_list, err_lock_list = self._run_cli(
+        [
+            "--repo-root",
+            prec_lock_repo,
+            "--lock-dir",
+            self.parent_locks_dir,
+            "list",
+            "--lock-dir",
+            self.locks_dir,
+            "--json",
+        ]
+    )
+    self.assertEqual(code_lock_list, 0, err_lock_list)
+    self.assertEqual(
+        [t["id"] for t in json.loads(out_lock_list)],
+        ["LOCAL-2"],
+    )
+
+    self.assertFalse(
+        os.path.exists(os.path.join(self.cwd_repo, ".workflow", "tickets"))
+    )
+    self._assert_no_default_repo_writes()
 
 
 if __name__ == "__main__":

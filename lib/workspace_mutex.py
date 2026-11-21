@@ -22,7 +22,6 @@ from lib.signal_trap import SignalTrap
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_LOCK_DIR = os.path.expanduser("~/.workflow/locks")
 
 
@@ -526,7 +525,7 @@ class WorkspaceMutexScript(BaseScript):
 
   def __init__(self) -> None:
     super().__init__()
-    self.repo_root: str = _DEFAULT_REPO_ROOT
+    self.repo_root: str = os.getcwd()
     self.lock_dir: Optional[str] = None
     self.ticket: str = ""
     self.branch: Optional[str] = None
@@ -550,7 +549,7 @@ class WorkspaceMutexScript(BaseScript):
     )
     parser.add_argument(
         "--repo-root",
-        default=_DEFAULT_REPO_ROOT,
+        default=None,
         help="Repository root directory.",
     )
     parser.add_argument(
@@ -594,22 +593,6 @@ class WorkspaceMutexScript(BaseScript):
         default=None,
         help="Optional process ID owning the session (defaults to current PID).",
     )
-    p_acq.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_acq.add_argument(
-        "--lock-dir",
-        default=None,
-        help="Directory for workspace mutual exclusion locks.",
-    )
-    p_acq.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit lock acquisition result as JSON.",
-    )
 
     p_rel = subparsers.add_parser(
         "release",
@@ -623,22 +606,6 @@ class WorkspaceMutexScript(BaseScript):
         required=True,
         help="Ticket identifier to unlock.",
     )
-    p_rel.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_rel.add_argument(
-        "--lock-dir",
-        default=None,
-        help="Directory for workspace mutual exclusion locks.",
-    )
-    p_rel.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit release result as JSON.",
-    )
 
     p_stat = subparsers.add_parser(
         "status",
@@ -651,22 +618,6 @@ class WorkspaceMutexScript(BaseScript):
         "--ticket",
         required=True,
         help="Ticket identifier to inspect.",
-    )
-    p_stat.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_stat.add_argument(
-        "--lock-dir",
-        default=None,
-        help="Directory for workspace mutual exclusion locks.",
-    )
-    p_stat.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit status output as JSON.",
     )
 
     p_rem = subparsers.add_parser(
@@ -686,17 +637,6 @@ class WorkspaceMutexScript(BaseScript):
         default="GITHUB",
         help="Hosting mode: GITHUB or PURE_GIT (default GITHUB).",
     )
-    p_rem.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_rem.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit remote check result as JSON.",
-    )
 
     p_dep = subparsers.add_parser(
         "check-dependencies",
@@ -715,17 +655,6 @@ class WorkspaceMutexScript(BaseScript):
         default="GITHUB",
         help="Hosting mode: GITHUB or PURE_GIT (default GITHUB).",
     )
-    p_dep.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_dep.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit dependency check result as JSON.",
-    )
 
     p_claim = subparsers.add_parser(
         "claim-issue",
@@ -739,17 +668,34 @@ class WorkspaceMutexScript(BaseScript):
         required=True,
         help="Ticket identifier to claim.",
     )
-    p_claim.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_claim.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit claim result as JSON.",
-    )
+
+    for subparser, has_lock_dir, json_help in (
+        (p_acq, True, "Emit lock acquisition result as JSON."),
+        (p_rel, True, "Emit release result as JSON."),
+        (p_stat, True, "Emit status output as JSON."),
+        (p_rem, False, "Emit remote check result as JSON."),
+        (p_dep, False, "Emit dependency check result as JSON."),
+        (p_claim, False, "Emit claim result as JSON."),
+    ):
+      subparser.add_argument(
+          "--repo-root",
+          default=None,
+          dest="sub_repo_root",
+          help="Repository root directory.",
+      )
+      if has_lock_dir:
+        subparser.add_argument(
+            "--lock-dir",
+            default=None,
+            dest="sub_lock_dir",
+            help="Directory for workspace mutual exclusion locks.",
+        )
+      subparser.add_argument(
+          "--json",
+          action="store_true",
+          dest="sub_json",
+          help=json_help,
+      )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.subcommand:
@@ -758,8 +704,15 @@ class WorkspaceMutexScript(BaseScript):
       )
 
     self.subcommand = ns.subcommand
-    self.repo_root = os.path.abspath(ns.repo_root or _DEFAULT_REPO_ROOT)
-    self.lock_dir = getattr(ns, "lock_dir", None)
+    self.repo_root = os.path.abspath(
+        getattr(ns, "sub_repo_root", None)
+        or getattr(ns, "repo_root", None)
+        or os.getcwd()
+    )
+    self.lock_dir = (
+        getattr(ns, "sub_lock_dir", None)
+        or getattr(ns, "lock_dir", None)
+    )
     self.ticket = getattr(ns, "ticket", "")
     self.branch = getattr(ns, "branch", None)
     self.pid = getattr(ns, "pid", None)

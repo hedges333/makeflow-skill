@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.workspace_mutex import WorkspaceMutex
 
-_DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _LOCAL_ID_RE = re.compile(r"^(?:local-)?([1-9][0-9]*)$", re.IGNORECASE)
 _LOCAL_NUM_RE = re.compile(r"^LOCAL-([1-9][0-9]*)$", re.IGNORECASE)
 _BRANCH_LOCAL_RE = re.compile(
@@ -363,7 +362,7 @@ class LocalTicketScript(BaseScript):
 
   def __init__(self) -> None:
     super().__init__()
-    self.repo_root: str = _DEFAULT_REPO_ROOT
+    self.repo_root: str = os.getcwd()
     self.lock_dir: Optional[str] = None
     self.as_json: bool = False
     self.subcommand: str = ""
@@ -396,7 +395,7 @@ class LocalTicketScript(BaseScript):
     )
     parser.add_argument(
         "--repo-root",
-        default=_DEFAULT_REPO_ROOT,
+        default=None,
         help="Repository root directory.",
     )
     parser.add_argument(
@@ -422,14 +421,6 @@ class LocalTicketScript(BaseScript):
         help="Allocate the next collision-free LOCAL-<N> ticket ID.",
         description="Scan history.json, .workflow/tickets/, active locks, and Git branches for the next LOCAL-<N> ID.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_next.add_argument("--repo-root", default=None, help="Repository root directory.")
-    p_next.add_argument("--lock-dir", default=None, help="Workspace lock directory.")
-    p_next.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit next ticket ID as JSON.",
     )
 
     p_create = subparsers.add_parser(
@@ -470,14 +461,6 @@ class LocalTicketScript(BaseScript):
         dest="ticket_id",
         help="Optional explicit ticket ID (defaults to next-id).",
     )
-    p_create.add_argument("--repo-root", default=None, help="Repository root directory.")
-    p_create.add_argument("--lock-dir", default=None, help="Workspace lock directory.")
-    p_create.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit created ticket as JSON.",
-    )
 
     p_list = subparsers.add_parser(
         "list",
@@ -496,14 +479,6 @@ class LocalTicketScript(BaseScript):
         dest="include_active",
         help="Include tickets with active workspace locks or Git branches.",
     )
-    p_list.add_argument("--repo-root", default=None, help="Repository root directory.")
-    p_list.add_argument("--lock-dir", default=None, help="Workspace lock directory.")
-    p_list.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit ticket list as JSON.",
-    )
 
     p_view = subparsers.add_parser(
         "view",
@@ -512,14 +487,6 @@ class LocalTicketScript(BaseScript):
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_view.add_argument("--ticket", required=True, help="Ticket ID to view.")
-    p_view.add_argument("--repo-root", default=None, help="Repository root directory.")
-    p_view.add_argument("--lock-dir", default=None, help="Workspace lock directory.")
-    p_view.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit ticket details as JSON.",
-    )
 
     p_close = subparsers.add_parser(
         "close",
@@ -539,22 +506,47 @@ class LocalTicketScript(BaseScript):
         dest="comment_file",
         help="Optional path to file containing resolution summary comment.",
     )
-    p_close.add_argument("--repo-root", default=None, help="Repository root directory.")
-    p_close.add_argument("--lock-dir", default=None, help="Workspace lock directory.")
-    p_close.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit closed ticket as JSON.",
-    )
+
+    for subparser, json_help in (
+        (p_next, "Emit next ticket ID as JSON."),
+        (p_create, "Emit created ticket as JSON."),
+        (p_list, "Emit ticket list as JSON."),
+        (p_view, "Emit ticket details as JSON."),
+        (p_close, "Emit closed ticket as JSON."),
+    ):
+      subparser.add_argument(
+          "--repo-root",
+          default=None,
+          dest="sub_repo_root",
+          help="Repository root directory.",
+      )
+      subparser.add_argument(
+          "--lock-dir",
+          default=None,
+          dest="sub_lock_dir",
+          help="Workspace lock directory.",
+      )
+      subparser.add_argument(
+          "--json",
+          action="store_true",
+          dest="sub_json",
+          help=json_help,
+      )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.subcommand:
       parser.error("Specify a subcommand: next-id, create, list, view, or close.")
 
     self.subcommand = ns.subcommand
-    self.repo_root = os.path.abspath(ns.repo_root or _DEFAULT_REPO_ROOT)
-    self.lock_dir = getattr(ns, "lock_dir", None)
+    self.repo_root = os.path.abspath(
+        getattr(ns, "sub_repo_root", None)
+        or getattr(ns, "repo_root", None)
+        or os.getcwd()
+    )
+    self.lock_dir = (
+        getattr(ns, "sub_lock_dir", None)
+        or getattr(ns, "lock_dir", None)
+    )
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
     self.title = getattr(ns, "title", "")
     self.body = getattr(ns, "body", "")

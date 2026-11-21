@@ -1690,5 +1690,218 @@ class TestAncestorPtyResolutionAndDelivery(unittest.TestCase):
             )
 
 
+class TestTerminalTitleSubparserRepoRootGH243(unittest.TestCase):
+  """Hermetic tests for TerminalTitleScript subparser --repo-root resolution (GH-243)."""
+
+  def setUp(self):
+    """Create isolated non-temporary-named workspace directories."""
+    self.temp_dir = tempfile.TemporaryDirectory(prefix="makeflow_gh243_")
+    self.target_repo = os.path.join(self.temp_dir.name, "target-project-dir")
+    self.post_repo = os.path.join(self.temp_dir.name, "post-project-dir")
+    self.cwd_repo = os.path.join(self.temp_dir.name, "cwd-project-dir")
+    self.other_repo = os.path.join(self.temp_dir.name, "other-project-dir")
+    self._seed_workspace(
+        self.target_repo, "GH-301", "Target workspace feature"
+    )
+    self._seed_workspace(self.post_repo, "GH-302", "Post workspace feature")
+    self._seed_workspace(self.cwd_repo, "GH-101", "CWD workspace bug")
+    self._seed_workspace(self.other_repo, "GH-404", "Other workspace task")
+    self.assertFalse(is_temporary_directory_name(self.target_repo))
+
+  def tearDown(self):
+    """Clean temporary directories."""
+    self.temp_dir.cleanup()
+
+  def _seed_workspace(self, repo_dir, ticket_id, issue_title):
+    """Populate minimal 10_ticket.md state card for deterministic title detection.
+
+    Args:
+      repo_dir: Target workspace directory path.
+      ticket_id: Ticket ID string (for example 'GH-301').
+      issue_title: Ticket title text without type prefix.
+    """
+    state_dir = os.path.join(repo_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(
+        os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write(
+          f"# 10_ticket: {ticket_id}\n\n"
+          f"- **Ticket ID**: `{ticket_id}`\n"
+          f"- **Title**: `[FEAT] {issue_title}`\n"
+      )
+
+  def _run_cli(self, args, cwd=None, script=None):
+    """Execute TerminalTitleScript in-process with patched os.getcwd and mock TTY.
+
+    Args:
+      args: CLI argument list passed to TerminalTitleScript.execute().
+      cwd: Optional working directory path for os.getcwd mock.
+      script: Optional existing TerminalTitleScript instance to reuse.
+
+    Returns:
+      Tuple of (exit_code, stdout_text, stderr_text, script_instance).
+    """
+    target_script = script if script is not None else TerminalTitleScript()
+    out = io.StringIO()
+    err = io.StringIO()
+    with patch("os.getcwd", return_value=cwd or self.cwd_repo):
+      code = target_script.execute(
+          args=args,
+          stdout=out,
+          stderr=err,
+          env_override={"TERM": "xterm-256color"},
+          mock_tty=True,
+      )
+    return code, out.getvalue(), err.getvalue(), target_script
+
+  def _assert_title_subcommands(
+      self,
+      build_args,
+      expected_dir,
+      expected_ticket,
+      expected_tag,
+      script=None,
+  ):
+    """Exercise info, set, and reset and assert expected directory and title outputs.
+
+    Args:
+      build_args: Callable accepting subcommand args and returning full CLI args.
+      expected_dir: Expected directory basename for the resolved repository root.
+      expected_ticket: Expected ticket ID detected from the resolved repository root.
+      expected_tag: Expected issue tag detected from the resolved repository root.
+      script: Optional existing TerminalTitleScript instance to reuse.
+    """
+    expected_title = f"{expected_dir}/: {expected_ticket} {expected_tag}"
+
+    code_info, out_info, err_info, _ = self._run_cli(
+        build_args(["info", "--json"]), script=script
+    )
+    self.assertEqual(code_info, 0, err_info)
+    info_data = json.loads(out_info)
+    self.assertEqual(info_data["directory_name"], expected_dir)
+    self.assertEqual(info_data["ticket_id"], expected_ticket)
+    self.assertEqual(info_data["issue_tag"], expected_tag)
+    self.assertEqual(info_data["title"], expected_title)
+    self.assertTrue(info_data["can_change"])
+
+    code_set, out_set, err_set, _ = self._run_cli(
+        build_args(["set", "--json"]), script=script
+    )
+    self.assertEqual(code_set, 0, err_set)
+    set_data = json.loads(out_set)
+    self.assertTrue(set_data["success"])
+    self.assertEqual(set_data["title"], expected_title)
+    self.assertEqual(err_set, f"\033]0;{expected_title}\007")
+
+    code_reset, out_reset, err_reset, _ = self._run_cli(
+        build_args(["reset", "--json"]), script=script
+    )
+    self.assertEqual(code_reset, 0, err_reset)
+    reset_data = json.loads(out_reset)
+    self.assertTrue(reset_data["success"])
+    self.assertEqual(reset_data["title"], f"{expected_dir}/")
+    self.assertEqual(err_reset, f"\033]0;{expected_dir}/\007")
+
+  def test_pre_subcommand_repo_root_info_set_reset_gh243(self):
+    """Pre-subcommand --repo-root targets the specified repo across info, set, and reset (GH-243)."""
+    self._assert_title_subcommands(
+        build_args=lambda sub: ["--repo-root", self.target_repo, *sub],
+        expected_dir="target-project-dir",
+        expected_ticket="GH-301",
+        expected_tag="Target workspace feature",
+    )
+
+  def test_post_subcommand_repo_root_info_set_reset_gh243(self):
+    """Post-subcommand --repo-root targets the specified repo across info, set, and reset (GH-243)."""
+    self._assert_title_subcommands(
+        build_args=lambda sub: [*sub, "--repo-root", self.post_repo],
+        expected_dir="post-project-dir",
+        expected_ticket="GH-302",
+        expected_tag="Post workspace feature",
+    )
+
+  def test_omitted_repo_root_defaults_to_cwd_gh243(self):
+    """Omitting --repo-root resolves dynamically to os.getcwd() across info, set, and reset (GH-243)."""
+    self._assert_title_subcommands(
+        build_args=lambda sub: list(sub),
+        expected_dir="cwd-project-dir",
+        expected_ticket="GH-101",
+        expected_tag="CWD workspace bug",
+    )
+
+    with patch("os.getcwd", return_value=self.other_repo):
+      pre_built = TerminalTitleScript()
+    self._assert_title_subcommands(
+        build_args=lambda sub: list(sub),
+        expected_dir="cwd-project-dir",
+        expected_ticket="GH-101",
+        expected_tag="CWD workspace bug",
+        script=pre_built,
+    )
+    self.assertEqual(pre_built.repo_root, os.path.abspath(self.cwd_repo))
+
+  def test_subcommand_repo_root_precedence_gh243(self):
+    """Subcommand --repo-root overrides parent --repo-root across info, set, and reset (GH-243)."""
+    self._assert_title_subcommands(
+        build_args=lambda sub: [
+            "--repo-root",
+            self.other_repo,
+            *sub,
+            "--repo-root",
+            self.target_repo,
+        ],
+        expected_dir="target-project-dir",
+        expected_ticket="GH-301",
+        expected_tag="Target workspace feature",
+    )
+
+  def test_reused_instance_resets_repo_root_to_cwd_when_omitted_gh243(self):
+    """Reusing one TerminalTitleScript resets self.repo_root to os.getcwd() when --repo-root is omitted (GH-243)."""
+    reused = TerminalTitleScript()
+
+    code_first, out_first, err_first, _ = self._run_cli(
+        ["--repo-root", self.target_repo, "info", "--json"], script=reused
+    )
+    self.assertEqual(code_first, 0, err_first)
+    first_data = json.loads(out_first)
+    self.assertEqual(first_data["directory_name"], "target-project-dir")
+    self.assertEqual(first_data["ticket_id"], "GH-301")
+    self.assertEqual(reused.repo_root, os.path.abspath(self.target_repo))
+
+    code_second, out_second, err_second, _ = self._run_cli(
+        ["info", "--json"], script=reused
+    )
+    self.assertEqual(code_second, 0, err_second)
+    second_data = json.loads(out_second)
+    self.assertEqual(reused.repo_root, os.path.abspath(self.cwd_repo))
+    self.assertEqual(second_data["directory_name"], "cwd-project-dir")
+    self.assertEqual(second_data["ticket_id"], "GH-101")
+    self.assertEqual(
+        second_data["title"], "cwd-project-dir/: GH-101 CWD workspace bug"
+    )
+
+    code_third, out_third, err_third, _ = self._run_cli(
+        ["set", "--repo-root", self.post_repo, "--json"], script=reused
+    )
+    self.assertEqual(code_third, 0, err_third)
+    self.assertEqual(reused.repo_root, os.path.abspath(self.post_repo))
+    self.assertEqual(
+        json.loads(out_third)["title"],
+        "post-project-dir/: GH-302 Post workspace feature",
+    )
+    self.assertEqual(
+        err_third, "\033]0;post-project-dir/: GH-302 Post workspace feature\007"
+    )
+
+    code_fourth, out_fourth, err_fourth, _ = self._run_cli(
+        ["reset", "--json"], script=reused
+    )
+    self.assertEqual(code_fourth, 0, err_fourth)
+    self.assertEqual(reused.repo_root, os.path.abspath(self.cwd_repo))
+    self.assertEqual(json.loads(out_fourth)["title"], "cwd-project-dir/")
+    self.assertEqual(err_fourth, "\033]0;cwd-project-dir/\007")
+
+
 if __name__ == "__main__":
   unittest.main()
