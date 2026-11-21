@@ -408,7 +408,7 @@ def _workflow_target_recipes(gates_script: str, quoted_root: str) -> str:
       ("archaeology-verified", "", "--to T15"),
       ("approved-plan", "", "--to T20"),
       ("implementation-diff", "", "--to T30"),
-      ("adversarial-review", " check-approved-tree", "--to T40"),
+      ("adversarial-review", " check-approved-tree check-regression", "--to T40"),
       ("triaged-blockers", "", "--to T42"),
       ("approved-review", " check-approved-tree", "--to T45"),
       ("commit", " check-approved-tree check-commit-msg", "--to T50"),
@@ -449,7 +449,8 @@ def generate_state_makefile(repo_root: str) -> str:
       "commit push bot-quiescence ready-to-land land "
       "codified-scars-consolidated finish advance "
       "check-intake release-intake check-approved-tree check-commit-msg "
-      "check-main-sync witness-red verify-green verify-citation ast-lint"
+      "check-main-sync verify-regression check-regression "
+      "witness-red verify-green verify-citation ast-lint"
   )
   recipes = _workflow_target_recipes(gates_script, quoted_root)
   return (
@@ -469,8 +470,11 @@ def generate_state_makefile(repo_root: str) -> str:
       "TEST_CMD =\n"
       "ALLOW_HEAD_MOVE =\n"
       "CITE =\n"
+      "REGRESSION_CMD ?=\n"
+      "SUBPROJECT ?=\n"
       "export TICKET ALLOW_BLOCKED FROM TO APPROVED BLOCKERS ALLOW_MAIN_CONFLICT NO_FETCH TRANSCRIPT FILE\n"
-      "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n\n"
+      "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n"
+      "export REGRESSION_CMD SUBPROJECT\n\n"
       f".PHONY: {phony}\n\n"
       f"{recipes}\n"
       "check-intake:\n"
@@ -483,6 +487,10 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg --make-env\n\n"
       "check-main-sync:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} main-sync --make-env\n\n"
+      "verify-regression:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} verify-regression --make-env\n\n"
+      "check-regression:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} check-regression --make-env\n\n"
       "witness-red:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
       "verify-green:\n"
@@ -524,6 +532,9 @@ class WorkflowGatesScript(BaseScript):
     self.adv_transcript: str = ""
     self.adv_complete: bool = False
     self.make_env: bool = False
+    self.regression_cmd: str = ""
+    self.subproject: str = ""
+    self.regression_timeout: Optional[float] = None
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -829,13 +840,15 @@ class WorkflowGatesScript(BaseScript):
 
     self._register_advance_subparser(subparsers)
     self._register_read_init_subparser(subparsers)
+    self._register_regression_subparsers(subparsers)
 
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
-          "intake, approved-tree, commit-msg, main-sync, terminal-title, "
-          "release-intake, release-lock, read-init-d, or advance."
+          "intake, approved-tree, commit-msg, main-sync, verify-regression, "
+          "check-regression, terminal-title, release-intake, release-lock, "
+          "read-init-d, or advance."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
@@ -855,6 +868,11 @@ class WorkflowGatesScript(BaseScript):
       self.no_fetch = bool(getattr(ns, "no_fetch", False))
       self.fail_on_behind = bool(getattr(ns, "fail_on_behind", False))
       self.allow_conflict = bool(getattr(ns, "allow_conflict", False))
+    elif ns.gate in ("verify-regression", "check-regression"):
+      self.regression_cmd = str(getattr(ns, "regression_cmd", "") or "").strip()
+      raw_sub = getattr(ns, "subproject", None)
+      self.subproject = str(raw_sub).strip() if raw_sub is not None else ""
+      self.regression_timeout = getattr(ns, "timeout", None)
     elif ns.gate == "read-init-d":
       self.adv_from = str(getattr(ns, "adv_from", "") or "").strip()
     elif ns.gate == "advance":
@@ -866,6 +884,7 @@ class WorkflowGatesScript(BaseScript):
       self.no_fetch = bool(getattr(ns, "no_fetch", False))
       self.adv_transcript = str(getattr(ns, "adv_transcript", "") or "").strip()
       self.adv_complete = bool(getattr(ns, "adv_complete", False))
+      self.subproject = ""
     elif ns.gate in ("terminal-title", "intake", "release-intake", "release-lock"):
       self.ticket = getattr(ns, "ticket", None)
       self.directory = getattr(ns, "directory", None)
@@ -899,6 +918,65 @@ class WorkflowGatesScript(BaseScript):
       self.adv_blockers = os.environ["BLOCKERS"].strip()
     if not self.adv_transcript and os.environ.get("TRANSCRIPT", "").strip():
       self.adv_transcript = os.environ["TRANSCRIPT"].strip()
+    if not self.regression_cmd and os.environ.get("REGRESSION_CMD", "").strip():
+      self.regression_cmd = os.environ["REGRESSION_CMD"].strip()
+    if not self.subproject and os.environ.get("SUBPROJECT", "").strip():
+      self.subproject = os.environ["SUBPROJECT"].strip()
+
+  @staticmethod
+  def _register_regression_subparsers(subparsers: Any) -> None:
+    """Registers verify-regression and check-regression subparsers."""
+    specs = (
+        (
+            "verify-regression",
+            "Run the active subproject full regression suite and seal 30_regression_receipt.json.",
+            "Example:\n  python3 scripts/workflow_gates.py --repo-root . verify-regression",
+        ),
+        (
+            "check-regression",
+            "Verify .workflow/state/30_regression_receipt.json against live tree and approved_tree.txt.",
+            "Example:\n  python3 scripts/workflow_gates.py --repo-root . check-regression",
+        ),
+    )
+    for name, desc, epilog in specs:
+      p_reg = subparsers.add_parser(
+          name,
+          help=desc,
+          description=desc,
+          epilog=epilog,
+          formatter_class=argparse.RawDescriptionHelpFormatter,
+      )
+      p_reg.add_argument(
+          "--regression-cmd",
+          dest="regression_cmd",
+          default="",
+          help="Explicit full subproject regression test command.",
+      )
+      p_reg.add_argument(
+          "--subproject",
+          dest="subproject",
+          default=None,
+          help="Relative path to active subproject directory (default '.').",
+      )
+      p_reg.add_argument(
+          "--timeout",
+          dest="timeout",
+          type=float,
+          default=None,
+          help="Regression command timeout in seconds.",
+      )
+      p_reg.add_argument(
+          "--json",
+          action="store_true",
+          dest="sub_json",
+          help="Emit output or Vector 4 Reflex errors as JSON.",
+      )
+      p_reg.add_argument(
+          "--make-env",
+          action="store_true",
+          dest="sub_make_env",
+          help="Hydrate REGRESSION_CMD and SUBPROJECT from environment.",
+      )
 
   @staticmethod
   def _register_read_init_subparser(subparsers: Any) -> None:
@@ -1288,7 +1366,7 @@ class WorkflowGatesScript(BaseScript):
     return 0
 
   def _cleanup_tdd_receipt(self, ticket_id: str) -> None:
-    """Archives or unlinks 30_tdd_receipt.json and loaded_scars.json on intake release."""
+    """Archives or unlinks 30_tdd_receipt.json, 30_regression_receipt.json, and loaded_scars.json on intake release."""
     from lib.config import is_ticket_active
 
     state_dir = os.path.join(self.repo_root, ".workflow", "state")
@@ -1304,7 +1382,11 @@ class WorkflowGatesScript(BaseScript):
           os.unlink(transient_path)
         except OSError:
           pass
-    json_artifacts = ("30_tdd_receipt.json", "loaded_scars.json")
+    json_artifacts = (
+        "30_tdd_receipt.json",
+        "30_regression_receipt.json",
+        "loaded_scars.json",
+    )
     existing = [
         name
         for name in json_artifacts
@@ -1671,6 +1753,96 @@ class WorkflowGatesScript(BaseScript):
       ev["transcriptPath"] = self.adv_transcript
     return ev
 
+  def _verify_regression(self) -> int:
+    """Runs the active subproject full regression suite and seals the receipt."""
+    from lib.regression_gate import run_verify_regression
+
+    ok, payload = run_verify_regression(
+        self.repo_root,
+        explicit_cmd=self.regression_cmd,
+        subproject=self.subproject or ".",
+        timeout_seconds=self.regression_timeout,
+    )
+    if not ok:
+      return self._fail(
+          scar_id=payload["scar_id"],
+          code=payload["code"],
+          trigger=payload["trigger"],
+          rejected=payload["rejected"],
+          reflex=payload["reflex"],
+      )
+    if self.as_json:
+      self.stdout.write(json.dumps(payload) + "\n")
+    return 0
+
+  def _check_regression(self, *, emit_stdout: bool = True) -> int:
+    """Verifies 30_regression_receipt.json, running verify-regression on explicit command."""
+    from lib.regression_gate import (
+        run_verify_regression,
+        validate_subproject,
+        verify_regression_receipt,
+    )
+
+    expected_sub: Optional[str] = None
+    if self.subproject:
+      try:
+        _, expected_sub = validate_subproject(self.repo_root, self.subproject)
+      except ValueError as exc:
+        return self._fail(
+            scar_id="TEST-12",
+            code="INVALID_SUBPROJECT",
+            trigger=str(exc),
+            rejected="Checking regression state against an invalid or escaping subproject path.",
+            reflex="Pass a valid subproject path inside the repository via SUBPROJECT or --subproject.",
+        )
+
+    if self.regression_cmd:
+      target_sub = expected_sub if expected_sub is not None else "."
+      existing_ok, existing_payload = verify_regression_receipt(
+          self.repo_root,
+          require_approved_tree_match=True,
+          expected_subproject=target_sub,
+      )
+      if (
+          existing_ok
+          and existing_payload.get("regression_cmd") == self.regression_cmd
+          and existing_payload.get("subproject") == target_sub
+      ):
+        if emit_stdout and self.as_json:
+          self.stdout.write(json.dumps(existing_payload) + "\n")
+        return 0
+      ok_run, run_payload = run_verify_regression(
+          self.repo_root,
+          explicit_cmd=self.regression_cmd,
+          subproject=target_sub,
+          timeout_seconds=self.regression_timeout,
+      )
+      if not ok_run:
+        return self._fail(
+            scar_id=run_payload["scar_id"],
+            code=run_payload["code"],
+            trigger=run_payload["trigger"],
+            rejected=run_payload["rejected"],
+            reflex=run_payload["reflex"],
+        )
+
+    ok, payload = verify_regression_receipt(
+        self.repo_root,
+        require_approved_tree_match=True,
+        expected_subproject=expected_sub,
+    )
+    if not ok:
+      return self._fail(
+          scar_id=payload["scar_id"],
+          code=payload["code"],
+          trigger=payload["trigger"],
+          rejected=payload["rejected"],
+          reflex=payload["reflex"],
+      )
+    if emit_stdout and self.as_json:
+      self.stdout.write(json.dumps(payload) + "\n")
+    return 0
+
   def _advance(self) -> int:
     """Executes the advance subcommand and renders 99_next_action.md."""
     from lib.state_machine import (
@@ -1696,6 +1868,10 @@ class WorkflowGatesScript(BaseScript):
       rc_tree = self._check_approved_tree()
       if rc_tree != 0:
         return rc_tree
+    if next_t == "T40":
+      rc_reg = self._check_regression(emit_stdout=False)
+      if rc_reg != 0:
+        return rc_reg
     if next_t == "T50":
       rc_msg = self._check_commit_msg()
       if rc_msg != 0:
@@ -1746,6 +1922,10 @@ class WorkflowGatesScript(BaseScript):
       return self._check_commit_msg()
     if self.gate == "main-sync":
       return self._check_main_sync()
+    if self.gate == "verify-regression":
+      return self._verify_regression()
+    if self.gate == "check-regression":
+      return self._check_regression()
     if self.gate == "terminal-title":
       return self._gate_terminal_title()
     if self.gate in ("release-intake", "release-lock"):

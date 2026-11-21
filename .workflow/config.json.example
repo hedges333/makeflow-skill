@@ -9,7 +9,12 @@
   },
   "review": {
     "maxReviewRounds": 3,
-    "strictSixPillars": true
+    "strictSixPillars": true,
+    "allowCriticHermeticTests": false
+  },
+  "testing": {
+    "regressionCommand": "",
+    "regressionTimeoutSeconds": 300
   },
   "ci": {
     "pollIntervalSeconds": 30,

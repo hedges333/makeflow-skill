@@ -7,8 +7,10 @@ delegation shared by CLI gates, hooks, and the MCP server.
 
 from dataclasses import dataclass
 import json
+import math
 import os
 import re
+import signal
 import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
@@ -744,7 +746,12 @@ def _finalize_completed_ticket(
       fname
       for fname in os.listdir(state_dir)
       if _LEFTOVER_CARD_RE.match(fname)
-      or fname in ("30_tdd_receipt.json", "loaded_scars.json")
+      or fname
+      in (
+          "30_tdd_receipt.json",
+          "30_regression_receipt.json",
+          "loaded_scars.json",
+      )
   ]
   for fname in sorted(removable):
     src = os.path.join(state_dir, fname)
@@ -987,6 +994,8 @@ def _build_make_advance_env(
       "TICKET",
       "ALLOW_BLOCKED",
       "FILE",
+      "REGRESSION_CMD",
+      "SUBPROJECT",
   ):
     env.pop(key, None)
 
@@ -1006,7 +1015,75 @@ def _build_make_advance_env(
   transcript = str(ev.get("transcriptPath") or "").strip()
   if transcript:
     env["TRANSCRIPT"] = transcript
+  reg_cmd = str(ev.get("regressionCmd") or "").strip()
+  if reg_cmd:
+    env["REGRESSION_CMD"] = reg_cmd
+  subproject = str(ev.get("subproject") or "").strip()
+  if subproject:
+    env["SUBPROJECT"] = subproject
   return env
+
+
+def _resolve_make_advance_timeout(
+    next_t: str,
+    ev: Dict[str, Any],
+    workspace_dir: str,
+) -> float:
+  """Resolves GNU Make subprocess timeout aligned with regression timeout config.
+
+  Args:
+    next_t: Destination target ID (T00..T90).
+    ev: Transition evidence dictionary.
+    workspace_dir: Repository root directory for loading workflow config.
+
+  Returns:
+    Timeout in seconds (30.0 by default, or regressionTimeoutSeconds + 5.0 when
+    running an explicit regression command during T30 -> T40).
+  """
+  if next_t == "T40" and str(ev.get("regressionCmd") or "").strip():
+    ws = workspace_dir if workspace_dir and os.path.isdir(workspace_dir) else None
+    cfg = resolve_workflow_config(workspace_dir=ws)
+    testing_cfg = cfg.get("testing") if isinstance(cfg, dict) else None
+    raw_to = (
+        testing_cfg.get("regressionTimeoutSeconds")
+        if isinstance(testing_cfg, dict)
+        else None
+    )
+    if (
+        not isinstance(raw_to, bool)
+        and isinstance(raw_to, (int, float))
+        and math.isfinite(float(raw_to))
+        and float(raw_to) >= 1
+    ):
+      return float(raw_to) + 5.0
+    return 305.0
+  return 30.0
+
+
+def _terminate_make_process_group(proc: subprocess.Popen) -> None:
+  """Terminates a GNU Make process group with SIGTERM then SIGKILL escalation.
+
+  Args:
+    proc: Running subprocess.Popen instance started in its own session.
+  """
+  if os.name != "nt":
+    try:
+      os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+      pass
+    try:
+      proc.wait(timeout=0.5)
+      return
+    except (subprocess.TimeoutExpired, OSError):
+      pass
+    try:
+      os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+      pass
+  try:
+    proc.kill()
+  except (ProcessLookupError, OSError):
+    pass
 
 
 def run_makefile_advance(
@@ -1060,28 +1137,58 @@ def run_makefile_advance(
       f"PYTHON={sys.executable}",
   ]
   env = _build_make_advance_env(current, next_t, ev)
+  timeout_seconds = _resolve_make_advance_timeout(next_t, ev, ws)
+  proc: Optional[subprocess.Popen] = None
   try:
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         cwd=ws if os.path.isdir(ws) else None,
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
-        timeout=30,
+        errors="replace",
+        start_new_session=(os.name != "nt"),
     )
+    try:
+      stdout_data, stderr_data = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+      _terminate_make_process_group(proc)
+      try:
+        proc.communicate(timeout=2)
+      except (subprocess.SubprocessError, OSError):
+        pass
+      return (
+          False,
+          f"BLOCKED: GNU Make target '{target_name}' timed out after"
+          f" {timeout_seconds:.1f}s.",
+      )
   except (OSError, subprocess.SubprocessError) as exc:
     return False, f"BLOCKED: GNU Make execution failed: {exc}"
+  finally:
+    if proc is not None:
+      if proc.poll() is None:
+        _terminate_make_process_group(proc)
+        try:
+          proc.wait(timeout=2)
+        except (subprocess.SubprocessError, OSError):
+          pass
+      for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+          try:
+            stream.close()
+          except OSError:
+            pass
 
   if proc.returncode == 0:
-    for line in reversed((proc.stdout or "").splitlines()):
+    for line in reversed((stdout_data or "").splitlines()):
       if line.strip().startswith("SUCCESS:"):
         return True, line.strip()
     return True, f"SUCCESS: Target transition {current} -> {next_t} passed."
 
   combined = "\n".join(
       part.strip()
-      for part in (proc.stderr or "", proc.stdout or "")
+      for part in (stderr_data or "", stdout_data or "")
       if part and part.strip()
   )
   if not combined:

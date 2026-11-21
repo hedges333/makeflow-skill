@@ -7,6 +7,7 @@ and MCP server endpoints.
 
 import copy
 import json
+import math
 import os
 import re
 
@@ -120,6 +121,61 @@ def _apply_ci_env_overrides(ci_cfg):
   return applied
 
 
+def _normalize_review_config(raw_review):
+  """Normalizes review configuration values with safe defaults.
+
+  Args:
+    raw_review: Raw ``review`` configuration mapping or invalid non-dict value.
+
+  Returns:
+    Normalized ``review`` dictionary with ``maxReviewRounds``,
+    ``strictSixPillars``, and validated ``allowCriticHermeticTests``.
+  """
+  review_dict = copy.deepcopy(raw_review) if isinstance(raw_review, dict) else {}
+  if not isinstance(review_dict.get("maxReviewRounds"), int) or isinstance(
+      review_dict.get("maxReviewRounds"), bool
+  ):
+    review_dict["maxReviewRounds"] = 3
+  if not isinstance(review_dict.get("strictSixPillars"), bool):
+    review_dict["strictSixPillars"] = True
+  raw_allow = review_dict.get("allowCriticHermeticTests")
+  review_dict["allowCriticHermeticTests"] = (
+      raw_allow if isinstance(raw_allow, bool) else False
+  )
+  return review_dict
+
+
+def _normalize_testing_config(raw_testing):
+  """Normalizes testing regression command and timeout settings.
+
+  Args:
+    raw_testing: Raw ``testing`` configuration mapping or invalid non-dict value.
+
+  Returns:
+    Dictionary with validated ``regressionCommand`` (str) and
+    ``regressionTimeoutSeconds`` (positive finite number >= 1, default 300).
+  """
+  testing_dict = raw_testing if isinstance(raw_testing, dict) else {}
+  raw_cmd = testing_dict.get("regressionCommand")
+  reg_cmd = raw_cmd.strip() if isinstance(raw_cmd, str) else ""
+
+  raw_timeout = testing_dict.get("regressionTimeoutSeconds")
+  if (
+      not isinstance(raw_timeout, bool)
+      and isinstance(raw_timeout, (int, float))
+      and math.isfinite(float(raw_timeout))
+      and float(raw_timeout) >= 1
+  ):
+    reg_timeout = raw_timeout
+  else:
+    reg_timeout = 300
+
+  return {
+      "regressionCommand": reg_cmd,
+      "regressionTimeoutSeconds": reg_timeout,
+  }
+
+
 def _normalize_str_list(items):
   if not isinstance(items, list):
     return []
@@ -178,6 +234,11 @@ def load_default_config():
       "review": {
           "maxReviewRounds": 3,
           "strictSixPillars": True,
+          "allowCriticHermeticTests": False,
+      },
+      "testing": {
+          "regressionCommand": "",
+          "regressionTimeoutSeconds": 300,
       },
       "ci": {
           "pollIntervalSeconds": 30,
@@ -520,6 +581,8 @@ def resolve_workflow_config(workspace_dir=None):
         pass
 
   config["ci"] = _normalize_ci_config(config.get("ci"))
+  config["review"] = _normalize_review_config(config.get("review"))
+  config["testing"] = _normalize_testing_config(config.get("testing"))
 
   for env_var, agent_key in ENV_MAPPINGS.items():
     val = os.getenv(env_var)

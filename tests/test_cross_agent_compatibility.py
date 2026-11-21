@@ -10029,5 +10029,212 @@ class TestScarProc95SubagentHaltAirlock(unittest.TestCase):
       )
 
 
+TARGET_30_REGRESSION_GATE_FILES = (
+    "default_config.json",
+    ".workflow/config.json.example",
+    "agents/tdd-worker.md",
+    "agents/adversarial-critic.md",
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "skills/makeflow/references/05_pre_commit_hygiene.md",
+    "skills/makeflow/references/08_subagent_orchestration.md",
+    "skills/makeflow/references/13_configuration_and_user_preferences.md",
+    "rules/AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def check_target_30_regression_gate_invariants(
+    repo_files: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-233 Target 30 full regression gate invariants across configs, docs, and adapters."""
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if repo_files is not None:
+    files_map = dict(repo_files)
+  else:
+    for rel in TARGET_30_REGRESSION_GATE_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in TARGET_30_REGRESSION_GATE_FILES:
+    if rel not in files_map:
+      if f"Missing {rel}" not in errs:
+        errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. Config defaults and schema parity
+  for cfg_rel in ("default_config.json", ".workflow/config.json.example"):
+    try:
+      cfg = json.loads(files_map[cfg_rel])
+    except json.JSONDecodeError as exc:
+      errs.append(f"{cfg_rel} is invalid JSON: {exc}")
+      continue
+    rev = cfg.get("review")
+    if not isinstance(rev, dict) or rev.get("allowCriticHermeticTests") is not False:
+      errs.append(
+          f"{cfg_rel} must set review.allowCriticHermeticTests to false"
+      )
+    testing = cfg.get("testing")
+    if not isinstance(testing, dict):
+      errs.append(f"{cfg_rel} must define testing configuration object")
+    else:
+      if testing.get("regressionCommand") != "":
+        errs.append(f"{cfg_rel} must set testing.regressionCommand to empty string")
+      if testing.get("regressionTimeoutSeconds") != 300:
+        errs.append(f"{cfg_rel} must set testing.regressionTimeoutSeconds to 300")
+
+  # 2. Agent definitions
+  for tok in ("verify-regression", "30_regression_receipt.json"):
+    if tok not in files_map["agents/tdd-worker.md"]:
+      errs.append(f"agents/tdd-worker.md must reference '{tok}'")
+  for tok in ("30_regression_receipt.json", "review.allowCriticHermeticTests"):
+    if tok not in files_map["agents/adversarial-critic.md"]:
+      errs.append(f"agents/adversarial-critic.md must reference '{tok}'")
+
+  # 3. SKILL.md budget and DAG wiring
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  skill_bytes = len(skill_text.encode("utf-8"))
+  if skill_bytes > 24576:
+    errs.append(f"{skill_rel} exceeds 24576-byte budget ({skill_bytes} bytes)")
+  for tok in (
+      "adversarial-review: check-approved-tree check-regression",
+      "verify-regression",
+      "30_regression_receipt.json",
+  ):
+    if tok not in skill_text:
+      errs.append(f"{skill_rel} must reference '{tok}'")
+
+  # 4. Reference manuals
+  manual_tokens = {
+      "skills/makeflow/references/03_tdd_and_code_quality.md": (
+          "verify-regression",
+          "30_regression_receipt.json",
+          "lib/regression_gate.py",
+      ),
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md": (
+          "verify-regression",
+          "30_regression_receipt.json",
+          "review.allowCriticHermeticTests",
+      ),
+      "skills/makeflow/references/05_pre_commit_hygiene.md": (
+          "30_regression_receipt.json",
+      ),
+      "skills/makeflow/references/08_subagent_orchestration.md": (
+          "verify-regression",
+          "review.allowCriticHermeticTests",
+      ),
+      "skills/makeflow/references/13_configuration_and_user_preferences.md": (
+          "allowCriticHermeticTests",
+          "regressionCommand",
+          "regressionTimeoutSeconds",
+      ),
+  }
+  for man_rel, req_tokens in manual_tokens.items():
+    for tok in req_tokens:
+      if tok not in files_map[man_rel]:
+        errs.append(f"{man_rel} must reference '{tok}'")
+
+  # 5. Rules and all 5 cross-agent adapters
+  for adapter_rel in (
+      "rules/AGENTS.md",
+      "CLAUDE.md",
+      ".cursorrules",
+      ".cursor/rules/makeflow.mdc",
+      ".github/copilot-instructions.md",
+      "adapters/chatgpt/instructions.md",
+  ):
+    for tok in (
+        "verify-regression",
+        "30_regression_receipt.json",
+        "review.allowCriticHermeticTests",
+    ):
+      if tok not in files_map[adapter_rel]:
+        errs.append(f"{adapter_rel} must reference '{tok}'")
+
+  return errs
+
+
+class TestTarget30RegressionGateInvariants(unittest.TestCase):
+  """Regression and negative falsification tests for GH-233 full subproject regression gate."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in TARGET_30_REGRESSION_GATE_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_repo_target30_regression_gate_files_pass(self) -> None:
+    self.assertEqual(check_target_30_regression_gate_invariants(), [])
+
+  def test_negative_falsifications_caught(self) -> None:
+    base = self._load_base_files()
+
+    # 1. Config default flipped to true or testing block removed
+    mut_cfg = dict(base)
+    cfg_data = json.loads(mut_cfg["default_config.json"])
+    cfg_data["review"]["allowCriticHermeticTests"] = True
+    mut_cfg["default_config.json"] = json.dumps(cfg_data)
+    errs_cfg = check_target_30_regression_gate_invariants(mut_cfg)
+    self.assertTrue(
+        any("allowCriticHermeticTests" in e for e in errs_cfg),
+        f"Expected allowCriticHermeticTests rejection, got: {errs_cfg}",
+    )
+
+    mut_ex = dict(base)
+    ex_data = json.loads(mut_ex[".workflow/config.json.example"])
+    ex_data.pop("testing", None)
+    mut_ex[".workflow/config.json.example"] = json.dumps(ex_data)
+    errs_ex = check_target_30_regression_gate_invariants(mut_ex)
+    self.assertTrue(
+        any("testing" in e for e in errs_ex),
+        f"Expected missing testing block rejection, got: {errs_ex}",
+    )
+
+    # 2. Dropping check-regression from SKILL.md
+    mut_skill = dict(base)
+    mut_skill["skills/makeflow/SKILL.md"] = mut_skill[
+        "skills/makeflow/SKILL.md"
+    ].replace("check-regression", "REMOVED")
+    errs_skill = check_target_30_regression_gate_invariants(mut_skill)
+    self.assertTrue(
+        any("check-regression" in e for e in errs_skill),
+        f"Expected SKILL.md check-regression rejection, got: {errs_skill}",
+    )
+
+    # 3. Dropping required tokens from agents, rules, and all 5 adapters
+    for rel in (
+        "agents/tdd-worker.md",
+        "agents/adversarial-critic.md",
+        "rules/AGENTS.md",
+        "CLAUDE.md",
+        ".cursorrules",
+        ".cursor/rules/makeflow.mdc",
+        ".github/copilot-instructions.md",
+        "adapters/chatgpt/instructions.md",
+    ):
+      mut_rel = dict(base)
+      mut_rel[rel] = mut_rel[rel].replace("30_regression_receipt.json", "REMOVED")
+      errs_rel = check_target_30_regression_gate_invariants(mut_rel)
+      self.assertTrue(
+          any(rel in e for e in errs_rel),
+          f"Expected {rel} rejection, got: {errs_rel}",
+      )
+
+
 if __name__ == "__main__":
   unittest.main()

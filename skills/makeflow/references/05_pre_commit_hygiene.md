@@ -8,7 +8,7 @@ Run these four checks under `set -euo pipefail` before you propose a commit:
 
 1. Format check: Run the project formatter in check mode, for example `prettier --check .`, `ruff format --check .`, `cargo fmt -- --check`, or `gofmt -l .`.
 2. Static analysis: Run the project linter with warnings treated as errors, for example `eslint .`, `ruff check .`, `cargo clippy -- -D warnings`, or `golangci-lint run`.
-3. Full repository test sweep: Run the test suite across every subproject in the repository so that changes in one module do not break another.
+3. Full repository test sweep: Confirm `.workflow/state/30_regression_receipt.json` passed in Target 30. Run the full test suite across every subproject before commit.
 4. Two-layer tree drift check: Make sure that no unreviewed edits entered the workspace after Target 40:
    ```bash
    git diff --quiet

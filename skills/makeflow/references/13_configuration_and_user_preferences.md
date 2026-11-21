@@ -31,6 +31,9 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `tdd-worker`: `inherit`
    - `triage-worker`: `inherit`
    - `synthetic-scar-importer`: `inherit`
+   - `review.allowCriticHermeticTests`: `false`. Set to `true` only to allow read-only critic hermetic tests when no automated `T30 -> T40` gate exists.
+   - `testing.regressionCommand`: `""`. Set an explicit full subproject regression command for `verify-regression` when no `Makefile` `test:` target exists.
+   - `testing.regressionTimeoutSeconds`: `300`. Positive timeout in seconds for `verify-regression` execution.
    - `ci.quiescenceSeconds`: `180`. Set to `0` to disable the post-CI quiescence wait.
    - `ci.pollIntervalSeconds`: `30`. Use `1` or higher.
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
@@ -51,7 +54,12 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
   },
   "review": {
     "maxReviewRounds": 3,
-    "strictSixPillars": true
+    "strictSixPillars": true,
+    "allowCriticHermeticTests": false
+  },
+  "testing": {
+    "regressionCommand": "",
+    "regressionTimeoutSeconds": 300
   },
   "ci": {
     "pollIntervalSeconds": 30,

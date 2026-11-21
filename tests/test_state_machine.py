@@ -369,6 +369,10 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       )
 
       _write_file(os.path.join(repo, "feature.py"), "VALUE = 1\n")
+      self.assertEqual(
+          _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+          0,
+      )
       _lock_approved_tree(repo)
       self.assertEqual(_run_make(repo, "adversarial-review").returncode, 0)
 
@@ -394,6 +398,10 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       )
 
       _write_file(os.path.join(repo, "feature.py"), "VALUE = 2\n")
+      self.assertEqual(
+          _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+          0,
+      )
       _lock_approved_tree(repo)
       self.assertEqual(_run_make(repo, "adversarial-review").returncode, 0)
       _write_file(os.path.join(state_dir, "40_critic_review.md"), "0 blockers\n")
@@ -730,6 +738,24 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       )
 
       _lock_approved_tree(tmp)
+      blocked_t40_reg = mcp_server.handle_tools_call(
+          2,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T30",
+              "nextTarget": "T40",
+              "workspaceDir": tmp,
+          },
+      )
+      self.assertTrue(blocked_t40_reg["result"].get("isError"))
+      self.assertIn(
+          "MISSING_REGRESSION_RECEIPT",
+          blocked_t40_reg["result"]["content"][0]["text"],
+      )
+
+      r_reg = _run_make(tmp, "verify-regression", "REGRESSION_CMD=true")
+      self.assertEqual(r_reg.returncode, 0, r_reg.stderr)
+
       ok_t40 = mcp_server.handle_tools_call(
           2,
           "workflow_advance_target",
@@ -1291,6 +1317,10 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           os.path.join(state_dir, "40_critic_review.md"), "Round 1\n"
       )
       _write_file(os.path.join(repo, "mod.py"), "VAL = 1\n")
+      self.assertEqual(
+          _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+          0,
+      )
       _lock_approved_tree(repo)
       r_t40 = _run_make(repo, "adversarial-review", "NO_FETCH=1")
       self.assertEqual(r_t40.returncode, 0, r_t40.stderr)

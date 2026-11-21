@@ -44,7 +44,7 @@ push: check-main-sync
 commit: check-approved-tree check-commit-msg
 approved-review: check-approved-tree
 triaged-blockers:
-adversarial-review: check-approved-tree
+adversarial-review: check-approved-tree check-regression
 implementation-diff:
 approved-plan:
 archaeology-verified:
@@ -71,8 +71,8 @@ At turn start or after context compaction (automatic chat history compression), 
 | `10` | No ticket branch | `ticket-assigned` | Run `init-makefile`, `check-intake`, create branch, write `10_ticket.md`, and run `ticket-assigned`. |
 | `15` | No `15_archaeology_receipt.md` | `archaeology-verified` | Run `archaeology-verified`, fork `archaeology-worker`, scan stack, write receipt. |
 | `20` | No `20_plan_approved.md` | `approved-plan` | Write `20_plan.md`, run `approved-plan`, and pause for `human-plan-approval`. |
-| `30` | Plan approved, diff incomplete | `implementation-diff` | Run `implementation-diff APPROVED=1`, fork `tdd-worker`, and run Red-Green-Refactor TDD. |
-| `40` | Diff lacks `40_critic_review.md` | `adversarial-review` | Lock `approved_tree.txt`, run `adversarial-review`, fork `adversarial-critic`, write review. |
+| `30` | Plan approved, diff incomplete | `implementation-diff` | Run `implementation-diff APPROVED=1`, fork `tdd-worker`, run Red-Green-Refactor TDD, and run `verify-regression`. |
+| `40` | Diff lacks `40_critic_review.md` | `adversarial-review` | Seal `30_regression_receipt.json`, lock `approved_tree.txt`, run `adversarial-review`, fork `adversarial-critic`. |
 | `42` | Review has `BLOCKERS > 0` | `triaged-blockers` | Run `triaged-blockers BLOCKERS=<n>`, pause for `human-blocker-triage-approval`, return to T30. |
 | `45` | Review has `0 BLOCKERS` | `approved-review` | Run `make -f .workflow/state/Makefile approved-review BLOCKERS=0` and pause for `human-review-approval`. |
 | `50` | Approved review, uncommitted | `commit` | Run full tests, write `50_commit_msg.txt`, run `commit APPROVED=1`, pause for `human-commit-approval`. |
@@ -126,13 +126,13 @@ Read `references/03`, `references/04_testing_isolation.md`, and `references/14` 
 1. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`), then enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`). Have the worker query `workflow_query_scars` (`workflowPhase: "Target 30: tdd"`) for target languages, frameworks, and diagnostic codes.
 2. Red phase: Write failing tests first and witness a non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
 3. Green phase: Write minimal production code so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.
-4. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`), update docstrings, and prepare for Target 40.
+4. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`) and update docstrings. Run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json` before Target 40.
 
 ### Target 40, Target 42, and Target 45: Adversarial Review and Sign-Off
 
 Read `references/04_six_pillars_adversarial_review.md` and `references/13`.
 
-1. Lock the Git Merkle tree (staged file hash) via `git add -A && git write-tree > .workflow/state/approved_tree.txt` and run `make -f .workflow/state/Makefile adversarial-review`.
+1. Run `make -f .workflow/state/Makefile verify-regression` to verify the full active subproject suite. Lock the Git Merkle tree (staged file hash) via `git add -A && git write-tree > .workflow/state/approved_tree.txt`. Run `make -f .workflow/state/Makefile adversarial-review` to check `approved_tree.txt` and `30_regression_receipt.json`.
 2. If `.workflow/config.json` specifies models or 'inherit', bypass the model picker prompt. When unconfigured in interactive IDEs, prompt the user to select a deep-reasoning model. Stop tool calls (`tool_calls: []`) to pause for model selection before critic dispatch.
 3. In Antigravity, fork `adversarial-critic` using `agyModelTiers["adversarial-critic"]` (default `inherit`) with explicit path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) and `workflow_query_scars` (`workflowPhase: "Target 40: review"`). Enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`), then write `40_critic_review.md`.
 4. At Target 42 (`BLOCKERS > 0`), run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<n>`, print Blocker Digest and NBO summary with dispositions, then pause for `human-blocker-triage-approval`. After triage approval, run `make -f .workflow/state/Makefile implementation-diff APPROVED=1`.

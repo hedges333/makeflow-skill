@@ -11,7 +11,7 @@ Follow these steps in order for every coding task:
 1. Make sure that `git status --short` is clean, then create branch `feat/<id>-<slug>` or `fix/<id>-<slug>` (use `feat/local-<n>-<slug>` for local tasks).
 2. Scan the repository to detect subprojects and test runners. If no tests exist, create a smoke test first.
 3. Present an implementation plan in chat. If existing tests must change, explain why and wait for user approval.
-4. Write failing unit tests first. Point tests to isolated test databases, configured `database.testDatabases`, or mocks, never production data.
+4. Write failing unit tests first. Point tests to isolated test databases, configured `database.testDatabases`, or mocks, never production data. Before Target 40 review, run the full active subproject regression suite (`verify-regression`) to seal `.workflow/state/30_regression_receipt.json`. Keep `review.allowCriticHermeticTests` set to `false` by default.
 5. Audit your diff against the Six Pillars: Intent, Verification (TDD, failure falsification, boundary limits), Architecture (including Gang of Four, Game Programming Patterns, and ORM versus parameterized query balance), Blast Radius (mandatory canary), Reviewer Defense (intentional non-changes, Simple English), and Immune Defenses & Crash Antibodies.
 6. Run formatters, linters, and the full test suite across all subprojects before you ask to commit.
 7. Stop and wait for explicit human approval at all six pause gates: Target 20 (plan), Target 42 (blocker triage), Target 45 (review), Target 50 (commit), Target 60 (push), and Target 75 (landing). Never declare or approve gates yourself under SCAR-PROC-102. Forbid agent self-approval. Forbid `closes #` on local session commits.
