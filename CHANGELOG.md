@@ -40,3 +40,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-237: Align .claude-plugin/plugin.json, .codex-plugin/plugin.json, and MCP fallback version to 0.0.1.
 - GH-235: Resolve outer ancestor PTY and emulator hints before TERM=dumb, simplify title formats without backticks, and reset titles on finish.
 - GH-248: Bypass Target 60 push pause in Pure Git Mode and align Target 80 squash-merge `git branch -D` cleanup with SCAR-GIT-25.
+- GH-243: Preserve pre-subcommand `--repo-root` and `--lock-dir` flags and default to `os.getcwd()` across `local_tickets`, `workspace_mutex`, and `terminal_title` CLI runners.

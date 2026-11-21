@@ -2502,5 +2502,24 @@
     "closes_issue": true,
     "tests_added": 6,
     "scars_earned": []
+  },
+  {
+    "id": "GH-243",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/243",
+    "title": "[BUG] local_tickets.py subparser --repo-root clobbers pre-subcommand --repo-root and falls back to plugin directory",
+    "request": "Give subparser --repo-root and --lock-dir distinct sub_* destinations, default omitted --repo-root to os.getcwd(), and add hermetic unit tests across LocalTicketScript, WorkspaceMutexScript, and TerminalTitleScript (plus shorten GH-248 CHANGELOG entry to pass CI).",
+    "branch": "fix/243-local-tickets-subparser-repo-root",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-21T18:54:06Z",
+    "completed_at": "2026-11-21T20:29:49Z",
+    "commit_sha": "9ed9cd4b1484dd952e2e1b2e80abf784c34c49f2",
+    "pr_number": 259,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/259",
+    "closes_issue": true,
+    "tests_added": 15,
+    "scars_earned": []
   }
 ]
