@@ -31,18 +31,19 @@ def test_smoke():
 
 ## 4. Test Database and Network Isolation
 
-Follow four isolation rules in Python tests:
+Follow five isolation rules in Python tests:
 
 1. Use SQLite in-memory connections (`sqlite:///:memory:`) for unit tests.
 2. For PostgreSQL or MySQL integration tests, set `TEST_DATABASE_URL=postgres://user:pass@localhost:5432/<app>_test`.
 3. Never point `DATABASE_URL` to staging or production hosts.
 4. Mock external HTTP requests with `pytest-mock` or `unittest.mock`.
+5. Use `tempfile.TemporaryDirectory()` for temporary files (`SCAR-TEST-45`). Never hardcode `/tmp/` writes or rely on manual `mkdtemp` or `NamedTemporaryFile(delete=False)` cleanup.
 
 ## Idiomatic Directory and Module Structure
 
 - **Library and Domain Layer**: Place reusable modules in `src/<pkg>/` or `lib/` with `__init__.py` and zero executable shebang headers (`SCAR-ARCH-05`).
 - **Executable Entrypoints and Controllers**: Place thin CLI wrappers in `scripts/` subclassing `BaseScript` and delegating `run()` to `lib/` without cross-script imports.
-- **Test Suite Placement and Naming**: Place unit and integration suites in `tests/test_*.py` so `pytest` and `unittest` discover them automatically.
+- **Test Suite Placement and Naming**: Place suites in `tests/test_*.py` with behavioral domain names (`SCAR-TEST-22`) so `pytest` and `unittest` discover them automatically.
 - **Structural Anti-Patterns to Flag at Target 15**: Flag peer script imports (`from scripts.other import ...`), shebangs inside `lib/`, or unguarded module-level side effects.
 
 ## Code Documentation Standards and Tree Assembly

@@ -44,11 +44,11 @@ class TestStaticAnalysis(unittest.TestCase):
 
   def test_static_check_detects_syntax_error(self):
     """Static check must exit non-zero and report syntax errors."""
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("def broken_syntax(\n")  # Unclosed parenthesis and missing body
-      bad_file = f.name
+    with tempfile.TemporaryDirectory() as tmpdir:
+      bad_file = os.path.join(tmpdir, "broken.py")
+      with open(bad_file, "w", encoding="utf-8") as f:
+        f.write("def broken_syntax(\n")  # Unclosed parenthesis and missing body
 
-    try:
       code, out, err = run_static_check([bad_file])
       self.assertNotEqual(code, 0, f"Expected non-zero exit on syntax error, got {code}")
       output = out + err
@@ -57,9 +57,6 @@ class TestStaticAnalysis(unittest.TestCase):
           or "syntax" in output.lower()
           or "error" in output.lower()
       )
-    finally:
-      if os.path.exists(bad_file):
-        os.unlink(bad_file)
 
   def test_static_check_tool_absence_fallback(self):
     """Static check falls back to stdlib AST when external linters are absent."""
@@ -67,15 +64,15 @@ class TestStaticAnalysis(unittest.TestCase):
     clean_env["PATH"] = "/usr/bin:/bin"
     clean_env["STATIC_CHECK_FORCE_NO_LINTER"] = "1"
 
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("def valid_func():\n    return 42\n")
-      valid_file = f.name
+    with tempfile.TemporaryDirectory() as tmpdir:
+      valid_file = os.path.join(tmpdir, "valid.py")
+      with open(valid_file, "w", encoding="utf-8") as f:
+        f.write("def valid_func():\n    return 42\n")
 
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("def invalid_syntax(:\n")
-      invalid_file = f.name
+      invalid_file = os.path.join(tmpdir, "invalid.py")
+      with open(invalid_file, "w", encoding="utf-8") as f:
+        f.write("def invalid_syntax(:\n")
 
-    try:
       code_valid, _, _ = run_static_check([valid_file], env=clean_env)
       self.assertEqual(
           code_valid, 0, f"Expected 0 on fallback AST valid file, got {code_valid}"
@@ -85,11 +82,6 @@ class TestStaticAnalysis(unittest.TestCase):
       self.assertNotEqual(
           code_bad, 0, f"Expected non-zero on fallback AST syntax error, got {code_bad}"
       )
-    finally:
-      if os.path.exists(valid_file):
-        os.unlink(valid_file)
-      if os.path.exists(invalid_file):
-        os.unlink(invalid_file)
 
 
 if __name__ == "__main__":

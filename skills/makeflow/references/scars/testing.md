@@ -16,6 +16,7 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 | `SCAR-TEST-24` | Coverage-Driven Fallback Branch Deletion Trap | Defensive Branch Safety & Coverage |
 | `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Red-Green TDD Discipline |
 | `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Test Flakiness & Defect Isolation |
+| `SCAR-TEST-45` | Ephemeral Temporary Directory Isolation | Scoped OS Temp Fixtures & Auto-Cleanup |
 | `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Structural AST Anti-Shortcut Gate |
 
 ---
@@ -64,11 +65,11 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 
 ### SCAR-TEST-22: Traceable Test Naming and Artifact Longevity
 
-- **Wound**: A developer writes tests named with temporary review finding numbers. After the ticket closes, future maintainers cannot trace why the test exists or what defect it guards.
-- **Trap**: Using short-lived review comment numbers in permanent test names.
-- **Circuit Breaker**: If you create a test, never name it after temporary review finding numbers.
-- **Permanent Reflex**: Name regression tests after permanent ticket keys and concrete failure behaviors. Include the ticket identifier in the test docstring.
-- **Socratic Probe**: Does this test name describe the concrete behavior and reference a permanent ticket key?
+- **Wound**: A developer names tests with temporary review finding numbers or bare issue numbers. After the ticket closes, future maintainers cannot trace what behavior each test guards.
+- **Trap**: Using short-lived review comment numbers or bare issue numbers in permanent test file and function names.
+- **Circuit Breaker**: If you create a test, never name it after temporary review finding numbers or bare issue numbers.
+- **Permanent Reflex**: Place permanent tests under `./tests/` or the language test directory with behavioral domain names. Record the permanent ticket identifier in the test docstring.
+- **Socratic Probe**: Does this test live in the test directory with a behavioral domain name and a permanent ticket docstring?
 
 ### SCAR-TEST-24: Coverage-Driven Fallback Branch Deletion Trap
 
@@ -93,6 +94,14 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 - **Circuit Breaker**: If a local test fails, never re-run it blindly without investigating the root cause.
 - **Permanent Reflex**: Treat all local test failures as deterministic defects. If a test fails twice with the same stack trace, fix the defect before you proceed.
 - **Socratic Probe**: Are you re-running this test to get lucky, or did you locate the root cause?
+
+### SCAR-TEST-45: Ephemeral Temporary Directory Isolation
+
+- **Wound**: Fixed `/tmp/<slug>` paths collide across concurrent sessions. Manual `mkdtemp` and `NamedTemporaryFile(delete=False)` cleanups leak temporary artifacts when exceptions occur.
+- **Trap**: Hardcoding shared `/tmp/` paths or relying on manual cleanup hooks instead of scoped OS temporary helpers.
+- **Circuit Breaker**: If a test writes temporary files, never hardcode `/tmp/` paths or call `mkdtemp`, `mktemp`, or `NamedTemporaryFile(delete=False)`.
+- **Permanent Reflex**: Create unique OS ephemeral temporary directories with automatic cleanup. Use Python `tempfile.TemporaryDirectory()`, Go `t.TempDir()`, Rust `tempfile::TempDir`, or shell `mktemp -d` with `trap`.
+- **Socratic Probe**: Does each test use an OS ephemeral temporary directory with automatic cleanup? If an assertion fails early, can fixed `/tmp/` paths or manual cleanup leak artifacts?
 
 ### SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate
 

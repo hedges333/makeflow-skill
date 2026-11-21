@@ -4,7 +4,6 @@
 import importlib.util
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -539,25 +538,24 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
     """GH-235: _finalize_completed_ticket resets terminal title for non-temp workspaces."""
     from lib.state_machine import _finalize_completed_ticket
 
-    parent = tempfile.mkdtemp(prefix="makeflow_sm_finish_")
-    self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
-    ws = os.path.join(parent, "my-app")
-    state_dir = os.path.join(ws, ".workflow", "state")
-    _write_file(
-        os.path.join(state_dir, "10_ticket.md"),
-        "# 10_ticket: GH-235\n\n- **Ticket ID**: `GH-235`\n",
-    )
+    with tempfile.TemporaryDirectory(prefix="makeflow_sm_finish_") as parent:
+      ws = os.path.join(parent, "my-app")
+      state_dir = os.path.join(ws, ".workflow", "state")
+      _write_file(
+          os.path.join(state_dir, "10_ticket.md"),
+          "# 10_ticket: GH-235\n\n- **Ticket ID**: `GH-235`\n",
+      )
 
-    with mock.patch(
-        "lib.terminal_title.set_terminal_title", return_value=(True, "my-app/")
-    ) as mock_set:
-      _finalize_completed_ticket(state_dir, ws, "T80")
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title", return_value=(True, "my-app/")
+      ) as mock_set:
+        _finalize_completed_ticket(state_dir, ws, "T80")
 
-    mock_set.assert_called_once_with(title="my-app/", repo_root=ws)
-    with open(
-        os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
-    ) as f:
-      self.assertIn("Status: COMPLETE", f.read())
+      mock_set.assert_called_once_with(title="my-app/", repo_root=ws)
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        self.assertIn("Status: COMPLETE", f.read())
 
   def test_finalize_completed_ticket_gh235_skips_temporary_workspace(
       self,
@@ -584,37 +582,36 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
     """GH-235 / SCAR-TEST-24 / SCAR-AST-01: tolerates ImportError/OSError; propagates fatal bugs."""
     from lib.state_machine import _finalize_completed_ticket
 
-    parent = tempfile.mkdtemp(prefix="makeflow_sm_err_")
-    self.addCleanup(shutil.rmtree, parent, ignore_errors=True)
-    ws = os.path.join(parent, "my-app")
-    state_dir = os.path.join(ws, ".workflow", "state")
-    _write_file(
-        os.path.join(state_dir, "10_ticket.md"),
-        "# 10_ticket: GH-235\n\n- **Ticket ID**: `GH-235`\n",
-    )
+    with tempfile.TemporaryDirectory(prefix="makeflow_sm_err_") as parent:
+      ws = os.path.join(parent, "my-app")
+      state_dir = os.path.join(ws, ".workflow", "state")
+      _write_file(
+          os.path.join(state_dir, "10_ticket.md"),
+          "# 10_ticket: GH-235\n\n- **Ticket ID**: `GH-235`\n",
+      )
 
-    # 1. Tolerates ImportError
-    with mock.patch.dict(sys.modules, {"lib.terminal_title": None}):
-      _finalize_completed_ticket(state_dir, ws, "T80")
+      # 1. Tolerates ImportError
+      with mock.patch.dict(sys.modules, {"lib.terminal_title": None}):
+        _finalize_completed_ticket(state_dir, ws, "T80")
 
-    # 2. Tolerates OSError
-    with mock.patch(
-        "lib.terminal_title.set_terminal_title",
-        side_effect=OSError("TTY unavailable"),
-    ):
-      _finalize_completed_ticket(state_dir, ws, "T80")
-
-    # 3. Propagates TypeError and RuntimeError
-    for fatal_exc in (
-        TypeError("Synthetic TypeError"),
-        RuntimeError("Synthetic RuntimeError"),
-    ):
+      # 2. Tolerates OSError
       with mock.patch(
           "lib.terminal_title.set_terminal_title",
-          side_effect=fatal_exc,
+          side_effect=OSError("TTY unavailable"),
       ):
-        with self.assertRaises(type(fatal_exc)):
-          _finalize_completed_ticket(state_dir, ws, "T80")
+        _finalize_completed_ticket(state_dir, ws, "T80")
+
+      # 3. Propagates TypeError and RuntimeError
+      for fatal_exc in (
+          TypeError("Synthetic TypeError"),
+          RuntimeError("Synthetic RuntimeError"),
+      ):
+        with mock.patch(
+            "lib.terminal_title.set_terminal_title",
+            side_effect=fatal_exc,
+        ):
+          with self.assertRaises(type(fatal_exc)):
+            _finalize_completed_ticket(state_dir, ws, "T80")
 
   def test_backtick_ticket_id_bracket_title_roundtrip_and_release_intake(
       self,

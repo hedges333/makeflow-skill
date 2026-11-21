@@ -7,7 +7,6 @@ import json
 import os
 import pty
 import select
-import shutil
 import stat
 import sys
 import tempfile
@@ -267,10 +266,9 @@ class TestProjectAndTicketDetection(unittest.TestCase):
   """Tests for detecting project name and ticket ID."""
 
   def setUp(self):
-    self.temp_dir = tempfile.mkdtemp(prefix="makeflow_title_test_")
-
-  def tearDown(self):
-    shutil.rmtree(self.temp_dir, ignore_errors=True)
+    self._tmp = tempfile.TemporaryDirectory(prefix="makeflow_title_test_")
+    self.addCleanup(self._tmp.cleanup)
+    self.temp_dir = self._tmp.name
 
   def test_project_name_from_git_remote_ssh(self):
     name = detect_project_name(
@@ -560,12 +558,9 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     self.assertFalse(is_temporary_directory_name("my-cool-project"))
 
     # detect_project_name on temporary directories must return ""
-    temp_dir = tempfile.mkdtemp(prefix="tmp")
-    try:
+    with tempfile.TemporaryDirectory(prefix="tmp") as temp_dir:
       name = detect_project_name(repo_root=temp_dir, git_remote_url="")
       self.assertEqual(name, "")
-    finally:
-      shutil.rmtree(temp_dir, ignore_errors=True)
 
     # Synthetic temporary path fallback check
     name = detect_project_name(repo_root="/tmp/tmpabcdef1", git_remote_url="")
@@ -578,10 +573,9 @@ class TestDirectoryNameDetection(unittest.TestCase):
   """Tests for bare unqualified directory name extraction (GH-224)."""
 
   def setUp(self):
-    self.temp_dir = tempfile.mkdtemp(prefix="makeflow_dir_test_")
-
-  def tearDown(self):
-    shutil.rmtree(self.temp_dir, ignore_errors=True)
+    self._tmp = tempfile.TemporaryDirectory(prefix="makeflow_dir_test_")
+    self.addCleanup(self._tmp.cleanup)
+    self.temp_dir = self._tmp.name
 
   def test_detect_directory_name_gh224_ignores_git_remote_and_manifests(self):
     """GH-224: detect_directory_name ignores plugin.json, package.json, and git remote."""
@@ -625,13 +619,10 @@ class TestDirectoryNameDetection(unittest.TestCase):
 
   def test_detect_directory_name_gh224_rejects_temporary_directories(self):
     """GH-224: temporary directory paths return empty string."""
-    temp_dir = tempfile.mkdtemp(prefix="tmp")
-    try:
+    with tempfile.TemporaryDirectory(prefix="tmp") as temp_dir:
       self.assertEqual(
           terminal_title.detect_directory_name(repo_root=temp_dir), ""
       )
-    finally:
-      shutil.rmtree(temp_dir, ignore_errors=True)
 
     self.assertEqual(
         terminal_title.detect_directory_name(repo_root="/tmp/tmpabcdef1"), ""
@@ -760,8 +751,7 @@ class TestSetTerminalTitle(unittest.TestCase):
     self.assertEqual(stream.getvalue(), "")
 
     # Temporary directory as repo_root with no ticket or remote
-    temp_dir = tempfile.mkdtemp(prefix="tmp")
-    try:
+    with tempfile.TemporaryDirectory(prefix="tmp") as temp_dir:
       ok, applied = set_terminal_title(
           repo_root=temp_dir,
           stream=stream,
@@ -770,8 +760,6 @@ class TestSetTerminalTitle(unittest.TestCase):
       self.assertFalse(ok)
       self.assertEqual(applied, "")
       self.assertEqual(stream.getvalue(), "")
-    finally:
-      shutil.rmtree(temp_dir, ignore_errors=True)
 
   def test_set_terminal_title_gh224_rejects_explicit_temp_dir_name(self):
     """GH-224: set_terminal_title rejects temporary directory patterns in dir_name."""
@@ -807,8 +795,9 @@ class TestSetTerminalTitle(unittest.TestCase):
 
   def test_set_terminal_title_gh224_canonical_example(self):
     """GH-224: auto-detects bare directory name and ignores plugin.json."""
-    temp_parent = tempfile.mkdtemp(prefix="makeflow_gh224_test_")
-    try:
+    with tempfile.TemporaryDirectory(
+        prefix="makeflow_gh224_test_"
+    ) as temp_parent:
       repo_dir = os.path.join(temp_parent, "makeflow-skill-dir3")
       state_dir = os.path.join(repo_dir, ".workflow", "state")
       os.makedirs(state_dir, exist_ok=True)
@@ -836,8 +825,6 @@ class TestSetTerminalTitle(unittest.TestCase):
       self.assertTrue(ok)
       self.assertEqual(applied, expected)
       self.assertEqual(stream.getvalue(), f"\033]0;{expected}\007")
-    finally:
-      shutil.rmtree(temp_parent, ignore_errors=True)
 
   def test_set_terminal_title_gh224_rejects_project_name_kwarg(self):
     """GH-224: project_name parameter is removed from set_terminal_title."""
@@ -919,10 +906,9 @@ class TestTerminalTitleScriptLifecycle(unittest.TestCase):
   """Tests for TerminalTitleScript BaseScript CLI lifecycle."""
 
   def setUp(self):
-    self.temp_dir = tempfile.mkdtemp(prefix="makeflow_cli_test_")
-
-  def tearDown(self):
-    shutil.rmtree(self.temp_dir, ignore_errors=True)
+    self._tmp = tempfile.TemporaryDirectory(prefix="makeflow_cli_test_")
+    self.addCleanup(self._tmp.cleanup)
+    self.temp_dir = self._tmp.name
 
   def test_inherits_base_script(self):
     script = TerminalTitleScript()
@@ -1214,8 +1200,9 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
     script = WorkflowGatesScript()
     out = io.StringIO()
     err = MockTtyStream()
-    temp_dir = tempfile.mkdtemp(prefix="makeflow_release_test_")
-    try:
+    with tempfile.TemporaryDirectory(
+        prefix="makeflow_release_test_"
+    ) as temp_dir:
       repo_dir = os.path.join(temp_dir, "restored-dir")
       os.makedirs(repo_dir, exist_ok=True)
       manifest = os.path.join(repo_dir, "plugin.json")
@@ -1236,18 +1223,15 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
       # Must ignore plugin.json and restore terminal title to restored-dir/
       self.assertIn("\033]0;restored-dir/\007", err.getvalue())
       self.assertNotIn("restored-project", err.getvalue())
-    finally:
-      shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 class TestAncestorPtyResolutionAndDelivery(unittest.TestCase):
   """Hermetic tests for ancestor PTY lookup and real PTY delivery (GH-235)."""
 
   def setUp(self):
-    self.temp_dir = tempfile.mkdtemp(prefix="makeflow_pty_test_")
-
-  def tearDown(self):
-    shutil.rmtree(self.temp_dir, ignore_errors=True)
+    self._tmp = tempfile.TemporaryDirectory(prefix="makeflow_pty_test_")
+    self.addCleanup(self._tmp.cleanup)
+    self.temp_dir = self._tmp.name
 
   def _open_pty_pair(self):
     master_fd, slave_fd = pty.openpty()
