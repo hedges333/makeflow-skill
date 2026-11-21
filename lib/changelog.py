@@ -11,9 +11,15 @@ from dataclasses import dataclass
 import json
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NoReturn, Optional, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
+from lib.scar_candidate import (
+    _CONTRACTION_RE,
+    count_words_in_sentence,
+    mask_code_and_math_spans,
+    split_into_sentences,
+)
 
 CANONICAL_SECTIONS: Tuple[str, ...] = (
     "Added",
@@ -34,6 +40,77 @@ _PREFIX_CAPTURE_RE = re.compile(r"^([^\s:]+):(.*)$")
 _BARE_DIGITS_RE = re.compile(r"^([1-9][0-9]*)$")
 _UNRELEASED_HEADING_RE = re.compile(r"^##\s+\[Unreleased\](?:\s|$)")
 _H2_HEADING_RE = re.compile(r"^##\s+(?!#)")
+_INLINE_CODE_SPAN_RE = re.compile(r"`[^`]*`")
+_LIST_MARKER_PREFIX_RE = re.compile(r"^(?:-\s+|\*\s+|\d+\.\s+)")
+
+
+class ChangelogCliError(Exception):
+  """Raised on invalid changelog CLI arguments or validation failures."""
+
+  exit_code = 2
+
+
+class ChangelogArgumentParser(SilentArgumentParser):
+  """ArgumentParser subclass raising ChangelogCliError with exit_code = 2 on errors."""
+
+  def error(self, message: str) -> NoReturn:
+    """Clear buffered messages and raise ChangelogCliError."""
+    self._printed_messages.clear()
+    raise ChangelogCliError(message)
+
+  def exit(self, status: int = 0, message: Optional[str] = None) -> NoReturn:
+    """Raise HelpExit on status 0, or ChangelogCliError on parser errors."""
+    if status == 0:
+      super().exit(status, message)
+    buffered = "".join(self._printed_messages)
+    self._printed_messages.clear()
+    raise ChangelogCliError(
+        message or buffered or f"Argument parser exited with status {status}"
+    )
+
+
+def _validate_simple_english_line(
+    line: str, *, line_no: Optional[int] = None
+) -> None:
+  """Validate a single non-heading, non-fenced line against Simple English rules.
+
+  Args:
+    line: Single changelog prose or bullet line to validate.
+    line_no: Optional 1-based line number for error reporting.
+
+  Raises:
+    ValueError: If prose contains semicolons, em-dashes, contractions, or >25-word sentences.
+  """
+  stripped = line.strip()
+  if not stripped:
+    return
+
+  loc = f" (line {line_no})" if line_no is not None else ""
+  no_code = _INLINE_CODE_SPAN_RE.sub("", stripped)
+  if not stripped.startswith("|"):
+    if ";" in no_code:
+      raise ValueError(
+          f"Changelog prose{loc} contains forbidden semicolon ';' outside inline code: {stripped!r}."
+      )
+    if "\u2014" in no_code:
+      raise ValueError(
+          f"Changelog prose{loc} contains forbidden em-dash '\u2014' outside inline code: {stripped!r}."
+      )
+
+  cmatch = _CONTRACTION_RE.search(no_code)
+  if cmatch:
+    raise ValueError(
+        f"Changelog prose{loc} contains forbidden contraction {cmatch.group(0)!r}: {stripped!r}."
+    )
+
+  body = _LIST_MARKER_PREFIX_RE.sub("", stripped)
+  masked = mask_code_and_math_spans(body)
+  for sent in split_into_sentences(masked):
+    wcount = count_words_in_sentence(sent)
+    if wcount > 25:
+      raise ValueError(
+          f"Changelog sentence{loc} exceeds 25-word limit ({wcount} > 25 words): {sent!r}."
+      )
 
 
 @dataclass
@@ -357,7 +434,7 @@ def format_changelog_bullet(
     Formatted bullet line ``- <TICKET_ID>: <summary>``.
 
   Raises:
-    ValueError: If ticket ID, summary, or embedded summary prefix is invalid.
+    ValueError: If ticket ID, summary, embedded summary prefix, or Simple English is invalid.
   """
   reg = _resolve_registry(registry)
   _, norm_id = reg.resolve(ticket_id, ticket_type=ticket_type)
@@ -386,7 +463,9 @@ def format_changelog_bullet(
       if not cleaned:
         raise ValueError("Changelog summary must not be empty.")
 
-  return f"- {norm_id}: {cleaned}"
+  formatted = f"- {norm_id}: {cleaned}"
+  _validate_simple_english_line(formatted)
+  return formatted
 
 
 def parse_changelog_bullet(
@@ -449,7 +528,7 @@ def validate_changelog_bullet(
     Validated ``ChangelogBullet`` instance.
 
   Raises:
-    ValueError: If the line is malformed, lacks a canonical ticket prefix, or mismatches ``expected_ticket_id``.
+    ValueError: If the line is malformed, lacks a canonical ticket prefix, mismatches ``expected_ticket_id``, or violates Simple English.
   """
   if not isinstance(line, str) or not line.strip():
     raise ValueError("Changelog bullet must not be empty.")
@@ -503,6 +582,7 @@ def validate_changelog_bullet(
           f"Expected ticket '{expected_norm}' but found '{parsed.ticket_id}'."
       )
 
+  _validate_simple_english_line(clean)
   return parsed
 
 
@@ -605,7 +685,7 @@ def add_unreleased_entry(
     already exists under ``## [Unreleased]``.
 
   Raises:
-    ValueError: If ``## [Unreleased]`` is missing, or ticket/summary/section is invalid.
+    ValueError: If ``## [Unreleased]`` is missing, existing content is invalid, or ticket/summary/section is invalid.
   """
   if not isinstance(changelog_text, str):
     raise ValueError("Changelog content must be a string.")
@@ -618,6 +698,7 @@ def add_unreleased_entry(
       ticket_type=None,
       registry=reg,
   )
+  validate_changelog_unreleased(changelog_text, registry=reg)
 
   lines = changelog_text.splitlines()
   unrel_start, unrel_end = _find_unreleased_bounds(lines)
@@ -670,23 +751,24 @@ def validate_changelog_unreleased(
     strict_all: bool = False,
     registry: Optional[TicketTypeRegistry] = None,
 ) -> List[ChangelogBullet]:
-  """Validate bullets under ``## [Unreleased]`` in a ``CHANGELOG.md`` string.
+  """Validate Simple English across ``CHANGELOG.md`` and ticket prefixes under ``## [Unreleased]``.
 
   Args:
     changelog_text: Full contents of ``CHANGELOG.md``.
     ticket_id: Optional ticket ID required to appear under ``## [Unreleased]``.
     ticket_type: Optional explicit ticket type for normalizing ``ticket_id``.
-    strict_all: Require every bullet under ``## [Unreleased]`` to be ticket-prefixed.
+    strict_all: Retained for compatibility; all ``## [Unreleased]`` bullets are always enforced.
     registry: Optional custom ``TicketTypeRegistry``.
 
   Returns:
     List of validated ``ChangelogBullet`` objects found under ``## [Unreleased]``.
 
   Raises:
-    ValueError: If ``## [Unreleased]`` is missing, required ticket is absent, or bullets are invalid.
+    ValueError: If ``## [Unreleased]`` is missing, required ticket is absent, bullets are invalid, or Simple English fails.
   """
   if not isinstance(changelog_text, str):
     raise ValueError("Changelog content must be a string.")
+  del strict_all
   reg = _resolve_registry(registry)
   lines = changelog_text.splitlines()
   unrel_start, unrel_end = _find_unreleased_bounds(lines)
@@ -695,39 +777,30 @@ def validate_changelog_unreleased(
   if ticket_id is not None:
     _, expected_norm = reg.resolve(ticket_id, ticket_type=ticket_type)
 
-  enforce_all = strict_all or (expected_norm is None)
   valid_bullets: List[ChangelogBullet] = []
   found_expected = False
   in_fence = False
 
-  for line in lines[unrel_start + 1 : unrel_end]:
-    stripped = line.strip()
+  for idx, raw_line in enumerate(lines):
+    stripped = raw_line.strip()
     if stripped.startswith("```"):
       in_fence = not in_fence
       continue
-    if in_fence or not _BULLET_LINE_RE.match(line):
+    if (
+        in_fence
+        or not stripped
+        or stripped.startswith("#")
+        or stripped.startswith("<!--")
+    ):
       continue
 
-    if enforce_all:
-      bullet = validate_changelog_bullet(line, registry=reg)
+    if unrel_start < idx < unrel_end and _BULLET_LINE_RE.match(raw_line):
+      bullet = validate_changelog_bullet(raw_line, registry=reg)
       valid_bullets.append(bullet)
       if expected_norm is not None and bullet.ticket_id == expected_norm:
         found_expected = True
-      continue
-
-    parsed = parse_changelog_bullet(line, registry=reg)
-    if parsed is not None:
-      valid_bullets.append(parsed)
-      if parsed.ticket_id == expected_norm:
-        found_expected = True
-    elif expected_norm is not None and re.match(
-        rf"^\s*[-*]\s+{re.escape(expected_norm)}(?::|\s|$)",
-        line,
-        re.IGNORECASE,
-    ):
-      validate_changelog_bullet(
-          line, expected_ticket_id=expected_norm, registry=reg
-      )
+    else:
+      _validate_simple_english_line(raw_line, line_no=idx + 1)
 
   if expected_norm is not None and not found_expected:
     raise ValueError(
@@ -760,7 +833,7 @@ class ChangelogScript(BaseScript):
       args: Optional explicit argument vector for hermetic unit tests.
     """
     super().parse_args(args)
-    parser = SilentArgumentParser(
+    parser = ChangelogArgumentParser(
         prog="changelog.py",
         description="Format, validate, and insert ticket-prefixed CHANGELOG.md bullets.",
         epilog=(
@@ -779,7 +852,7 @@ class ChangelogScript(BaseScript):
     )
     subparsers = parser.add_subparsers(
         dest="subcommand",
-        parser_class=SilentArgumentParser,
+        parser_class=ChangelogArgumentParser,
         help="Subcommand to execute (format, validate, or add).",
     )
 
@@ -964,12 +1037,15 @@ class ChangelogScript(BaseScript):
       Process exit code (0 on success).
 
     Raises:
-      ValueError: If an unsupported subcommand is set.
+      ChangelogCliError: If validation, file access, or subcommand dispatch fails.
     """
-    if self.subcommand == "format":
-      return self._run_format()
-    if self.subcommand == "validate":
-      return self._run_validate()
-    if self.subcommand == "add":
-      return self._run_add()
-    raise ValueError(f"Unsupported subcommand: {self.subcommand}")
+    try:
+      if self.subcommand == "format":
+        return self._run_format()
+      if self.subcommand == "validate":
+        return self._run_validate()
+      if self.subcommand == "add":
+        return self._run_add()
+      raise ChangelogCliError(f"Unsupported subcommand: {self.subcommand}")
+    except (ValueError, OSError) as exc:
+      raise ChangelogCliError(str(exc)) from exc

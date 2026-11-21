@@ -74,7 +74,7 @@ def split_into_sentences(text: str) -> List[str]:
 
 
 _CONTRACTION_RE = re.compile(
-    r"\b(?:don't|doesn't|didn't|won't|can't|isn't|aren't|wasn't|weren't|"
+    r"\b(?:don't|doesn't|didn't|won't|can't|cannot't|isn't|aren't|wasn't|weren't|"
     r"haven't|hasn't|hadn't|wouldn't|shouldn't|couldn't|mustn't|"
     r"i'm|you're|we're|they're|i've|you've|we've|they've|"
     r"i'll|you'll|we'll|they'll|i'd|you'd|we'd|they'd|"

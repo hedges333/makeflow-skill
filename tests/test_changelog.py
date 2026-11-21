@@ -456,7 +456,7 @@ class TestChangelogBulletFormattingAndValidation(unittest.TestCase):
           "# Changelog\n\n"
           "## [Unreleased]\n\n"
           "### Added\n\n"
-          "- Legacy note without ticket ID.\n"
+          "- GH-100: Valid existing entry.\n"
           f"{malformed_line}\n"
       )
       with self.subTest(ticket_id=ticket_id, line=malformed_line):
@@ -476,9 +476,9 @@ class TestAddUnreleasedEntry(unittest.TestCase):
         "# Changelog\n\n"
         "## [Unreleased]\n\n"
         "### Added\n\n"
-        "- Legacy unreleased note.\n\n"
+        "- GH-100: Existing unreleased note.\n\n"
         "### Fixed\n\n"
-        "- Legacy bug fix.\n\n"
+        "- GH-101: Existing bug fix.\n\n"
         "## [1.0.0] - 2026-01-01\n\n"
         "### Added\n\n"
         "- GH-1234: Historical bullet in released section.\n"
@@ -494,10 +494,10 @@ class TestAddUnreleasedEntry(unittest.TestCase):
         "# Changelog\n\n"
         "## [Unreleased]\n\n"
         "### Added\n\n"
-        "- Legacy unreleased note.\n"
+        "- GH-100: Existing unreleased note.\n"
         "- GH-1234: Added frobnostication to reticulator dongle\n\n"
         "### Fixed\n\n"
-        "- Legacy bug fix.\n\n"
+        "- GH-101: Existing bug fix.\n\n"
         "## [1.0.0] - 2026-01-01\n\n"
         "### Added\n\n"
         "- GH-1234: Historical bullet in released section.\n"
@@ -774,12 +774,12 @@ class TestChangelogScriptCLI(unittest.TestCase):
         "--summary",
         "Ambiguous ticket",
     ])
-    self.assertEqual(code_bad, 1)
+    self.assertEqual(code_bad, 2)
     self.assertEqual(out_bad, "")
     self.assertIn("Error:", err_bad)
 
   def test_validate_subcommand_bullet_and_file_modes(self):
-    """validate subcommand supports --bullet, --file --ticket, and --strict-all."""
+    """validate subcommand enforces ticket prefixes universally with zero legacy exemptions (GH-260)."""
     code_ok, out_ok, err_ok = self._run_cli([
         "validate",
         "--bullet",
@@ -792,12 +792,13 @@ class TestChangelogScriptCLI(unittest.TestCase):
     self.assertEqual(payload["ticket_id"], "GH-1234")
     self.assertEqual(payload["ticket_type"], "GITHUB")
 
-    code_bad_bullet, _, err_bad_bullet = self._run_cli([
+    code_bad_bullet, out_bad_bullet, err_bad_bullet = self._run_cli([
         "validate",
         "--bullet",
         "- Unprefixed bullet",
     ])
-    self.assertEqual(code_bad_bullet, 1)
+    self.assertEqual(code_bad_bullet, 2)
+    self.assertEqual(out_bad_bullet, "")
     self.assertIn("Error:", err_bad_bullet)
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -807,37 +808,21 @@ class TestChangelogScriptCLI(unittest.TestCase):
             "# Changelog\n\n"
             "## [Unreleased]\n\n"
             "### Added\n\n"
-            "- Legacy bullet without ticket ID.\n"
+            "- Unprefixed bullet without ticket ID.\n"
             "- GH-228: Enforce ticket prefix on changelog bullets.\n"
         )
 
-      code_ticket_ok, _, err_ticket_ok = self._run_cli([
-          "validate",
-          "--file",
-          mixed_path,
-          "--ticket",
-          "GH-228",
-      ])
-      self.assertEqual(code_ticket_ok, 0, err_ticket_ok)
-
-      code_ticket_miss, _, err_ticket_miss = self._run_cli([
-          "validate",
-          "--file",
-          mixed_path,
-          "--ticket",
-          "GH-999",
-      ])
-      self.assertEqual(code_ticket_miss, 1)
-      self.assertIn("GH-999", err_ticket_miss)
-
-      code_strict_fail, _, err_strict_fail = self._run_cli([
-          "validate",
-          "--file",
-          mixed_path,
-          "--strict-all",
-      ])
-      self.assertEqual(code_strict_fail, 1)
-      self.assertIn("Error:", err_strict_fail)
+      for argv in (
+          ["validate", "--file", mixed_path, "--ticket", "GH-228"],
+          ["validate", "--file", mixed_path, "--ticket", "GH-999"],
+          ["validate", "--file", mixed_path, "--strict-all"],
+          ["validate", "--file", mixed_path],
+      ):
+        with self.subTest(argv=argv):
+          code_fail, out_fail, err_fail = self._run_cli(argv)
+          self.assertEqual(code_fail, 2)
+          self.assertEqual(out_fail, "")
+          self.assertIn("Error:", err_fail)
 
       strict_path = os.path.join(tmpdir, "STRICT.md")
       with open(strict_path, "w", encoding="utf-8") as f:
@@ -855,12 +840,33 @@ class TestChangelogScriptCLI(unittest.TestCase):
       ])
       self.assertEqual(code_strict_ok, 0, err_strict_ok)
 
+      code_ticket_ok, _, err_ticket_ok = self._run_cli([
+          "validate",
+          "--file",
+          strict_path,
+          "--ticket",
+          "GH-228",
+      ])
+      self.assertEqual(code_ticket_ok, 0, err_ticket_ok)
+
+      code_ticket_miss, out_ticket_miss, err_ticket_miss = self._run_cli([
+          "validate",
+          "--file",
+          strict_path,
+          "--ticket",
+          "GH-999",
+      ])
+      self.assertEqual(code_ticket_miss, 2)
+      self.assertEqual(out_ticket_miss, "")
+      self.assertIn("Error:", err_ticket_miss)
+      self.assertIn("GH-999", err_ticket_miss)
+
   def test_add_subcommand_updates_once_and_handles_errors_without_sys_exit(self):
-    """add subcommand inserts once, stays idempotent, and returns 1 on missing file."""
+    """add subcommand inserts once, stays idempotent, and returns 2 on missing file."""
     with tempfile.TemporaryDirectory() as tmpdir:
       cl_path = os.path.join(tmpdir, "CHANGELOG.md")
       with open(cl_path, "w", encoding="utf-8") as f:
-        f.write("# Changelog\n\n## [Unreleased]\n\n### Added\n\n- Legacy item.\n")
+        f.write("# Changelog\n\n## [Unreleased]\n\n### Added\n\n- GH-100: Existing item.\n")
 
       code1, out1, err1 = self._run_cli([
           "add",
@@ -909,7 +915,7 @@ class TestChangelogScriptCLI(unittest.TestCase):
           "--summary",
           "Should fail gracefully",
       ])
-      self.assertEqual(code_missing, 1)
+      self.assertEqual(code_missing, 2)
       self.assertIn("Error:", err_missing)
 
   def test_validate_cli_reports_malformed_prefix_for_expected_ticket(self):
@@ -946,7 +952,7 @@ class TestChangelogScriptCLI(unittest.TestCase):
               "--ticket",
               "GH-228",
           ])
-          self.assertEqual(code, 1)
+          self.assertEqual(code, 2)
           self.assertEqual(out, "")
           self.assertIn("Error:", err)
           self.assertIn(expected_fragment, err)
@@ -963,7 +969,7 @@ class TestChangelogScriptCLI(unittest.TestCase):
     for argv in bad_arg_vectors:
       with self.subTest(argv=argv):
         code, out, err = self._run_cli(argv)
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertEqual(out, "")
         self.assertIn("Error:", err)
 
@@ -1023,6 +1029,301 @@ class TestChangelogMakefileWiring(unittest.TestCase):
     recipe = recipe_match.group(0)
     self.assertIn("$(PYTHON)", recipe)
     self.assertIn("test_changelog.py", recipe)
+
+
+class TestChangelogSimpleEnglishValidation(unittest.TestCase):
+  """Tests universal Simple English and zero-exemption validation across lib.changelog (GH-260)."""
+
+  @staticmethod
+  def _words(count: int, prefix: str = "word") -> str:
+    return " ".join(f"{prefix}{idx}" for idx in range(1, count + 1))
+
+  @staticmethod
+  def _wrap_unreleased(body: str) -> str:
+    return f"# Changelog\n\n## [Unreleased]\n\n### Added\n\n{body}\n"
+
+  def test_word_count_boundary_includes_ticket_prefix_and_multi_sentence(self):
+    """Sentences <= 25 words pass and > 25 words fail across all entrypoints including <TICKET_ID>: (GH-260)."""
+    base_doc = "# Changelog\n\n## [Unreleased]\n"
+
+    summary_24 = self._words(24) + "."
+    bullet_25 = format_changelog_bullet("GH-248", summary_24)
+    self.assertEqual(bullet_25, f"- GH-248: {summary_24}")
+    self.assertEqual(validate_changelog_bullet(bullet_25).summary, summary_24)
+    updated_25, changed_25 = add_unreleased_entry(base_doc, "GH-248", summary_24)
+    self.assertTrue(changed_25)
+    self.assertEqual(len(validate_changelog_unreleased(updated_25)), 1)
+
+    summary_25 = self._words(25) + "."
+    bullet_26 = f"- GH-248: {summary_25}"
+    with self.assertRaises(ValueError):
+      format_changelog_bullet("GH-248", summary_25)
+    with self.assertRaises(ValueError):
+      validate_changelog_bullet(bullet_26)
+    with self.assertRaises(ValueError):
+      add_unreleased_entry(base_doc, "GH-248", summary_25)
+    with self.assertRaises(ValueError):
+      validate_changelog_unreleased(self._wrap_unreleased(bullet_26))
+
+    multi_ok = "Short first sentence. " + self._words(25, prefix="second") + "."
+    bullet_multi_ok = format_changelog_bullet("GH-260", multi_ok)
+    self.assertEqual(validate_changelog_bullet(bullet_multi_ok).summary, multi_ok)
+    updated_multi, changed_multi = add_unreleased_entry(base_doc, "GH-260", multi_ok)
+    self.assertTrue(changed_multi)
+    self.assertEqual(len(validate_changelog_unreleased(updated_multi)), 1)
+
+    multi_bad = "Short first sentence. " + self._words(26, prefix="second") + "."
+    bullet_multi_bad = f"- GH-260: {multi_bad}"
+    with self.assertRaises(ValueError):
+      format_changelog_bullet("GH-260", multi_bad)
+    with self.assertRaises(ValueError):
+      validate_changelog_bullet(bullet_multi_bad)
+    with self.assertRaises(ValueError):
+      add_unreleased_entry(base_doc, "GH-260", multi_bad)
+    with self.assertRaises(ValueError):
+      validate_changelog_unreleased(self._wrap_unreleased(bullet_multi_bad))
+
+  def test_contractions_rejected_in_prose_but_allowed_in_inline_code(self):
+    """Contractions outside backticks fail while contractions inside inline code pass (GH-260)."""
+    base_doc = "# Changelog\n\n## [Unreleased]\n"
+    for contraction in (
+        "don't",
+        "it's",
+        "can't",
+        "cannot't",
+        "won't",
+        "didn't",
+        "shouldn't",
+        "we're",
+        "they've",
+    ):
+      bad_summary = f"Ensure parser {contraction} break."
+      bad_bullet = f"- GH-260: {bad_summary}"
+      with self.subTest(contraction=contraction):
+        with self.assertRaises(ValueError):
+          format_changelog_bullet("GH-260", bad_summary)
+        with self.assertRaises(ValueError):
+          validate_changelog_bullet(bad_bullet)
+        with self.assertRaises(ValueError):
+          add_unreleased_entry(base_doc, "GH-260", bad_summary)
+        with self.assertRaises(ValueError):
+          validate_changelog_unreleased(self._wrap_unreleased(bad_bullet))
+
+    safe_summary = "Allow `it's`, `don't`, `cannot't`, and `didn't` inside code spans."
+    safe_bullet = format_changelog_bullet("GH-260", safe_summary)
+    self.assertEqual(validate_changelog_bullet(safe_bullet).summary, safe_summary)
+    updated, changed = add_unreleased_entry(base_doc, "GH-260", safe_summary)
+    self.assertTrue(changed)
+    self.assertEqual(len(validate_changelog_unreleased(updated)), 1)
+
+    mixed_summary = "Allow `it's` in backticks when prose doesn't pass."
+    with self.assertRaises(ValueError):
+      format_changelog_bullet("GH-260", mixed_summary)
+    with self.assertRaises(ValueError):
+      validate_changelog_bullet(f"- GH-260: {mixed_summary}")
+
+  def test_semicolons_and_em_dashes_rejected_outside_inline_code(self):
+    """Semicolons and em-dashes fail outside inline code and pass inside backticks (GH-260)."""
+    base_doc = "# Changelog\n\n## [Unreleased]\n"
+    for label, bad_summary in (
+        ("semicolon", "Validate bullets; reject bad lines."),
+        ("em_dash", "Validate bullets\u2014reject bad lines."),
+        ("mixed_semicolon", "Allow `a;b` in code; reject bare punctuation."),
+        ("mixed_em_dash", "Allow `a\u2014b` in code\u2014reject bare dash."),
+    ):
+      bad_bullet = f"- GH-260: {bad_summary}"
+      with self.subTest(case=label):
+        with self.assertRaises(ValueError):
+          format_changelog_bullet("GH-260", bad_summary)
+        with self.assertRaises(ValueError):
+          validate_changelog_bullet(bad_bullet)
+        with self.assertRaises(ValueError):
+          add_unreleased_entry(base_doc, "GH-260", bad_summary)
+        with self.assertRaises(ValueError):
+          validate_changelog_unreleased(self._wrap_unreleased(bad_bullet))
+
+    safe_summary = "Allow `a;b` and `a\u2014b` inside inline code spans."
+    safe_bullet = format_changelog_bullet("GH-260", safe_summary)
+    self.assertEqual(validate_changelog_bullet(safe_bullet).summary, safe_summary)
+    updated, changed = add_unreleased_entry(base_doc, "GH-260", safe_summary)
+    self.assertTrue(changed)
+    self.assertEqual(len(validate_changelog_unreleased(updated)), 1)
+
+  def test_inline_code_period_masking_prevents_premature_sentence_split(self):
+    """Periods inside inline code spans like `lib/changelog.py` and `0.0.1` do not split sentences (GH-260)."""
+    base_doc = "# Changelog\n\n## [Unreleased]\n"
+    # 1 (GH-260:) + 22 plain words + 2 masked inline code tokens = 25 words in 1 sentence.
+    ok_summary = "`lib/changelog.py` and `0.0.1` " + self._words(21, prefix="tok") + "."
+    ok_bullet = format_changelog_bullet("GH-260", ok_summary)
+    self.assertEqual(validate_changelog_bullet(ok_bullet).summary, ok_summary)
+    updated, changed = add_unreleased_entry(base_doc, "GH-260", ok_summary)
+    self.assertTrue(changed)
+    self.assertEqual(len(validate_changelog_unreleased(updated)), 1)
+
+    # Adding 1 more plain word yields 26 words in a single masked sentence (must fail, not split on dots).
+    too_long = "`lib/changelog.py` and `0.0.1` " + self._words(22, prefix="tok") + "."
+    too_long_bullet = f"- GH-260: {too_long}"
+    with self.assertRaises(ValueError):
+      format_changelog_bullet("GH-260", too_long)
+    with self.assertRaises(ValueError):
+      validate_changelog_bullet(too_long_bullet)
+    with self.assertRaises(ValueError):
+      add_unreleased_entry(base_doc, "GH-260", too_long)
+    with self.assertRaises(ValueError):
+      validate_changelog_unreleased(self._wrap_unreleased(too_long_bullet))
+
+  def test_universal_enforcement_without_legacy_exemptions(self):
+    """Simple English applies universally across released sections and intro while Unreleased rejects unprefixed bullets (GH-260)."""
+    clean_with_release = (
+        "# Changelog\n\n"
+        "All notable changes appear here.\n\n"
+        "## [Unreleased]\n\n"
+        "### Added\n\n"
+        "- GH-260: Enforce Simple English universally.\n\n"
+        "## [1.0.0] - 2026-01-01\n\n"
+        "### Added\n\n"
+        "- Initial release.\n"
+    )
+    self.assertEqual(len(validate_changelog_unreleased(clean_with_release)), 1)
+
+    long_26 = self._words(26) + "."
+    invalid_docs = (
+        (
+            "released_long_sentence",
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- GH-260: Valid entry.\n\n"
+            f"## [1.0.0] - 2026-01-01\n\n### Added\n\n- {long_26}\n",
+        ),
+        (
+            "released_contraction",
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- GH-260: Valid entry.\n\n"
+            "## [1.0.0] - 2026-01-01\n\n### Added\n\n- We don't skip tests.\n",
+        ),
+        (
+            "released_semicolon",
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- GH-260: Valid entry.\n\n"
+            "## [1.0.0] - 2026-01-01\n\n### Added\n\n- Initial release; first cut.\n",
+        ),
+        (
+            "released_em_dash",
+            "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- GH-260: Valid entry.\n\n"
+            "## [1.0.0] - 2026-01-01\n\n### Added\n\n- Initial release\u2014first cut.\n",
+        ),
+        (
+            "intro_prose_contraction",
+            "# Changelog\n\nThis file doesn't allow contractions.\n\n"
+            "## [Unreleased]\n\n### Added\n\n- GH-260: Valid entry.\n",
+        ),
+        (
+            "intro_prose_long_sentence",
+            f"# Changelog\n\n{long_26}\n\n"
+            "## [Unreleased]\n\n### Added\n\n- GH-260: Valid entry.\n",
+        ),
+        (
+            "unreleased_prose_semicolon",
+            "# Changelog\n\n## [Unreleased]\n\nNote; invalid punctuation.\n\n"
+            "### Added\n\n- GH-260: Valid entry.\n",
+        ),
+    )
+    for name, bad_doc in invalid_docs:
+      with self.subTest(case=name):
+        with self.assertRaises(ValueError):
+          validate_changelog_unreleased(bad_doc)
+        with self.assertRaises(ValueError):
+          add_unreleased_entry(bad_doc, "GH-261", "Add clean entry.")
+
+    unprefixed_with_ticket = (
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n\n"
+        "- Unprefixed bullet under unreleased.\n"
+        "- GH-260: Valid entry.\n"
+    )
+    with self.assertRaises(ValueError):
+      validate_changelog_unreleased(
+          unprefixed_with_ticket, ticket_id="GH-260", strict_all=False
+      )
+    with self.assertRaises(ValueError):
+      add_unreleased_entry(unprefixed_with_ticket, "GH-260", "Valid entry.")
+
+    fenced_ok = (
+        "# Changelog\n\n"
+        "```markdown\n"
+        f"- Unprefixed can't fail; inside fence\u2014with {long_26}\n"
+        "```\n\n"
+        "## [Unreleased]\n\n"
+        "```text\n"
+        f"- Another fenced line that won't trigger; em-dash\u2014{long_26}\n"
+        "```\n\n"
+        "### Added\n\n"
+        "- GH-260: Enforce Simple English universally.\n"
+    )
+    self.assertEqual(len(validate_changelog_unreleased(fenced_ok)), 1)
+
+  def test_cli_simple_english_and_universal_validation_exit_code_two(self):
+    """ChangelogScript format, validate, and add reject invalid inputs with exit code 2 (GH-260)."""
+    long_25 = self._words(25) + "."
+    bad_vectors = (
+        ["format", "--ticket", "GH-260", "--summary", long_25],
+        ["format", "--ticket", "GH-260", "--summary", "We cannot't bypass gates."],
+        ["format", "--ticket", "GH-260", "--summary", "One; two."],
+        ["format", "--ticket", "GH-260", "--summary", "One\u2014two."],
+        ["validate", "--bullet", f"- GH-260: {long_25}"],
+        ["validate", "--bullet", "- GH-260: We won't bypass gates."],
+        ["validate", "--bullet", "- GH-260: One; two."],
+        ["validate", "--bullet", "- GH-260: One\u2014two."],
+    )
+    for argv in bad_vectors:
+      with self.subTest(argv=argv):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        code = ChangelogScript().execute(args=argv, stdout=stdout, stderr=stderr)
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("Error:", stderr.getvalue())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      bad_cl = os.path.join(tmpdir, "BAD_CHANGELOG.md")
+      original_content = (
+          "# Changelog\n\n## [Unreleased]\n\n### Added\n\n"
+          "- Legacy unprefixed bullet.\n"
+          "- GH-260: Valid entry.\n"
+      )
+      with open(bad_cl, "w", encoding="utf-8") as f:
+        f.write(original_content)
+
+      for argv in (
+          ["validate", "--file", bad_cl, "--ticket", "GH-260"],
+          ["add", "--file", bad_cl, "--ticket", "GH-261", "--summary", "Add clean entry."],
+          ["add", "--file", bad_cl, "--ticket", "GH-260", "--summary", "We don't skip."],
+          ["validate", "--file", os.path.join(tmpdir, "MISSING.md")],
+      ):
+        with self.subTest(argv=argv):
+          stdout = io.StringIO()
+          stderr = io.StringIO()
+          code = ChangelogScript().execute(args=argv, stdout=stdout, stderr=stderr)
+          self.assertEqual(code, 2)
+          self.assertEqual(stdout.getvalue(), "")
+          self.assertIn("Error:", stderr.getvalue())
+
+      with open(bad_cl, "r", encoding="utf-8") as f:
+        self.assertEqual(f.read(), original_content)
+
+  def test_repository_changelog_passes_validation(self):
+    """Repository CHANGELOG.md passes validate_changelog_unreleased and ChangelogScript validate --file (GH-260)."""
+    repo_cl = os.path.join(_REPO_ROOT, "CHANGELOG.md")
+    with open(repo_cl, "r", encoding="utf-8") as f:
+      content = f.read()
+    bullets = validate_changelog_unreleased(content)
+    self.assertGreater(len(bullets), 0)
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    code = ChangelogScript().execute(
+        args=["validate", "--file", repo_cl],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    self.assertEqual(code, 0, stderr.getvalue())
+    self.assertIn("OK:", stdout.getvalue())
+    self.assertEqual(stderr.getvalue(), "")
 
 
 if __name__ == "__main__":
