@@ -10,6 +10,19 @@ INSTALL_DIR = $(HOME)/.gemini/config/plugins/$(PLUGIN_NAME)
 PYTHON ?= python3
 REPO_ROOT ?= $(MKFILE_DIR)
 TICKET ?=
+PLUGIN_RUNTIME_PATHS := plugin.json hooks.json mcp_config.json default_config.json LICENSE README.md assets agents lib mcp rules skills scripts
+PLUGIN_STAGE_EXCLUDES := --exclude=__pycache__ --exclude='*.py[cod]' --exclude='*$$py.class' --exclude=.DS_Store
+
+define STAGE_TO_DIR
+( \
+	stage_tmp=$$(mktemp -d) || exit $$?; \
+	trap 'rm -rf "$$stage_tmp"' EXIT; \
+	tar -C "$(1)" $(PLUGIN_STAGE_EXCLUDES) -cf "$$stage_tmp/plugin.tar" $(PLUGIN_RUNTIME_PATHS) && \
+	rm -rf "$(2)" && \
+	mkdir -p "$(2)" && \
+	tar -xf "$$stage_tmp/plugin.tar" -C "$(2)"; \
+)
+endef
 
 .PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry enrich-scars migrate-scars-ontology test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets test-changelog check-plugin-files check-skill-budget check-intake release-intake help
 
@@ -48,12 +61,18 @@ help:
 validate:
 	@if command -v agy >/dev/null 2>&1; then \
 		echo "Checking plugin with agy..."; \
-		(cd "$(MKFILE_DIR)" && agy plugin validate . --strict) || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
-			--scar-id DOC-16 \
-			--code PLUGIN_MANIFEST_VALIDATION_FAILED \
-			--trigger "agy plugin validate . --strict failed." \
-			--rejected "Shipping invalid plugin manifests, agent frontmatter, or skill metadata." \
-			--reflex "Inspect agy validation errors above, fix manifest or frontmatter fields, and re-run make validate."; \
+		STAGE_DIR=$$(mktemp -d) || exit $$?; \
+		trap 'rm -rf "$$STAGE_DIR"' EXIT; \
+		$(call STAGE_TO_DIR,$(MKFILE_DIR),$$STAGE_DIR/$(PLUGIN_NAME)) || exit $$?; \
+		agy plugin validate "$$STAGE_DIR/$(PLUGIN_NAME)" --strict || { \
+			$(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+				--scar-id DOC-16 \
+				--code PLUGIN_MANIFEST_VALIDATION_FAILED \
+				--trigger "agy plugin validate $$STAGE_DIR/$(PLUGIN_NAME) --strict failed." \
+				--rejected "Shipping invalid plugin manifests, agent frontmatter, or skill metadata." \
+				--reflex "Inspect agy validation errors above, fix manifest or frontmatter fields, and re-run make validate."; \
+			exit 2; \
+		}; \
 	else \
 		echo "agy CLI not found in PATH. Skipping CLI check."; \
 	fi
@@ -300,20 +319,24 @@ test: test-static
 install: validate test
 	@if command -v agy >/dev/null 2>&1; then \
 		echo "Installing with agy plugin install..."; \
-		STAGE_DIR=$$(mktemp -d); \
+		STAGE_DIR=$$(mktemp -d) || exit $$?; \
 		trap 'rm -rf "$$STAGE_DIR"' EXIT; \
-		mkdir -p "$$STAGE_DIR/$(PLUGIN_NAME)"; \
-		tar -C "$(MKFILE_DIR)" --exclude='./.git' --exclude='./.tmp' --exclude='./.venv' --exclude='./.workflow/state' --exclude='./.workflow/archive' --exclude='./.workflow/config.json' --exclude='./.workflow/plan.md' --exclude='./.workflow/commit_msg.txt' -cf - . | tar -xf - -C "$$STAGE_DIR/$(PLUGIN_NAME)"; \
+		$(call STAGE_TO_DIR,$(MKFILE_DIR),$$STAGE_DIR/$(PLUGIN_NAME)) || exit $$?; \
+		agy plugin validate "$$STAGE_DIR/$(PLUGIN_NAME)" --strict || { \
+			$(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+				--scar-id DOC-16 \
+				--code PLUGIN_MANIFEST_VALIDATION_FAILED \
+				--trigger "agy plugin validate $$STAGE_DIR/$(PLUGIN_NAME) --strict failed." \
+				--rejected "Shipping invalid plugin manifests, agent frontmatter, or skill metadata." \
+				--reflex "Inspect agy validation errors above, fix manifest or frontmatter fields, and re-run make install."; \
+			exit 2; \
+		}; \
 		agy plugin install "$$STAGE_DIR/$(PLUGIN_NAME)"; \
 	else \
 		echo "Copying plugin to $(INSTALL_DIR)..."; \
-		rm -rf "$(INSTALL_DIR)"; \
-		mkdir -p "$(INSTALL_DIR)"; \
-		tar -C "$(MKFILE_DIR)" --exclude='./.git' --exclude='./.tmp' --exclude='./.venv' --exclude='./.workflow/state' --exclude='./.workflow/archive' --exclude='./.workflow/config.json' --exclude='./.workflow/plan.md' --exclude='./.workflow/commit_msg.txt' -cf - . | tar -xf - -C "$(INSTALL_DIR)"; \
+		$(call STAGE_TO_DIR,$(MKFILE_DIR),$(INSTALL_DIR)) || exit $$?; \
 		echo "Installed to $(INSTALL_DIR)"; \
 	fi
-	@rm -rf "$(INSTALL_DIR)/.workflow/state"
-	@rm -rf "$(INSTALL_DIR)/.workflow/archive"
 
 uninstall:
 	@if command -v agy >/dev/null 2>&1; then \

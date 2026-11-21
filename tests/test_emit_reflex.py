@@ -2015,7 +2015,18 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
 
     files_to_create = {
         "plugin.json": '{"name": "makeflow"}\n',
+        "hooks.json": '{"makeflow-guard": {}}\n',
+        "mcp_config.json": '{"mcpServers": {}}\n',
+        "default_config.json": '{"models": {}}\n',
+        "LICENSE": "MIT\n",
+        "README.md": "# Makeflow\n",
+        "assets/logo.svg": "<svg></svg>\n",
+        "agents/tdd-worker.md": "---\nname: tdd-worker\n---\n",
+        "lib/__init__.py": '"""Lib package."""\n',
+        "mcp/server.py": '"""MCP server."""\n',
+        "rules/AGENTS.md": "# Rules\n",
         "skills/makeflow/SKILL.md": "# Makeflow Skill\n",
+        "scripts/session_start.py": "#!/usr/bin/env python3\n",
         ".workflow/config.json.example": "{}\n",
         ".git/HEAD": "ref: refs/heads/main\n",
         ".tmp/scratch.txt": "scratch\n",
@@ -2066,11 +2077,7 @@ EXCLUDED = (
     ".git",
     ".tmp",
     ".venv",
-    ".workflow/state",
-    ".workflow/archive",
-    ".workflow/config.json",
-    ".workflow/plan.md",
-    ".workflow/commit_msg.txt",
+    ".workflow",
 )
 
 args = sys.argv[1:]
@@ -2134,8 +2141,18 @@ sys.exit(1)
     install_dir = fixture["install_dir"]
     for included in (
         "plugin.json",
+        "hooks.json",
+        "mcp_config.json",
+        "default_config.json",
+        "LICENSE",
+        "README.md",
+        "assets/logo.svg",
+        "agents/tdd-worker.md",
+        "lib/__init__.py",
+        "mcp/server.py",
+        "rules/AGENTS.md",
         "skills/makeflow/SKILL.md",
-        ".workflow/config.json.example",
+        "scripts/session_start.py",
     ):
       self.assertTrue(
           os.path.isfile(os.path.join(install_dir, included)),
@@ -2148,6 +2165,8 @@ sys.exit(1)
         ".tmp/scratch.txt",
         ".venv",
         ".venv/bin/python",
+        ".workflow",
+        ".workflow/config.json.example",
         ".workflow/state",
         ".workflow/state/10_ticket.md",
         ".workflow/archive",
