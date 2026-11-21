@@ -17,6 +17,7 @@ Follow these rules for every coding task in Cursor:
 13. Use atomic directory creation (`mkdir`) for mutual exclusion locks under `SCAR-SYS-08`.
 14. Never arbitrarily impose `--limit` or truncation flags before assessing the full dataset. If output volume threatens context limits, halt tool execution immediately. Interview the user to select a triage path under `SCAR-TOOL-16`.
 15. Enforce Immediate Supervisory Halt (`tool_calls: []`) while phase subagents run (`SCAR-PROC-95`). Defer live bug reproduction to Target 30 instead of Target 15.
+16. At Target 15, capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree` under `SCAR-TOOL-16` triage before dispatching archaeology. Attach that index in the prompt, or call `workflow_repo_tree` as the read-only MCP fallback.
 
 ## Interactive Model Switch Reminder
 

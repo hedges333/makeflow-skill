@@ -1125,6 +1125,206 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     self.assertIn("`file://`", sec_1_2)
     self.assertIn("in chat first", sec_1_2.lower())
 
+  def test_pure_git_t50_to_t70_turn_boundary_and_t80_squash_cleanup(self):
+    """GH-248: Verifies T50->T70 turn boundary and T80 Pure Git squash-merge cleanup guards."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      for card in (
+          "45_review_approved.md",
+          "50_commit_msg.txt",
+          "70_bot_triage.md",
+      ):
+        with open(os.path.join(state_dir, card), "w", encoding="utf-8") as f:
+          f.write("# Card\n")
+
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {
+              "step_index": 1,
+              "type": "USER_INPUT",
+              "content": "Review approved.",
+          },
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Entering Target 50 commit gate.",
+              "tool_calls": [{
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          "make -f .workflow/state/Makefile commit"
+                          " FROM=T45 APPROVED=1"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+
+      # Enter T50 -> allow and record gate_entry.json for T50
+      enter_t50 = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile commit"
+                      " FROM=T45 APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(enter_t50["decision"], "allow", enter_t50)
+
+      # Same-turn T50 -> T70 without intervening USER_INPUT -> denied (SCAR-PROC-102)
+      same_turn_t70 = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile bot-quiescence APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(same_turn_t70["decision"], "deny", same_turn_t70)
+      self.assertIn("SCAR-PROC-102", same_turn_t70["reason"])
+
+      # Intervening human USER_INPUT -> T50 -> T70 allowed
+      steps.append({
+          "step_index": 3,
+          "type": "USER_INPUT",
+          "content": "Commit approved.",
+      })
+      _write_transcript(transcript_path, steps)
+      ok_t70 = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile bot-quiescence APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(ok_t70["decision"], "allow", ok_t70)
+
+      # Advance T70 -> T75 -> USER_INPUT -> T80
+      steps.append({
+          "step_index": 4,
+          "type": "PLANNER_RESPONSE",
+          "content": "Entering T75.",
+          "tool_calls": [
+              {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          "make -f .workflow/state/Makefile bot-quiescence"
+                          " APPROVED=1"
+                      )
+                  },
+              },
+              {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          "make -f .workflow/state/Makefile ready-to-land"
+                      )
+                  },
+              },
+          ],
+      })
+      _write_transcript(transcript_path, steps)
+      ok_t75 = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile ready-to-land"
+                  )
+              },
+          },
+      })
+      self.assertEqual(ok_t75["decision"], "allow", ok_t75)
+
+      steps.append({
+          "step_index": 5,
+          "type": "USER_INPUT",
+          "content": "Approved. Land locally.",
+      })
+      steps.append({
+          "step_index": 6,
+          "type": "PLANNER_RESPONSE",
+          "content": "Advancing to T80 and squash-merging.",
+          "tool_calls": [{
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile land APPROVED=1"
+                  )
+              },
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+      ok_t80 = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile land APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(ok_t80["decision"], "allow", ok_t80)
+
+      # Target 80 Pure Git cleanup guards
+      squash_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "git checkout main && git merge --squash fix/local-1-demo"
+                  )
+              },
+          },
+      })
+      self.assertEqual(squash_res["decision"], "allow", squash_res)
+
+      commit_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          },
+      })
+      self.assertEqual(commit_res["decision"], "force_ask", commit_res)
+
+      branch_del_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git branch -D fix/local-1-demo"},
+          },
+      })
+      self.assertEqual(branch_del_res["decision"], "force_ask", branch_del_res)
+
 
 class TestSubagentHaltAirlock(unittest.TestCase):
   """Hermetic unit and boundary tests for SCAR-PROC-95 subagent halt airlock (GH-220)."""

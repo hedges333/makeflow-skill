@@ -11,14 +11,14 @@ Follow these rules for every coding request:
 Move through these targets in dependency order:
 - Target 00 (read-init-d): If `.workflow/state/` files exist, read them in alphabetical order to restore state.
 - Target 10 (ticket-assigned): Record the task scope and create branch `feat/<id>-<slug>` or `fix/<id>-<slug>` (use `feat/local-<n>-<slug>` for local tasks).
-- Target 15 (archaeology-verified): Inspect existing files, detect languages and subprojects, and find test runners. Tag facts with Belnap truth states (ESTABLISHED, CONTRADICTED, UNKNOWN, RETRACTED).
+- Target 15 (archaeology-verified): Inspect existing files, detect languages and subprojects, and find test runners. Tag facts with Belnap truth states (ESTABLISHED, CONTRADICTED, UNKNOWN, RETRACTED). Capture the Git file tree index (`make -f .workflow/state/Makefile repo-tree` or `git ls-files --cached --others --exclude-standard`) under `SCAR-TOOL-16` before dispatch. Use `workflow_repo_tree` when MCP is active.
 - Target 20 (approved-plan): Present an implementation plan. State any changes to existing tests and confirm test database isolation. Stop and wait for user approval.
 - Target 30 (implementation-diff): Run Red-Green-Refactor test-driven development. Write failing tests first, then write minimal production code. Before Target 40, run `verify-regression` to seal `.workflow/state/30_regression_receipt.json` for the active subproject. Keep `review.allowCriticHermeticTests` set to `false` by default.
 - Target 40 (adversarial-review): If `.workflow/config.json` specifies models or "inherit", bypass the model switch prompt. When unconfigured, tell the user: "If model switching is available, switch to o1 or GPT-4o for this Six Pillars review." and pause before starting review. Audit Intent, Verification (TDD and boundary testing), Architecture, Blast Radius (mandatory canary), Reviewer Defense, and Immune Defenses & Crash Antibodies.
 - Target 42 (triaged-blockers): If blockers exist, present them in chat and wait for user triage.
 - Target 45 (approved-review): If zero blockers exist, present the review sign-off. Tell the user that they can switch back to their fast model.
 - Target 50 (commit): Run formatters, linters, and full repository tests, then wait for commit approval. Forbid `closes #` on local commits.
-- Target 60 (push): Check clean merge with `main`, then wait for push approval.
+- Target 60 (push): Check clean merge with `main`, then wait for push approval. Skip via `T50 -> T70` in Pure Git Mode when zero remotes exist.
 - Target 70 (bot-quiescence): Check CI status and automated review comments.
 - Target 75 (ready-to-land): Present policy checks and wait for merge approval.
 - Target 80 (land): Merge the pull request, delete the ticket branch, and update `main`.

@@ -17,7 +17,7 @@ You inspect repositories to gather facts before planning. You do not change file
 ## Rules
 
 1. Do not edit source files or run Git commands that change state.
-2. Scan the repository to detect programming languages and subprojects across the 27 supported languages.
+2. Read target files from the Git file tree index (tracked and non-ignored files) in the dispatch prompt. If the dispatch omits that index, call the `workflow_repo_tree` MCP tool before reading files. Never probe nonexistent paths blindly with `read_file`, especially on empty greenfield repositories (`0 of 0 files`). Scan listed files to detect programming languages and subprojects across the 27 supported languages.
 3. Record these six facts for each subproject:
    - Root directory path and language runtime.
    - Package manifest file, for example `Cargo.toml`, `pyproject.toml`, `package.json`, `project.godot`, `*.nimble`, `*.hxml`, or `dub.json`.

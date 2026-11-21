@@ -2167,5 +2167,408 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       self.assertTrue(is_ticket_active(state_dir))
 
 
+class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
+  """Tests Pure Git Mode T50 -> T70 bypass, skipped T60 rendering, and T80 cleanup (GH-248)."""
+
+  def _setup_pure_git_repo_at_t50(
+      self,
+      tmp: str,
+      name: str = "pure_repo",
+      branch: str = "fix/local-1-pure-git",
+      receipt_mode: str = "PURE_GIT",
+      remote_spec: tuple = (),
+  ) -> tuple:
+    """Initializes a temp repo advanced through T45 -> T50 for transition tests."""
+    from lib.workflow_gates import WorkflowGatesScript
+
+    repo = os.path.join(tmp, name)
+    os.makedirs(repo)
+    _init_git_repo(repo, branch="main")
+    if remote_spec:
+      remote_name, bare_path = remote_spec
+      os.makedirs(bare_path)
+      _git(bare_path, "init", "--bare", "-q", "-b", "main")
+      _git(repo, "remote", "add", remote_name, bare_path)
+      if remote_name == "origin":
+        _git(repo, "push", "-q", "-u", "origin", "main")
+    _git(repo, "checkout", "-q", "-b", branch)
+    self.assertEqual(
+        WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"]),
+        0,
+    )
+    state_dir = os.path.join(repo, ".workflow", "state")
+    transcript = os.path.join(tmp, f"{name}_transcript.jsonl")
+    step_no = 1
+
+    def human_turn(text: str = "Approved.") -> None:
+      nonlocal step_no
+      _append_transcript_step(
+          transcript,
+          {"step_index": step_no, "type": "USER_INPUT", "content": text},
+      )
+      step_no += 1
+
+    human_turn("Start local ticket")
+    self.assertEqual(_run_make(repo, "read-init-d", "NO_FETCH=1").returncode, 0)
+    _write_file(
+        os.path.join(state_dir, "10_ticket.md"),
+        "# 10_ticket: LOCAL-1\n\n"
+        "- **Ticket ID**: LOCAL-1\n"
+        "- **Title**: Pure Git Mode T60 bypass and T80 cleanup\n",
+    )
+    self.assertEqual(
+        _run_make(repo, "ticket-assigned", "NO_FETCH=1").returncode, 0
+    )
+    _write_file(
+        os.path.join(state_dir, "15_archaeology_receipt.md"),
+        f"# Receipt\nHOSTING_MODE: {receipt_mode}\n",
+    )
+    self.assertEqual(
+        _run_make(repo, "archaeology-verified", "NO_FETCH=1").returncode, 0
+    )
+    _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+    self.assertEqual(
+        _run_make(
+            repo, "approved-plan", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
+        ).returncode,
+        0,
+    )
+    human_turn("Plan approved")
+    _write_file(os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n")
+    self.assertEqual(
+        _run_make(
+            repo,
+            "implementation-diff",
+            "APPROVED=1",
+            "NO_FETCH=1",
+            f"TRANSCRIPT={transcript}",
+        ).returncode,
+        0,
+    )
+    _write_file(os.path.join(repo, "app.py"), "PURE_GIT = True\n")
+    self.assertEqual(
+        _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+        0,
+    )
+    _lock_approved_tree(repo)
+    self.assertEqual(
+        _run_make(repo, "adversarial-review", "NO_FETCH=1").returncode, 0
+    )
+    _write_file(os.path.join(state_dir, "40_critic_review.md"), "0 blockers\n")
+    self.assertEqual(
+        _run_make(
+            repo,
+            "approved-review",
+            "BLOCKERS=0",
+            "NO_FETCH=1",
+            f"TRANSCRIPT={transcript}",
+        ).returncode,
+        0,
+    )
+    human_turn("Review approved")
+    _write_file(os.path.join(state_dir, "45_review_approved.md"), "APPROVED\n")
+    local_num = "1"
+    if "local-" in branch:
+      tail = branch.split("local-", 1)[1].split("-", 1)[0]
+      if tail.isdigit():
+        local_num = tail
+    _write_file(
+        os.path.join(state_dir, "50_commit_msg.txt"),
+        "fix(git): bypass target 60 without remote\n\n"
+        "- app.py: add Pure Git demo constant.\n\n"
+        f"Ticket: LOCAL-{local_num}\n",
+    )
+    r_commit = _run_make(
+        repo, "commit", "APPROVED=1", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
+    )
+    self.assertEqual(r_commit.returncode, 0, r_commit.stderr)
+    return repo, state_dir, transcript, human_turn
+
+  def test_pure_git_no_remote_end_to_end_bypasses_t60_and_squash_merges(
+      self,
+  ) -> None:
+    """GH-248: Verifies remote-less T50->T70->T75->T80->T90, turn boundary, and squash cleanup."""
+    from lib.state_machine import read_active_target
+
+    with tempfile.TemporaryDirectory() as tmp:
+      repo, state_dir, transcript, human_turn = self._setup_pure_git_repo_at_t50(
+          tmp, name="no_remote_e2e"
+      )
+      self.assertEqual(_git(repo, "remote").stdout.strip(), "")
+
+      # Same-turn T50 -> T70 without USER_INPUT after T50 entry is blocked (SCAR-PROC-102)
+      same_turn_t70 = _run_make(
+          repo,
+          "bot-quiescence",
+          "APPROVED=1",
+          f"TRANSCRIPT={transcript}",
+      )
+      self.assertEqual(same_turn_t70.returncode, 2)
+      self.assertIn("SCAR-PROC-102", same_turn_t70.stderr)
+
+      human_turn("Commit approved")
+      _git(
+          repo,
+          "commit",
+          "-q",
+          "-F",
+          os.path.join(state_dir, "50_commit_msg.txt"),
+      )
+
+      # T50 -> T70 succeeds cleanly bypassing T60 without humanPushApproved
+      r_t70 = _run_make(
+          repo,
+          "bot-quiescence",
+          "APPROVED=1",
+          f"TRANSCRIPT={transcript}",
+      )
+      self.assertEqual(r_t70.returncode, 0, r_t70.stderr)
+      active_t70 = read_active_target(state_dir)
+      self.assertEqual(active_t70["target"], "T70")
+      self.assertEqual(active_t70["previousTarget"], "T50")
+      self.assertEqual(active_t70.get("skippedTargets"), ["T60"])
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        na_t70 = f.read()
+      self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", na_t70)
+      self.assertIn(
+          "Run local verification suite (make all) and write 70_bot_triage.md",
+          na_t70,
+      )
+
+      # T70 -> T75 persists skippedTargets and skipped T60 marker
+      _write_file(
+          os.path.join(state_dir, "70_bot_triage.md"),
+          "LOCAL_SWEEP: PASS\n",
+      )
+      r_t75 = _run_make(repo, "ready-to-land", f"TRANSCRIPT={transcript}")
+      self.assertEqual(r_t75.returncode, 0, r_t75.stderr)
+      self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", f.read())
+
+      # T75 -> T80 persists skippedTargets
+      human_turn("Landing approved")
+      r_t80 = _run_make(
+          repo, "land", "APPROVED=1", f"TRANSCRIPT={transcript}"
+      )
+      self.assertEqual(r_t80.returncode, 0, r_t80.stderr)
+      self.assertEqual(read_active_target(state_dir)["target"], "T80")
+      self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", f.read())
+
+      # Real Target 80 local squash merge: git branch -d fails, git branch -D succeeds
+      _git(repo, "checkout", "-q", "main")
+      _git(repo, "merge", "--squash", "-q", "fix/local-1-pure-git")
+      sq_env = dict(os.environ)
+      sq_env["GIT_AUTHOR_DATE"] = "2026-01-01T00:01:00Z"
+      sq_env["GIT_COMMITTER_DATE"] = "2026-01-01T00:01:00Z"
+      subprocess.run(
+          [
+              "git",
+              "commit",
+              "-q",
+              "-F",
+              os.path.join(state_dir, "50_commit_msg.txt"),
+          ],
+          cwd=repo,
+          env=sq_env,
+          check=True,
+      )
+      d_small = subprocess.run(
+          ["git", "branch", "-d", "fix/local-1-pure-git"],
+          cwd=repo,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertNotEqual(d_small.returncode, 0)
+      self.assertIn("not fully merged", d_small.stderr.lower())
+
+      d_force = subprocess.run(
+          ["git", "branch", "-D", "fix/local-1-pure-git"],
+          cwd=repo,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(d_force.returncode, 0, d_force.stderr)
+      self.assertNotIn("fix/local-1-pure-git", _git(repo, "branch").stdout)
+      self.assertTrue(os.path.isfile(os.path.join(repo, "app.py")))
+
+      # T80 -> T90 -> finish preserves skipped T60 marker in readerboard
+      r_t90 = _run_make(repo, "codified-scars-consolidated")
+      self.assertEqual(r_t90.returncode, 0, r_t90.stderr)
+      self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", f.read())
+
+      r_fin = _run_make(repo, "finish")
+      self.assertEqual(r_fin.returncode, 0, r_fin.stderr)
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        na_fin = f.read()
+      self.assertIn("# Target 90 Finished: COMPLETE", na_fin)
+      self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", na_fin)
+
+  def test_pure_git_skipped_targets_cleared_on_recovery_and_preserved_on_restore(
+      self,
+  ) -> None:
+    """GH-248: Verifies read-init-d preserves skippedTargets and T70->T30 recovery clears it."""
+    from lib.state_machine import read_active_target
+
+    with tempfile.TemporaryDirectory() as tmp:
+      repo, state_dir, transcript, human_turn = self._setup_pure_git_repo_at_t50(
+          tmp, name="recovery_repo"
+      )
+      human_turn("Commit approved")
+      _git(
+          repo,
+          "commit",
+          "-q",
+          "-F",
+          os.path.join(state_dir, "50_commit_msg.txt"),
+      )
+      self.assertEqual(
+          _run_make(
+              repo, "bot-quiescence", "APPROVED=1", f"TRANSCRIPT={transcript}"
+          ).returncode,
+          0,
+      )
+      self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
+
+      # read-init-d preserves skippedTargets and skipped T60 marker
+      self.assertEqual(_run_make(repo, "read-init-d").returncode, 0)
+      self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", f.read())
+
+      # Recovery T70 -> T30 clears skippedTargets
+      r_rec = _run_make(repo, "implementation-diff", "FROM=T70")
+      self.assertEqual(r_rec.returncode, 0, r_rec.stderr)
+      self.assertEqual(read_active_target(state_dir)["target"], "T30")
+      self.assertFalse(read_active_target(state_dir).get("skippedTargets"))
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        self.assertNotIn("Skipped in Pure Git Mode", f.read())
+
+  def test_configured_git_remote_or_github_receipt_blocks_t50_to_t70(
+      self,
+  ) -> None:
+    """GH-248: Blocks T50->T70 whenever any Git remote exists or receipt declares GITHUB."""
+    from lib.state_machine import advance_workflow_target, read_active_target
+
+    with tempfile.TemporaryDirectory() as tmp:
+      # 1. Repo with bare origin remote blocks T50 -> T70 and enforces T50 -> T60
+      repo_origin, st_origin, tr_origin, human_origin = (
+          self._setup_pure_git_repo_at_t50(
+              tmp,
+              name="with_origin",
+              branch="fix/248-origin",
+              receipt_mode="GITHUB",
+              remote_spec=("origin", os.path.join(tmp, "origin.git")),
+          )
+      )
+      human_origin("Commit approved")
+      _git(
+          repo_origin,
+          "commit",
+          "-q",
+          "-F",
+          os.path.join(st_origin, "50_commit_msg.txt"),
+      )
+      blk_origin = _run_make(
+          repo_origin,
+          "bot-quiescence",
+          "FROM=T50",
+          "APPROVED=1",
+          f"TRANSCRIPT={tr_origin}",
+      )
+      self.assertEqual(blk_origin.returncode, 2)
+      self.assertIn("SCAR-GIT-30", blk_origin.stderr)
+      self.assertIn("T60", blk_origin.stderr)
+      ok_push_origin = _run_make(
+          repo_origin,
+          "push",
+          "APPROVED=1",
+          "NO_FETCH=1",
+          f"TRANSCRIPT={tr_origin}",
+      )
+      self.assertEqual(ok_push_origin.returncode, 0, ok_push_origin.stderr)
+      self.assertEqual(read_active_target(st_origin)["target"], "T60")
+
+      # 2. Repo with non-origin remote (upstream) + PURE_GIT receipt blocks T50 -> T70
+      repo_up, st_up, tr_up, human_up = self._setup_pure_git_repo_at_t50(
+          tmp,
+          name="with_upstream",
+          branch="fix/local-2-upstream",
+          receipt_mode="PURE_GIT",
+          remote_spec=("upstream", os.path.join(tmp, "upstream.git")),
+      )
+      human_up("Commit approved")
+      _git(
+          repo_up,
+          "commit",
+          "-q",
+          "-F",
+          os.path.join(st_up, "50_commit_msg.txt"),
+      )
+      blk_up = _run_make(
+          repo_up,
+          "bot-quiescence",
+          "FROM=T50",
+          "APPROVED=1",
+          f"TRANSCRIPT={tr_up}",
+      )
+      self.assertEqual(blk_up.returncode, 2)
+      self.assertIn("SCAR-GIT-30", blk_up.stderr)
+      self.assertIn("T60", blk_up.stderr)
+      ok_push_up = _run_make(
+          repo_up,
+          "push",
+          "APPROVED=1",
+          "NO_FETCH=1",
+          f"TRANSCRIPT={tr_up}",
+      )
+      self.assertEqual(ok_push_up.returncode, 0, ok_push_up.stderr)
+      self.assertEqual(read_active_target(st_up)["target"], "T60")
+
+      # 3. Remote-less repo whose 15_archaeology_receipt.md explicitly declares GITHUB blocks T50 -> T70
+      repo_gh_rec, st_gh_rec, tr_gh_rec, human_gh_rec = (
+          self._setup_pure_git_repo_at_t50(
+              tmp,
+              name="github_receipt_no_remote",
+              branch="fix/248-gh-receipt",
+              receipt_mode="GITHUB",
+          )
+      )
+      human_gh_rec("Commit approved")
+      ok_rec, msg_rec = advance_workflow_target(
+          "T50",
+          "T70",
+          evidence={
+              "humanCommitApproved": True,
+              "transcriptPath": tr_gh_rec,
+          },
+          workspace_dir=repo_gh_rec,
+          state_dir=st_gh_rec,
+      )
+      self.assertFalse(ok_rec)
+      self.assertIn("BLOCKED: [SCAR-GIT-30]", msg_rec)
+      self.assertIn("T60", msg_rec)
+
+
 if __name__ == "__main__":
   unittest.main()

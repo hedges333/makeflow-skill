@@ -127,10 +127,11 @@ class TestMcpServer(unittest.TestCase):
         "workflow_get_config",
         "workflow_poll_ci",
         "workflow_query_scars",
+        "workflow_repo_tree",
     ):
       with self.subTest(tool=expected):
         self.assertIn(expected, tool_names)
-    self.assertEqual(len(tool_names), 7)
+    self.assertEqual(len(tool_names), 8)
 
   def test_safety_check_prod_and_safe_commands(self):
     """Checks workflow_safety_check blocks prod DBs and allows safe test commands."""
@@ -3883,6 +3884,404 @@ class TestMcpQueryScarsDescriptionClarification(unittest.TestCase):
         self.assertEqual(
             empty_resp["result"]["content"][0]["text"], expected_error
         )
+
+
+class TestMcpRepoTreeTool(unittest.TestCase):
+  """Tests read-only workflow_repo_tree MCP tool schema, isolation, and SCAR-TOOL-16 triage (GH-246)."""
+
+  @staticmethod
+  def _init_git_repo(repo_dir: str) -> None:
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+  def test_workflow_repo_tree_schema_and_plugin_dir_isolation(self):
+    """Checks workflow_repo_tree inputSchema properties and workspaceDir isolation."""
+    mcp_server = _load_mcp_server_module()
+    tools_resp = mcp_server.handle_tools_list(1)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    self.assertIn("workflow_repo_tree", tools)
+    schema = tools["workflow_repo_tree"]["inputSchema"]
+    props = schema["properties"]
+    for prop in (
+        "workspaceDir",
+        "pathPrefix",
+        "approvedLimit",
+        "countOnly",
+        "noLimit",
+        "threshold",
+    ):
+      with self.subTest(prop=prop):
+        self.assertIn(prop, props)
+
+    with mock.patch.object(mcp_server, "resolve_workspace_dir", return_value=None):
+      blocked = mcp_server.handle_tools_call(2, "workflow_repo_tree", {})
+      self.assertIs(blocked["result"].get("isError"), True)
+      self.assertIn("workspaceDir", blocked["result"]["content"][0]["text"])
+
+  def test_workflow_repo_tree_stdio_greenfield_populated_and_triage(self):
+    """Tests workflow_repo_tree over stdio JSON-RPC for empty, populated, and large trees."""
+    non_git_cwd = _make_temp_dir(self)
+    proc = _start_mcp_server(self, non_git_cwd)
+
+    # 1. Non-Git workspace returns isError=True cleanly
+    err_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {"workspaceDir": non_git_cwd},
+            },
+        },
+    )
+    self.assertIs(err_resp["result"].get("isError"), True)
+
+    # 2. Empty greenfield Git repository returns 0 of 0 files
+    greenfield = _make_temp_dir(self)
+    self._init_git_repo(greenfield)
+    empty_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {"workspaceDir": greenfield},
+            },
+        },
+    )
+    self.assertFalse(empty_resp["result"].get("isError"))
+    empty_payload = json.loads(empty_resp["result"]["content"][0]["text"])
+    self.assertEqual(empty_payload["totalCount"], 0)
+    self.assertEqual(empty_payload["filteredCount"], 0)
+    self.assertEqual(empty_payload["denominator"], "0 of 0 files")
+    self.assertIs(empty_payload["triageRequired"], False)
+    self.assertEqual(empty_payload["files"], [])
+
+    # 3. Populated Git repository with tracked, untracked, spaces, and .gitignore
+    repo_dir = _make_temp_dir(self)
+    self._init_git_repo(repo_dir)
+    with open(os.path.join(repo_dir, ".gitignore"), "w", encoding="utf-8") as f:
+      f.write("*.tmp\n")
+    os.makedirs(os.path.join(repo_dir, "lib"))
+    os.makedirs(os.path.join(repo_dir, "tests"))
+    for rel in ("lib/a.py", "lib/b.py", "tests/test_a.py"):
+      with open(os.path.join(repo_dir, rel), "w", encoding="utf-8") as f:
+        f.write("# file\n")
+    subprocess.run(
+        ["git", "add", ".gitignore", "lib/a.py"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init", "-q"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with open(os.path.join(repo_dir, "skip.tmp"), "w", encoding="utf-8") as f:
+      f.write("ignored\n")
+
+    # 3a. Exceeding threshold without override returns triageRequired=True and empty files
+    triage_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {"workspaceDir": repo_dir, "threshold": 2},
+            },
+        },
+    )
+    self.assertFalse(triage_resp["result"].get("isError"))
+    triage_payload = json.loads(triage_resp["result"]["content"][0]["text"])
+    self.assertIs(triage_payload["triageRequired"], True)
+    self.assertEqual(triage_payload["totalCount"], 4)
+    self.assertEqual(triage_payload["files"], [])
+    self.assertEqual(triage_payload["topLevelCounts"], {".": 1, "lib": 2, "tests": 1})
+
+    # 3b. Path 1: pathPrefix narrows results within threshold
+    prefix_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {
+                    "workspaceDir": repo_dir,
+                    "pathPrefix": "lib",
+                    "threshold": 2,
+                },
+            },
+        },
+    )
+    self.assertFalse(prefix_resp["result"].get("isError"))
+    prefix_payload = json.loads(prefix_resp["result"]["content"][0]["text"])
+    self.assertIs(prefix_payload["triageRequired"], False)
+    self.assertEqual(prefix_payload["files"], ["lib/a.py", "lib/b.py"])
+    self.assertEqual(prefix_payload["denominator"], "2 of 4 files")
+
+    # 3c. Path 2: approvedLimit returns bounded slice explicitly marked truncated
+    limit_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {
+                    "workspaceDir": repo_dir,
+                    "approvedLimit": 2,
+                    "threshold": 2,
+                },
+            },
+        },
+    )
+    self.assertFalse(limit_resp["result"].get("isError"))
+    limit_payload = json.loads(limit_resp["result"]["content"][0]["text"])
+    self.assertIs(limit_payload["triageRequired"], False)
+    self.assertIs(limit_payload["truncated"], True)
+    self.assertEqual(limit_payload["files"], [".gitignore", "lib/a.py"])
+
+    # 3d. Path 3: countOnly returns counts without files
+    count_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {
+                    "workspaceDir": repo_dir,
+                    "countOnly": True,
+                    "threshold": 2,
+                },
+            },
+        },
+    )
+    self.assertFalse(count_resp["result"].get("isError"))
+    count_payload = json.loads(count_resp["result"]["content"][0]["text"])
+    self.assertIs(count_payload["triageRequired"], False)
+    self.assertIs(count_payload["countOnly"], True)
+    self.assertEqual(count_payload["files"], [])
+
+    # 3e. Path 4: noLimit returns full index excluding ignored files
+    full_resp = send_rpc(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": 16,
+            "method": "tools/call",
+            "params": {
+                "name": "workflow_repo_tree",
+                "arguments": {
+                    "workspaceDir": repo_dir,
+                    "noLimit": True,
+                    "threshold": 2,
+                },
+            },
+        },
+    )
+    self.assertFalse(full_resp["result"].get("isError"))
+    full_payload = json.loads(full_resp["result"]["content"][0]["text"])
+    self.assertIs(full_payload["triageRequired"], False)
+    self.assertEqual(
+        full_payload["files"],
+        [".gitignore", "lib/a.py", "lib/b.py", "tests/test_a.py"],
+    )
+
+    # 4. Invalid argument types return isError=True
+    for idx, bad_args in enumerate(
+        (
+            {"workspaceDir": repo_dir, "approvedLimit": 0},
+            {"workspaceDir": repo_dir, "approvedLimit": True},
+            {"workspaceDir": repo_dir, "threshold": "2"},
+            {"workspaceDir": repo_dir, "threshold": False},
+            {"workspaceDir": repo_dir, "countOnly": "yes"},
+            {"workspaceDir": repo_dir, "noLimit": 1},
+            {"workspaceDir": repo_dir, "pathPrefix": 123},
+            {"workspaceDir": repo_dir, "approvedLimit": 2, "noLimit": True},
+            {"workspaceDir": repo_dir, "countOnly": True, "noLimit": True},
+        ),
+        start=20,
+    ):
+      with self.subTest(bad_args=bad_args):
+        bad_resp = send_rpc(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": idx,
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow_repo_tree",
+                    "arguments": bad_args,
+                },
+            },
+        )
+        self.assertIs(bad_resp["result"].get("isError"), True)
+
+
+class TestMcpPureGitTransitions(unittest.TestCase):
+  """Tests Pure Git Mode T50 -> T70 workflow_advance_target and schema description (GH-248)."""
+
+  def _init_temp_git_repo(self, repo_dir: str, with_remote: bool = False) -> None:
+    os.makedirs(repo_dir, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo_dir,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Makeflow Test"],
+        cwd=repo_dir,
+        check=True,
+    )
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo_dir, check=True)
+    with open(os.path.join(repo_dir, "README.md"), "w", encoding="utf-8") as f:
+      f.write("# Test\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "chore: initial"],
+        cwd=repo_dir,
+        check=True,
+    )
+    if with_remote:
+      bare_dir = os.path.join(os.path.dirname(repo_dir), "remote.git")
+      os.makedirs(bare_dir, exist_ok=True)
+      subprocess.run(
+          ["git", "init", "--bare", "-q", "-b", "main"],
+          cwd=bare_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "remote", "add", "upstream", bare_dir],
+          cwd=repo_dir,
+          check=True,
+      )
+
+  def test_mcp_pure_git_t50_to_t70_allowed_without_remote_and_blocked_with_remote(
+      self,
+  ):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.state_machine import read_active_target
+    from mcp.server import handle_tools_call
+
+    with tempfile.TemporaryDirectory() as tmp:
+      no_remote_repo = os.path.join(tmp, "no_remote")
+      self._init_temp_git_repo(no_remote_repo, with_remote=False)
+      state_dir = os.path.join(no_remote_repo, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      with open(
+          os.path.join(state_dir, "15_archaeology_receipt.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Receipt\nHOSTING_MODE: PURE_GIT\n")
+
+      for bad_ev in ({}, {"humanCommitApproved": False}):
+        blocked_no_ev = handle_tools_call(
+            801,
+            "workflow_advance_target",
+            {
+                "currentTarget": "T50",
+                "nextTarget": "T70",
+                "workspaceDir": no_remote_repo,
+                "evidence": bad_ev,
+            },
+        )
+        self.assertTrue(blocked_no_ev["result"].get("isError"))
+        self.assertIn(
+            "humanCommitApproved",
+            blocked_no_ev["result"]["content"][0]["text"],
+        )
+
+      ok_resp = handle_tools_call(
+          802,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T50",
+              "nextTarget": "T70",
+              "workspaceDir": no_remote_repo,
+              "evidence": {"humanCommitApproved": True},
+          },
+      )
+      self.assertFalse(ok_resp["result"].get("isError"), ok_resp)
+      self.assertEqual(
+          read_active_target(state_dir).get("skippedTargets"), ["T60"]
+      )
+
+      remote_repo = os.path.join(tmp, "with_remote")
+      self._init_temp_git_repo(remote_repo, with_remote=True)
+      remote_state = os.path.join(remote_repo, ".workflow", "state")
+      os.makedirs(remote_state, exist_ok=True)
+      with open(
+          os.path.join(remote_state, "15_archaeology_receipt.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Receipt\nHOSTING_MODE: PURE_GIT\n")
+
+      blocked_remote = handle_tools_call(
+          803,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T50",
+              "nextTarget": "T70",
+              "workspaceDir": remote_repo,
+              "evidence": {"humanCommitApproved": True},
+          },
+      )
+      self.assertTrue(blocked_remote["result"].get("isError"))
+      err_txt = blocked_remote["result"]["content"][0]["text"]
+      self.assertIn("SCAR-GIT-30", err_txt)
+      self.assertIn("T60", err_txt)
+
+  def test_mcp_tools_list_documents_t50_to_t70_pure_git_mode(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import handle_tools_list
+
+    tools_resp = handle_tools_list(804)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    desc = tools["workflow_advance_target"]["inputSchema"]["properties"][
+        "evidence"
+    ]["description"]
+    self.assertIn("T50->T60", desc)
+    self.assertIn("T50->T70", desc)
+    self.assertIn("Pure Git", desc)
 
 
 if __name__ == "__main__":

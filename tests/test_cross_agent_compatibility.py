@@ -3375,6 +3375,10 @@ def validate_hosting_mode_and_pure_git_invariants():
       errors.append(
           f"{ci_rel} must reference 'git merge --squash' for Pure Git Mode landing"
       )
+    if "git branch -D" not in ci_text:
+      errors.append(
+          f"{ci_rel} must document 'git branch -D' after 'git merge --squash'"
+      )
 
   # 5. SKILL.md invariants and size ceiling
   skill_rel = "skills/makeflow/SKILL.md"
@@ -3388,6 +3392,10 @@ def validate_hosting_mode_and_pure_git_invariants():
       errors.append(f"{skill_rel} must reference SCAR-GIT-30")
     if "HOSTING_MODE: PURE_GIT" not in skill_text:
       errors.append(f"{skill_rel} must reference 'HOSTING_MODE: PURE_GIT'")
+    if "T50 -> T70" not in skill_text:
+      errors.append(
+          f"{skill_rel} must document bypassing Target 60 (T50 -> T70) when no remote exists"
+      )
     skill_size = os.path.getsize(skill_path)
     if skill_size > 24576:
       errors.append(
@@ -8139,6 +8147,15 @@ def _collect_compatibility_errors():
         " verified."
     )
 
+  # Target 15 Archaeology Git File Tree Index Dispatch Invariants (GH-246)
+  tree_dispatch_errors = check_archaeology_file_tree_dispatch_contract()
+  errors.extend(tree_dispatch_errors)
+  if not tree_dispatch_errors:
+    print(
+        "✔ Target 15 archaeology file tree index dispatch invariants (GH-246)"
+        " verified."
+    )
+
   return errors
 
 
@@ -10234,6 +10251,194 @@ class TestTarget30RegressionGateInvariants(unittest.TestCase):
           any(rel in e for e in errs_rel),
           f"Expected {rel} rejection, got: {errs_rel}",
       )
+
+
+ARCHAEOLOGY_FILE_TREE_DISPATCH_FILES = (
+    "agents/archaeology-worker.md",
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/08_subagent_orchestration.md",
+    "rules/AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def check_archaeology_file_tree_dispatch_contract(
+    repo_files: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-246 Target 15 Git file tree index dispatch invariants across agents, docs, and adapters."""
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if repo_files is not None:
+    files_map = dict(repo_files)
+  else:
+    for rel in ARCHAEOLOGY_FILE_TREE_DISPATCH_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in ARCHAEOLOGY_FILE_TREE_DISPATCH_FILES:
+    if rel not in files_map and f"Missing {rel}" not in errs:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. agents/archaeology-worker.md: read-only, supplied index + workflow_repo_tree fallback, 0 of 0 files
+  aw_rel = "agents/archaeology-worker.md"
+  aw_text = files_map[aw_rel]
+  if "run_command" in aw_text:
+    errs.append(f"{aw_rel} must remain read-only without run_command")
+  for tok in ("file tree index", "workflow_repo_tree", "0 of 0 files"):
+    if tok not in aw_text.lower():
+      errs.append(f"{aw_rel} must document '{tok}'")
+  if "probe" not in aw_text.lower() and "guess" not in aw_text.lower():
+    errs.append(f"{aw_rel} must forbid blind path probing")
+
+  # 2. skills/makeflow/SKILL.md: Target 15 captures repo-tree under SCAR-TOOL-16 before halt
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  if len(skill_text.encode("utf-8")) > 24576:
+    errs.append(f"{skill_rel} exceeds 24576-byte budget")
+  if "### Target 15:" not in skill_text:
+    errs.append(f"{skill_rel} missing '### Target 15:' section")
+  else:
+    t15_sec = re.split(
+        r"\n###\s+|\n---\n",
+        skill_text.split("### Target 15:", 1)[1],
+        maxsplit=1,
+    )[0]
+    for tok in ("repo-tree", "SCAR-TOOL-16", "file tree index", "archaeology-worker"):
+      if tok.lower() not in t15_sec.lower():
+        errs.append(f"{skill_rel} Target 15 must document '{tok}'")
+    tree_pos = t15_sec.find("repo-tree")
+    halt_pos = t15_sec.find("Immediate Supervisory Halt")
+    if tree_pos == -1 or halt_pos == -1 or tree_pos >= halt_pos:
+      errs.append(
+          f"{skill_rel} Target 15 must capture repo-tree before Immediate Supervisory Halt"
+      )
+
+  # 3. skills/makeflow/references/02_archaeology_and_planning.md Section 1
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_sec1 = _extract_markdown_h2_section(files_map[r02_rel], "## 1. Target 15")
+  for tok in (
+      "repo-tree",
+      "git ls-files --cached --others --exclude-standard",
+      "SCAR-TOOL-16",
+      "0 of 0 files",
+      "workflow_repo_tree",
+      "invoke_subagent",
+  ):
+    if tok not in r02_sec1:
+      errs.append(f"{r02_rel} Section 1 must document '{tok}'")
+
+  # 4. skills/makeflow/references/08_subagent_orchestration.md Section 5
+  r08_rel = "skills/makeflow/references/08_subagent_orchestration.md"
+  r08_sec5 = _extract_markdown_h2_section(
+      files_map[r08_rel], "## 5. Socratic Subagent Delegation Protocol"
+  )
+  for tok in (
+      "repo-tree",
+      "SCAR-TOOL-16",
+      "workflow_repo_tree",
+      "0 of 0 files",
+      "file tree index",
+  ):
+    if tok not in r08_sec5:
+      errs.append(f"{r08_rel} Section 5 must document '{tok}'")
+
+  # 5. rules/AGENTS.md Section 1.13
+  agents_rel = "rules/AGENTS.md"
+  sec_hdr = "### 1.13 Immediate Supervisory Halt During Subagent Execution (SCAR-PROC-95)"
+  agents_text = files_map[agents_rel]
+  if sec_hdr not in agents_text:
+    errs.append(f"{agents_rel} missing '{sec_hdr}'")
+  else:
+    sec_1_13 = re.split(
+        r"\n#{2,3}\s+", agents_text.split(sec_hdr, 1)[1], maxsplit=1
+    )[0]
+    for tok in (
+        "repo-tree",
+        "SCAR-TOOL-16",
+        "workflow_repo_tree",
+        "archaeology-worker",
+        "file tree index",
+    ):
+      if tok not in sec_1_13:
+        errs.append(f"{agents_rel} Section 1.13 must document '{tok}'")
+
+  # 6. Cross-agent adapters
+  for adapter_rel in (
+      "CLAUDE.md",
+      ".cursorrules",
+      ".cursor/rules/makeflow.mdc",
+      ".github/copilot-instructions.md",
+      "adapters/chatgpt/instructions.md",
+  ):
+    ad_text = files_map[adapter_rel]
+    if "file tree index" not in ad_text.lower():
+      errs.append(f"{adapter_rel} must document Target 15 'file tree index'")
+    if (
+        "repo-tree" not in ad_text
+        and "git ls-files --cached --others --exclude-standard" not in ad_text
+    ):
+      errs.append(
+          f"{adapter_rel} must reference 'repo-tree' or 'git ls-files --cached --others --exclude-standard'"
+      )
+    if "SCAR-TOOL-16" not in ad_text:
+      errs.append(f"{adapter_rel} must reference 'SCAR-TOOL-16'")
+    if "workflow_repo_tree" not in ad_text:
+      errs.append(f"{adapter_rel} must reference 'workflow_repo_tree'")
+
+  return errs
+
+
+class TestArchaeologyFileTreeDispatch(unittest.TestCase):
+  """Regression and negative falsification tests for GH-246 Target 15 file tree index dispatch."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in ARCHAEOLOGY_FILE_TREE_DISPATCH_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_archaeology_file_tree_dispatch_contract(self) -> None:
+    self.assertEqual(check_archaeology_file_tree_dispatch_contract(), [])
+
+  def test_negative_falsification_archaeology_file_tree_dispatch(self) -> None:
+    base = self._load_base_files()
+    self.assertEqual(check_archaeology_file_tree_dispatch_contract(base), [])
+
+    mutations = (
+        ("agents/archaeology-worker.md", "workflow_repo_tree", "REMOVED"),
+        ("skills/makeflow/SKILL.md", "repo-tree", "REMOVED"),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", "0 of 0 files", "REMOVED"),
+        ("skills/makeflow/references/08_subagent_orchestration.md", "workflow_repo_tree", "REMOVED"),
+        ("rules/AGENTS.md", "repo-tree", "REMOVED"),
+        ("CLAUDE.md", "file tree index", "REMOVED"),
+        (".cursorrules", "file tree index", "REMOVED"),
+        (".cursor/rules/makeflow.mdc", "file tree index", "REMOVED"),
+        (".github/copilot-instructions.md", "file tree index", "REMOVED"),
+        ("adapters/chatgpt/instructions.md", "file tree index", "REMOVED"),
+    )
+    for rel, token, repl in mutations:
+      with self.subTest(rel=rel, token=token):
+        mut = dict(base)
+        mut[rel] = mut[rel].replace(token, repl)
+        errs = check_archaeology_file_tree_dispatch_contract(mut)
+        self.assertTrue(
+            any(rel in e for e in errs),
+            f"Expected rejection when '{token}' omitted from {rel}, got: {errs}",
+        )
 
 
 if __name__ == "__main__":
