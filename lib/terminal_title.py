@@ -964,7 +964,7 @@ class TerminalTitleScript(BaseScript):
     )
     parser.add_argument(
         "--repo-root",
-        default=os.getcwd(),
+        default=None,
         help="Repository root directory.",
     )
     parser.add_argument(
@@ -1016,17 +1016,6 @@ class TerminalTitleScript(BaseScript):
         default=None,
         help="Override short issue description tag.",
     )
-    p_info.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_info.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit info result as JSON.",
-    )
 
     p_set = subparsers.add_parser(
         "set",
@@ -1055,17 +1044,6 @@ class TerminalTitleScript(BaseScript):
         default=None,
         help="Explicit full title string override.",
     )
-    p_set.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_set.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit set result as JSON.",
-    )
 
     p_reset = subparsers.add_parser(
         "reset",
@@ -1079,17 +1057,24 @@ class TerminalTitleScript(BaseScript):
         default=None,
         help="Explicit directory name override.",
     )
-    p_reset.add_argument(
-        "--repo-root",
-        default=None,
-        help="Repository root directory.",
-    )
-    p_reset.add_argument(
-        "--json",
-        action="store_true",
-        dest="sub_json",
-        help="Emit reset result as JSON.",
-    )
+
+    for subparser, json_help in (
+        (p_info, "Emit info result as JSON."),
+        (p_set, "Emit set result as JSON."),
+        (p_reset, "Emit reset result as JSON."),
+    ):
+      subparser.add_argument(
+          "--repo-root",
+          default=None,
+          dest="sub_repo_root",
+          help="Repository root directory.",
+      )
+      subparser.add_argument(
+          "--json",
+          action="store_true",
+          dest="sub_json",
+          help=json_help,
+      )
 
     ns = parser.parse_args(self.raw_args)
     if not ns.command:
@@ -1097,8 +1082,11 @@ class TerminalTitleScript(BaseScript):
 
     self.command = ns.command
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
-    if getattr(ns, "repo_root", None):
-      self.repo_root = os.path.abspath(ns.repo_root)
+    self.repo_root = os.path.abspath(
+        getattr(ns, "sub_repo_root", None)
+        or getattr(ns, "repo_root", None)
+        or os.getcwd()
+    )
     self.ticket = getattr(ns, "ticket", None)
     self.directory = getattr(ns, "directory", None)
     self.issue_tag = getattr(ns, "issue_tag", None)
