@@ -22,7 +22,7 @@ Do not plan code edits from guesswork. Inspect the repository first to gather fa
 10. Discover repository-scoped hosting mode (`SCAR-GIT-30`). Check `git remote get-url origin`, `gh` binary, `gh auth status`, and `gh repo view`. If origin does not point to GitHub or CLI checks fail, record `HOSTING_MODE: PURE_GIT`.
 11. Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`, and call `workflow_query_scars` (`workflowPhase: "Target 15: archaeology"`) for detected languages and frameworks.
 12. Inspect the subproject for existing doc comment styles and documentation generator configs (`docs/conf.py`, `mkdocs.yml`, `typedoc.json`, `Doxyfile`, `Cargo.toml`) (`SCAR-PROC-159`). Adapt to existing conventions, or fall back to `skills/makeflow/references/polyglot/<lang>.md` defaults.
-13. Write `.workflow/state/15_archaeology_receipt.md` and advance to Target 20.
+13. Write `.workflow/state/15_archaeology_receipt.md` and draft `.workflow/state/20_plan.md` for Target 20.
 
 ### 1.1 Post-Archaeology Dependency Coupling Evaluation
 
@@ -84,8 +84,8 @@ Include these seven items in every plan:
 
 Target 20 is a mandatory human pause gate.
 
-1. Print the plan summary in chat with a `file://` link to `.workflow/state/20_plan.md`.
-2. Set `.workflow/state/99_next_action.md` to `AWAITING_DECLARATION (human-plan-approval)`.
+1. Run `make -f .workflow/state/Makefile approved-plan` to record Target 20 and render `AWAITING_DECLARATION (human-plan-approval)` in `.workflow/state/99_next_action.md`.
+2. Print the plan summary in chat with a `file://` link to `.workflow/state/20_plan.md`.
 3. Stop execution with empty tool calls (`tool_calls: []`).
 4. Wait for explicit human approval in chat before editing any source files.
-5. After the user approves the plan, write `.workflow/state/20_plan_approved.md` and advance to Target 30 with `humanPlanApproved: true`.
+5. After the user approves the plan, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1` (or `humanPlanApproved: true`).

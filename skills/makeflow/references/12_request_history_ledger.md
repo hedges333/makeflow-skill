@@ -104,7 +104,7 @@ If the repository runs without pull requests, follow this lifecycle:
 
 Run these steps during Target 90 after a pull request merges:
 
-1. Create `.workflow/` if the directory does not exist.
+1. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90 (`finish`) while keeping the session active. Create `.workflow/` if the directory does not exist.
 2. Read `.workflow/history.json`, or start with `[]` when the file is new.
 3. Append the completed ticket object to `.workflow/history.json`.
 4. Add a matching summary row to `.workflow/history.md`.
@@ -119,7 +119,7 @@ Run these steps during Target 90 after a pull request merges:
 13. Bump versions across all project manifests (such as `./plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, or `package.json`) and docs (`SCAR-DOC-20`).
 14. Run the full repository test suite and confirm zero failures before committing (`make test`).
 15. Under Mode 1, cut `release/vX.Y.Z`, commit with `git commit -m "docs(release): cut vX.Y.Z"`, and open a pull request. Under Mode 2 or Mode 3, commit with `git commit -m "docs(release): cut vX.Y.Z"`, push to `main`, and optionally run `gh release create vX.Y.Z --generate-notes` or tag `vX.Y.Z`.
-16. Archive or clean up completed state cards and `approved_tree.txt` per `state.completedCardAction`:
-   - If `state.completedCardAction` is `unlink` (default), remove intermediate cards `10_` through `80_` and `approved_tree.txt` from `.workflow/state/`.
-   - If `state.completedCardAction` is `archive`, move intermediate cards `10_` through `80_` and `approved_tree.txt` to `.workflow/archive/<ticket-id>/`.
-17. Mark `.workflow/state/99_next_action.md` as `COMPLETE (make finish satisfied)` and print the closing summary in chat.
+16. Run `make -f .workflow/state/Makefile finish` to release the intake lock, clean up completed state cards per `state.completedCardAction`, and render `COMPLETE (make finish satisfied)` in `.workflow/state/99_next_action.md`:
+   - If `state.completedCardAction` is `unlink` (default), `finish` removes intermediate cards `10_` through `80_` and `approved_tree.txt` from `.workflow/state/`.
+   - If `state.completedCardAction` is `archive`, `finish` moves intermediate cards `10_` through `80_` and `approved_tree.txt` to `.workflow/archive/<ticket-id>/`.
+17. Print the closing summary in chat.

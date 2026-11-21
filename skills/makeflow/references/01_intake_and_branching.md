@@ -24,13 +24,12 @@ When the user provides a task description, issue number, or issue URL, run these
    ```bash
    git checkout main && git pull --ff-only
    ```
-4. Exclude `.workflow/state/` and `.workflow/archive/` from Git tracking:
+4. Synthesize `.workflow/state/Makefile` and configure `.git/info/exclude` for `.workflow/state/` and `.workflow/archive/`:
    ```bash
-   git check-ignore -q .workflow/state/ || echo ".workflow/state/" >> .git/info/exclude
-   git check-ignore -q .workflow/archive/ || echo ".workflow/archive/" >> .git/info/exclude
+   python3 <plugin_root>/scripts/workflow_gates.py --repo-root . init-makefile
    ```
-5. Run clean intake pre-flight check: If leftover state cards or `approved_tree.txt` from prior sessions exist in `.workflow/state/`, remove them (`unlink`, default) or move them to `.workflow/archive/<old-id>/` (`archive`) per `state.completedCardAction` before writing `10_ticket.md`.
-6. Acquire the ticket lock to prevent collisions across multiple workspaces (`SCAR-SYS-08`). If another active workspace holds the ticket, stop intake immediately.
+5. Check `.workflow/state/` for leftover `10_`..`80_` cards or `approved_tree.txt` before writing `10_ticket.md`. If stale files exist, unlink them or archive them to `.workflow/archive/<old-id>/` per `state.completedCardAction`.
+6. Run `make -f .workflow/state/Makefile check-intake TICKET=<ticket-id>` to verify a clean tree, check upstream blockers, and acquire the ticket lock (`SCAR-SYS-08`). If another active workspace holds the ticket, stop intake immediately.
 7. Create and switch to a feature branch that matches standard Git naming rules:
    - GitHub Bug (`#<number>` or `GH-<number>`): `fix/<number>-<slug>`, for example `fix/42-login-redirect`. Ticket ID is `GH-<number>`.
    - GitHub Feature (`#<number>` or `GH-<number>`): `feat/<number>-<slug>`, for example `feat/101-csv-export`. Ticket ID is `GH-<number>`.
@@ -39,8 +38,9 @@ When the user provides a task description, issue number, or issue URL, run these
    - Ad-hoc Chat Task / Pure Git Session (no external tracker): Allocate the next ID with `python3 scripts/local_tickets.py next-id`. Use `feat/local-<N>-<slug>` or `fix/local-<N>-<slug>`. Ticket ID is `LOCAL-<N>`. Never use bare integers for local branches.
 8. Format `<slug>` with lowercase letters, digits, and single hyphens (`[a-z0-9-]`), up to 40 characters.
 9. Write the consolidated ticket and comment details to `<workspace>/.workflow/state/10_ticket.md`.
-10. Update the terminal title to `{dir_name}/: {ticket_number} {issue_tag}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
-11. Advance to Target 15.
+10. Run `make -f .workflow/state/Makefile ticket-assigned` to record Target 10 and auto-render `.workflow/state/99_next_action.md`.
+11. Update the terminal title to `{dir_name}/: {ticket_number} {issue_tag}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
+12. Run `make -f .workflow/state/Makefile archaeology-verified` to advance to Target 15.
 
 ### Multi-Workspace Mutual Exclusion (`SCAR-SYS-08`)
 
@@ -133,7 +133,7 @@ Use `python3 scripts/local_tickets.py` to manage local tickets:
 
 ## 3. Live Readerboard (`99_next_action.md`)
 
-Update `<workspace>/.workflow/state/99_next_action.md` at every target transition.
+Running `make -f .workflow/state/Makefile <target>` auto-renders `<workspace>/.workflow/state/99_next_action.md` and updates `.workflow/state/active_target.json` via `lib/state_machine.py`. Do not hand-edit `99_next_action.md`. Active targets never write uppercase `COMPLETE` until `make -f .workflow/state/Makefile finish` runs.
 
 ```markdown
 # 99_next_action: Live Memento Readerboard

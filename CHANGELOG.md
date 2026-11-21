@@ -8,6 +8,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 
 ### Added
 
+- GH-219: Add `lib/state_machine.py` to execute 15 Makefile workflow targets and auto-render `.workflow/state/99_next_action.md`.
 - Add `CHANGELOG.md` and the two-stage Target 90 release workflow.
 - Add `lib/target90_guard.py` for shared hook and MCP Target 90 gating.
 - Add interactive Target 90 release prompting for SemVer patch, minor, or major cuts.
@@ -20,6 +21,8 @@ Historical ticket records before the first tagged release live in `.workflow/his
 
 ### Changed
 
+- GH-219: Configure `.git/info/exclude` during `init-makefile` in `scripts/workflow_gates.py` and refresh `.workflow/state/Makefile` in `scripts/session_start.py`.
+- GH-219: Route `workflow_advance_target` in `mcp/server.py` through GNU Make and enforce `lib/turn_boundary.py` across shell and Make transitions.
 - Load `serverInfo.version` dynamically from `./plugin.json` in `mcp/server.py`.
 - Set author metadata in `./plugin.json` to Mark Hedges.
 - Align hook and MCP commit gates on `docs(changelog):`, `docs(release):`, `chore(release):`, and `docs(scars):`.

@@ -108,8 +108,8 @@ Use `scripts/commit_msg.py` to format and validate commit messages:
 
 Target 50 is a mandatory human pause gate.
 
-1. Print `git status --short`, the diff stat, and the full text of `.workflow/state/50_commit_msg.txt` in chat.
-2. Set `.workflow/state/99_next_action.md` to `AWAITING_DECLARATION (human-commit-approval)`.
+1. Run `make -f .workflow/state/Makefile commit APPROVED=1` to verify `check-approved-tree`, validate `check-commit-msg`, and render `AWAITING_DECLARATION (human-commit-approval)` in `.workflow/state/99_next_action.md`.
+2. Print `git status --short`, the diff stat, and the full text of `.workflow/state/50_commit_msg.txt` in chat.
 3. Stop tool calls (`tool_calls: []`) and wait for explicit user approval in chat.
 4. After user approval, commit the staged tree from the saved message file:
    ```bash
@@ -119,4 +119,4 @@ Target 50 is a mandatory human pause gate.
    ```bash
    test "$(git rev-parse HEAD^{tree})" = "$(cat .workflow/state/approved_tree.txt)"
    ```
-6. Advance to Target 60 with `humanCommitApproved: true`.
+6. Run `make -f .workflow/state/Makefile push APPROVED=1` (or `humanCommitApproved: true`) to advance to Target 60.

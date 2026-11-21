@@ -77,9 +77,10 @@ If a Tier 3 or Tier 2 subagent fails due to transient network or transport error
 ## 3. Target 40: Adversarial Review Protocol
 
 ### 3.1 Lock the Merkle Tree (`SCAR-GIT-23`, `SCAR-DIFF-05`)
-Stage all workspace changes and record the Git Merkle tree hash:
+Stage all workspace changes, record the Git Merkle tree hash, and enter Target 40:
 ```bash
 git add -A && git write-tree > .workflow/state/approved_tree.txt
+make -f .workflow/state/Makefile adversarial-review
 ```
 Verify that zero untracked files remain (`git status --porcelain` is clean). The tree hash provides an immutable cryptographic anchor.
 
@@ -211,7 +212,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 
 ## 5. Target 42: Blocker Triage Gate (`BLOCKERS > 0`)
 
-If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`, route from `T40` to `T42` with `blockersCount > 0`:
+If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`, run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>` to route from `T40` to `T42`:
 
 ### 5.1 The Zero-Tool Blocker Airlock (`SCAR-PROC-89`)
 The agent is strictly prohibited from immediately modifying code, running tests, or arguing with the critic. The turn following a critic blocker wakeup must contain **zero tool calls (`tool_calls: []`)**.
@@ -230,13 +231,13 @@ Halt and wait for explicit human steering:
 - *"Reject blocker as counterfeit per SCAR-INV-03."*
 - Confirm or adjust proposed NBO dispositions (`Apply`, `Skip`, or `Defer to issue`).
 
-After human authorization, advance from `T42` to `T30` with `humanBlockerTriageApproved: true`. Implement reproduction tests and fixes, then dispatch a fresh critic for Round $N+1$.
+After human authorization, run `make -f .workflow/state/Makefile implementation-diff APPROVED=1` (or `humanBlockerTriageApproved: true`) to return from `T42` to `T30`. Implement reproduction tests and fixes, then dispatch a fresh critic for Round $N+1$.
 
 ---
 
 ## 6. Target 45: Review Sign-Off Gate (`0 BLOCKERS`)
 
-If Target 40 yields `VERDICT: APPROVED (0 BLOCKERS)`, route from `T40` to `T45` with `blockersCount: 0`:
+If Target 40 yields `VERDICT: APPROVED (0 BLOCKERS)`, run `make -f .workflow/state/Makefile approved-review BLOCKERS=0` (or `blockersCount: 0`) to enforce `check-approved-tree` and route from `T40` to `T45`:
 
 ### 6.1 Merkle Tree Verification
 Verify that the working tree still matches the recorded Merkle tree:
@@ -268,4 +269,4 @@ Target 45 is an absolute turn-ending airlock:
 1. Confirm that all accepted changes are tested and staged in the working tree.
 2. Prohibit looking ahead to commit messages or pull request drafting.
 3. Stop calling tools and wait for human review approval.
-4. After approval, write `.workflow/state/45_review_approved.md` and advance to Target 50 (`commit`) with `humanReviewApproved: true`.
+4. After approval, write `.workflow/state/45_review_approved.md`, prepare `.workflow/state/50_commit_msg.txt`, and run `make -f .workflow/state/Makefile commit APPROVED=1` (or `humanReviewApproved: true`).

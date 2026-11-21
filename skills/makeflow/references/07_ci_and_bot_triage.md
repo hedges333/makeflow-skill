@@ -22,7 +22,7 @@ In multi-agent environments, the supervisor must remain at Depth 0:
 5. **Reactive Wakeup**:
    When CI is green and quiescence is satisfied (or if bot comments need triage), `triage-worker` classifies findings and notifies the supervisor via `send_message`. The platform delivers a reactive wakeup to resume the supervisor turn cleanly.
 6. **Card Persistence**:
-   The supervisor writes `.workflow/state/70_bot_triage.md` from the worker receipt and advances to Target 75.
+   The supervisor writes `.workflow/state/70_bot_triage.md` from the worker receipt and runs `make -f .workflow/state/Makefile ready-to-land` to advance to Target 75.
 
 ### 1.2 Single-Agent CLI Fallback & Single-Probe Inspection
 
@@ -43,11 +43,11 @@ When review bots (such as Copilot, Gemini Code Assist, CodeRabbit, or SonarCloud
 ### 1.4 Fixing Accepted Findings
 
 If any accepted finding requires code modifications:
-1. Return to Target 30, write a failing reproduction test, and implement the fix.
+1. Run `make -f .workflow/state/Makefile implementation-diff FROM=T70`, write a failing reproduction test, and implement the fix.
 2. Run Target 40 adversarial review and secure Target 45 approval.
 3. Run Target 50 commit and Target 60 push.
 4. Re-enter Target 70 and dispatch `triage-worker` for a fresh quiescence cycle.
-5. When CI is green and zero open comments remain, advance to Target 75.
+5. When CI is green and zero open comments remain, run `make -f .workflow/state/Makefile ready-to-land`.
 
 ---
 
@@ -65,7 +65,7 @@ Target 75 is a mandatory human pause gate.
    - Documentation updates.
    - Dependency changes.
    - Test coverage.
-4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`. After approval, advance to Target 80 with `humanLandingApproved: true`.
+4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`. After approval, run `make -f .workflow/state/Makefile land APPROVED=1` (or `humanLandingApproved: true`) to advance to Target 80.
 5. If branch protection forbids direct push, commit ledger and `CHANGELOG.md` updates on the feature branch before requesting landing approval.
 
 ---
@@ -94,4 +94,4 @@ After the user approves landing, merge the pull request and clean up local Git s
    git branch -d <branch>
    ```
 5. Release the intake lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
-6. Advance to Target 90 (`finish`).
+6. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90.

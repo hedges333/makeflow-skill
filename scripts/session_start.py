@@ -25,6 +25,7 @@ from lib.config import (  # noqa: E402
     is_ticket_active,
     load_default_config,
 )
+from lib.workflow_gates import refresh_state_makefile_if_ignored  # noqa: E402
 
 
 # Built-in technical English specifications live in skills/makeflow/references/resources/language/english/
@@ -55,6 +56,14 @@ def main():
     artifact_dir = payload.get("artifactDirectoryPath", "")
     if not isinstance(artifact_dir, str):
       artifact_dir = ""
+
+    candidate_roots = (
+        workspace_paths
+        if workspace_paths
+        else ([os.getcwd()] if not is_plugin_dir(os.getcwd()) else [])
+    )
+    for root in candidate_roots:
+      refresh_state_makefile_if_ignored(root)
 
     state_dir = find_state_dir(workspace_paths, artifact_dir)
     cfg, cfg_source = get_workflow_config(workspace_paths)

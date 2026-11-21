@@ -4104,18 +4104,49 @@ def validate_target_40_model_picker_invariants():
   return errors
 
 
-def check_mcp_t60_transitions(server_text):
-  """Checks that mcp/server.py VALID_TRANSITIONS maps T60 to a set containing T40 and T70."""
+def check_mcp_t60_transitions(server_text, state_machine_text=None):
+  """Checks VALID_TRANSITIONS['T60'] across lib/turn_boundary.py, lib/state_machine.py, and mcp/server.py."""
   errors = []
+  if state_machine_text is not None:
+    if not re.search(
+        r"from\s+lib\.state_machine\s+import\b[^;]*\bVALID_TRANSITIONS\b",
+        server_text,
+        re.DOTALL,
+    ):
+      errors.append(
+          "mcp/server.py must import and re-export VALID_TRANSITIONS from lib.state_machine"
+      )
+    if not re.search(
+        r"from\s+lib\.turn_boundary\s+import\b[^;]*\bVALID_TRANSITIONS\b",
+        state_machine_text,
+        re.DOTALL,
+    ):
+      errors.append(
+          "lib/state_machine.py must import VALID_TRANSITIONS from lib.turn_boundary"
+      )
+    from lib.state_machine import VALID_TRANSITIONS as sm_transitions
+    from lib.turn_boundary import VALID_TRANSITIONS as tb_transitions
+
+    if sm_transitions != tb_transitions:
+      errors.append(
+          "lib/state_machine.py VALID_TRANSITIONS diverged from lib/turn_boundary.py"
+      )
+    targets = set(sm_transitions.get("T60", ()))
+    if "T40" not in targets:
+      errors.append("VALID_TRANSITIONS['T60'] must contain 'T40'")
+    if "T70" not in targets:
+      errors.append("VALID_TRANSITIONS['T60'] must contain 'T70'")
+    return errors
+
   match = re.search(r'"T60"\s*:\s*\{([^}]+)\}', server_text)
   if not match:
-    errors.append("mcp/server.py VALID_TRANSITIONS missing 'T60' entry")
+    errors.append("VALID_TRANSITIONS missing 'T60' entry")
     return errors
   targets = {t.strip(' "\'') for t in match.group(1).split(",") if t.strip(' "\'')}
   if "T40" not in targets:
-    errors.append("mcp/server.py VALID_TRANSITIONS['T60'] must contain 'T40'")
+    errors.append("VALID_TRANSITIONS['T60'] must contain 'T40'")
   if "T70" not in targets:
-    errors.append("mcp/server.py VALID_TRANSITIONS['T60'] must contain 'T70'")
+    errors.append("VALID_TRANSITIONS['T60'] must contain 'T70'")
   return errors
 
 
@@ -4236,15 +4267,21 @@ def validate_target_60_rebase_critic_reaudit_invariants():
   """
   errors = []
 
-  # 1. mcp/server.py
+  # 1. mcp/server.py + lib/state_machine.py
   server_rel = "mcp/server.py"
   server_path = repo_path(server_rel)
+  sm_rel = "lib/state_machine.py"
+  sm_path = repo_path(sm_rel)
   if not os.path.exists(server_path):
     errors.append(f"Missing {server_rel}")
+  elif not os.path.exists(sm_path):
+    errors.append(f"Missing {sm_rel}")
   else:
     with open(server_path, "r", encoding="utf-8") as f:
       server_text = f.read()
-    errors.extend(check_mcp_t60_transitions(server_text))
+    with open(sm_path, "r", encoding="utf-8") as f:
+      sm_text = f.read()
+    errors.extend(check_mcp_t60_transitions(server_text, sm_text))
 
   # 2. references/06_clean_commit_and_pr.md
   commit_rel = "skills/makeflow/references/06_clean_commit_and_pr.md"

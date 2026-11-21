@@ -81,14 +81,15 @@ from lib.shell_safety import (
     evaluate_mcp_database_safety as evaluate_database_safety,
     is_database_command,
 )
-from lib.turn_boundary import (
-    PAUSE_GATE_TARGETS,
-    clear_gate_entry,
-    record_gate_entry,
-    verify_mcp_gate_exit,
+from lib.state_machine import (
+    ALL_TARGETS,
+    GATE_EVIDENCE_KEYS,
+    REQUIRED_STATE_CARDS,
+    VALID_TRANSITIONS,
+    advance_workflow_target,
+    run_makefile_advance,
 )
 from lib.workflow_gates import (
-    fetch_and_inspect_main_sync,
     inspect_main_sync,
 )
 from lib.target90_guard import (
@@ -112,60 +113,6 @@ def get_plugin_version(plugin_path=None):
   except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
     pass
   return DEFAULT_PLUGIN_VERSION
-
-ALL_TARGETS = {
-    "T00",
-    "T10",
-    "T15",
-    "T20",
-    "T30",
-    "T40",
-    "T42",
-    "T45",
-    "T50",
-    "T60",
-    "T70",
-    "T75",
-    "T80",
-    "T90",
-}
-
-VALID_TRANSITIONS = {
-    "T00": ALL_TARGETS - {"T00"},
-    "T10": {"T15"},
-    "T15": {"T20"},
-    "T20": {"T30", "T15"},
-    "T30": {"T40", "T20", "T15"},
-    "T40": {"T42", "T45"},
-    "T42": {"T30", "T20", "T15"},
-    "T45": {"T50", "T30"},
-    "T50": {"T60", "T30"},
-    "T60": {"T70", "T40", "T30"},
-    "T70": {"T75", "T30"},
-    "T75": {"T80", "T30", "T40", "T70"},
-    "T80": {"T90", "T30", "T40", "T60", "T70"},
-    "T90": set(),
-}
-
-GATE_EVIDENCE_KEYS = {
-    ("T20", "T30"): "humanPlanApproved",
-    ("T42", "T30"): "humanBlockerTriageApproved",
-    ("T45", "T50"): "humanReviewApproved",
-    ("T50", "T60"): "humanCommitApproved",
-    ("T60", "T70"): "humanPushApproved",
-    ("T75", "T80"): "humanLandingApproved",
-}
-
-REQUIRED_STATE_CARDS = {
-    ("T10", "T15"): "10_ticket.md",
-    ("T15", "T20"): "15_archaeology_receipt.md",
-    ("T20", "T30"): "20_plan_approved.md",
-    ("T30", "T40"): "20_plan_approved.md",
-    ("T40", "T45"): "40_critic_review.md",
-    ("T40", "T42"): "40_critic_review.md",
-    ("T45", "T50"): "45_review_approved.md",
-    ("T70", "T75"): "70_bot_triage.md",
-}
 
 
 def _evaluate_git_tokens_safety(tokens, is_t90_commit=False):
@@ -1178,179 +1125,58 @@ def handle_tools_call(request_id, tool_name, arguments):
     if evidence_err is not None:
       return _error_result(request_id, evidence_err)
 
-    if current not in VALID_TRANSITIONS:
-      return _error_result(
-          request_id,
-          f"BLOCKED: Unknown currentTarget '{current}'. Use T00 through T90.",
-      )
-    if next_t not in ALL_TARGETS:
-      return _error_result(
-          request_id,
-          f"BLOCKED: Unknown nextTarget '{next_t}'. Use T00 through T90.",
-      )
-    if next_t not in VALID_TRANSITIONS[current]:
-      allowed = sorted(VALID_TRANSITIONS[current])
-      return _error_result(
-          request_id,
-          f"BLOCKED: Transition {current} -> {next_t} is not valid in the"
-          f" Makefile DAG. Allowed next targets from {current}: {allowed}.",
-      )
-
-    gate_key = GATE_EVIDENCE_KEYS.get((current, next_t))
-    if gate_key and not evidence.get(gate_key):
-      return _error_result(
-          request_id,
-          f"BLOCKED: Cannot move {current} -> {next_t} without"
-          f" {gate_key} = true.",
-      )
-
-    if current == "T40" and next_t == "T45":
-      blockers = evidence.get("blockersCount", 1)
-      if blockers > 0:
-        return _error_result(
-            request_id,
-            f"BLOCKED: Critic reported {blockers} blocker(s). Route to T42"
-            " (triaged-blockers) before T45.",
-        )
-
-    if current == "T40" and next_t == "T42":
-      blockers = evidence.get("blockersCount", 1)
-      if blockers == 0:
-        return _error_result(
-            request_id,
-            "BLOCKED: Critic reported 0 blockers. Route to T45"
-            " (approved-review) instead of T42.",
-        )
-
-    state_dir = ""
-    main_sync_notice = ""
+    ev = dict(evidence)
+    ev.pop("allowInit", None)
+    ev.pop("explicitFrom", None)
     transcript_path = (
         arguments.get("transcriptPath")
-        or evidence.get("transcriptPath")
+        or ev.get("transcriptPath")
         or ""
     ).strip()
+    if transcript_path:
+      ev["transcriptPath"] = transcript_path
+
+    ws = ""
+    state_dir = ""
     if arguments.get("workspaceDir") or arguments.get("stateDir"):
-      ws = resolve_workspace_dir(arguments)
-      if ws is None:
+      resolved_ws = resolve_workspace_dir(arguments)
+      if resolved_ws is None:
         return _error_result(
             request_id,
             "BLOCKED: Missing workspaceDir when running in plugin directory.",
         )
+      ws = resolved_ws
       raw_state_dir = arguments.get("stateDir", ".workflow/state")
       state_dir = (
           raw_state_dir
           if os.path.isabs(raw_state_dir)
           else os.path.join(ws, raw_state_dir)
       )
-      if os.path.isdir(state_dir):
-        req_card = REQUIRED_STATE_CARDS.get((current, next_t))
-        alt_cards = {
-            ("T15", "T20"): ("20_plan.md", "20_plan_approved.md"),
-            ("T40", "T45"): ("45_review_approved.md",),
-        }.get((current, next_t), ())
-        if (
-            req_card
-            and not os.path.isfile(os.path.join(state_dir, req_card))
-            and not any(
-                os.path.isfile(os.path.join(state_dir, ac)) for ac in alt_cards
-            )
-        ):
-          return _error_result(
-              request_id,
-              f"BLOCKED: Required state card '{req_card}' does not exist in"
-              f" '{state_dir}' for transition {current} -> {next_t}.",
-          )
 
-      sync = (
-          inspect_main_sync(ws)
-          if evidence.get("skipMainFetch")
-          else fetch_and_inspect_main_sync(ws)
+    if state_dir and os.path.isfile(os.path.join(state_dir, "Makefile")):
+      ok, msg = run_makefile_advance(
+          current,
+          next_t,
+          evidence=ev,
+          workspace_dir=ws,
+          state_dir=state_dir,
       )
-      sync_status = sync.get("status", "NO_REMOTE")
-      upstream_ref = sync.get("upstream_ref") or "origin/main"
-      behind_count = sync.get("behind_count", 0)
-      conflicting_files = sync.get("conflicting_files") or []
-      if sync_status == "CONFLICT" and not evidence.get("allowMainConflict"):
-        files_str = ", ".join(conflicting_files) or "unknown"
-        if current in ("T70", "T75", "T80") or next_t in ("T70", "T75", "T80"):
-          guidance = (
-              "Stop tool calls without altering Git state (SCAR-GIT-25), report"
-              f" conflicting files ({files_str}) to the operator, and request"
-              f" approval to merge {upstream_ref} (git fetch origin main &&"
-              " git merge origin/main) and return to T30/T40 for re-verification."
-          )
-        else:
-          guidance = (
-              "Stop tool calls without altering Git state (SCAR-GIT-25), report"
-              f" conflicting files ({files_str}) to the operator, and request"
-              f" approval to run git rebase {upstream_ref} (and re-lock"
-              " approved_tree.txt + re-run T40 critic review if already past T40)."
-          )
-        return _error_result(
-            request_id,
-            f"BLOCKED: [SCAR-GIT-20] UPSTREAM_MAIN_CONFLICT on transition"
-            f" {current} -> {next_t}: branch is behind {upstream_ref} by"
-            f" {behind_count} commit(s) with merge conflicts in"
-            f" [{files_str}]. {guidance}",
-        )
-      elif sync_status == "BEHIND_CLEAN":
-        if next_t in ("T15", "T20", "T30", "T40"):
-          main_sync_notice = (
-              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
-              " commit(s) with 0 conflicts (BEHIND_CLEAN). You may offer an"
-              f" operator-approved 'git rebase {upstream_ref}' (SCAR-GIT-25)"
-              f" now while in pre-review targets ({current} -> {next_t}) before"
-              " locking approved_tree.txt at T40."
-          )
-        elif next_t in ("T42", "T45", "T50"):
-          main_sync_notice = (
-              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
-              " commit(s) with 0 conflicts (BEHIND_CLEAN). Preserve"
-              " .workflow/state/approved_tree.txt (SCAR-GIT-23); do not rebase"
-              " during locked-tree gates unless returning to T40 for critic"
-              " re-audit."
-          )
-        elif next_t == "T60":
-          main_sync_notice = (
-              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
-              " commit(s) with 0 conflicts (BEHIND_CLEAN). Branch merges"
-              " cleanly; rebasing now would invalidate approved_tree.txt and"
-              " require T60 -> T40 critic re-audit."
-          )
-        else:
-          main_sync_notice = (
-              f" MAIN_SYNC_NOTICE: {upstream_ref} advanced by {behind_count}"
-              " commit(s) with 0 conflicts (BEHIND_CLEAN). Per SCAR-GIT-18 and"
-              " SCAR-GIT-25, do not rebase or force-push an open pull request"
-              " when mergeable is CLEAN."
-          )
-
-    if gate_key:
-      ok, reason = verify_mcp_gate_exit(
-          state_dir, current, next_t, transcript_path=transcript_path
+    else:
+      ok, msg = advance_workflow_target(
+          current,
+          next_t,
+          evidence=ev,
+          workspace_dir=ws,
+          state_dir=state_dir,
       )
-      if not ok:
-        return _error_result(request_id, reason)
 
-    if state_dir and os.path.isdir(state_dir):
-      if next_t in PAUSE_GATE_TARGETS:
-        record_gate_entry(
-            state_dir, current, next_t, transcript_path=transcript_path
-        )
-      elif current in PAUSE_GATE_TARGETS or gate_key:
-        clear_gate_entry(state_dir, current)
-
+    if not ok:
+      return _error_result(request_id, msg)
     return {
         "jsonrpc": "2.0",
         "id": request_id,
         "result": {
-            "content": [{
-                "type": "text",
-                "text": (
-                    f"SUCCESS: Target transition {current} -> {next_t} passed."
-                    f"{main_sync_notice}"
-                ),
-            }]
+            "content": [{"type": "text", "text": msg}]
         },
     }
 

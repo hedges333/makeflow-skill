@@ -15,7 +15,7 @@ AI coding agents fail on long coding tasks in four common ways:
 
 ### Solution 1: Makefile DAG
 
-Stuart Feldman created `make` in 1976 to run software builds through a DAG (a dependency graph without loops). Instead of a flat prompt list, the agent evaluates 14 dependency targets. The agent cannot edit source code before planning, and it cannot commit before testing.
+Stuart Feldman created `make` in 1976 to run software builds through a DAG (a dependency graph without loops). Instead of a flat prompt list, the agent runs 15 executable targets in `.workflow/state/Makefile`. Make enforces prerequisites and auto-renders `.workflow/state/99_next_action.md` at every phase.
 
 ### Solution 2: Memento State Files
 
@@ -59,7 +59,7 @@ Start a task or query status with direct chat prompts:
 - View progress: `"Show the active target and readerboard."`
 - View backlog: `"List the top open issues by priority."`
 
-When the agent stops at a human pause gate, reply in chat to continue. After you reply, the agent calls `workflow_advance_target` with the matching boolean `evidence` key (`blockersCount` routes `T40` to `T42` or `T45`):
+When the agent stops at a human pause gate, reply in chat to continue. After you reply, the agent runs `make -f .workflow/state/Makefile <target> APPROVED=1` or calls `workflow_advance_target` with the matching boolean `evidence` key (`BLOCKERS` and `blockersCount` route `T40` to `T42` or `T45`):
 
 - Plan Gate (`T20 -> T30`, `humanPlanApproved: true`): `"Plan approved. Proceed."`
 - Blocker Gate (`T42 -> T30`, `humanBlockerTriageApproved: true`): `"Approved. Fix blockers 1 and 2."`
