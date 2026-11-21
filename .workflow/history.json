@@ -2480,5 +2480,27 @@
     "closes_issue": true,
     "tests_added": 16,
     "scars_earned": []
+  },
+  {
+    "id": "GH-248",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/248",
+    "title": "[BUG] Fix Pure Git Mode (SCAR-GIT-30) redundant Target 60 pause gate and Target 80 squash-merge branch deletion",
+    "request": "Allow remote-less Pure Git Mode repositories to transition from Target 50 commit directly to Target 70 local verification without a redundant Target 60 push pause while keeping Target 60 mandatory whenever any Git remote exists, persist skipped T60 status in 99_next_action.md, and update Target 80 documentation and SCAR-GIT-30 to separate zero-remote steps and instruct git branch -D under SCAR-GIT-25 operator confirmation after git merge --squash.",
+    "branch": "fix/248-pure-git-mode-t60-t80-rebased",
+    "subprojects": [
+      "adapters",
+      "lib",
+      "mcp",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-21T18:54:49Z",
+    "completed_at": "2026-11-21T20:09:33Z",
+    "commit_sha": "6c836c1d2b8df013ccaf38cf3376af86cc0955c1",
+    "pr_number": 256,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/256",
+    "closes_issue": true,
+    "tests_added": 6,
+    "scars_earned": []
   }
 ]

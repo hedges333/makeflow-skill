@@ -39,3 +39,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - Run MCP server tests through the `unittest` runner in `make test-mcp` and CI workflows, and split `TestMcpServer` into discrete methods.
 - GH-237: Align .claude-plugin/plugin.json, .codex-plugin/plugin.json, and MCP fallback version to 0.0.1.
 - GH-235: Resolve outer ancestor PTY and emulator hints before TERM=dumb, simplify title formats without backticks, and reset titles on finish.
+- GH-248: Allow remote-less Pure Git Mode T50 to T70 bypass without Target 60 push pause and align Target 80 squash-merge git branch -D cleanup with SCAR-GIT-25.
