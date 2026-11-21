@@ -305,9 +305,9 @@ class TestProjectAndTicketDetection(unittest.TestCase):
   def test_ticket_id_from_state_card(self):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
-    card_path = os.path.join(state_dir, "10_ticket.md")
+    card_path = os.path.join(state_dir, "10_ticket.json")
     with open(card_path, "w", encoding="utf-8") as f:
-      f.write("# Ticket Intake: GH-103\n- **Ticket ID**: GH-103\n")
+      json.dump({"ticket_id": "GH-103", "title": "Terminal title"}, f)
     ticket = detect_ticket_id(repo_root=self.temp_dir)
     self.assertEqual(ticket, "GH-103")
 
@@ -322,14 +322,17 @@ class TestProjectAndTicketDetection(unittest.TestCase):
       ticket = detect_ticket_id(repo_root=self.temp_dir, branch=branch)
       self.assertEqual(ticket, expected)
 
-  def test_ticket_id_from_next_action_card(self):
+  def test_ticket_id_does_not_scrape_next_action_markdown(self):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
     card_path = os.path.join(state_dir, "99_next_action.md")
     with open(card_path, "w", encoding="utf-8") as f:
       f.write("- Ticket: [LOCAL-456: Test local ticket](url)\n")
-    ticket = detect_ticket_id(repo_root=self.temp_dir)
-    self.assertEqual(ticket, "LOCAL-456")
+    self.assertEqual(detect_ticket_id(repo_root=self.temp_dir, branch=""), "")
+    self.assertEqual(
+        detect_ticket_id(repo_root=self.temp_dir, branch="feat/local-456-test"),
+        "LOCAL-456",
+    )
 
   def test_format_terminal_title(self):
     self.assertEqual(
@@ -411,12 +414,9 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
     long_desc = "refactor broad exception handlers and preserve full terminal title in session start"
-    card_10 = os.path.join(state_dir, "10_ticket.md")
+    card_10 = os.path.join(state_dir, "10_ticket.json")
     with open(card_10, "w", encoding="utf-8") as f:
-      f.write(
-          f"# Ticket Intake: GH-130\n\n"
-          f"- Ticket: [GH-130: [FEAT] {long_desc}](https://github.com/...)\n"
-      )
+      json.dump({"ticket_id": "GH-130", "title": f"[FEAT] {long_desc}"}, f)
     tag = detect_issue_tag(repo_root=self.temp_dir)
     self.assertEqual(tag, long_desc)
 
@@ -430,11 +430,8 @@ class TestProjectAndTicketDetection(unittest.TestCase):
   def test_detect_ticket_id_handles_unicode_decode_error(self):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
-    card_10 = os.path.join(state_dir, "10_ticket.md")
+    card_10 = os.path.join(state_dir, "10_ticket.json")
     with open(card_10, "wb") as f:
-      f.write(b"\xff\xfe\x00\x01")
-    card_99 = os.path.join(state_dir, "99_next_action.md")
-    with open(card_99, "wb") as f:
       f.write(b"\xff\xfe\x00\x01")
     ticket = detect_ticket_id(repo_root=self.temp_dir, branch="")
     self.assertEqual(ticket, "")
@@ -442,11 +439,8 @@ class TestProjectAndTicketDetection(unittest.TestCase):
   def test_detect_issue_tag_handles_unicode_decode_error(self):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
-    card_10 = os.path.join(state_dir, "10_ticket.md")
+    card_10 = os.path.join(state_dir, "10_ticket.json")
     with open(card_10, "wb") as f:
-      f.write(b"\xff\xfe\x00\x01")
-    card_99 = os.path.join(state_dir, "99_next_action.md")
-    with open(card_99, "wb") as f:
       f.write(b"\xff\xfe\x00\x01")
     tag = detect_issue_tag(repo_root=self.temp_dir, branch="")
     self.assertEqual(tag, "")
@@ -458,41 +452,50 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
 
-    # 1. State card 10_ticket.md with - Ticket: [GH-113: [FEAT] enhance terminal title](url)
-    card_10 = os.path.join(state_dir, "10_ticket.md")
+    # 1. Canonical 10_ticket.json
+    card_10 = os.path.join(state_dir, "10_ticket.json")
     with open(card_10, "w", encoding="utf-8") as f:
-      f.write(
-          "# Ticket Intake: GH-113\n\n"
-          "- Ticket: [GH-113: [FEAT] enhance terminal title](https://github.com/...)\n"
-          "- Branch: `feat/113-enhance-terminal-title`\n"
+      json.dump(
+          {
+              "ticket_id": "GH-113",
+              "title": "[FEAT] enhance terminal title",
+              "url": "https://github.com/example/repo/issues/113",
+          },
+          f,
       )
     tag = detect_issue_tag(repo_root=self.temp_dir)
     self.assertEqual(tag, "enhance terminal title")
 
-    # 2. State card 10_ticket.md with # Ticket Intake: GH-113: enhance terminal title
+    # 2. Raw gh issue view --json saved directly to 10_ticket.json
     with open(card_10, "w", encoding="utf-8") as f:
-      f.write("# Ticket Intake: GH-113: enhance terminal title\n")
-    tag = detect_issue_tag(repo_root=self.temp_dir)
-    self.assertEqual(tag, "enhance terminal title")
+      json.dump(
+          {
+              "number": 240,
+              "title": "[BUG] terminal title formatting",
+              "url": "https://github.com/example/repo/issues/240",
+              "labels": [{"name": "bug"}],
+          },
+          f,
+      )
+    self.assertEqual(detect_ticket_id(repo_root=self.temp_dir, branch=""), "GH-240")
+    self.assertEqual(
+        detect_issue_tag(repo_root=self.temp_dir, branch=""),
+        "terminal title formatting",
+    )
 
-    # 3. State card 10_ticket.md with ## Description fallback
+    # 3. Local ticket schema with 'id'
     with open(card_10, "w", encoding="utf-8") as f:
-      f.write("# Ticket Intake: GH-113\n\n## Description\n\nenhance terminal title\n")
-    tag = detect_issue_tag(repo_root=self.temp_dir)
-    self.assertEqual(tag, "enhance terminal title")
+      json.dump({"id": "LOCAL-456", "title": "Test local ticket"}, f)
+    self.assertEqual(
+        detect_ticket_id(repo_root=self.temp_dir, branch=""), "LOCAL-456"
+    )
+    self.assertEqual(
+        detect_issue_tag(repo_root=self.temp_dir, branch=""),
+        "Test local ticket",
+    )
 
-    # 4. State card 99_next_action.md
+    # 4. Git branch slug fallback when 10_ticket.json absent
     os.remove(card_10)
-    card_99 = os.path.join(state_dir, "99_next_action.md")
-    with open(card_99, "w", encoding="utf-8") as f:
-      f.write(
-          "- Ticket: [LOCAL-456: Test local ticket](url) (In Progress)\n"
-      )
-    tag = detect_issue_tag(repo_root=self.temp_dir)
-    self.assertEqual(tag, "Test local ticket")
-
-    # 5. Git branch slug fallback
-    os.remove(card_99)
     tag = detect_issue_tag(
         repo_root=self.temp_dir, branch="feat/113-enhance-terminal-title"
     )
@@ -505,18 +508,18 @@ class TestProjectAndTicketDetection(unittest.TestCase):
   def test_detect_issue_tag_gh235_extracts_title_field_and_strips_backticks_and_prefix(
       self,
   ):
-    """GH-235: extracts - **Title**: from 10_ticket.md, strips backticks and [TYPE] prefix."""
+    """GH-235 / GH-240: extracts title from 10_ticket.json, strips backticks and [TYPE] prefix."""
     state_dir = os.path.join(self.temp_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
-    card_10 = os.path.join(state_dir, "10_ticket.md")
+    card_10 = os.path.join(state_dir, "10_ticket.json")
 
-    # 1. Backticked - **Title**: with [BUG] and inline backticks (GH-235 format)
     with open(card_10, "w", encoding="utf-8") as f:
-      f.write(
-          "# 10_ticket: GH-235 Intake\n\n"
-          "- **Ticket ID**: `GH-235`\n"
-          "- **Title**: `[BUG] Terminal title reset at Target 90 fails via `scripts/terminal_title.py``\n"
-          "## Description\n\nFallback description should not win.\n"
+      json.dump(
+          {
+              "ticket_id": "GH-235",
+              "title": "`[BUG] Terminal title reset at Target 90 fails via `scripts/terminal_title.py``",
+          },
+          f,
       )
     self.assertEqual(
         detect_issue_tag(repo_root=self.temp_dir, branch=""),
@@ -527,17 +530,97 @@ class TestProjectAndTicketDetection(unittest.TestCase):
         "GH-235",
     )
 
-    # 2. Unbackticked - **Title**: with [FEAT] and preserved inner [DAG]
     with open(card_10, "w", encoding="utf-8") as f:
-      f.write(
-          "# 10_ticket: `GH-219`\n\n"
-          "- **Ticket ID**: `GH-219`\n"
-          "- **Title**: [FEAT] Execute [DAG] transitions\n"
+      json.dump(
+          {
+              "ticket_id": "GH-219",
+              "title": "[FEAT] Execute [DAG] transitions",
+          },
+          f,
       )
     self.assertEqual(
         detect_issue_tag(repo_root=self.temp_dir, branch=""),
         "Execute [DAG] transitions",
     )
+
+  def test_gh240_prose_quoting_in_ticket_md_never_hijacks_issue_tag(self):
+    """GH-240: quoted ticket bullets in 10_ticket.md cannot hijack 10_ticket.json metadata."""
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(
+        os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump(
+          {
+              "ticket_id": "GH-240",
+              "title": "[BUG] terminal title formatting",
+              "url": "https://github.com/hedges333/makeflow-skill/issues/240",
+          },
+          f,
+      )
+    with open(
+        os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write(
+          "# 10_ticket: GH-240\n\n"
+          "Repro notes: writing `- Ticket: [GH-233: GH-233](https://example.com) (In Progress)`\n"
+      )
+    tid = detect_ticket_id(repo_root=self.temp_dir, branch="fix/240-title")
+    tag = detect_issue_tag(repo_root=self.temp_dir, branch="fix/240-title")
+    self.assertEqual(tid, "GH-240")
+    self.assertEqual(tag, "terminal title formatting")
+    self.assertEqual(
+        format_terminal_title(tid, "makeflow-skill-dir3", tag),
+        "makeflow-skill-dir3/: GH-240 terminal title formatting",
+    )
+
+  def test_gh240_suppresses_duplicate_ticket_id_in_tag_and_format(self):
+    """GH-240: duplicate ticket_id in title or issue_tag never produces '{dir}/: GH-233 GH-233'."""
+    self.assertEqual(
+        format_terminal_title("GH-233", "makeflow-skill-dir2", "GH-233"),
+        "makeflow-skill-dir2/: GH-233",
+    )
+    self.assertEqual(
+        format_terminal_title("GH-233", "makeflow-skill-dir2", "gh-233"),
+        "makeflow-skill-dir2/: GH-233",
+    )
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    card_10 = os.path.join(state_dir, "10_ticket.json")
+    for dup_title in ("GH-233", "gh-233", "[BUG] GH-233", ""):
+      with open(card_10, "w", encoding="utf-8") as f:
+        json.dump({"ticket_id": "GH-233", "title": dup_title}, f)
+      self.assertEqual(
+          detect_issue_tag(
+              repo_root=self.temp_dir, branch="fix/233-regression-gate"
+          ),
+          "regression gate",
+      )
+      self.assertEqual(
+          detect_issue_tag(repo_root=self.temp_dir, branch=""),
+          "",
+      )
+
+  def test_gh240_corrupt_or_non_dict_ticket_json_falls_back_to_branch(self):
+    """GH-240: corrupt or non-dict 10_ticket.json degrades cleanly to Git branch fallback."""
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    card_10 = os.path.join(state_dir, "10_ticket.json")
+    for raw_payload in ("{broken json", "[1, 2, 3]", '"just-a-string"'):
+      with open(card_10, "w", encoding="utf-8") as f:
+        f.write(raw_payload)
+      self.assertEqual(
+          detect_ticket_id(
+              repo_root=self.temp_dir, branch="fix/240-terminal-title"
+          ),
+          "GH-240",
+      )
+      self.assertEqual(
+          detect_issue_tag(
+              repo_root=self.temp_dir, branch="fix/240-terminal-title"
+          ),
+          "terminal title",
+      )
 
   def test_detect_project_name_rejects_temporary_directory_patterns(self):
     self.assertIsNotNone(
@@ -806,11 +889,15 @@ class TestSetTerminalTitle(unittest.TestCase):
       ) as f:
         json.dump({"name": "makeflow"}, f)
       with open(
-          os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+          os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
       ) as f:
-        f.write(
-            "# Ticket Intake: GH-1234\n\n"
-            "- Ticket: [GH-1234: [FEAT] Add frobnosticator to reticulator subnodule](https://example.com)\n"
+        json.dump(
+            {
+                "ticket_id": "GH-1234",
+                "title": "[FEAT] Add frobnosticator to reticulator subnodule",
+                "url": "https://example.com",
+            },
+            f,
         )
 
       stream = MockTtyStream()
@@ -1430,11 +1517,15 @@ class TestAncestorPtyResolutionAndDelivery(unittest.TestCase):
     repo_dir = os.path.join(self.temp_dir, "makeflow-skill")
     state_dir = os.path.join(repo_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
-    with open(os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8") as f:
-      f.write(
-          "# 10_ticket: GH-235 Intake\n\n"
-          "- **Ticket ID**: `GH-235`\n"
-          "- **Title**: `[BUG] Reset title via `scripts/terminal_title.py``\n"
+    with open(
+        os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump(
+          {
+              "ticket_id": "GH-235",
+              "title": "`[BUG] Reset title via `scripts/terminal_title.py``",
+          },
+          f,
       )
 
     with patch(
@@ -1697,7 +1788,7 @@ class TestTerminalTitleSubparserRepoRootGH243(unittest.TestCase):
     self.temp_dir.cleanup()
 
   def _seed_workspace(self, repo_dir, ticket_id, issue_title):
-    """Populate minimal 10_ticket.md state card for deterministic title detection.
+    """Populate minimal 10_ticket.json state card for deterministic title detection.
 
     Args:
       repo_dir: Target workspace directory path.
@@ -1707,12 +1798,14 @@ class TestTerminalTitleSubparserRepoRootGH243(unittest.TestCase):
     state_dir = os.path.join(repo_dir, ".workflow", "state")
     os.makedirs(state_dir, exist_ok=True)
     with open(
-        os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+        os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
     ) as f:
-      f.write(
-          f"# 10_ticket: {ticket_id}\n\n"
-          f"- **Ticket ID**: `{ticket_id}`\n"
-          f"- **Title**: `[FEAT] {issue_title}`\n"
+      json.dump(
+          {
+              "ticket_id": ticket_id,
+              "title": f"[FEAT] {issue_title}",
+          },
+          f,
       )
 
   def _run_cli(self, args, cwd=None, script=None):

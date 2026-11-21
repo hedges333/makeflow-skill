@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.signal_trap import SignalTrap
+from lib.ticket_state import TicketStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class WorkspaceMutex:
         or _DEFAULT_LOCK_DIR
     )
     self.lock_dir: str = os.path.abspath(os.path.expanduser(raw_lock_dir))
+    self.last_remote_issue: Optional[Dict[str, Any]] = None
 
   def get_repo_hash(self) -> str:
     """Compute repository identity hash via initial git commit or repo path SHA-256."""
@@ -130,32 +132,30 @@ class WorkspaceMutex:
     if not ws or not os.path.isdir(ws):
       return False
 
-    ticket_card = os.path.join(ws, ".workflow", "state", "10_ticket.md")
-    if not os.path.isfile(ticket_card):
+    state_dir = os.path.join(ws, ".workflow", "state")
+    meta = TicketStateStore(state_dir).load()
+    if meta is None or not meta.ticket_id:
       return False
 
     ticket_id = str(session_data.get("ticket_id", "")).strip()
-    clean_num = ""
-    m = re.search(r"\d+", ticket_id)
-    if m:
-      clean_num = m.group(0)
+    active_id = meta.ticket_id.strip()
+    matched = False
+    if ticket_id and active_id.lower() == ticket_id.lower():
+      matched = True
+    else:
+      m = re.search(r"\d+", ticket_id)
+      clean_num = m.group(0) if m else ""
+      if clean_num and active_id.upper() in (
+          f"GH-{clean_num}",
+          f"LOCAL-{clean_num}",
+      ):
+        matched = True
+
+    if not matched:
+      return False
 
     try:
-      with open(ticket_card, "r", encoding="utf-8", errors="replace") as f:
-        ticket_content = f.read()
-
-      matched = False
-      if ticket_id and ticket_id in ticket_content:
-        matched = True
-      elif clean_num and f"GH-{clean_num}" in ticket_content:
-        matched = True
-      elif clean_num and f"LOCAL-{clean_num}" in ticket_content:
-        matched = True
-
-      if not matched:
-        return False
-
-      next_action = os.path.join(ws, ".workflow", "state", "99_next_action.md")
+      next_action = os.path.join(state_dir, "99_next_action.md")
       if os.path.isfile(next_action):
         with open(next_action, "r", encoding="utf-8", errors="replace") as f:
           na_content = f.read()
@@ -294,13 +294,21 @@ class WorkspaceMutex:
       self, ticket_id: str, hosting_mode: str = "GITHUB"
   ) -> Dict[str, Any]:
     """Check remote repository or tracker for concurrent work."""
+    self.last_remote_issue = None
     mode = hosting_mode.upper()
     if mode == "GITHUB":
       m = re.search(r"\d+", ticket_id)
       issue_num = m.group(0) if m else ticket_id
       try:
         proc = subprocess.run(
-            ["gh", "issue", "view", issue_num, "--json", "assignees,labels"],
+            [
+                "gh",
+                "issue",
+                "view",
+                issue_num,
+                "--json",
+                "number,title,url,assignees,labels",
+            ],
             cwd=self.repo_root,
             capture_output=True,
             text=True,
@@ -309,6 +317,13 @@ class WorkspaceMutex:
         )
         if proc.returncode == 0:
           data = json.loads(proc.stdout)
+          if not isinstance(data, dict):
+            return {
+                "conflict": False,
+                "hosting_mode": "GITHUB",
+                "error": "Unexpected non-object JSON payload from gh issue view",
+            }
+          self.last_remote_issue = data
           raw_assignees = data.get("assignees", [])
           assignees = [
               a.get("login") for a in raw_assignees if isinstance(a, dict) and a.get("login")

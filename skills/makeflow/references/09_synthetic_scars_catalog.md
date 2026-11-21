@@ -121,6 +121,7 @@ Agents must use Socratic Probes during:
 | `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 | `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 | `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
+| `SCAR-ARCH-10` | Preserve Structured Data Over Lossy Prose Round-Trips | Architecture | [`scars/architecture.md`](./scars/architecture.md) |
 
 ### Language-Specific Failure Vaccines
 

@@ -1295,25 +1295,30 @@ class WorkflowGatesScript(BaseScript):
 
     state_dir = os.path.join(self.repo_root, ".workflow", "state")
     if os.path.isdir(state_dir):
+      from lib.ticket_state import TICKET_JSON_FILENAME, TicketStateStore
+
       leftovers = sorted(
           fname
           for fname in os.listdir(state_dir)
           if _LEFTOVER_CARD_RE.match(fname)
       )
+      if leftovers == [TICKET_JSON_FILENAME] and self.ticket:
+        existing_meta = TicketStateStore(state_dir).load()
+        if (
+            existing_meta is not None
+            and existing_meta.ticket_id
+            and existing_meta.ticket_id.strip().lower()
+            == self.ticket.strip().lower()
+        ):
+          leftovers = []
       if leftovers:
         return self._fail(
             scar_id="GIT-25",
             code="UNCLEAN_INTAKE_STATE",
             trigger=f"Leftover intermediate state file(s) in .workflow/state/: {', '.join(leftovers)}",
             rejected="Starting a new ticket while prior 10_..80_ state cards remain active.",
-            reflex="Archive or unlink intermediate state files per state.completedCardAction before writing 10_ticket.md.",
+            reflex="Archive or unlink intermediate state files per state.completedCardAction before saving 10_ticket.json.",
         )
-
-    try:
-      from lib.terminal_title import set_terminal_title
-      set_terminal_title(repo_root=self.repo_root)
-    except (ImportError, OSError):
-      pass
 
     ticket_id = self.ticket
     if not ticket_id:
@@ -1324,6 +1329,7 @@ class WorkflowGatesScript(BaseScript):
         ticket_id = ""
 
     if ticket_id:
+      from lib.ticket_state import TicketMetadata, TicketStateStore
       from lib.workspace_mutex import WorkspaceMutex
       mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
       branch_proc = self._git("branch", "--show-current")
@@ -1418,6 +1424,53 @@ class WorkflowGatesScript(BaseScript):
 
       mutex.register_signal_trap(ticket_id)
 
+      ticket_store = TicketStateStore.from_repo_root(self.repo_root)
+      existing_ticket = ticket_store.load() if res.get("reentrant") else None
+      if (
+          res.get("reentrant")
+          and existing_ticket is not None
+          and existing_ticket.ticket_id.strip().lower()
+          == ticket_id.strip().lower()
+      ):
+        ticket_payload = None
+      elif ticket_id.upper().startswith("LOCAL-"):
+        from lib.local_tickets import LocalTicketStore
+
+        local_store = LocalTicketStore(
+            repo_root=self.repo_root, lock_dir=self.lock_dir
+        )
+        local_record = local_store.get_ticket(ticket_id)
+        if isinstance(local_record, dict):
+          ticket_payload = dict(local_record)
+          ticket_payload.setdefault("ticket_id", ticket_id)
+          if branch_name and not ticket_payload.get("branch"):
+            ticket_payload["branch"] = branch_name
+          ticket_payload.setdefault("source", "local")
+        else:
+          ticket_payload = TicketMetadata(
+              ticket_id=ticket_id,
+              branch=branch_name,
+              source="local",
+          )
+      elif isinstance(mutex.last_remote_issue, dict) and mutex.last_remote_issue:
+        ticket_payload = dict(mutex.last_remote_issue)
+        ticket_payload.setdefault("ticket_id", ticket_id)
+        if branch_name and not ticket_payload.get("branch"):
+          ticket_payload["branch"] = branch_name
+        ticket_payload.setdefault("source", "github")
+      else:
+        ticket_payload = TicketMetadata(
+            ticket_id=ticket_id,
+            branch=branch_name,
+            source="fallback",
+        )
+
+      if ticket_payload is not None:
+        try:
+          ticket_store.save(ticket_payload)
+        except OSError:
+          pass
+
     if os.path.isdir(state_dir):
       stale_subagent = os.path.join(state_dir, "active_subagent.json")
       if os.path.isfile(stale_subagent):
@@ -1425,6 +1478,12 @@ class WorkflowGatesScript(BaseScript):
           os.unlink(stale_subagent)
         except OSError:
           pass
+
+    try:
+      from lib.terminal_title import set_terminal_title
+      set_terminal_title(repo_root=self.repo_root)
+    except (ImportError, OSError):
+      pass
     return 0
 
   def _release_intake(self) -> int:

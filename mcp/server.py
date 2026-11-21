@@ -52,6 +52,7 @@ from lib.config import (
     resolve_workflow_config,
     resolve_workspace_dir,
 )
+from lib.ticket_state import TICKET_JSON_FILENAME
 from lib.shell_safety import (
     DB_TOOLS,
     ENV_ASSIGN_RE,
@@ -1203,7 +1204,11 @@ def handle_tools_call(request_id, tool_name, arguments):
           },
       }
 
-    files = sorted(f for f in os.listdir(state_dir) if f.endswith(".md"))
+    files = sorted(
+        f
+        for f in os.listdir(state_dir)
+        if f.endswith(".md") or f == TICKET_JSON_FILENAME
+    )
     if not files:
       return {
           "jsonrpc": "2.0",

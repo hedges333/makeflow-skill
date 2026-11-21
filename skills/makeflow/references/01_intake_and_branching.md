@@ -7,7 +7,7 @@ This manual covers state restoration, ticket intake, Git branch setup, and live 
 At the start of every turn, inspect `<workspace>/.workflow/state/`:
 
 1. If `.workflow/state/` does not exist, start at Target 10.
-2. If `.workflow/state/` exists, read all `.md` files in alphabetical order (`00_governance.md` through `99_next_action.md`).
+2. If `.workflow/state/` exists, read `10_ticket.json` (if present) and all `.md` files in alphabetical order (`00_governance.md` through `99_next_action.md`).
 3. Restore the active ticket ID, branch name, and active target.
 4. If an active ticket is restored, update the terminal tab title to `{dir_name}/: {ticket_number} {issue_tag}`.
 5. If the user only asks for status, print the readerboard in chat and stop.
@@ -28,8 +28,8 @@ When the user provides a task description, issue number, or issue URL, run these
    ```bash
    python3 <plugin_root>/scripts/workflow_gates.py --repo-root . init-makefile
    ```
-5. Check `.workflow/state/` for leftover `10_`..`80_` cards or `approved_tree.txt` before writing `10_ticket.md`. If stale files exist, unlink them or archive them to `.workflow/archive/<old-id>/` per `state.completedCardAction`.
-6. Run `make -f .workflow/state/Makefile check-intake TICKET=<ticket-id>` to verify a clean tree, check upstream blockers, and acquire the ticket lock (`SCAR-SYS-08`). If another active workspace holds the ticket, stop intake immediately.
+5. Check `.workflow/state/` for leftover `10_`..`80_` cards or `approved_tree.txt` before starting intake. If stale files exist, unlink them or archive them to `.workflow/archive/<old-id>/` per `state.completedCardAction`.
+6. Run `make -f .workflow/state/Makefile check-intake TICKET=<ticket-id>` to verify a clean tree and check blockers. This command acquires the ticket lock (`SCAR-SYS-08`) and saves `.workflow/state/10_ticket.json`. If another workspace holds the ticket, stop intake immediately.
 7. Create and switch to a feature branch that matches standard Git naming rules:
    - GitHub Bug (`#<number>` or `GH-<number>`): `fix/<number>-<slug>`, for example `fix/42-login-redirect`. Ticket ID is `GH-<number>`.
    - GitHub Feature (`#<number>` or `GH-<number>`): `feat/<number>-<slug>`, for example `feat/101-csv-export`. Ticket ID is `GH-<number>`.
@@ -37,10 +37,9 @@ When the user provides a task description, issue number, or issue URL, run these
    - Jira or Linear Issue (`<PROJECT>-<NUMBER>`): `feat/<project>-<number>-<slug>` or `fix/<project>-<number>-<slug>`.
    - Ad-hoc Chat Task / Pure Git Session (no external tracker): Allocate the next ID with `python3 scripts/local_tickets.py next-id`. Use `feat/local-<N>-<slug>` or `fix/local-<N>-<slug>`. Ticket ID is `LOCAL-<N>`. Never use bare integers for local branches.
 8. Format `<slug>` with lowercase letters, digits, and single hyphens (`[a-z0-9-]`), up to 40 characters.
-9. Write the consolidated ticket and comment details to `<workspace>/.workflow/state/10_ticket.md`.
-10. Run `make -f .workflow/state/Makefile ticket-assigned` to record Target 10 and auto-render `.workflow/state/99_next_action.md`.
-11. Update the terminal title to `{dir_name}/: {ticket_number} {issue_tag}` by running `python3 <plugin_root>/scripts/terminal_title.py set`.
-12. Run `make -f .workflow/state/Makefile archaeology-verified` to advance to Target 15.
+9. Verify structured ticket metadata exists in `<workspace>/.workflow/state/10_ticket.json`. Optionally write consolidated discussion notes to `<workspace>/.workflow/state/10_ticket.md`.
+10. Run `make -f .workflow/state/Makefile ticket-assigned` to record Target 10, auto-render `.workflow/state/99_next_action.md`, and refresh the terminal title automatically.
+11. Run `make -f .workflow/state/Makefile archaeology-verified` to advance to Target 15.
 
 ### Multi-Workspace Mutual Exclusion (`SCAR-SYS-08`)
 

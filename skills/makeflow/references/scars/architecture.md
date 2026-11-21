@@ -11,6 +11,7 @@ This reference manual documents universal architecture and software design patte
 | `SCAR-ARCH-07` | Anti-Speculative Defenses and Caller Grounding | Architecture & Caller Invariants |
 | `SCAR-ARCH-08` | Polyglot Layer Separation and Structural Debt Triage | Layer Boundaries & Structural Triage |
 | `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Root-Cause Boundaries & Control Flow |
+| `SCAR-ARCH-10` | Preserve Structured Data Over Lossy Prose Round-Trips | Data Contracts & Serialization Boundaries |
 
 ---
 
@@ -48,3 +49,10 @@ This reference manual documents universal architecture and software design patte
 - **Trap**: An agent patches symptoms at the downstream call site instead of tracing control flow upstream to the root cause.
 - **Permanent Reflex**: Trace each defect or design friction upstream to its earliest safe boundary. If an upstream fix simplifies control flow without breaking other subsystems, fix the root cause upstream. Delete obsolete downstream workarounds instead of stacking defensive patches.
 - **Socratic Probe**: Would fixing the root cause upstream keep code simplest without harming other subsystems? Can you remove downstream workarounds instead of patching symptoms further down the control flow?
+
+### SCAR-ARCH-10: Preserve Structured Data Over Lossy Prose Round-Trips
+
+- **Wound**: Serializing structured JSON records into free-form Markdown prose and scraping fields back with regexes causes silent truncation and wrong value extraction.
+- **Trap**: An agent converts structured API or store payloads into prose documents, then writes brittle regex parsers across downstream modules to recover original fields.
+- **Permanent Reflex**: If upstream systems emit structured JSON or typed records, persist that structured data directly. Read structured fields from one shared module instead of regex-scraping prose. Keep human-readable Markdown notes separate from machine-read state.
+- **Socratic Probe**: Does this module scrape prose with regexes for data that already exists as structured JSON upstream? Can consumers read one shared structured store instead?

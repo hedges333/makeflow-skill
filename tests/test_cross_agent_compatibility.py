@@ -2074,6 +2074,266 @@ def validate_scar_arch_09_upstream_root_cause() -> list[str]:
   return errors
 
 
+SCAR_ARCH_10_TARGET_FILES = (
+    "skills/makeflow/references/scars/architecture.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "rules/AGENTS.md",
+)
+
+SCAR_ARCH_10_PROBE_QUESTIONS = (
+    "Does this module scrape prose with regexes for data that already exists as structured JSON upstream?",
+    "Can consumers read one shared structured store instead?",
+)
+
+
+def check_scar_arch_10_structured_data(
+    files_map: dict[str, str],
+) -> list[str]:
+  """Validates SCAR-ARCH-10 structured data preservation invariants (GH-240)."""
+  errs: list[str] = []
+  for rel in SCAR_ARCH_10_TARGET_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # a. skills/makeflow/references/scars/architecture.md
+  arch_rel = "skills/makeflow/references/scars/architecture.md"
+  arch_text = files_map[arch_rel]
+  table_match = re.search(
+      r"## Scars in this Category.*?(?=\n###|\Z)", arch_text, re.DOTALL
+  )
+  table_sec = table_match.group(0) if table_match else ""
+  if (
+      "SCAR-ARCH-10" not in table_sec
+      or "Preserve Structured Data Over Lossy Prose Round-Trips" not in table_sec
+  ):
+    errs.append(
+        f"{arch_rel} category table must list SCAR-ARCH-10 (Preserve Structured Data Over Lossy Prose Round-Trips)"
+    )
+
+  m09 = re.search(r"(?m)^###\s+SCAR-ARCH-09\b", arch_text)
+  m10 = re.search(
+      r"(?m)^###\s+SCAR-ARCH-10:\s+Preserve Structured Data Over Lossy Prose Round-Trips\b",
+      arch_text,
+  )
+  if not (m09 and m10 and m09.start() < m10.start()):
+    errs.append(
+        f"{arch_rel} must define '### SCAR-ARCH-10: Preserve Structured Data Over Lossy Prose Round-Trips' monotonically after SCAR-ARCH-09"
+    )
+  else:
+    sec10 = arch_text[m10.start() :].split("\n### SCAR-")[0]
+    extracted: dict[str, str] = {}
+    req_fields = ("Wound", "Trap", "Permanent Reflex", "Socratic Probe")
+    for field in req_fields:
+      fm = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", sec10)
+      val = fm.group(1).strip() if fm else ""
+      extracted[field] = val
+      if not val:
+        errs.append(f"{arch_rel} SCAR-ARCH-10 missing non-empty '**{field}**:'")
+
+    sec10_lower = sec10.lower()
+    for tok in ("structured", "json", "regex", "prose"):
+      if tok not in sec10_lower:
+        errs.append(f"{arch_rel} SCAR-ARCH-10 missing required token '{tok}'")
+
+    if all(extracted[f] for f in req_fields):
+      candidate = {
+          "id": "SCAR-ARCH-10",
+          "raw_wound": extracted["Wound"],
+          "wound": extracted["Wound"],
+          "raw_trap": extracted["Trap"],
+          "trap": extracted["Trap"],
+          "raw_circuit_breaker": "",
+          "circuit_breaker": "",
+          "raw_reflex": extracted["Permanent Reflex"],
+          "reflex": extracted["Permanent Reflex"],
+          "socratic_probe": extracted["Socratic Probe"],
+      }
+      errs.extend(ScarCandidateValidator().validate(candidate))
+      errs.extend(
+          validate_socratic_probe(
+              extracted["Socratic Probe"], scar_id="SCAR-ARCH-10"
+          )
+      )
+      probe_sents = split_into_sentences(extracted["Socratic Probe"])
+      if not (1 <= len(probe_sents) <= 3):
+        errs.append(
+            f"{arch_rel} SCAR-ARCH-10 Socratic Probe must contain 1-3 '?' sentences, found {len(probe_sents)}"
+        )
+
+  errs.extend(_check_prose_punctuation(arch_rel, arch_text))
+
+  # b. skills/makeflow/references/09_synthetic_scars_catalog.md
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_text = files_map[cat_rel]
+  if not check_scar_catalog_routing(cat_text, "SCAR-ARCH-10", "architecture.md"):
+    errs.append(
+        f"{cat_rel} Master Routing Table must strictly route SCAR-ARCH-10 to scars/architecture.md"
+    )
+  c09 = re.search(r"(?m)^\|\s*`SCAR-ARCH-09`\s*\|", cat_text)
+  c10 = re.search(r"(?m)^\|\s*`SCAR-ARCH-10`\s*\|", cat_text)
+  if not (c09 and c10 and c09.start() < c10.start()):
+    errs.append(
+        f"{cat_rel} must place SCAR-ARCH-10 monotonically after SCAR-ARCH-09"
+    )
+
+  # c. Target 20: skills/makeflow/references/02_archaeology_and_planning.md Section 2.1
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  r02_sec2 = _extract_markdown_h2_section(r02_text, "## 2. Target 20")
+  if "### 2.1 Socratic Pre-Planning Deliberation" not in r02_sec2:
+    errs.append(
+        f"{r02_rel} Section 2 missing '### 2.1 Socratic Pre-Planning Deliberation'"
+    )
+  else:
+    s21 = r02_sec2.split("### 2.1 Socratic Pre-Planning Deliberation")[1].split(
+        "### 2.2"
+    )[0]
+    if "Preserve Structured Data" not in s21 or "SCAR-ARCH-10" not in s21:
+      errs.append(
+          f"{r02_rel} Section 2.1 must include Socratic question on Preserve Structured Data (SCAR-ARCH-10)"
+      )
+    for q_text in SCAR_ARCH_10_PROBE_QUESTIONS:
+      if q_text not in s21:
+        errs.append(
+            f"{r02_rel} Section 2.1 must include SCAR-ARCH-10 probe question: '{q_text}'"
+        )
+
+  # d. Target 40: skills/makeflow/references/04_six_pillars_adversarial_review.md Pillar 3
+  r04_rel = "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+  r04_text = files_map[r04_rel]
+  p3_match = re.search(
+      r"(?m)^###\s+3\.\s+Architecture\b.*?(?=^###\s+4\b|\Z)",
+      r04_text,
+      re.DOTALL,
+  )
+  p3_sec = p3_match.group(0) if p3_match else ""
+  if "SCAR-ARCH-10" not in p3_sec or "Preserve Structured Data" not in p3_sec:
+    errs.append(
+        f"{r04_rel} Pillar 3 must reference Preserve Structured Data (SCAR-ARCH-10)"
+    )
+
+  # e. rules/AGENTS.md Section 3
+  rules_rel = "rules/AGENTS.md"
+  rules_text = files_map[rules_rel]
+  s3_match = re.search(
+      r"(?m)^##\s+3\.\s+Code Edit.*?(?=^##\s+4\b|\Z)",
+      rules_text,
+      re.DOTALL,
+  )
+  s3_sec = s3_match.group(0) if s3_match else ""
+  if "SCAR-ARCH-10" not in s3_sec:
+    errs.append(f"{rules_rel} Section 3 must reference SCAR-ARCH-10")
+
+  return errs
+
+
+def validate_scar_arch_10_structured_data() -> list[str]:
+  """Validates SCAR-ARCH-10 structured data preservation and negative falsifications (GH-240)."""
+  errors: list[str] = []
+  repo_files: dict[str, str] = {}
+  for rel in SCAR_ARCH_10_TARGET_FILES:
+    fpath = repo_path(rel)
+    if os.path.isfile(fpath):
+      with open(fpath, "r", encoding="utf-8") as f:
+        repo_files[rel] = f.read()
+
+  errors.extend(check_scar_arch_10_structured_data(repo_files))
+
+  sample_files = {
+      "skills/makeflow/references/scars/architecture.md": (
+          "# Architecture and Pattern Scars\n\n"
+          "## Scars in this Category\n\n"
+          "| ID | Title | Scope |\n"
+          "| :--- | :--- | :--- |\n"
+          "| `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Root-Cause Boundaries |\n"
+          "| `SCAR-ARCH-10` | Preserve Structured Data Over Lossy Prose Round-Trips | Data Contracts |\n\n"
+          "### SCAR-ARCH-09: Upstream Root-Cause Remediation Over Downstream Workarounds\n\n"
+          "- **Wound**: Downstream workarounds.\n"
+          "- **Trap**: Symptom patching.\n"
+          "- **Permanent Reflex**: Fix upstream.\n"
+          "- **Socratic Probe**: Would fixing upstream keep code simplest?\n\n"
+          "### SCAR-ARCH-10: Preserve Structured Data Over Lossy Prose Round-Trips\n\n"
+          "- **Wound**: Serializing structured JSON records into free-form Markdown prose and scraping fields back with regexes causes silent truncation and wrong value extraction.\n"
+          "- **Trap**: An agent converts structured API or store payloads into prose documents, then writes brittle regex parsers across downstream modules to recover original fields.\n"
+          "- **Permanent Reflex**: If upstream systems emit structured JSON or typed records, persist that structured data directly. Read structured fields from one shared module instead of regex-scraping prose. Keep human-readable Markdown notes separate from machine-read state.\n"
+          "- **Socratic Probe**: Does this module scrape prose with regexes for data that already exists as structured JSON upstream? Can consumers read one shared structured store instead?\n"
+      ),
+      "skills/makeflow/references/09_synthetic_scars_catalog.md": (
+          "| `SCAR-ARCH-09` | Upstream Root-Cause Remediation Over Downstream Workarounds | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+          "| `SCAR-ARCH-10` | Preserve Structured Data Over Lossy Prose Round-Trips | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+      ),
+      "skills/makeflow/references/02_archaeology_and_planning.md": (
+          "## 2. Target 20: Plan File Creation (`20_plan.md`)\n"
+          "### 2.1 Socratic Pre-Planning Deliberation\n"
+          "9. **Preserve Structured Data (`SCAR-ARCH-10`)**: "
+          "Does this module scrape prose with regexes for data that already exists as structured JSON upstream? "
+          "Can consumers read one shared structured store instead?\n"
+          "### 2.2 Socratic Invariant Audit Table\n"
+      ),
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md": (
+          "### 3. Architecture\n"
+          "- **Preserve Structured Data (`SCAR-ARCH-10`)**: Preserve structured JSON instead of regex-scraping prose.\n"
+          "### 4. Blast Radius\n"
+      ),
+      "rules/AGENTS.md": (
+          "## 3. Code Edit and Architecture Rules (`SCAR-PROC-104`)\n"
+          "9. Preserve structured data (`SCAR-ARCH-10`): Persist structured JSON directly.\n"
+          "## 4. Simple English Documentation Rules\n"
+      ),
+  }
+  baseline_errs = check_scar_arch_10_structured_data(sample_files)
+  if baseline_errs:
+    errors.append(
+        f"Negative falsification baseline failed for SCAR-ARCH-10: {baseline_errs}"
+    )
+
+  # 1) Missing SCAR-ARCH-10 in architecture.md
+  bad_missing = dict(sample_files)
+  bad_missing["skills/makeflow/references/scars/architecture.md"] = (
+      bad_missing["skills/makeflow/references/scars/architecture.md"].split(
+          "### SCAR-ARCH-10"
+      )[0]
+  )
+  if not any(
+      "SCAR-ARCH-10" in e
+      for e in check_scar_arch_10_structured_data(bad_missing)
+  ):
+    errors.append(
+        "Negative falsification failed: stripped SCAR-ARCH-10 in architecture.md was not rejected"
+    )
+
+  # 2) Missing routing row in 09_synthetic_scars_catalog.md
+  bad_cat = dict(sample_files)
+  bad_cat["skills/makeflow/references/09_synthetic_scars_catalog.md"] = (
+      "| `SCAR-ARCH-09` | Upstream | Architecture | [`scars/architecture.md`](./scars/architecture.md) |\n"
+  )
+  if not any(
+      "SCAR-ARCH-10" in e for e in check_scar_arch_10_structured_data(bad_cat)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-10 routing row was not rejected"
+    )
+
+  # 3) Missing SCAR-ARCH-10 in rules/AGENTS.md Section 3
+  bad_rules = dict(sample_files)
+  bad_rules["rules/AGENTS.md"] = (
+      "## 3. Code Edit and Architecture Rules\n1. Minimal edits.\n## 4. Simple English\n"
+  )
+  if not any(
+      "rules/AGENTS.md" in e and "SCAR-ARCH-10" in e
+      for e in check_scar_arch_10_structured_data(bad_rules)
+  ):
+    errors.append(
+        "Negative falsification failed: missing SCAR-ARCH-10 in rules/AGENTS.md was not rejected"
+    )
+
+  return errors
+
+
 def validate_vector4_reflex_gates_scar():
   """Validates Just-in-Time Vector 4 Reflex gates and SCAR-ARCH-06 (GH-57)."""
   errors = []
@@ -7297,8 +7557,8 @@ def _collect_compatibility_errors():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 62:
-    errors.append(f"Expected 62 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 63:
+    errors.append(f"Expected 63 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -8090,6 +8350,15 @@ def _collect_compatibility_errors():
   if not scar_arch_09_errors:
     print(
         "✔ Upstream root-cause remediation invariants (GH-232, SCAR-ARCH-09)"
+        " verified."
+    )
+
+  # Preserve Structured Data Over Lossy Prose Round-Trips (GH-240, SCAR-ARCH-10)
+  scar_arch_10_errors = validate_scar_arch_10_structured_data()
+  errors.extend(scar_arch_10_errors)
+  if not scar_arch_10_errors:
+    print(
+        "✔ Structured data preservation invariants (GH-240, SCAR-ARCH-10)"
         " verified."
     )
 
@@ -9206,6 +9475,10 @@ class TestCrossAgentCompatibility(unittest.TestCase):
   def test_scar_arch_09_upstream_root_cause_invariants(self):
     """Verifies SCAR-ARCH-09 codification, directives, probe validation, and negative falsifications (GH-232)."""
     self.assertEqual(validate_scar_arch_09_upstream_root_cause(), [])
+
+  def test_scar_arch_10_structured_data_invariants(self):
+    """Verifies SCAR-ARCH-10 codification, routing, probe validation, and negative falsifications (GH-240)."""
+    self.assertEqual(validate_scar_arch_10_structured_data(), [])
 
 
   def test_check_makefile_test_discovery_requires_single_active_command(self):

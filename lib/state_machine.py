@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from lib.config import is_ticket_active, resolve_workflow_config
 from lib.safe_copy import safe_copy_file
+from lib.ticket_state import TICKET_JSON_FILENAME, TicketStateStore
 from lib.turn_boundary import (
     ACTIVE_SUBAGENT_FILENAME,
     GATE_EVIDENCE_KEYS,
@@ -74,6 +75,7 @@ REQUIRED_STATE_CARDS = {
 }
 
 ALT_STATE_CARDS = {
+    ("T10", "T15"): (TICKET_JSON_FILENAME,),
     ("T15", "T20"): ("20_plan.md", "20_plan_approved.md"),
     ("T40", "T45"): ("45_review_approved.md",),
 }
@@ -117,18 +119,6 @@ _ACTIVE_TARGET_LINE_RE = re.compile(
 )
 _LAST_COMPLETED_LINE_RE = re.compile(
     r"(?im)^-\s*Last Completed Step:\s*Target\s*(\d{2})\b"
-)
-_TICKET_ID_RE = re.compile(
-    r"(?im)^(?:-\s*\*\*Ticket ID\*\*|Ticket ID|#\s*(?:Ticket Intake|10_ticket)):\s*`?([A-Za-z]+-[0-9]+)`?\b"
-)
-_TICKET_TITLE_RE = re.compile(
-    r"(?im)^-\s*\*\*Title\*\*:\s*(.+)$"
-)
-_TICKET_URL_RE = re.compile(
-    r"(?im)^-\s*\*\*URL\*\*:\s*(https?://\S+)\s*$"
-)
-_NA_TICKET_RE = re.compile(
-    r"(?m)^-\s*Ticket:\s*\[([A-Za-z0-9_-]+):\s*(.+)\](?:\((https?://[^)\s]+)\))?\s+\(In Progress\)\s*$"
 )
 _NA_BRANCH_RE = re.compile(r"(?m)^-\s*Branch:\s*`?([^`\n]+)`?\s*$")
 _LEFTOVER_CARD_RE = re.compile(r"^(?:[1-8][0-9]_.*|approved_tree\.txt$)")
@@ -292,7 +282,7 @@ def write_active_target(state_dir: str, payload: Dict[str, Any]) -> None:
 
 
 _PREREQ_CARDS_FOR_TARGET: Dict[str, Tuple[str, ...]] = {
-    "T10": ("10_ticket.md",),
+    "T10": ("10_ticket.md", TICKET_JSON_FILENAME),
     "T15": ("15_archaeology_receipt.md",),
     "T20": ("20_plan.md",),
     "T40": ("40_critic_review.md",),
@@ -316,7 +306,11 @@ def _infer_t30_source_from_cards(filtered: set) -> str:
     return "T20"
   if "15_archaeology_receipt.md" in filtered:
     return "T15"
-  return "T10" if "10_ticket.md" in filtered else "T00"
+  return (
+      "T10"
+      if ("10_ticket.md" in filtered or TICKET_JSON_FILENAME in filtered)
+      else "T00"
+  )
 
 
 def _infer_target_from_cards(state_dir: str, next_target: str = "") -> str:
@@ -353,6 +347,7 @@ def _infer_target_from_cards(state_dir: str, next_target: str = "") -> str:
       ("20_plan.md", "T20"),
       ("15_archaeology_receipt.md", "T15"),
       ("10_ticket.md", "T10"),
+      (TICKET_JSON_FILENAME, "T10"),
   ):
     if card_name in filtered:
       return target_id
@@ -431,48 +426,53 @@ def _detect_git_branch(workspace_dir: str) -> str:
   return ""
 
 
-def _parse_metadata_from_files(state_dir: str) -> Dict[str, str]:
-  """Extracts ticket ID, title, URL, and branch from 10_ticket.md or readerboard.
+def _parse_metadata_from_files(
+    state_dir: str, workspace_dir: str = ""
+) -> Dict[str, str]:
+  """Loads ticket ID, title, URL, and branch from 10_ticket.json with Git fallback.
 
   Args:
     state_dir: Path to .workflow/state directory.
+    workspace_dir: Optional repository root directory for Git branch fallback.
 
   Returns:
     Dictionary with keys ticket_id, title, url, and branch.
   """
   meta = {"ticket_id": "", "title": "", "url": "", "branch": ""}
-  ticket_path = os.path.join(state_dir, "10_ticket.md")
-  if os.path.isfile(ticket_path):
+  ticket = TicketStateStore(state_dir).load()
+  if ticket is not None:
+    meta["ticket_id"] = ticket.ticket_id
+    meta["title"] = ticket.title
+    meta["url"] = ticket.url
+    meta["branch"] = ticket.branch
+
+  eff_ws = _resolve_effective_workspace(workspace_dir, state_dir)
+  git_branch = _detect_git_branch(eff_ws) if eff_ws else ""
+  if not meta["branch"] and git_branch:
+    meta["branch"] = git_branch
+
+  if not meta["branch"]:
+    na_path = os.path.join(state_dir, NEXT_ACTION_FILENAME)
+    if os.path.isfile(na_path) and is_ticket_active(state_dir):
+      try:
+        with open(na_path, "r", encoding="utf-8") as f:
+          na_text = f.read()
+        br_m = _NA_BRANCH_RE.search(na_text)
+        if br_m:
+          meta["branch"] = br_m.group(1).strip()
+      except (OSError, UnicodeDecodeError):
+        pass
+
+  if not meta["ticket_id"] and meta["branch"]:
     try:
-      with open(ticket_path, "r", encoding="utf-8") as f:
-        text = f.read()
-      id_m = _TICKET_ID_RE.search(text)
-      title_m = _TICKET_TITLE_RE.search(text)
-      url_m = _TICKET_URL_RE.search(text)
-      if id_m:
-        meta["ticket_id"] = id_m.group(1).strip()
-      if title_m:
-        meta["title"] = title_m.group(1).strip()
-      if url_m:
-        meta["url"] = url_m.group(1).strip()
-    except (OSError, UnicodeDecodeError):
+      from lib.terminal_title import detect_ticket_id
+
+      meta["ticket_id"] = detect_ticket_id(
+          repo_root=eff_ws or state_dir, branch=meta["branch"]
+      )
+    except (ImportError, OSError):
       pass
 
-  na_path = os.path.join(state_dir, NEXT_ACTION_FILENAME)
-  if os.path.isfile(na_path) and is_ticket_active(state_dir):
-    try:
-      with open(na_path, "r", encoding="utf-8") as f:
-        na_text = f.read()
-      na_m = _NA_TICKET_RE.search(na_text)
-      if na_m and not meta["ticket_id"]:
-        meta["ticket_id"] = na_m.group(1).strip()
-        meta["title"] = na_m.group(2).strip()
-        meta["url"] = (na_m.group(3) or "").strip()
-      br_m = _NA_BRANCH_RE.search(na_text)
-      if br_m:
-        meta["branch"] = br_m.group(1).strip()
-    except (OSError, UnicodeDecodeError):
-      pass
   return meta
 
 
@@ -486,27 +486,30 @@ def _format_ticket_bullet(
     complete: True when ticket execution has finished.
 
   Returns:
-    Formatted markdown bullet string.
+    Formatted markdown bullet string without repeating ticket_id as title.
   """
   ticket_id = _sanitize_active_text(meta.get("ticket_id", ""))
-  raw_title = meta.get("title") or ticket_id or "Active Task"
+  raw_title = meta.get("title") or ""
   title = (
       re.sub(r"[\r\n\t]+", " ", raw_title).strip()
       if complete
       else _sanitize_active_text(raw_title)
   )
+  has_distinct_title = bool(title) and title.lower() != ticket_id.lower()
   url = _sanitize_active_text(meta.get("url", ""))
   if complete:
     if not ticket_id:
       return "- Completed Ticket: Unassigned (Completed)"
+    label = f"{ticket_id}: {title}" if has_distinct_title else ticket_id
     if url:
-      return f"- Completed Ticket: [{ticket_id}: {title}]({url}) (Completed)"
-    return f"- Completed Ticket: [{ticket_id}: {title}] (Completed)"
+      return f"- Completed Ticket: [{label}]({url}) (Completed)"
+    return f"- Completed Ticket: [{label}] (Completed)"
   if not ticket_id:
     return "- Ticket: Unassigned (Ready for Intake)"
+  label = f"{ticket_id}: {title}" if has_distinct_title else ticket_id
   if url:
-    return f"- Ticket: [{ticket_id}: {title}]({url}) (In Progress)"
-  return f"- Ticket: [{ticket_id}: {title}] (In Progress)"
+    return f"- Ticket: [{label}]({url}) (In Progress)"
+  return f"- Ticket: [{label}] (In Progress)"
 
 
 def _resolve_skipped_targets(
@@ -657,7 +660,10 @@ def render_next_action_card(
   Returns:
     Rendered markdown content written to 99_next_action.md.
   """
-  meta = dict(ticket_meta or _parse_metadata_from_files(spec.state_dir))
+  meta = dict(
+      ticket_meta
+      or _parse_metadata_from_files(spec.state_dir, workspace_dir=spec.workspace_dir)
+  )
   git_branch = _detect_git_branch(spec.workspace_dir)
   branch = _sanitize_active_text(git_branch or meta.get("branch") or "HEAD")
   t_label = (
@@ -925,7 +931,7 @@ def _finalize_completed_ticket(
       workspace_dir, state_dir, require_git=False
   )
   skipped_targets = _resolve_skipped_targets(state_dir, "T90", previous_target)
-  meta = _parse_metadata_from_files(state_dir)
+  meta = _parse_metadata_from_files(state_dir, workspace_dir=ws)
   ticket_id = meta.get("ticket_id", "")
   cfg = resolve_workflow_config(workspace_dir=ws if os.path.isdir(ws) else None)
   action = cfg.get("state", {}).get("completedCardAction", "unlink")
@@ -1055,6 +1061,21 @@ def _persist_active_transition(
       ),
   )
   render_next_action_card(spec)
+  if (
+      spec.active_target == "T10"
+      and spec.workspace_dir
+      and os.path.isdir(spec.workspace_dir)
+  ):
+    try:
+      from lib.terminal_title import (
+          is_temporary_directory_name,
+          set_terminal_title,
+      )
+
+      if not is_temporary_directory_name(spec.workspace_dir):
+        set_terminal_title(repo_root=spec.workspace_dir)
+    except (ImportError, OSError):
+      pass
 
 
 def _restore_active_session_state(
