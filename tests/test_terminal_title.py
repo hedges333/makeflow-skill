@@ -5,7 +5,10 @@ import importlib
 import io
 import json
 import os
+import pty
+import select
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -149,6 +152,64 @@ class TestTerminalTitleCapability(unittest.TestCase):
     self.assertTrue(can_change)
     self.assertEqual(mechanism, "xterm_osc")
 
+  def test_detect_capability_gh235_dumb_term_with_outer_emulator_hints(self):
+    """GH-235: recognizes outer emulator hints even when subshell sets TERM=dumb."""
+    stream = MockTtyStream()
+    cases = [
+        ({"TERM": "dumb", "TMUX": "/tmp/tmux-1000/default,123,0"}, "tmux"),
+        ({"TERM": "dumb", "STY": "12345.pts-1.host"}, "screen"),
+        ({"TERM": "dumb", "TERM_PROGRAM": "vscode"}, "xterm_osc"),
+        ({"TERM": "dumb", "TERM_PROGRAM": "iTerm.app"}, "xterm_osc"),
+        (
+            {
+                "TERM": "dumb",
+                "WT_SESSION": "00000000-0000-0000-0000-000000000000",
+            },
+            "xterm_osc",
+        ),
+        ({"TERM": "dumb", "KITTY_WINDOW_ID": "1"}, "xterm_osc"),
+        ({"TERM": "dumb", "ALACRITTY_LOG": "/tmp/alacritty.log"}, "xterm_osc"),
+        ({"TERM": "dumb", "KONSOLE_VERSION": "230801"}, "xterm_osc"),
+        ({"TERM": "dumb", "VTE_VERSION": "8001"}, "xterm_osc"),
+    ]
+    for env_case, expected_mech in cases:
+      with self.subTest(env_case=env_case):
+        can_change, mechanism = detect_terminal_capability(
+            stream=stream, env=env_case
+        )
+        self.assertTrue(can_change, f"Expected True for {env_case}")
+        self.assertEqual(mechanism, expected_mech)
+
+    # Bare TERM=dumb without hints still rejects
+    can_change, mechanism = detect_terminal_capability(
+        stream=stream, env={"TERM": "dumb"}
+    )
+    self.assertFalse(can_change)
+    self.assertEqual(mechanism, "dumb_term")
+
+    # Opt-out overrides hints even when TERM=dumb
+    can_change, mechanism = detect_terminal_capability(
+        stream=stream,
+        env={
+            "TERM": "dumb",
+            "VTE_VERSION": "8001",
+            "MAKEFLOW_DISABLE_TERMINAL_TITLE": "1",
+        },
+    )
+    self.assertFalse(can_change)
+    self.assertEqual(mechanism, "disabled")
+
+    # Unsupported Linux console stays unsupported even with hints
+    for env_linux in (
+        {"TERM": "linux"},
+        {"TERM": "linux", "VTE_VERSION": "8001"},
+    ):
+      can_change, mechanism = detect_terminal_capability(
+          stream=stream, env=env_linux
+      )
+      self.assertFalse(can_change)
+      self.assertEqual(mechanism, "unsupported_term")
+
 
 class TestEscapeSequenceGeneration(unittest.TestCase):
   """Tests for escape sequence formatting."""
@@ -183,6 +244,23 @@ class TestEscapeSequenceGeneration(unittest.TestCase):
     )
     self.assertEqual(sanitize_terminal_title(""), "")
     self.assertEqual(sanitize_terminal_title(None), "")
+
+  def test_sanitize_terminal_title_gh235_strips_backticks(self):
+    """GH-235: backticks are stripped cleanly from terminal title strings."""
+    self.assertEqual(
+        sanitize_terminal_title(
+            "`[BUG] Terminal title reset at Target 90 fails via `scripts/terminal_title.py``"
+        ),
+        "[BUG] Terminal title reset at Target 90 fails via scripts/terminal_title.py",
+    )
+    self.assertEqual(sanitize_terminal_title("`GH-235`"), "GH-235")
+    self.assertEqual(sanitize_terminal_title("```"), "")
+    self.assertEqual(
+        generate_escape_sequence(
+            "`GH-235` `scripts/terminal_title.py`", "xterm_osc"
+        ),
+        "\033]0;GH-235 scripts/terminal_title.py\007",
+    )
 
 
 class TestProjectAndTicketDetection(unittest.TestCase):
@@ -264,7 +342,7 @@ class TestProjectAndTicketDetection(unittest.TestCase):
         format_terminal_title("LOCAL-42", "engine"),
         "engine/: LOCAL-42",
     )
-    self.assertEqual(format_terminal_title("GH-103", ""), "GH-103")
+    self.assertEqual(format_terminal_title("GH-103", ""), "")
     self.assertEqual(format_terminal_title("", "engine"), "engine/")
     self.assertEqual(format_terminal_title("", ""), "")
 
@@ -289,15 +367,15 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     )
     self.assertEqual(
         format_terminal_title("", "engine", "offline mode"),
-        "engine/: offline mode",
+        "engine/",
     )
     self.assertEqual(
         format_terminal_title("GH-113", "", "enhance terminal title"),
-        "GH-113 enhance terminal title",
+        "",
     )
     self.assertEqual(
         format_terminal_title("", "", "enhance terminal title"),
-        "enhance terminal title",
+        "",
     )
     # Trailing slashes and root path normalization when dir_name passed directly
     self.assertEqual(
@@ -306,7 +384,7 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     )
     self.assertEqual(
         format_terminal_title("GH-103", "/", "bar"),
-        "GH-103 bar",
+        "",
     )
     self.assertEqual(
         format_terminal_title("", "foo/", ""),
@@ -426,6 +504,43 @@ class TestProjectAndTicketDetection(unittest.TestCase):
     )
     self.assertEqual(tag, "login redirect timeout")
 
+  def test_detect_issue_tag_gh235_extracts_title_field_and_strips_backticks_and_prefix(
+      self,
+  ):
+    """GH-235: extracts - **Title**: from 10_ticket.md, strips backticks and [TYPE] prefix."""
+    state_dir = os.path.join(self.temp_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    card_10 = os.path.join(state_dir, "10_ticket.md")
+
+    # 1. Backticked - **Title**: with [BUG] and inline backticks (GH-235 format)
+    with open(card_10, "w", encoding="utf-8") as f:
+      f.write(
+          "# 10_ticket: GH-235 Intake\n\n"
+          "- **Ticket ID**: `GH-235`\n"
+          "- **Title**: `[BUG] Terminal title reset at Target 90 fails via `scripts/terminal_title.py``\n"
+          "## Description\n\nFallback description should not win.\n"
+      )
+    self.assertEqual(
+        detect_issue_tag(repo_root=self.temp_dir, branch=""),
+        "Terminal title reset at Target 90 fails via scripts/terminal_title.py",
+    )
+    self.assertEqual(
+        detect_ticket_id(repo_root=self.temp_dir, branch=""),
+        "GH-235",
+    )
+
+    # 2. Unbackticked - **Title**: with [FEAT] and preserved inner [DAG]
+    with open(card_10, "w", encoding="utf-8") as f:
+      f.write(
+          "# 10_ticket: `GH-219`\n\n"
+          "- **Ticket ID**: `GH-219`\n"
+          "- **Title**: [FEAT] Execute [DAG] transitions\n"
+      )
+    self.assertEqual(
+        detect_issue_tag(repo_root=self.temp_dir, branch=""),
+        "Execute [DAG] transitions",
+    )
+
   def test_detect_project_name_rejects_temporary_directory_patterns(self):
     self.assertIsNotNone(
         is_temporary_directory_name,
@@ -528,6 +643,41 @@ class TestDirectoryNameDetection(unittest.TestCase):
         terminal_title.detect_directory_name(repo_root="/var/tmp/tmp1a2b3c4d"),
         "",
     )
+
+  def test_is_temporary_directory_name_gh235_rejects_custom_tmpdir_subdirectories(
+      self,
+  ):
+    """GH-235: rejects subdirs under tmp... parents inside tempfile.gettempdir() for non-/tmp TMPDIR."""
+    custom_tmp_root = "/var/tmp/custom_runner_scratch"
+    with patch("lib.terminal_title.tempfile.gettempdir", return_value=custom_tmp_root):
+      self.assertTrue(
+          is_temporary_directory_name(
+              os.path.join(custom_tmp_root, "tmp1a2b3c4d", "repo")
+          )
+      )
+      self.assertTrue(
+          is_temporary_directory_name(
+              os.path.join(custom_tmp_root, "tmp_nested", "sub", "makeflow-skill")
+          )
+      )
+      self.assertEqual(
+          terminal_title.detect_directory_name(
+              repo_root=os.path.join(custom_tmp_root, "tmp1a2b3c4d", "makeflow-skill")
+          ),
+          "",
+      )
+      # Non-tmp... work dir under custom_tmp_root stays allowed (parity with /tmp/work/my-repo)
+      self.assertFalse(
+          is_temporary_directory_name(
+              os.path.join(custom_tmp_root, "work", "my-repo")
+          )
+      )
+      self.assertEqual(
+          terminal_title.detect_directory_name(
+              repo_root=os.path.join(custom_tmp_root, "work", "my-repo")
+          ),
+          "my-repo",
+      )
 
   def test_detect_directory_name_gh224_sanitizes_control_characters(self):
     """GH-224 / SCAR-SEC-01: control characters and escapes are stripped from dir name."""
@@ -1088,6 +1238,456 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
       self.assertNotIn("restored-project", err.getvalue())
     finally:
       shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class TestAncestorPtyResolutionAndDelivery(unittest.TestCase):
+  """Hermetic tests for ancestor PTY lookup and real PTY delivery (GH-235)."""
+
+  def setUp(self):
+    self.temp_dir = tempfile.mkdtemp(prefix="makeflow_pty_test_")
+
+  def tearDown(self):
+    shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+  def _open_pty_pair(self):
+    master_fd, slave_fd = pty.openpty()
+    slave_path = os.ttyname(slave_fd)
+
+    def _close_fds():
+      for fd in (master_fd, slave_fd):
+        try:
+          os.close(fd)
+        except OSError:
+          pass
+
+    self.addCleanup(_close_fds)
+    return master_fd, slave_fd, slave_path
+
+  def _read_pty_nonblocking(self, master_fd: int) -> str:
+    ready, _, _ = select.select([master_fd], [], [], 0.05)
+    if not ready:
+      return ""
+    chunks = []
+    while True:
+      ready, _, _ = select.select([master_fd], [], [], 0.01)
+      if not ready:
+        break
+      try:
+        data = os.read(master_fd, 4096)
+      except OSError:
+        break
+      if not data:
+        break
+      chunks.append(data)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+  def test_find_ancestor_pty_gh235_linux_proc_parsing_and_nested_parens(self):
+    """GH-235: parses /proc/<pid>/stat with spaces/nested parens and decodes tty_nr."""
+    _, _, slave_path = self._open_pty_pair()
+    slave_rdev = os.lstat(slave_path).st_rdev
+    child_rdev = os.makedev(136, os.minor(slave_rdev) + 1000)
+    vt_rdev = os.makedev(4, 2)
+
+    proc_root = os.path.join(self.temp_dir, "proc")
+    entries = {
+        1000: f"1000 (python3) R 950 1000 1000 {child_rdev} 1000 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0\n",
+        950: f"950 (bash) S 900 950 950 {child_rdev} 950 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0\n",
+        900: f"900 (Web Content (1)) S 800 900 800 {slave_rdev} 900 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0\n",
+        800: f"800 (mate-terminal) S 1 800 800 {vt_rdev} 800 0 0 0 0 0 0 0 0 20 0 1 0 1 0 0 0\n",
+    }
+    for pid, stat_line in entries.items():
+      pid_dir = os.path.join(proc_root, str(pid))
+      os.makedirs(pid_dir, exist_ok=True)
+      with open(os.path.join(pid_dir, "stat"), "w", encoding="utf-8") as f:
+        f.write(stat_line)
+
+    resolved = terminal_title.find_ancestor_pty(
+        start_pid=1000, proc_dir=proc_root
+    )
+    self.assertEqual(resolved, slave_path)
+
+  def test_find_ancestor_pty_gh235_security_lstat_uid_regex_cycles_and_depth(
+      self,
+  ):
+    """GH-235: enforces S_ISCHR, same UID, PTY regex, cycle guard, and max_depth."""
+    _, _, slave_path = self._open_pty_pair()
+    slave_rdev = os.lstat(slave_path).st_rdev
+    vt_rdev = os.makedev(4, 2)
+    my_uid = os.getuid()
+
+    # 1. Rejects non-PTY VTs (/dev/tty2)
+    vt_stats = {
+        100: "100 (python3) R 90 100 100 0 100\n",
+        90: f"90 (mate-terminal) S 1 90 90 {vt_rdev} 90\n",
+    }
+    self.assertIsNone(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            stat_reader=lambda p: vt_stats.get(p),
+            uid=my_uid,
+        )
+    )
+
+    # 2. Rejects symlink / non-character device (S_ISCHR false)
+    fake_lnk = os.stat_result((stat.S_IFLNK | 0o777, 0, 0, 1, my_uid, 0, 0, 0, 0, 0))
+    pts_stats = {
+        100: "100 (python3) R 90 100 100 0 100\n",
+        90: f"90 (agy) S 1 90 90 {slave_rdev} 90\n",
+    }
+    self.assertIsNone(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            stat_reader=lambda p: pts_stats.get(p),
+            lstat_fn=lambda _p: fake_lnk,
+            uid=my_uid,
+        )
+    )
+
+    # 3. Rejects different UID owner
+    other_uid_chr = os.stat_result(
+        (stat.S_IFCHR | 0o600, 0, 0, 1, my_uid + 1, 0, 0, 0, 0, 0)
+    )
+    self.assertIsNone(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            stat_reader=lambda p: pts_stats.get(p),
+            lstat_fn=lambda _p: other_uid_chr,
+            uid=my_uid,
+        )
+    )
+
+    # 4. Stops cleanly on PPID cycle without hanging
+    cyclic_stats = {
+        100: "100 (a) R 90 100 100 0 100\n",
+        90: "90 (b) S 100 90 90 0 90\n",
+    }
+    self.assertIsNone(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            stat_reader=lambda p: cyclic_stats.get(p),
+            uid=my_uid,
+        )
+    )
+
+    # 5. Respects max_depth
+    deep_stats = {
+        100: "100 (a) R 90 100 100 0 100\n",
+        90: "90 (b) S 80 90 90 0 90\n",
+        80: f"80 (agy) S 1 80 80 {slave_rdev} 80\n",
+    }
+    self.assertIsNone(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            max_depth=1,
+            stat_reader=lambda p: deep_stats.get(p),
+            uid=my_uid,
+        )
+    )
+    self.assertEqual(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            max_depth=2,
+            stat_reader=lambda p: deep_stats.get(p),
+            uid=my_uid,
+        ),
+        slave_path,
+    )
+
+  def test_find_ancestor_pty_gh235_posix_ps_fallback_when_proc_absent(self):
+    """GH-235: falls back to POSIX ps lookup when /proc is absent."""
+    _, _, slave_path = self._open_pty_pair()
+    slave_short = slave_path[len("/dev/") :]
+    my_uid = os.getuid()
+    absent_proc = os.path.join(self.temp_dir, "missing_proc")
+
+    ps_map = {
+        100: "90 ?\n",
+        90: f"80 {slave_short}\n",
+        80: "1 tty2\n",
+    }
+    self.assertEqual(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            proc_dir=absent_proc,
+            ps_runner=lambda p: ps_map.get(p),
+            uid=my_uid,
+        ),
+        slave_path,
+    )
+
+    # Verify macOS /dev/ttys001 and BSD /dev/ptyp0 pass regex while /dev/tty2 is rejected
+    valid_chr = os.stat_result((stat.S_IFCHR | 0o600, 0, 0, 1, my_uid, 0, 0, 0, 0, 0))
+    for dev_short in ("ttys001", "ptyp0"):
+      self.assertEqual(
+          terminal_title.find_ancestor_pty(
+              start_pid=100,
+              proc_dir=absent_proc,
+              ps_runner=lambda p, d=dev_short: {100: "90 ?\n", 90: f"1 {d}\n"}.get(p),
+              lstat_fn=lambda _p: valid_chr,
+              uid=my_uid,
+          ),
+          f"/dev/{dev_short}",
+      )
+    self.assertIsNone(
+        terminal_title.find_ancestor_pty(
+            start_pid=100,
+            proc_dir=absent_proc,
+            ps_runner=lambda p: {100: "90 ?\n", 90: "1 tty2\n"}.get(p),
+            lstat_fn=lambda _p: valid_chr,
+            uid=my_uid,
+        )
+    )
+
+  def test_set_terminal_title_and_cli_deliver_to_openpty_ancestor_with_dumb_term(
+      self,
+  ):
+    """GH-235: set_terminal_title and TerminalTitleScript deliver OSC bytes to ancestor PTY."""
+    master_fd, _, slave_path = self._open_pty_pair()
+    repo_dir = os.path.join(self.temp_dir, "makeflow-skill")
+    state_dir = os.path.join(repo_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8") as f:
+      f.write(
+          "# 10_ticket: GH-235 Intake\n\n"
+          "- **Ticket ID**: `GH-235`\n"
+          "- **Title**: `[BUG] Reset title via `scripts/terminal_title.py``\n"
+      )
+
+    with patch(
+        "lib.terminal_title.find_ancestor_pty", return_value=slave_path
+    ):
+      # 1. set_terminal_title(stream=None) under TERM=dumb (clamped subshell)
+      ok, applied = set_terminal_title(
+          repo_root=repo_dir, stream=None, env={"TERM": "dumb"}
+      )
+      expected_title = "makeflow-skill/: GH-235 Reset title via scripts/terminal_title.py"
+      self.assertTrue(ok)
+      self.assertEqual(applied, expected_title)
+      self.assertEqual(
+          self._read_pty_nonblocking(master_fd),
+          f"\033]0;{expected_title}\007",
+      )
+
+      # 2. set_terminal_title(stream=sys.__stderr__) simulating WorkflowGatesScript
+      ok_std, applied_std = set_terminal_title(
+          title="makeflow-skill/",
+          repo_root=repo_dir,
+          stream=sys.__stderr__,
+          env={"TERM": "dumb"},
+      )
+      self.assertTrue(ok_std)
+      self.assertEqual(applied_std, "makeflow-skill/")
+      self.assertEqual(
+          self._read_pty_nonblocking(master_fd),
+          "\033]0;makeflow-skill/\007",
+      )
+
+      # 3. tmux inference when TMUX is set with TERM=dumb
+      ok_tmux, _ = set_terminal_title(
+          title="makeflow-skill/",
+          repo_root=repo_dir,
+          stream=None,
+          env={"TERM": "dumb", "TMUX": "/tmp/tmux-1000/default,1,0"},
+      )
+      self.assertTrue(ok_tmux)
+      self.assertEqual(
+          self._read_pty_nonblocking(master_fd),
+          "\033Ptmux;\033\033]0;makeflow-skill/\007\033\\",
+      )
+
+      # 4. TerminalTitleScript detect, info, set, reset with unmocked stderr (stderr=sys.__stderr__)
+      out_detect = io.StringIO()
+      rc_detect = TerminalTitleScript().execute(
+          ["detect", "--json"],
+          stdout=out_detect,
+          stderr=sys.__stderr__,
+          env_override={"TERM": "dumb"},
+      )
+      self.assertEqual(rc_detect, 0)
+      self.assertEqual(
+          json.loads(out_detect.getvalue()),
+          {"can_change": True, "mechanism": "xterm_osc"},
+      )
+
+      out_info = io.StringIO()
+      rc_info = TerminalTitleScript().execute(
+          ["info", "--repo-root", repo_dir, "--json"],
+          stdout=out_info,
+          stderr=sys.__stderr__,
+          env_override={"TERM": "dumb"},
+      )
+      self.assertEqual(rc_info, 0)
+      info_data = json.loads(out_info.getvalue())
+      self.assertTrue(info_data["can_change"])
+      self.assertEqual(info_data["mechanism"], "xterm_osc")
+      self.assertEqual(info_data["title"], expected_title)
+      self.assertNotIn("`", info_data["title"])
+
+      out_set = io.StringIO()
+      rc_set = TerminalTitleScript().execute(
+          ["set", "--repo-root", repo_dir, "--json"],
+          stdout=out_set,
+          stderr=sys.__stderr__,
+          env_override={"TERM": "dumb"},
+      )
+      self.assertEqual(rc_set, 0)
+      set_data = json.loads(out_set.getvalue())
+      self.assertTrue(set_data["success"])
+      self.assertEqual(set_data["mechanism"], "xterm_osc")
+      self.assertEqual(set_data["title"], expected_title)
+      self.assertEqual(
+          self._read_pty_nonblocking(master_fd),
+          f"\033]0;{expected_title}\007",
+      )
+
+      out_reset = io.StringIO()
+      rc_reset = TerminalTitleScript().execute(
+          ["reset", "--repo-root", repo_dir, "--json"],
+          stdout=out_reset,
+          stderr=sys.__stderr__,
+          env_override={"TERM": "dumb"},
+      )
+      self.assertEqual(rc_reset, 0)
+      reset_data = json.loads(out_reset.getvalue())
+      self.assertTrue(reset_data["success"])
+      self.assertEqual(reset_data["mechanism"], "xterm_osc")
+      self.assertEqual(reset_data["title"], "makeflow-skill/")
+      self.assertEqual(
+          self._read_pty_nonblocking(master_fd),
+          "\033]0;makeflow-skill/\007",
+      )
+
+  def test_injected_streams_preserve_exact_behavior_and_never_probe_proc(self):
+    """GH-235: MockNonTtyStream, MockTtyStream, and io.StringIO never probe /proc or ancestor PTY."""
+    with patch(
+        "lib.terminal_title.find_ancestor_pty",
+        side_effect=AssertionError("Must not probe ancestor PTY for injected stream"),
+    ):
+      tty_stream = MockTtyStream()
+      ok_tty, applied_tty = set_terminal_title(
+          title="makeflow-skill/: GH-235",
+          stream=tty_stream,
+          env={"TERM": "xterm-256color"},
+      )
+      self.assertTrue(ok_tty)
+      self.assertEqual(applied_tty, "makeflow-skill/: GH-235")
+      self.assertEqual(tty_stream.getvalue(), "\033]0;makeflow-skill/: GH-235\007")
+
+      non_tty = MockNonTtyStream()
+      ok, applied = set_terminal_title(
+          title="makeflow-skill/: GH-235",
+          stream=non_tty,
+          env={"TERM": "xterm-256color"},
+      )
+      self.assertFalse(ok)
+      self.assertEqual(applied, "")
+      self.assertEqual(non_tty.getvalue(), "")
+
+      out = io.StringIO()
+      rc = TerminalTitleScript().execute(
+          ["detect", "--json"],
+          stdout=out,
+          stderr=non_tty,
+          env_override={"TERM": "dumb"},
+      )
+      self.assertEqual(rc, 0)
+      self.assertEqual(
+          json.loads(out.getvalue()),
+          {"can_change": False, "mechanism": "non_tty"},
+      )
+
+      out_set = io.StringIO()
+      rc_set = TerminalTitleScript().execute(
+          ["set", "--title", "makeflow-skill/: GH-235", "--json"],
+          stdout=out_set,
+          stderr=non_tty,
+          env_override={"TERM": "dumb"},
+      )
+      self.assertEqual(rc_set, 0)
+      self.assertFalse(json.loads(out_set.getvalue())["success"])
+      self.assertEqual(non_tty.getvalue(), "")
+
+      out_mock = io.StringIO()
+      err_mock = io.StringIO()
+      rc_mock = TerminalTitleScript().execute(
+          ["detect", "--json"],
+          stdout=out_mock,
+          stderr=err_mock,
+          env_override={"TERM": "dumb"},
+          mock_tty=True,
+      )
+      self.assertEqual(rc_mock, 0)
+      self.assertEqual(
+          json.loads(out_mock.getvalue()),
+          {"can_change": False, "mechanism": "dumb_term"},
+      )
+
+  def test_ancestor_pty_failure_injection_and_exception_boundaries(self):
+    """GH-235 / SCAR-TEST-24 / SCAR-AST-01: OSError/PermissionError falls back; TypeError/RuntimeError propagates."""
+    _, _, slave_path = self._open_pty_pair()
+    with patch("lib.terminal_title.find_ancestor_pty", return_value=slave_path):
+      for exc in (
+          PermissionError("EACCES on /dev/pts"),
+          OSError("EIO on /dev/pts"),
+      ):
+        with patch("lib.terminal_title.os.open", side_effect=exc):
+          ok, applied = set_terminal_title(
+              title="makeflow-skill/: GH-235",
+              stream=None,
+              env={"TERM": "dumb"},
+          )
+          self.assertFalse(ok)
+          self.assertEqual(applied, "")
+
+          out = io.StringIO()
+          rc = TerminalTitleScript().execute(
+              ["set", "--title", "makeflow-skill/: GH-235", "--json"],
+              stdout=out,
+              stderr=sys.__stderr__,
+              env_override={"TERM": "dumb"},
+          )
+          self.assertEqual(rc, 0)
+          self.assertFalse(json.loads(out.getvalue())["success"])
+
+      # os.write OSError must return (False, "") and close fd cleanly
+      with patch("lib.terminal_title.os.write", side_effect=OSError("EAGAIN")):
+        ok_w, applied_w = set_terminal_title(
+            title="makeflow-skill/: GH-235",
+            stream=None,
+            env={"TERM": "dumb"},
+        )
+        self.assertFalse(ok_w)
+        self.assertEqual(applied_w, "")
+
+      # os.isatty False after open must return (False, "") without writing
+      with patch("lib.terminal_title.os.isatty", return_value=False):
+        ok_tty, applied_tty = set_terminal_title(
+            title="makeflow-skill/: GH-235",
+            stream=None,
+            env={"TERM": "dumb"},
+        )
+        self.assertFalse(ok_tty)
+        self.assertEqual(applied_tty, "")
+
+      # Unrelated programming bugs must propagate cleanly (SCAR-AST-01)
+      for fatal_exc in (
+          TypeError("Synthetic TypeError"),
+          RuntimeError("Synthetic RuntimeError"),
+      ):
+        with patch("lib.terminal_title.os.open", side_effect=fatal_exc):
+          with self.assertRaises(type(fatal_exc)):
+            set_terminal_title(
+                title="makeflow-skill/: GH-235",
+                stream=None,
+                env={"TERM": "dumb"},
+            )
+        with patch("lib.terminal_title.os.write", side_effect=fatal_exc):
+          with self.assertRaises(type(fatal_exc)):
+            set_terminal_title(
+                title="makeflow-skill/: GH-235",
+                stream=None,
+                env={"TERM": "dumb"},
+            )
 
 
 if __name__ == "__main__":
