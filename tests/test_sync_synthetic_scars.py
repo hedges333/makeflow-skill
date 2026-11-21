@@ -2307,7 +2307,7 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM scars")
     total_scars = cur.fetchone()[0]
-    self.assertEqual(total_scars, 597)
+    self.assertEqual(total_scars, 598)
 
     cur.execute("SELECT COUNT(*) FROM scars_fts")
     fts_scars = cur.fetchone()[0]
@@ -2487,6 +2487,37 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
           [],
       )
 
+    for query_term in (
+        "SCAR-TEST-45",
+        "SCAR-TEST-0045",
+        "ephemeral temporary directory",
+    ):
+      test45_matches = query_scars(bundled_db, query=query_term, limit=10)
+      test45_row = next(
+          (m for m in test45_matches if m["id"] == "SCAR-TEST-0045"), None
+      )
+      self.assertIsNotNone(
+          test45_row,
+          f"Expected SCAR-TEST-0045 in query_scars({query_term!r}), got {[m['id'] for m in test45_matches]}",
+      )
+      self.assertEqual(test45_row["source"], "makeflow")
+      self.assertIsNone(test45_row.get("ssId"))
+      self.assertEqual(test45_row.get("originalId"), "SCAR-TEST-45")
+      self.assertEqual(test45_row["category"], "TEST")
+      self.assertEqual(test45_row["languages"], ["universal"])
+      self.assertEqual(test45_row["mfTargets"], [20, 30, 40])
+      self.assertEqual(
+          test45_row["ssTargets"],
+          ["Target 20: plan", "Target 30: tdd", "Target 40: review"],
+      )
+      self.assertGreaterEqual(len(test45_row["keywords"]), 1)
+      self.assertEqual(
+          validate_socratic_probe(
+              test45_row["socraticProbe"], scar_id="SCAR-TEST-0045"
+          ),
+          [],
+      )
+
   def test_sync_preserves_bundled_scar_arch_0009_when_omitted_upstream(self):
     """Verifies SyncSyntheticScarsScript preserves Makeflow-sourced SCAR-ARCH-0009 across upstream syncs (GH-232)."""
     bundled_db = os.path.join(
@@ -2524,6 +2555,44 @@ class TestMultiDimensionalIndexingAndEnrichment(unittest.TestCase):
         self.assertEqual(matched["source"], "makeflow")
         self.assertIsNone(matched.get("ssId"))
         self.assertEqual(matched.get("originalId"), "SCAR-ARCH-09")
+
+  def test_sync_preserves_bundled_scar_test_0045_when_omitted_upstream(self):
+    """Verifies SyncSyntheticScarsScript preserves Makeflow-sourced SCAR-TEST-0045 across upstream syncs (GH-215)."""
+    bundled_db = os.path.join(
+        _REPO_ROOT, "skills", "makeflow", "data", "scars_registry.db"
+    )
+    self.assertTrue(os.path.isfile(bundled_db))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      tmp_db = os.path.join(tmpdir, "scars_registry.db")
+      shutil.copyfile(bundled_db, tmp_db)
+
+      # Upstream registry omits SCAR-TEST-0045 and SCAR-TEST-45
+      upstream_payload = json.dumps(SAMPLE_SCARS).encode("utf-8")
+      script = SyncSyntheticScarsScript()
+      with patch(
+          "urllib.request.urlopen",
+          return_value=MockHTTPResponse(upstream_payload, etag='"etag-preserve-test45"'),
+      ):
+        code = script.execute(
+            args=["--db-path", tmp_db, "--force"],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+      self.assertEqual(code, 0)
+
+      for query_term in ("SCAR-TEST-45", "SCAR-TEST-0045"):
+        matches = query_scars(tmp_db, query=query_term, limit=5)
+        matched = next(
+            (m for m in matches if m["id"] == "SCAR-TEST-0045"), None
+        )
+        self.assertIsNotNone(
+            matched,
+            f"SCAR-TEST-0045 lost after sync on query {query_term!r}",
+        )
+        self.assertEqual(matched["source"], "makeflow")
+        self.assertIsNone(matched.get("ssId"))
+        self.assertEqual(matched.get("originalId"), "SCAR-TEST-45")
 
 
 class TestMultiPathStackingAndSessionLedger(unittest.TestCase):

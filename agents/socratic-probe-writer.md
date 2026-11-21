@@ -35,7 +35,7 @@ You are an expert in AI deep reasoning model internal architecture and assessmen
      - **Trap-to-Reflex Probe**: `If the worker skips <reflex>, can <trap> cause <wound>?`
      - **Circuit-Breaker Probe**: `When <circuit_breaker> occurs, does the handler execute <reflex> before the process exits?`
      - **State-Boundary `wh`-Query**: `What happens to <target noun phrase> if <failure condition> occurs during execution?`
-5. Write the revised socratic prompt questions to a temporary file in a temporary directory, e.g. `${TMPFILE_PATH} = /tmp/${tmpdir}/socratic_prompt.txt`.
+5. Create a unique OS temporary directory with automatic cleanup, such as `TMPDIR_WORK="$(mktemp -d)"` with `trap 'rm -rf "$TMPDIR_WORK"' EXIT` or `tempfile.TemporaryDirectory()`. Write the revised socratic prompt questions to `${TMPFILE_PATH}` inside the temporary directory, such as `"${TMPDIR_WORK}/socratic_prompt.txt"`.
 6. Use the command `sqlite3 skills/makeflow/data/scars_registry.db "UPDATE scars SET socratic_probe = TRIM(CAST(readfile('${TMPFILE_PATH}') AS TEXT), ' ' || char(9) || char(10) || char(13)) WHERE id = '${SCAR_ID}';"`
 7. If an error occurs, resolve the error before returning to the supervisor agent.
 8. Return the scar ID, generated socratic prompt questions, and summary of any errors corrected to the supervisor agent with `send_message`.

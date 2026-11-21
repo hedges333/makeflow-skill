@@ -428,10 +428,10 @@ class TestAstScrubScriptLifecycle(unittest.TestCase):
       self.skipTest("ast_scrub not implemented yet")
 
   def test_clean_file_returns_exit_zero(self):
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("def clean():\n    return 42\n")
-      clean_path = f.name
-    try:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      clean_path = os.path.join(tmpdir, "clean.py")
+      with open(clean_path, "w", encoding="utf-8") as f:
+        f.write("def clean():\n    return 42\n")
       out = io.StringIO()
       err = io.StringIO()
       script = AstScrubScript()
@@ -442,15 +442,12 @@ class TestAstScrubScriptLifecycle(unittest.TestCase):
       )
       self.assertEqual(code, 0)
       self.assertEqual(err.getvalue(), "")
-    finally:
-      if os.path.exists(clean_path):
-        os.unlink(clean_path)
 
   def test_violation_returns_exit_code_two_and_reflex(self):
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("def bad():\n    try:\n        run()\n    except:\n        pass\n")
-      bad_path = f.name
-    try:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      bad_path = os.path.join(tmpdir, "bad.py")
+      with open(bad_path, "w", encoding="utf-8") as f:
+        f.write("def bad():\n    try:\n        run()\n    except:\n        pass\n")
       out = io.StringIO()
       err = io.StringIO()
       script = AstScrubScript()
@@ -466,15 +463,12 @@ class TestAstScrubScriptLifecycle(unittest.TestCase):
       self.assertIn("TRIGGER (THIS):", err_output)
       self.assertIn("REJECTED (TRAP):", err_output)
       self.assertIn("REFLEX (ACTION):", err_output)
-    finally:
-      if os.path.exists(bad_path):
-        os.unlink(bad_path)
 
   def test_json_output_mode(self):
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("def bad():\n    try:\n        run()\n    except Exception:\n        return None\n")
-      bad_path = f.name
-    try:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      bad_path = os.path.join(tmpdir, "bad.py")
+      with open(bad_path, "w", encoding="utf-8") as f:
+        f.write("def bad():\n    try:\n        run()\n    except Exception:\n        return None\n")
       out = io.StringIO()
       err = io.StringIO()
       script = AstScrubScript()
@@ -491,9 +485,6 @@ class TestAstScrubScriptLifecycle(unittest.TestCase):
       self.assertEqual(payload["short_id"], "AST-01")
       self.assertEqual(payload["violation_code"], "TRIVIAL_FALLBACK_RETURN")
       self.assertEqual(payload["exit_code"], 2)
-    finally:
-      if os.path.exists(bad_path):
-        os.unlink(bad_path)
 
   def test_default_scan_dirs_when_src_dir_and_files_omitted(self):
     self.assertEqual(
@@ -538,10 +529,10 @@ class TestAstScrubSubprocessCli(unittest.TestCase):
       self.skipTest("ast_scrub not implemented yet")
 
   def test_cli_subprocess_exit_code_two(self):
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-      f.write("import unittest.mock\n")
-      bad_path = f.name
-    try:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      bad_path = os.path.join(tmpdir, "prod.py")
+      with open(bad_path, "w", encoding="utf-8") as f:
+        f.write("import unittest.mock\n")
       scrub_script = os.path.join(_SCRIPTS_DIR, "ast_scrub.py")
       proc = subprocess.run(
           [sys.executable, scrub_script, "--files", bad_path, "--strict"],
@@ -553,9 +544,189 @@ class TestAstScrubSubprocessCli(unittest.TestCase):
       self.assertEqual(proc.returncode, 2)
       self.assertIn("SCAR-ID: AST-01", proc.stderr)
       self.assertIn("PRODUCTION_MOCK_LEAKAGE", proc.stderr)
-    finally:
-      if os.path.exists(bad_path):
-        os.unlink(bad_path)
+
+
+class TestAstScrubberUnsafeTempFixtures(unittest.TestCase):
+  """Tests detection of unsafe temp fixtures in test files (SCAR-TEST-45, GH-215)."""
+
+  def setUp(self):
+    if ast_scrub is None:
+      self.skipTest("ast_scrub not implemented yet")
+
+  def test_mkdtemp_mkstemp_and_mktemp_rejected_in_tests(self):
+    for snippet in (
+        "import tempfile\nd = tempfile.mkdtemp(prefix='t_')\n",
+        "from tempfile import mkdtemp\nd = mkdtemp()\n",
+        "import tempfile\nfd, p = tempfile.mkstemp()\n",
+        "from tempfile import mkstemp\nfd, p = mkstemp()\n",
+        "import tempfile\np = tempfile.mktemp()\n",
+        "from tempfile import mktemp\np = mktemp()\n",
+    ):
+      violations = scrub_source(snippet, filename="tests/test_sample.py")
+      self.assertTrue(
+          any(
+              v.code == "UNSAFE_TEMP_FIXTURE" and v.scar_id == "SCAR-TEST-45"
+              for v in violations
+          ),
+          f"Expected UNSAFE_TEMP_FIXTURE (SCAR-TEST-45) for {snippet!r}, got {violations}",
+      )
+
+  def test_chained_receiver_temp_method_calls_not_flagged(self):
+    safe_chained = (
+        "def test_chained(self, factory, custom):\n"
+        "    self.helper.mkdtemp()\n"
+        "    self.helper.mkstemp()\n"
+        "    self.helper.mktemp()\n"
+        "    factory().NamedTemporaryFile(delete=False)\n"
+        "    custom.mkdtemp()\n"
+        "    custom.NamedTemporaryFile(delete=False)\n"
+    )
+    self.assertEqual(
+        scrub_source(safe_chained, filename="tests/test_sample.py"), []
+    )
+
+  def test_named_temporary_file_delete_false_rejected_in_tests(self):
+    for snippet in (
+        "import tempfile\nwith tempfile.NamedTemporaryFile('w', delete=False) as f:\n    pass\n",
+        "from tempfile import NamedTemporaryFile\nf = NamedTemporaryFile(delete=False)\n",
+    ):
+      violations = scrub_source(snippet, filename="tests/test_sample.py")
+      self.assertTrue(
+          any(
+              v.code == "UNSAFE_TEMP_FIXTURE" and v.scar_id == "SCAR-TEST-45"
+              for v in violations
+          ),
+          f"Expected UNSAFE_TEMP_FIXTURE for {snippet!r}, got {violations}",
+      )
+
+  def test_fixed_tmp_filesystem_mutations_rejected_in_tests(self):
+    for snippet in (
+        'open("/tmp/fixed.txt", "w")\n',
+        'open("/tmp/fixed.txt", "a")\n',
+        'open("/tmp/fixed.txt", "x")\n',
+        'open("/var/tmp/fixed.txt", mode="w")\n',
+        'open("/tmp/fixed.txt", "r+")\n',
+        'import os\nos.mkdir("/tmp/fixed_dir")\n',
+        'import os\nos.makedirs("/var/tmp/fixed_dir", exist_ok=True)\n',
+        'import os\nos.makedirs(os.path.join("/tmp", "sub"))\n',
+        'import sqlite3\nsqlite3.connect("/tmp/test.db")\n',
+        'import os, sqlite3\nsqlite3.connect(os.path.join("/var/tmp", "test.db"))\n',
+        'from pathlib import Path\nPath("/tmp/x.txt").write_text("hi")\n',
+        'from pathlib import Path\nPath("/tmp/x.bin").write_bytes(b"hi")\n',
+        'from pathlib import Path\nPath("/tmp/sub").mkdir()\n',
+        'from pathlib import Path\nPath("/var/tmp/flag").touch()\n',
+        'from pathlib import Path\nPath("/tmp/x.txt").open("w")\n',
+        'from pathlib import Path\n(Path("/tmp") / "sub.txt").write_text("hi")\n',
+        'open(f"/tmp/{name}.txt", "w")\n',
+        'import os\nos.makedirs(f"/var/tmp/run_{pid}")\n',
+        'from pathlib import Path\nPath(f"/tmp/{slug}/x").write_text("hi")\n',
+        'open("/tmp/" + name, "w")\n',
+        'open("/tmp/" + a + ".txt", "w")\n',
+        'import sqlite3\nsqlite3.connect(f"/tmp/{name}.db")\n',
+        'import os\nos.mkdir("/var/tmp/" + run_id + "/dir")\n',
+    ):
+      violations = scrub_source(snippet, filename="tests/test_sample.py")
+      self.assertTrue(
+          any(
+              v.code == "UNSAFE_TEMP_FIXTURE" and v.scar_id == "SCAR-TEST-45"
+              for v in violations
+          ),
+          f"Expected UNSAFE_TEMP_FIXTURE for {snippet!r}, got {violations}",
+      )
+
+  def test_non_slash_tmp_prefix_interpolations_not_flagged(self):
+    safe_interpolated = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "def test_non_tmp_dir(slug, suffix):\n"
+        '    open(f"/tmp_{slug}", "w")\n'
+        '    open("/tmp_" + slug, "w")\n'
+        '    os.makedirs("/tmp" + suffix)\n'
+        '    Path(f"/var/tmp_{slug}").write_text("ok")\n'
+    )
+    self.assertEqual(
+        scrub_source(safe_interpolated, filename="tests/test_sample.py"), []
+    )
+
+  def test_safe_temp_helpers_and_pure_string_fixtures_allowed(self):
+    safe_code = (
+        "import os\n"
+        "import tempfile\n"
+        "from pathlib import Path\n"
+        "def test_safe():\n"
+        '    cmd = "git -C /tmp reset --hard"\n'
+        '    resolved = resolve_scars_db_path("/tmp/x.db")\n'
+        '    env = {"TMUX": "/tmp/tmux-1000/default,1234,0"}\n'
+        '    p = Path("/tmp/not_written.txt")\n'
+        '    with open("/tmp/readonly.txt", "r") as rf:\n'
+        "        _ = rf.read()\n"
+        "    with tempfile.TemporaryDirectory() as tmpdir:\n"
+        '        with open(os.path.join(tmpdir, "out.txt"), "w") as wf:\n'
+        '            wf.write("ok")\n'
+        "    with tempfile.NamedTemporaryFile(delete=True) as nf:\n"
+        "        pass\n"
+        "    with tempfile.NamedTemporaryFile() as nf2:\n"
+        "        pass\n"
+        "    return cmd, resolved, env, p\n"
+    )
+    violations = scrub_source(safe_code, filename="tests/test_sample.py")
+    self.assertEqual(violations, [])
+
+  def test_non_test_files_and_ast_scrub_ignore_exempt(self):
+    prod_code = (
+        "import tempfile\n"
+        "d = tempfile.mkdtemp()\n"
+        "f = tempfile.NamedTemporaryFile(delete=False)\n"
+        'open("/tmp/runtime.log", "w")\n'
+    )
+    self.assertEqual(scrub_source(prod_code, filename="lib/foo.py"), [])
+
+    exempt_code = (
+        "import tempfile\n"
+        "d = tempfile.mkdtemp()  # ast-scrub: ignore\n"
+    )
+    self.assertEqual(scrub_source(exempt_code, filename="tests/test_sample.py"), [])
+
+  def test_ast_scrub_script_emits_scar_test_45_reflex_and_json(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      test_file = os.path.join(tmpdir, "test_unsafe_temp.py")
+      with open(test_file, "w", encoding="utf-8") as f:
+        f.write("import tempfile\nd = tempfile.mkdtemp()\n")
+
+      out = io.StringIO()
+      err = io.StringIO()
+      code = AstScrubScript().execute(
+          args=["--files", test_file, "--strict"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 2)
+      self.assertIn("SCAR-ID: TEST-45", err.getvalue())
+      self.assertIn("UNSAFE_TEMP_FIXTURE", err.getvalue())
+
+      out_json = io.StringIO()
+      err_json = io.StringIO()
+      code_json = AstScrubScript().execute(
+          args=["--files", test_file, "--strict", "--json"],
+          stdout=out_json,
+          stderr=err_json,
+      )
+      self.assertEqual(code_json, 2)
+      payload = json.loads(err_json.getvalue().strip().splitlines()[0])
+      self.assertEqual(payload["scar_id"], "SCAR-TEST-45")
+      self.assertEqual(payload["short_id"], "TEST-45")
+      self.assertEqual(payload["violation_code"], "UNSAFE_TEMP_FIXTURE")
+
+  def test_full_repo_tests_directory_passes_ast_scrub_strict(self):
+    out = io.StringIO()
+    err = io.StringIO()
+    code = AstScrubScript().execute(
+        args=["--src-dir", os.path.join(_REPO_ROOT, "tests"), "--all", "--strict"],
+        stdout=out,
+        stderr=err,
+    )
+    self.assertEqual(code, 0, f"Unexpected AST scrub violations in tests/:\n{err.getvalue()}")
+    self.assertEqual(err.getvalue(), "")
 
 
 class TestAstScrubPerformanceBenchmark(unittest.TestCase):

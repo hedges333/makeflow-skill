@@ -1,10 +1,13 @@
-"""Structural AST scrubber gate (SCAR-AST-01, GH-56).
+"""Structural AST scrubber gate (SCAR-AST-01, SCAR-TEST-45, GH-56, GH-215).
 
 Prevents autonomous coding agents from bypassing failing tests by silencing errors
-in production code. Enforces deterministic AST checks that reject:
+in production code or creating unsafe temporary fixtures in tests. Enforces
+deterministic AST checks that reject:
 1. Silent exception handlers (bare except:, broad except Exception: with pass/ellipsis/continue).
 2. Trivial fallback returns in broad handlers (return None, {}, [], "", 0, False without logging/re-raising).
 3. Production mock leakage (importing unittest.mock, MagicMock, mock, pytest in non-test code).
+4. Unsafe temporary test fixtures (mkdtemp, mkstemp, mktemp, NamedTemporaryFile(delete=False),
+   and fixed /tmp/ or /var/tmp/ filesystem writes in test files under SCAR-TEST-45).
 
 Emits Vector 4 Reflex recovery directives on stderr with exit code 2.
 """
@@ -21,7 +24,14 @@ from lib.base_script import BaseScript, SilentArgumentParser
 from lib.reflex import REFLEX_EXIT_CODE, emit_reflex
 
 SCAR_ID = "SCAR-AST-01"
+TEMP_FIXTURE_SCAR_ID = "SCAR-TEST-45"
 DEFAULT_SCAN_DIRS = ("lib", "scripts", "mcp", "tests")
+
+_FIXED_TMP_PREFIXES = ("/tmp", "/var/tmp")
+_FIXED_TMP_SLASH_PREFIXES = ("/tmp/", "/var/tmp/")
+_FORBIDDEN_TEMPFILE_FUNCS = frozenset({"mkdtemp", "mkstemp", "mktemp"})
+_WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
+_PATH_MUTATION_METHODS = frozenset({"write_text", "write_bytes", "mkdir", "touch"})
 
 _COMMENT_EXEMPTION_RE = re.compile(
     r"#.*(?:pylint:\s*disable=(?:broad-except|bare-except)|noqa|ast-scrub:\s*(?:ignore|disable)|nosec)",
@@ -69,6 +79,7 @@ class Violation:
   trigger: str
   rejected: str
   reflex: str
+  scar_id: str = SCAR_ID
 
 
 def is_test_file(filepath: str) -> bool:
@@ -347,6 +358,212 @@ class AstScrubberVisitor(ast.NodeVisitor):
 
     self.generic_visit(node)
 
+  @staticmethod
+  def _starts_with_tmp_slash(expr: Optional[ast.AST]) -> bool:
+    """Checks whether an AST constant or f-string starts with /tmp/ or /var/tmp/.
+
+    Args:
+      expr: AST expression node representing a leading string fragment.
+
+    Returns:
+      True when the leading literal begins with ``/tmp/`` or ``/var/tmp/``.
+    """
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+      return expr.value.startswith(_FIXED_TMP_SLASH_PREFIXES)
+    if isinstance(expr, ast.JoinedStr) and expr.values:
+      first = expr.values[0]
+      return (
+          isinstance(first, ast.Constant)
+          and isinstance(first.value, str)
+          and first.value.startswith(_FIXED_TMP_SLASH_PREFIXES)
+      )
+    return False
+
+  @staticmethod
+  def _is_fixed_tmp_path_expr(expr: Optional[ast.AST]) -> bool:
+    """Checks whether an AST expression targets a fixed /tmp or /var/tmp path.
+
+    Args:
+      expr: AST expression node representing a path or Path receiver.
+
+    Returns:
+      True when the expression resolves to a literal or interpolated /tmp or /var/tmp path.
+    """
+    if expr is None:
+      return False
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+      val = expr.value
+      for prefix in _FIXED_TMP_PREFIXES:
+        if val == prefix or val.startswith(f"{prefix}/"):
+          return True
+      return False
+    if isinstance(expr, ast.JoinedStr):
+      return AstScrubberVisitor._starts_with_tmp_slash(expr)
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+      left = expr.left
+      while isinstance(left, ast.BinOp) and isinstance(left.op, ast.Add):
+        left = left.left
+      return AstScrubberVisitor._starts_with_tmp_slash(left)
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Div):
+      return AstScrubberVisitor._is_fixed_tmp_path_expr(expr.left)
+    if isinstance(expr, ast.Call):
+      func = expr.func
+      is_path_or_join = False
+      if isinstance(func, ast.Name) and func.id in {"Path", "join"}:
+        is_path_or_join = True
+      elif isinstance(func, ast.Attribute) and func.attr in {"Path", "join"}:
+        is_path_or_join = True
+      if is_path_or_join and expr.args:
+        return AstScrubberVisitor._is_fixed_tmp_path_expr(expr.args[0])
+    return False
+
+  @staticmethod
+  def _is_tempfile_call(func: ast.AST, names: frozenset) -> Optional[str]:
+    """Matches bare or tempfile-qualified calls without matching chained receivers.
+
+    Args:
+      func: AST node for ``Call.func``.
+      names: Set of target tempfile callable names to match.
+
+    Returns:
+      Matched function name when ``func`` is a bare ``ast.Name`` or direct
+      ``tempfile.<name>`` attribute lookup, otherwise ``None``.
+    """
+    if isinstance(func, ast.Name) and func.id in names:
+      return func.id
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr in names
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "tempfile"
+    ):
+      return func.attr
+    return None
+
+  @staticmethod
+  def _is_write_open_mode(node: ast.Call, mode_arg_index: int) -> bool:
+    """Checks whether an open() call specifies a filesystem-mutating mode.
+
+    Args:
+      node: AST Call node for open() or Path.open().
+      mode_arg_index: Positional argument index for the file mode string.
+
+    Returns:
+      True when the mode literal includes w, a, x, or +.
+    """
+    mode_node: Optional[ast.AST] = None
+    if len(node.args) > mode_arg_index:
+      mode_node = node.args[mode_arg_index]
+    else:
+      for kw in node.keywords:
+        if kw.arg == "mode":
+          mode_node = kw.value
+          break
+    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+      return any(ch in _WRITE_MODE_CHARS for ch in mode_node.value)
+    return False
+
+  def _record_unsafe_temp_fixture(self, lineno: int, detail: str) -> None:
+    """Records an UNSAFE_TEMP_FIXTURE violation tagged with SCAR-TEST-45.
+
+    Args:
+      lineno: Source line number of the violating call expression.
+      detail: Human-readable summary of the unsafe temporary fixture call.
+    """
+    self.violations.append(
+        Violation(
+            code="UNSAFE_TEMP_FIXTURE",
+            file_path=self.filename,
+            line_number=lineno,
+            trigger=f"{self.filename}:{lineno}: {detail}",
+            rejected=(
+                "Creating test temp files with manual cleanup or fixed"
+                " /tmp or /var/tmp paths leaks artifacts and causes collisions."
+            ),
+            reflex=(
+                "Use tempfile.TemporaryDirectory() as a context manager or"
+                " register cleanup via addCleanup."
+            ),
+            scar_id=TEMP_FIXTURE_SCAR_ID,
+        )
+    )
+
+  def visit_Call(self, node: ast.Call) -> None:
+    """Rejects unsafe temporary fixture patterns inside test files (SCAR-TEST-45).
+
+    Args:
+      node: AST Call node visited during traversal.
+    """
+    if not self.is_test or self._is_line_exempt(node.lineno):
+      self.generic_visit(node)
+      return
+
+    func = node.func
+    obj_name: Optional[str] = None
+    func_name: str = ""
+    if isinstance(func, ast.Name):
+      func_name = func.id
+    elif isinstance(func, ast.Attribute):
+      func_name = func.attr
+      if isinstance(func.value, ast.Name):
+        obj_name = func.value.id
+
+    matched_temp = self._is_tempfile_call(func, _FORBIDDEN_TEMPFILE_FUNCS)
+    if matched_temp is not None:
+      self._record_unsafe_temp_fixture(
+          node.lineno,
+          f"Test file calls {matched_temp}() requiring manual temp cleanup.",
+      )
+    elif (
+        self._is_tempfile_call(func, frozenset({"NamedTemporaryFile"}))
+        is not None
+    ):
+      for kw in node.keywords:
+        if (
+            kw.arg == "delete"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is False
+        ):
+          self._record_unsafe_temp_fixture(
+              node.lineno,
+              "Test file calls NamedTemporaryFile(delete=False) requiring manual cleanup.",
+          )
+          break
+    elif isinstance(func, ast.Name) and func_name == "open":
+      if (
+          node.args
+          and self._is_fixed_tmp_path_expr(node.args[0])
+          and self._is_write_open_mode(node, 1)
+      ):
+        self._record_unsafe_temp_fixture(
+            node.lineno,
+            "Test file opens a fixed /tmp or /var/tmp path for writing.",
+        )
+    elif func_name in {"mkdir", "makedirs"} and obj_name == "os":
+      if node.args and self._is_fixed_tmp_path_expr(node.args[0]):
+        self._record_unsafe_temp_fixture(
+            node.lineno,
+            f"Test file calls os.{func_name}() on a fixed /tmp or /var/tmp path.",
+        )
+    elif func_name == "connect" and obj_name == "sqlite3":
+      if node.args and self._is_fixed_tmp_path_expr(node.args[0]):
+        self._record_unsafe_temp_fixture(
+            node.lineno,
+            "Test file calls sqlite3.connect() on a fixed /tmp or /var/tmp path.",
+        )
+    elif isinstance(func, ast.Attribute) and self._is_fixed_tmp_path_expr(
+        func.value
+    ):
+      if func_name in _PATH_MUTATION_METHODS or (
+          func_name == "open" and self._is_write_open_mode(node, 0)
+      ):
+        self._record_unsafe_temp_fixture(
+            node.lineno,
+            f"Test file mutates a fixed /tmp or /var/tmp Path via .{func_name}().",
+        )
+
+    self.generic_visit(node)
+
 
 def scrub_source(
     source_code: str,
@@ -493,7 +710,7 @@ class AstScrubScript(BaseScript):
     super().parse_args(args)
     parser = SilentArgumentParser(
         prog="ast_scrub.py",
-        description="Structural AST scrubber gate (SCAR-AST-01, GH-56).",
+        description="Structural AST scrubber gate (SCAR-AST-01, SCAR-TEST-45, GH-56, GH-215).",
         epilog=(
             "Examples:\n"
             "  python3 scripts/ast_scrub.py --src-dir lib --strict\n"
@@ -584,7 +801,7 @@ class AstScrubScript(BaseScript):
       for v in all_violations:
         emit_reflex(
             stderr=self.stderr,
-            scar_id=SCAR_ID,
+            scar_id=v.scar_id,
             violation_code=v.code,
             trigger=v.trigger,
             rejected=v.rejected,

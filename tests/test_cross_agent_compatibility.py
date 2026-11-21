@@ -7297,8 +7297,8 @@ def _collect_compatibility_errors():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 61:
-    errors.append(f"Expected 61 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 62:
+    errors.append(f"Expected 62 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -10439,6 +10439,288 @@ class TestArchaeologyFileTreeDispatch(unittest.TestCase):
             any(rel in e for e in errs),
             f"Expected rejection when '{token}' omitted from {rel}, got: {errs}",
         )
+
+
+TEMPDIR_TEST_ISOLATION_FILES = (
+    "skills/makeflow/references/scars/testing.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "skills/makeflow/references/04_testing_isolation.md",
+    "skills/makeflow/references/polyglot/python.md",
+    "agents/tdd-worker.md",
+    "agents/socratic-probe-writer.md",
+)
+
+
+def check_tempdir_test_isolation_invariants(
+    files_map: dict[str, str] | None = None,
+) -> list[str]:
+  """Verifies GH-215 SCAR-TEST-45 and SCAR-TEST-22 invariants across docs and agents."""
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scar_candidate import (
+      ScarCandidateValidator,
+      count_words_in_sentence,
+      mask_code_and_math_spans,
+      split_into_sentences,
+      validate_socratic_probe,
+  )
+
+  if files_map is None:
+    files_map = {}
+    for rel in TEMPDIR_TEST_ISOLATION_FILES:
+      full = repo_path(rel)
+      if not os.path.isfile(full):
+        return [f"Missing required GH-215 file: {rel}"]
+      with open(full, "r", encoding="utf-8") as f:
+        files_map[rel] = f.read()
+
+  errs: list[str] = []
+
+  def _check_procedural_line_word_limit(
+      rel_path: str, line_text: str, label: str, max_words: int = 20
+  ) -> None:
+    stripped = re.sub(r"^\s*\d+\.\s+", "", line_text.strip())
+    masked = mask_code_and_math_spans(stripped)
+    for sent in split_into_sentences(masked):
+      wc = count_words_in_sentence(sent)
+      if wc > max_words:
+        errs.append(
+            f"{rel_path} {label} exceeds {max_words}-word procedural limit ({wc} words): {sent}"
+        )
+
+  def _validate_scar_section(
+      rel_path: str, scar_id: str, section_text: str
+  ) -> None:
+    extracted: dict[str, str] = {}
+    req_fields = ("Wound", "Trap", "Permanent Reflex", "Socratic Probe")
+    for field in req_fields:
+      fm = re.search(rf"\*\*{re.escape(field)}\*\*:[ \t]*([^\n\r]+)", section_text)
+      val = fm.group(1).strip() if fm else ""
+      extracted[field] = val
+      if not val:
+        errs.append(f"{rel_path} {scar_id} missing non-empty '**{field}**:'")
+    cb_match = re.search(r"\*\*Circuit Breaker\*\*:[ \t]*([^\n\r]+)", section_text)
+    cb_val = cb_match.group(1).strip() if cb_match else ""
+    if all(extracted[f] for f in req_fields):
+      candidate = {
+          "id": scar_id,
+          "raw_wound": extracted["Wound"],
+          "wound": extracted["Wound"],
+          "raw_trap": extracted["Trap"],
+          "trap": extracted["Trap"],
+          "raw_circuit_breaker": cb_val,
+          "circuit_breaker": cb_val,
+          "raw_reflex": extracted["Permanent Reflex"],
+          "reflex": extracted["Permanent Reflex"],
+          "socratic_probe": extracted["Socratic Probe"],
+      }
+      errs.extend(ScarCandidateValidator().validate(candidate))
+      errs.extend(
+          validate_socratic_probe(extracted["Socratic Probe"], scar_id=scar_id)
+      )
+      probe_sents = split_into_sentences(extracted["Socratic Probe"])
+      if not (1 <= len(probe_sents) <= 3):
+        errs.append(
+            f"{rel_path} {scar_id} Socratic Probe must contain 1-3 '?' sentences, found {len(probe_sents)}"
+        )
+
+  # 1. skills/makeflow/references/scars/testing.md
+  test_rel = "skills/makeflow/references/scars/testing.md"
+  t_text = files_map[test_rel]
+  r44 = re.search(r"(?m)^\|\s*`SCAR-TEST-44`\s*\|", t_text)
+  r45 = re.search(r"(?m)^\|\s*`SCAR-TEST-45`\s*\|", t_text)
+  if not (r44 and r45 and r44.start() < r45.start()):
+    errs.append(f"{test_rel} summary table must list SCAR-TEST-45 after SCAR-TEST-44")
+
+  m44 = re.search(r"(?m)^###\s+SCAR-TEST-44:", t_text)
+  m45 = re.search(r"(?m)^###\s+SCAR-TEST-45:", t_text)
+  if not (m44 and m45 and m44.start() < m45.start()):
+    errs.append(f"{test_rel} must place '### SCAR-TEST-45:' after '### SCAR-TEST-44:'")
+  else:
+    sec45 = t_text[m45.start() :].split("\n### SCAR-")[0]
+    for tok in ("tempfile.TemporaryDirectory()", "t.TempDir()", "TempDir", "mktemp -d", "trap"):
+      if tok not in sec45:
+        errs.append(f"{test_rel} SCAR-TEST-45 missing multi-language helper token '{tok}'")
+    _validate_scar_section(test_rel, "SCAR-TEST-45", sec45)
+
+  m22 = re.search(r"(?m)^###\s+SCAR-TEST-22:", t_text)
+  if not m22:
+    errs.append(f"{test_rel} missing '### SCAR-TEST-22:'")
+  else:
+    sec22 = t_text[m22.start() :].split("\n### SCAR-")[0]
+    if "./tests/" not in sec22:
+      errs.append(f"{test_rel} SCAR-TEST-22 must direct placing tests under './tests/'")
+    if "behavioral" not in sec22.lower():
+      errs.append(f"{test_rel} SCAR-TEST-22 must mandate behavioral domain naming")
+    _validate_scar_section(test_rel, "SCAR-TEST-22", sec22)
+
+  # 2. skills/makeflow/references/09_synthetic_scars_catalog.md
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  cat_text = files_map[cat_rel]
+  if not check_scar_catalog_routing(cat_text, "SCAR-TEST-45", "testing.md"):
+    errs.append(
+        f"{cat_rel} Master Routing Table must strictly route SCAR-TEST-45 to scars/testing.md"
+    )
+  c44 = re.search(r"(?m)^\|\s*`SCAR-TEST-44`\s*\|", cat_text)
+  c45 = re.search(r"(?m)^\|\s*`SCAR-TEST-45`\s*\|", cat_text)
+  if not (c44 and c45 and c44.start() < c45.start()):
+    errs.append(f"{cat_rel} must place SCAR-TEST-45 monotonically after SCAR-TEST-44")
+
+  # 3. skills/makeflow/references/04_testing_isolation.md
+  iso_rel = "skills/makeflow/references/04_testing_isolation.md"
+  iso_text = files_map[iso_rel]
+  for tok in ("SCAR-TEST-45", "SCAR-TEST-22", "tempfile.TemporaryDirectory()", "mkdtemp", "NamedTemporaryFile", "./tests/"):
+    if tok not in iso_text:
+      errs.append(f"{iso_rel} missing required GH-215 token '{tok}'")
+  errs.extend(_check_prose_punctuation(iso_rel, iso_text))
+  for raw_line in iso_text.splitlines():
+    if "SCAR-TEST-45" in raw_line or "SCAR-TEST-22" in raw_line:
+      if re.match(r"^\s*\d+\.\s+", raw_line):
+        _check_procedural_line_word_limit(iso_rel, raw_line, "GH-215 list item")
+
+  # 4. skills/makeflow/references/polyglot/python.md
+  py_rel = "skills/makeflow/references/polyglot/python.md"
+  py_text = files_map[py_rel]
+  for tok in ("SCAR-TEST-45", "SCAR-TEST-22", "tempfile.TemporaryDirectory()"):
+    if tok not in py_text:
+      errs.append(f"{py_rel} missing required GH-215 token '{tok}'")
+  errs.extend(_check_prose_punctuation(py_rel, py_text))
+
+  # 5. agents/tdd-worker.md
+  tdd_rel = "agents/tdd-worker.md"
+  tdd_text = files_map[tdd_rel]
+  for tok in ("SCAR-TEST-45", "SCAR-TEST-22"):
+    if tok not in tdd_text:
+      errs.append(f"{tdd_rel} missing required GH-215 token '{tok}'")
+  errs.extend(_check_prose_punctuation(tdd_rel, tdd_text))
+  for raw_line in tdd_text.splitlines():
+    if "SCAR-TEST-45" in raw_line:
+      _check_procedural_line_word_limit(tdd_rel, raw_line, "Rule 15")
+
+  # 6. agents/socratic-probe-writer.md
+  spw_rel = "agents/socratic-probe-writer.md"
+  spw_text = files_map[spw_rel]
+  if "/tmp/" in spw_text:
+    errs.append(f"{spw_rel} must not contain hardcoded '/tmp/' path")
+  if "mktemp -d" not in spw_text and "TemporaryDirectory" not in spw_text:
+    errs.append(
+        f"{spw_rel} must use unique OS-managed temp directory (mktemp -d or TemporaryDirectory)"
+    )
+  for raw_line in spw_text.splitlines():
+    if re.match(r"^\s*5\.\s+", raw_line):
+      _check_procedural_line_word_limit(spw_rel, raw_line, "Rule 5")
+      if "inside it" in raw_line.lower():
+        errs.append(f"{spw_rel} Rule 5 must not use bare pronoun 'inside it'")
+
+  return errs
+
+
+class TestTempDirTestIsolationInvariants(unittest.TestCase):
+  """Contract tests for GH-215 SCAR-TEST-45 and SCAR-TEST-22 docs and agents."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in TEMPDIR_TEST_ISOLATION_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_repo_tempdir_isolation_invariants_pass(self) -> None:
+    self.assertEqual(check_tempdir_test_isolation_invariants(), [])
+
+  def test_negative_falsifications_caught(self) -> None:
+    base = self._load_base_files()
+
+    # 1. testing.md: drop SCAR-TEST-45 helper token, break SCAR-TEST-22 ./tests/, invalid Socratic Probe
+    test_rel = "skills/makeflow/references/scars/testing.md"
+    mut_45 = dict(base)
+    mut_45[test_rel] = mut_45[test_rel].replace("t.TempDir()", "REMOVED")
+    self.assertTrue(
+        any("t.TempDir()" in e for e in check_tempdir_test_isolation_invariants(mut_45)),
+        "Expected missing t.TempDir() rejection in testing.md",
+    )
+
+    mut_22 = dict(base)
+    mut_22[test_rel] = mut_22[test_rel].replace("./tests/", "REMOVED")
+    self.assertTrue(
+        any("./tests/" in e for e in check_tempdir_test_isolation_invariants(mut_22)),
+        "Expected missing ./tests/ rejection in SCAR-TEST-22",
+    )
+
+    mut_22_probe = dict(base)
+    mut_22_probe[test_rel] = mut_22_probe[test_rel].replace(
+        "Does this test live in the test directory with a behavioral domain name and a permanent ticket docstring?",
+        "This probe has no question mark.",
+    )
+    self.assertTrue(
+        any("SCAR-TEST-22" in e and "?" in e for e in check_tempdir_test_isolation_invariants(mut_22_probe)),
+        "Expected invalid SCAR-TEST-22 Socratic Probe rejection",
+    )
+
+    # 2. 09_synthetic_scars_catalog.md: break routing / monotonicity
+    cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+    mut_cat = dict(base)
+    mut_cat[cat_rel] = mut_cat[cat_rel].replace("SCAR-TEST-45", "SCAR-TEST-99")
+    self.assertTrue(
+        any(cat_rel in e for e in check_tempdir_test_isolation_invariants(mut_cat)),
+        "Expected catalog routing rejection for SCAR-TEST-45",
+    )
+
+    # 3. 04_testing_isolation.md: missing token and >20-word procedural line
+    iso_rel = "skills/makeflow/references/04_testing_isolation.md"
+    mut_iso = dict(base)
+    mut_iso[iso_rel] = mut_iso[iso_rel].replace("NamedTemporaryFile", "REMOVED")
+    self.assertTrue(
+        any(iso_rel in e for e in check_tempdir_test_isolation_invariants(mut_iso)),
+        "Expected 04_testing_isolation.md token rejection",
+    )
+    mut_iso_long = dict(base)
+    mut_iso_long[iso_rel] = mut_iso_long[iso_rel] + (
+        "\n4. Extra rule (`SCAR-TEST-45`): Write one single extremely verbose procedural"
+        " instruction sentence that deliberately exceeds the twenty word technical"
+        " English limit right now.\n"
+    )
+    self.assertTrue(
+        any("20-word procedural limit" in e for e in check_tempdir_test_isolation_invariants(mut_iso_long)),
+        "Expected 04_testing_isolation.md 20-word procedural rejection",
+    )
+
+    # 4. polyglot/python.md: missing SCAR-TEST-22 token
+    py_rel = "skills/makeflow/references/polyglot/python.md"
+    mut_py = dict(base)
+    mut_py[py_rel] = mut_py[py_rel].replace("SCAR-TEST-22", "REMOVED")
+    self.assertTrue(
+        any(py_rel in e for e in check_tempdir_test_isolation_invariants(mut_py)),
+        "Expected polyglot/python.md token rejection",
+    )
+
+    # 5. agents/tdd-worker.md: missing SCAR-TEST-45 token
+    tdd_rel = "agents/tdd-worker.md"
+    mut_tdd = dict(base)
+    mut_tdd[tdd_rel] = mut_tdd[tdd_rel].replace("SCAR-TEST-45", "REMOVED")
+    self.assertTrue(
+        any(tdd_rel in e for e in check_tempdir_test_isolation_invariants(mut_tdd)),
+        "Expected agents/tdd-worker.md token rejection",
+    )
+
+    # 6. agents/socratic-probe-writer.md: reintroduce /tmp/ and drop mktemp -d/TemporaryDirectory
+    spw_rel = "agents/socratic-probe-writer.md"
+    mut_spw_tmp = dict(base)
+    mut_spw_tmp[spw_rel] = mut_spw_tmp[spw_rel] + "\nUse /tmp/fixed/socratic_prompt.txt.\n"
+    self.assertTrue(
+        any("/tmp/" in e for e in check_tempdir_test_isolation_invariants(mut_spw_tmp)),
+        "Expected agents/socratic-probe-writer.md /tmp/ rejection",
+    )
+    mut_spw_helper = dict(base)
+    mut_spw_helper[spw_rel] = (
+        mut_spw_helper[spw_rel]
+        .replace("mktemp -d", "REMOVED")
+        .replace("TemporaryDirectory", "REMOVED")
+    )
+    self.assertTrue(
+        any("mktemp -d" in e for e in check_tempdir_test_isolation_invariants(mut_spw_helper)),
+        "Expected agents/socratic-probe-writer.md missing temp helper rejection",
+    )
 
 
 if __name__ == "__main__":
