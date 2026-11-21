@@ -11,6 +11,22 @@ PLUGIN_NAME="makeflow"
 REPO_URL="https://github.com/hedges333/makeflow-skill.git"
 TARGET_DIR="${HOME}/.gemini/config/plugins/${PLUGIN_NAME}"
 
+RUNTIME_ALLOWLIST=(
+  plugin.json
+  hooks.json
+  mcp_config.json
+  default_config.json
+  LICENSE
+  README.md
+  assets
+  agents
+  lib
+  mcp
+  rules
+  skills
+  scripts
+)
+
 DRY_RUN=false
 for arg in "$@"; do
   if [ "$arg" = "--dry-run" ]; then
@@ -21,18 +37,42 @@ done
 copy_plugin_tree() {
   local src_dir="$1"
   local dst_dir="$2"
-  rm -rf "${dst_dir}"
-  mkdir -p "${dst_dir}"
-  tar -C "${src_dir}" \
-    --exclude='./.git' \
-    --exclude='./.tmp' \
-    --exclude='./.venv' \
-    --exclude='./.workflow/state' \
-    --exclude='./.workflow/archive' \
-    --exclude='./.workflow/config.json' \
-    --exclude='./.workflow/plan.md' \
-    --exclude='./.workflow/commit_msg.txt' \
-    -cf - . | tar -xf - -C "${dst_dir}"
+  (
+    local tmp_tar
+    tmp_tar=$(mktemp)
+    trap 'rm -f "${tmp_tar}"' EXIT
+    tar -C "${src_dir}" \
+      --exclude='__pycache__' \
+      --exclude='*.py[cod]' \
+      --exclude='*$py.class' \
+      --exclude='.DS_Store' \
+      -cf "${tmp_tar}" "${RUNTIME_ALLOWLIST[@]}" &&
+      rm -rf "${dst_dir}" &&
+      mkdir -p "${dst_dir}" &&
+      tar -xf "${tmp_tar}" -C "${dst_dir}"
+  )
+}
+
+install_with_agy_from_dir() {
+  local src_dir="$1"
+  (
+    local stage_dir
+    echo "Staging runtime plugin tree for validation..."
+    stage_dir=$(mktemp -d)
+    trap 'rm -rf "${stage_dir}"' EXIT
+    copy_plugin_tree "${src_dir}" "${stage_dir}/${PLUGIN_NAME}"
+    echo "Running plugin check on staged tree..."
+    agy plugin validate "${stage_dir}/${PLUGIN_NAME}" --strict
+    if [ "$DRY_RUN" = true ]; then
+      echo "Dry run passed. Skipping install."
+      exit 0
+    fi
+    echo "Installing plugin with agy plugin install..."
+    agy plugin install "${stage_dir}/${PLUGIN_NAME}"
+  )
+  if [ "$DRY_RUN" = true ]; then
+    exit 0
+  fi
 }
 
 echo "=== Installing Makefile Workflow Plugin ==="
@@ -41,24 +81,17 @@ if command -v agy >/dev/null 2>&1; then
   echo "Found Antigravity CLI (agy)."
 
   if [ -f "plugin.json" ] && [ -d "skills/makeflow" ]; then
-    echo "Running plugin check from current directory..."
-    agy plugin validate . --strict
-    if [ "$DRY_RUN" = true ]; then
-      echo "Dry run passed. Skipping install."
-      exit 0
-    fi
-    echo "Installing plugin with agy plugin install..."
-    STAGE_DIR=$(mktemp -d)
-    trap 'rm -rf "${STAGE_DIR}"' EXIT
-    copy_plugin_tree "." "${STAGE_DIR}/${PLUGIN_NAME}"
-    agy plugin install "${STAGE_DIR}/${PLUGIN_NAME}"
+    install_with_agy_from_dir "."
   else
     if [ "$DRY_RUN" = true ]; then
-      echo "Dry run: will run agy plugin install ${REPO_URL}"
+      echo "Dry run: will clone ${REPO_URL}, stage runtime tree, validate, and install."
       exit 0
     fi
     echo "Installing plugin from Git repository..."
-    agy plugin install "${REPO_URL}"
+    TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf "${TEMP_DIR}"' EXIT
+    git clone --depth 1 "${REPO_URL}" "${TEMP_DIR}"
+    install_with_agy_from_dir "${TEMP_DIR}"
   fi
 else
   echo "agy CLI not found in PATH. Copying plugin files directly."
