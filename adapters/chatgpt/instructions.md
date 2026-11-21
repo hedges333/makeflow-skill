@@ -18,7 +18,7 @@ Move through these targets in dependency order:
 - Target 42 (triaged-blockers): If blockers exist, present them in chat and wait for user triage.
 - Target 45 (approved-review): If zero blockers exist, present the review sign-off. Tell the user that they can switch back to their fast model.
 - Target 50 (commit): Run formatters, linters, and full repository tests, then wait for commit approval. Forbid `closes #` on local commits.
-- Target 60 (push): Check clean merge with `main`, then wait for push approval.
+- Target 60 (push): Check clean merge with `main`, then wait for push approval. Skip via `T50 -> T70` in Pure Git Mode when zero remotes exist.
 - Target 70 (bot-quiescence): Check CI status and automated review comments.
 - Target 75 (ready-to-land): Present policy checks and wait for merge approval.
 - Target 80 (land): Merge the pull request, delete the ticket branch, and update `main`.

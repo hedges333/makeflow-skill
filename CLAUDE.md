@@ -48,7 +48,7 @@ claude -p --model claude-3-opus-20240229 "Run Six-Pillar review on $(git merge-b
 - `T42`: Present blockers and wait for triage approval.
 - `T45`: Present zero-blocker review and wait for sign-off.
 - `T50`: Format, lint, run full tests, wait for Target 50 commit approval, and commit (forbid `closes #` on local commits).
-- `T60`: Check clean merge with `git merge-tree`, wait for push approval, push, and open a pull request.
+- `T60`: Check clean merge with `git merge-tree`, wait for push approval, push, and open a pull request. Skip via `T50 -> T70` in Pure Git Mode when zero remotes exist.
 - `T70`: Poll CI checks and wait for review bots to finish (quiescence window).
 - `T75`: Present policy checks and wait for merge approval.
 - `T80`: Squash-merge the pull request, delete the ticket branch, and update `main`.

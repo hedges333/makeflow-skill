@@ -3885,5 +3885,137 @@ class TestMcpQueryScarsDescriptionClarification(unittest.TestCase):
         )
 
 
+class TestMcpPureGitTransitions(unittest.TestCase):
+  """Tests Pure Git Mode T50 -> T70 workflow_advance_target and schema description (GH-248)."""
+
+  def _init_temp_git_repo(self, repo_dir: str, with_remote: bool = False) -> None:
+    os.makedirs(repo_dir, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo_dir,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Makeflow Test"],
+        cwd=repo_dir,
+        check=True,
+    )
+    subprocess.run(["git", "branch", "-M", "main"], cwd=repo_dir, check=True)
+    with open(os.path.join(repo_dir, "README.md"), "w", encoding="utf-8") as f:
+      f.write("# Test\n")
+    subprocess.run(["git", "add", "README.md"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "chore: initial"],
+        cwd=repo_dir,
+        check=True,
+    )
+    if with_remote:
+      bare_dir = os.path.join(os.path.dirname(repo_dir), "remote.git")
+      os.makedirs(bare_dir, exist_ok=True)
+      subprocess.run(
+          ["git", "init", "--bare", "-q", "-b", "main"],
+          cwd=bare_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "remote", "add", "upstream", bare_dir],
+          cwd=repo_dir,
+          check=True,
+      )
+
+  def test_mcp_pure_git_t50_to_t70_allowed_without_remote_and_blocked_with_remote(
+      self,
+  ):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from lib.state_machine import read_active_target
+    from mcp.server import handle_tools_call
+
+    with tempfile.TemporaryDirectory() as tmp:
+      no_remote_repo = os.path.join(tmp, "no_remote")
+      self._init_temp_git_repo(no_remote_repo, with_remote=False)
+      state_dir = os.path.join(no_remote_repo, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      with open(
+          os.path.join(state_dir, "15_archaeology_receipt.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Receipt\nHOSTING_MODE: PURE_GIT\n")
+
+      for bad_ev in ({}, {"humanCommitApproved": False}):
+        blocked_no_ev = handle_tools_call(
+            801,
+            "workflow_advance_target",
+            {
+                "currentTarget": "T50",
+                "nextTarget": "T70",
+                "workspaceDir": no_remote_repo,
+                "evidence": bad_ev,
+            },
+        )
+        self.assertTrue(blocked_no_ev["result"].get("isError"))
+        self.assertIn(
+            "humanCommitApproved",
+            blocked_no_ev["result"]["content"][0]["text"],
+        )
+
+      ok_resp = handle_tools_call(
+          802,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T50",
+              "nextTarget": "T70",
+              "workspaceDir": no_remote_repo,
+              "evidence": {"humanCommitApproved": True},
+          },
+      )
+      self.assertFalse(ok_resp["result"].get("isError"), ok_resp)
+      self.assertEqual(
+          read_active_target(state_dir).get("skippedTargets"), ["T60"]
+      )
+
+      remote_repo = os.path.join(tmp, "with_remote")
+      self._init_temp_git_repo(remote_repo, with_remote=True)
+      remote_state = os.path.join(remote_repo, ".workflow", "state")
+      os.makedirs(remote_state, exist_ok=True)
+      with open(
+          os.path.join(remote_state, "15_archaeology_receipt.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Receipt\nHOSTING_MODE: PURE_GIT\n")
+
+      blocked_remote = handle_tools_call(
+          803,
+          "workflow_advance_target",
+          {
+              "currentTarget": "T50",
+              "nextTarget": "T70",
+              "workspaceDir": remote_repo,
+              "evidence": {"humanCommitApproved": True},
+          },
+      )
+      self.assertTrue(blocked_remote["result"].get("isError"))
+      err_txt = blocked_remote["result"]["content"][0]["text"]
+      self.assertIn("SCAR-GIT-30", err_txt)
+      self.assertIn("T60", err_txt)
+
+  def test_mcp_tools_list_documents_t50_to_t70_pure_git_mode(self):
+    if REPO_ROOT not in sys.path:
+      sys.path.insert(0, REPO_ROOT)
+    from mcp.server import handle_tools_list
+
+    tools_resp = handle_tools_list(804)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    desc = tools["workflow_advance_target"]["inputSchema"]["properties"][
+        "evidence"
+    ]["description"]
+    self.assertIn("T50->T60", desc)
+    self.assertIn("T50->T70", desc)
+    self.assertIn("Pure Git", desc)
+
+
 if __name__ == "__main__":
   unittest.main()

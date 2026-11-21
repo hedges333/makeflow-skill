@@ -72,26 +72,26 @@ Target 75 is a mandatory human pause gate.
 
 ## 3. Target 80: Merge and Branch Cleanup
 
-After the user approves landing, merge the pull request and clean up local Git state:
+After the user approves landing, merge the changes and clean up local Git state:
 
 1. In GitHub mode, squash-merge the pull request and delete the remote branch:
    ```bash
    gh pr merge <PR_NUMBER> --squash --delete-branch
    ```
    Verify that the linked GitHub issue is closed.
-2. In Pure Git Mode (`SCAR-GIT-30`), squash-merge locally on `main`:
+2. In Pure Git Mode (`SCAR-GIT-30`), switch to `main` and squash-merge the ticket branch:
    ```bash
    git checkout main && git merge --squash <branch>
    git commit -F .workflow/state/50_commit_msg.txt
-   git remote | grep -q "^origin$" && git push origin main || true
    ```
-3. If an origin remote exists, pull the merged commit on `main`:
+3. If an `origin` remote exists, push `main` and pull the updated head:
    ```bash
-   git checkout main && (git remote | grep -q "^origin$" && git pull --ff-only || true)
+   git push origin main && git pull --ff-only
    ```
-4. Delete the local feature branch:
+   If zero remotes exist, skip push and pull steps.
+4. Verify the squashed commit on `main`. Because `git merge --squash` creates one new commit without merge parents, `git branch -d` fails (`not fully merged`). Request operator confirmation under `SCAR-GIT-25`, then force-delete the local ticket branch:
    ```bash
-   git branch -d <branch>
+   git branch -D <branch>
    ```
 5. Release the intake lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
 6. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90.

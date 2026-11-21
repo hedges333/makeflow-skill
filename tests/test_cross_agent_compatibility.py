@@ -3375,6 +3375,10 @@ def validate_hosting_mode_and_pure_git_invariants():
       errors.append(
           f"{ci_rel} must reference 'git merge --squash' for Pure Git Mode landing"
       )
+    if "git branch -D" not in ci_text:
+      errors.append(
+          f"{ci_rel} must document 'git branch -D' after 'git merge --squash'"
+      )
 
   # 5. SKILL.md invariants and size ceiling
   skill_rel = "skills/makeflow/SKILL.md"
@@ -3388,6 +3392,10 @@ def validate_hosting_mode_and_pure_git_invariants():
       errors.append(f"{skill_rel} must reference SCAR-GIT-30")
     if "HOSTING_MODE: PURE_GIT" not in skill_text:
       errors.append(f"{skill_rel} must reference 'HOSTING_MODE: PURE_GIT'")
+    if "T50 -> T70" not in skill_text:
+      errors.append(
+          f"{skill_rel} must document bypassing Target 60 (T50 -> T70) when no remote exists"
+      )
     skill_size = os.path.getsize(skill_path)
     if skill_size > 24576:
       errors.append(
