@@ -2437,5 +2437,24 @@
     "closes_issue": true,
     "tests_added": 16,
     "scars_earned": []
+  },
+  {
+    "id": "GH-235",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/235",
+    "title": "[BUG] Terminal title reset at Target 90 fails via agent bash subshell and needs an alternate mechanism",
+    "request": "Evaluate ancestor controlling PTY resolution vs lifecycle hooks so Target 10 set and Target 90 reset update the outer terminal from isolated agent bash subshells, strip backticks and simplify format_terminal_title() to '{dir_name}/: {ticket_id} {issue_tag}' and '{dir_name}/', and reset titles inside lib/state_machine.py:_finalize_completed_ticket().",
+    "branch": "fix/235-terminal-title-reset-subshell",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-21T03:32:34Z",
+    "completed_at": "2026-11-21T18:47:50Z",
+    "commit_sha": "faa4360f96ede372d15ea8e104185299610ceb2c",
+    "pr_number": 251,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/251",
+    "closes_issue": true,
+    "tests_added": 13,
+    "scars_earned": []
   }
 ]

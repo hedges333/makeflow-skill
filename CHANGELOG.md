@@ -37,3 +37,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - Allow `ci.quiescenceSeconds=0` and `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS=0` across hooks, configuration loaders, and `workflow_poll_ci`.
 - Run MCP server tests through the `unittest` runner in `make test-mcp` and CI workflows, and split `TestMcpServer` into discrete methods.
 - GH-237: Align .claude-plugin/plugin.json, .codex-plugin/plugin.json, and MCP fallback version to 0.0.1.
+- GH-235: Resolve outer ancestor PTY and emulator hints before TERM=dumb, simplify title formats without backticks, and reset titles on finish.
