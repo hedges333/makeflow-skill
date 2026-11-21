@@ -155,6 +155,7 @@ When the Depth-0 supervisor dispatches a Makeflow phase subagent (`archaeology-w
 5. If a human `USER_INPUT` step arrives before wakeup, supervisor inspection tools are allowed while mutating tools stay blocked.
 6. Never run live CLI or shell bug-reproduction experiments in the supervisor during Target 15. Direct live bug reproduction to `tdd-worker` at Target 30.
 7. On `archaeology-worker` wakeup, write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
+8. Before dispatching `archaeology-worker` at Target 15, capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree`. If `repo-tree` requires `SCAR-TOOL-16` triage, interview the user first, then attach the index. Use `workflow_repo_tree` as the read-only MCP fallback if the dispatch omits an index.
 
 ## 2. Production Data Protection Rules
 

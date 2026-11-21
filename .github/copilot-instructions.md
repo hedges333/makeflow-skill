@@ -18,6 +18,7 @@ Follow the Makefile Workflow lifecycle when assisting in this repository:
 14. Use atomic directory creation (`mkdir`) for mutual exclusion locks under `SCAR-SYS-08`.
 15. Never arbitrarily impose `--limit` or truncation flags before assessing the full dataset. If output volume threatens context limits, halt tool execution immediately. Interview the user to select a triage path under `SCAR-TOOL-16`.
 16. Enforce Immediate Supervisory Halt (`tool_calls: []`) while phase subagents run (`SCAR-PROC-95`). Defer live bug reproduction to Target 30 instead of Target 15.
+17. At Target 15, capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree` under `SCAR-TOOL-16` triage before dispatching archaeology. Attach that index in the prompt, or call `workflow_repo_tree` as the read-only MCP fallback.
 
 ## Interactive Model Switch Reminder
 

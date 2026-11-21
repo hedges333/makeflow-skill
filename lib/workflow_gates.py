@@ -15,9 +15,14 @@ import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from lib.base_script import BaseScript, SilentArgumentParser
+from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
 from lib.commit_msg import validate_commit_message
 from lib.reflex import emit_reflex
+from lib.repo_tree import (
+    DEFAULT_REPO_TREE_THRESHOLD,
+    RepoTreeCollector,
+    RepoTreeError,
+)
 
 _DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS_DIR = os.path.join(_DEFAULT_REPO_ROOT, "scripts")
@@ -449,7 +454,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "commit push bot-quiescence ready-to-land land "
       "codified-scars-consolidated finish advance "
       "check-intake release-intake check-approved-tree check-commit-msg "
-      "check-main-sync verify-regression check-regression "
+      "check-main-sync verify-regression check-regression repo-tree "
       "witness-red verify-green verify-citation ast-lint"
   )
   recipes = _workflow_target_recipes(gates_script, quoted_root)
@@ -472,9 +477,14 @@ def generate_state_makefile(repo_root: str) -> str:
       "CITE =\n"
       "REGRESSION_CMD ?=\n"
       "SUBPROJECT ?=\n"
+      "PATH_PREFIX ?=\n"
+      "TREE_LIMIT ?=\n"
+      "NO_LIMIT ?=\n"
+      "COUNT_ONLY ?=\n"
       "export TICKET ALLOW_BLOCKED FROM TO APPROVED BLOCKERS ALLOW_MAIN_CONFLICT NO_FETCH TRANSCRIPT FILE\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n"
-      "export REGRESSION_CMD SUBPROJECT\n\n"
+      "export REGRESSION_CMD SUBPROJECT\n"
+      "export PATH_PREFIX TREE_LIMIT NO_LIMIT COUNT_ONLY\n\n"
       f".PHONY: {phony}\n\n"
       f"{recipes}\n"
       "check-intake:\n"
@@ -491,6 +501,8 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} verify-regression --make-env\n\n"
       "check-regression:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} check-regression --make-env\n\n"
+      "repo-tree:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} repo-tree --make-env\n\n"
       "witness-red:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
       "verify-green:\n"
@@ -535,6 +547,11 @@ class WorkflowGatesScript(BaseScript):
     self.regression_cmd: str = ""
     self.subproject: str = ""
     self.regression_timeout: Optional[float] = None
+    self.tree_prefix: str = ""
+    self.tree_approved_limit: Optional[int] = None
+    self.tree_count_only: bool = False
+    self.tree_no_limit: bool = False
+    self.tree_threshold: int = DEFAULT_REPO_TREE_THRESHOLD
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -841,14 +858,15 @@ class WorkflowGatesScript(BaseScript):
     self._register_advance_subparser(subparsers)
     self._register_read_init_subparser(subparsers)
     self._register_regression_subparsers(subparsers)
+    self._register_repo_tree_subparser(subparsers)
 
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
           "intake, approved-tree, commit-msg, main-sync, verify-regression, "
-          "check-regression, terminal-title, release-intake, release-lock, "
-          "read-init-d, or advance."
+          "check-regression, repo-tree, terminal-title, release-intake, "
+          "release-lock, read-init-d, or advance."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
@@ -873,6 +891,16 @@ class WorkflowGatesScript(BaseScript):
       raw_sub = getattr(ns, "subproject", None)
       self.subproject = str(raw_sub).strip() if raw_sub is not None else ""
       self.regression_timeout = getattr(ns, "timeout", None)
+    elif ns.gate == "repo-tree":
+      if ns.tree_threshold <= 0:
+        parser.error("--threshold must be a positive integer.")
+      if ns.tree_approved_limit is not None and ns.tree_approved_limit <= 0:
+        parser.error("--approved-limit must be a positive integer.")
+      self.tree_prefix = str(getattr(ns, "tree_prefix", "") or "").strip()
+      self.tree_approved_limit = ns.tree_approved_limit
+      self.tree_count_only = bool(getattr(ns, "tree_count_only", False))
+      self.tree_no_limit = bool(getattr(ns, "tree_no_limit", False))
+      self.tree_threshold = ns.tree_threshold
     elif ns.gate == "read-init-d":
       self.adv_from = str(getattr(ns, "adv_from", "") or "").strip()
     elif ns.gate == "advance":
@@ -894,6 +922,16 @@ class WorkflowGatesScript(BaseScript):
 
     if self.make_env:
       self._hydrate_from_make_env()
+
+    if self.gate == "repo-tree":
+      if self.tree_approved_limit is not None and self.tree_no_limit:
+        parser.error("--approved-limit and --no-limit cannot be used together.")
+      if self.tree_count_only and (
+          self.tree_approved_limit is not None or self.tree_no_limit
+      ):
+        parser.error(
+            "--count-only cannot be combined with --approved-limit or --no-limit."
+        )
 
   def _hydrate_from_make_env(self) -> None:
     """Populates unset gate fields from exported GNU Make environment variables."""
@@ -922,6 +960,75 @@ class WorkflowGatesScript(BaseScript):
       self.regression_cmd = os.environ["REGRESSION_CMD"].strip()
     if not self.subproject and os.environ.get("SUBPROJECT", "").strip():
       self.subproject = os.environ["SUBPROJECT"].strip()
+    if not self.tree_prefix and os.environ.get("PATH_PREFIX", "").strip():
+      self.tree_prefix = os.environ["PATH_PREFIX"].strip()
+    if (
+        self.tree_approved_limit is None
+        and os.environ.get("TREE_LIMIT", "").strip()
+    ):
+      raw_limit = os.environ["TREE_LIMIT"].strip()
+      if not raw_limit.isascii() or not raw_limit.isdigit() or int(raw_limit) <= 0:
+        raise ReflexArgumentError("TREE_LIMIT must be a positive integer.")
+      self.tree_approved_limit = int(raw_limit)
+    if not self.tree_no_limit and _env_truthy("NO_LIMIT"):
+      self.tree_no_limit = True
+    if not self.tree_count_only and _env_truthy("COUNT_ONLY"):
+      self.tree_count_only = True
+
+  @staticmethod
+  def _register_repo_tree_subparser(subparsers: Any) -> None:
+    """Registers the repo-tree subparser for Target 15 Git file tree indexing."""
+    p_tree_idx = subparsers.add_parser(
+        "repo-tree",
+        help="List repository Git file tree index with SCAR-TOOL-16 volume triage.",
+        description="Collect tracked and non-ignored untracked Git paths for Target 15 archaeology dispatch.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . repo-tree",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_tree_idx.add_argument(
+        "--prefix",
+        dest="tree_prefix",
+        default="",
+        help="Optional repository-relative path prefix filter.",
+    )
+    p_tree_idx.add_argument(
+        "--approved-limit",
+        dest="tree_approved_limit",
+        type=int,
+        default=None,
+        help="Explicit user-approved maximum number of file paths to display.",
+    )
+    p_tree_idx.add_argument(
+        "--count-only",
+        action="store_true",
+        dest="tree_count_only",
+        help="Print file counts and top-level directory breakdown without listing file paths.",
+    )
+    p_tree_idx.add_argument(
+        "--no-limit",
+        action="store_true",
+        dest="tree_no_limit",
+        help="Return the full file tree index when the user explicitly approves unbounded output.",
+    )
+    p_tree_idx.add_argument(
+        "--threshold",
+        dest="tree_threshold",
+        type=int,
+        default=DEFAULT_REPO_TREE_THRESHOLD,
+        help=f"Volume triage file threshold (default {DEFAULT_REPO_TREE_THRESHOLD}).",
+    )
+    p_tree_idx.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit output or Vector 4 Reflex errors as JSON.",
+    )
+    p_tree_idx.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate PATH_PREFIX, TREE_LIMIT, NO_LIMIT, and COUNT_ONLY from environment.",
+    )
 
   @staticmethod
   def _register_regression_subparsers(subparsers: Any) -> None:
@@ -1907,6 +2014,79 @@ class WorkflowGatesScript(BaseScript):
     self.stdout.write(msg + "\n")
     return 0
 
+  def _repo_tree(self) -> int:
+    """Collects and formats the Git file tree index with SCAR-TOOL-16 volume triage."""
+    try:
+      index = RepoTreeCollector(self.repo_root).collect(prefix=self.tree_prefix)
+    except RepoTreeError as exc:
+      return self._fail(
+          scar_id="GIT-25",
+          code="REPO_TREE_COLLECTION_FAILED",
+          trigger=str(exc),
+          rejected=(
+              "Collecting Git file tree index outside a valid Git repository "
+              "or with an invalid path prefix."
+          ),
+          reflex=(
+              "Run repo-tree inside a valid Git repository with a "
+              "repository-relative PATH_PREFIX."
+          ),
+      )
+
+    if (
+        index.exceeds_threshold(self.tree_threshold)
+        and not self.tree_no_limit
+        and self.tree_approved_limit is None
+        and not self.tree_count_only
+    ):
+      if self.as_json:
+        self.stdout.write(
+            json.dumps(index.to_dict(threshold=self.tree_threshold)) + "\n"
+        )
+      else:
+        self.stdout.write(
+            index.format_triage_summary(threshold=self.tree_threshold) + "\n"
+        )
+      return self._fail(
+          scar_id="TOOL-16",
+          code="REPO_TREE_VOLUME_TRIAGE_REQUIRED",
+          trigger=(
+              f"Repository file tree has {index.filtered_count} of "
+              f"{index.total_count} files, exceeding threshold {self.tree_threshold}."
+          ),
+          rejected=(
+              "Returning an unbounded file tree or silently truncating paths "
+              "without user triage."
+          ),
+          reflex=(
+              "Report the file counts and top-level directory breakdown to the "
+              "user and interview them across the 4 SCAR-TOOL-16 paths: "
+              "(1) revise filter criteria (--prefix <dir> / PATH_PREFIX=<dir>), "
+              "(2) impose user-approved limit (--approved-limit <N> / TREE_LIMIT=<N>), "
+              "(3) count files only (--count-only / COUNT_ONLY=1), or "
+              "(4) proceed without limits (--no-limit / NO_LIMIT=1)."
+          ),
+      )
+
+    if self.as_json:
+      payload = index.to_dict(
+          approved_limit=self.tree_approved_limit,
+          threshold=self.tree_threshold,
+          count_only=self.tree_count_only,
+          no_limit=self.tree_no_limit,
+      )
+      self.stdout.write(json.dumps(payload) + "\n")
+      return 0
+
+    if self.tree_count_only:
+      self.stdout.write(index.format_count_summary() + "\n")
+      return 0
+
+    self.stdout.write(
+        index.format_index(approved_limit=self.tree_approved_limit) + "\n"
+    )
+    return 0
+
   def run(self) -> int:
     if self.gate == "init-makefile":
       return self._init_makefile()
@@ -1926,6 +2106,8 @@ class WorkflowGatesScript(BaseScript):
       return self._verify_regression()
     if self.gate == "check-regression":
       return self._check_regression()
+    if self.gate == "repo-tree":
+      return self._repo_tree()
     if self.gate == "terminal-title":
       return self._gate_terminal_title()
     if self.gate in ("release-intake", "release-lock"):
