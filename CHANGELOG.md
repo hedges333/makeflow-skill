@@ -46,3 +46,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-260: Enforce Simple English rules and exit code 2 in `lib/changelog.py` without legacy exemptions, and require `make test` before Target 90 commits.
 - GH-258: Sanitize MAKEFLAGS, GNU Make recursion flags, and Makeflow exports in child regression, TDD, and Make advance subprocesses.
 - GH-257: Anchor receipt hosting mode detection in lib/commit_msg.py and lib/workflow_gates.py to ignore prose quotes.
+- GH-240: Persist structured ticket JSON in lib/ticket_state.py, remove Markdown regex scraping, deduplicate terminal titles, and codify SCAR-ARCH-10.

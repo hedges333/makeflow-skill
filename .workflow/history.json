@@ -2621,5 +2621,30 @@
     "closes_issue": true,
     "tests_added": 12,
     "scars_earned": []
+  },
+  {
+    "id": "GH-240",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/240",
+    "title": "[BUG] terminal title formatting",
+    "request": "Persist structured ticket metadata as .workflow/state/10_ticket.json via object-oriented TicketMetadata and TicketStateStore in lib/ticket_state.py, auto-save on check-intake, remove brittle Markdown regex scraping across consumers, deduplicate terminal titles and readerboard bullets, and codify SCAR-ARCH-10 (SCAR-ARCH-0010).",
+    "branch": "fix/240-terminal-title-formatting",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "mcp",
+      "skills",
+      "rules",
+      "tests"
+    ],
+    "started_at": "2026-11-21T21:00:16Z",
+    "completed_at": "2026-11-21T22:57:46Z",
+    "commit_sha": "bdfa4174ad54bd57bc745710c4f23f1fa8d6d96b",
+    "pr_number": 267,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/267",
+    "closes_issue": true,
+    "tests_added": 21,
+    "scars_earned": [
+      "SCAR-ARCH-10: Preserve Structured Data Over Lossy Prose Round-Trips"
+    ]
   }
 ]
