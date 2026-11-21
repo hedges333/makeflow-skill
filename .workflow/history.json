@@ -2563,5 +2563,25 @@
     "scars_earned": [
       "SCAR-TEST-45: Mandate unique OS ephemeral temporary directories and forbid fixed /tmp/<slug> paths or manual cleanup"
     ]
+  },
+  {
+    "id": "GH-260",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/260",
+    "title": "[BUG] Enforce Simple English validation in lib/changelog.py and run make test before Target 90 changelog commit",
+    "request": "Enforce universal Simple English rules and exit code 2 in lib/changelog.py and scripts/changelog.py, add missing ticket prefixes across CHANGELOG.md, require make test before Target 90 ledger commits in 12_request_history_ledger.md and SKILL.md, and add hermetic tests.",
+    "branch": "fix/260-enforce-changelog-simple-english",
+    "subprojects": [
+      "lib",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-21T21:07:15Z",
+    "completed_at": "2026-11-21T22:35:58Z",
+    "commit_sha": "1cc36d3a32df8823a1155a129ab63a49a5ae320b",
+    "pr_number": 264,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/264",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
