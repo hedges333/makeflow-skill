@@ -2392,5 +2392,28 @@
     "closes_issue": true,
     "tests_added": 21,
     "scars_earned": []
+  },
+  {
+    "id": "GH-220",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/220",
+    "title": "[FEAT] Enforce deterministic supervisory halt airlock while phase subagents run (SCAR-PROC-95)",
+    "request": "Widen ./hooks.json PreToolUse matcher across all eight guarded tools, enforce deterministic SCAR-PROC-95 supervisory halt airlock via .workflow/state/active_subagent.json in lib/turn_boundary.py and scripts/pre_tool_guard.py, unlink stale locks in check-intake, release-intake, and finish, and align SKILL.md, manuals, rules/AGENTS.md, and cross-agent adapters.",
+    "branch": "feat/220-subagent-halt-airlock",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-21T03:38:00Z",
+    "completed_at": "2026-11-21T09:03:34Z",
+    "commit_sha": "edaf3560ad3cd5718aeacfcd2d24237bd64f3247",
+    "pr_number": 241,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/241",
+    "closes_issue": true,
+    "tests_added": 13,
+    "scars_earned": [
+      "SCAR-PROC-95: Enforce deterministic supervisory halt airlock while Makeflow phase subagents run"
+    ]
   }
 ]
