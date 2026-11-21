@@ -2370,5 +2370,27 @@
     "closes_issue": true,
     "tests_added": 1,
     "scars_earned": []
+  },
+  {
+    "id": "GH-219",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/219",
+    "title": "[FEAT] Execute real DAG target transitions and auto-render 99_next_action.md in .workflow/state/Makefile",
+    "request": "Synthesize all 15 executable DAG targets, read-init-d, advance, and 9 leaf gates inside .workflow/state/Makefile, extract shared DAG state and deterministic 99_next_action.md rendering into lib/state_machine.py, route MCP workflow_advance_target through GNU Make when .workflow/state/Makefile exists on disk, enforce lib/turn_boundary.py pause-gate turn boundaries across shell and Make transitions in scripts/pre_tool_guard.py, and update CHANGELOG.md and workflow manuals.",
+    "branch": "feat/219-makefile-dag-transitions",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "scripts",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-15T10:34:00Z",
+    "completed_at": "2026-11-21T02:17:01Z",
+    "commit_sha": "92f6da403b39659c4802494e353b8ffd48bc62a7",
+    "pr_number": 239,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/239",
+    "closes_issue": true,
+    "tests_added": 21,
+    "scars_earned": []
   }
 ]
