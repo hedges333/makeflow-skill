@@ -2583,5 +2583,24 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-258",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/258",
+    "title": "[BUG] make -f .workflow/state/Makefile verify-regression leaks MAKEFLAGS and exported Make variables into child regression commands",
+    "request": "Sanitize GNU Make recursion variables (MAKEFLAGS, MFLAGS, MAKEOVERRIDES, MAKELEVEL, GNUMAKEFLAGS) and all 20 exported .workflow/state/Makefile variables via lib/config.py::sanitize_make_subprocess_env across lib/regression_gate.py, lib/tdd_guard.py, and lib/state_machine.py, with 8 hermetic unit and GNU Make integration tests.",
+    "branch": "fix/258-sanitize-makeflags-verify-regression",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-21T21:01:03Z",
+    "completed_at": "2026-11-21T22:44:57Z",
+    "commit_sha": "f5b1a54329df48cbd9ac19190c1af9a5cfe7e12d",
+    "pr_number": 265,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/265",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": []
   }
 ]
