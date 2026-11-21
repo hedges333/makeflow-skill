@@ -102,13 +102,14 @@ Memento state files (numbered markdown progress cards on disk) preserve task pro
 Read `references/02` and `references/11` for discovery and 27-language scan rules.
 
 1. Run `make -f .workflow/state/Makefile archaeology-verified` to enter Target 15.
-2. Fork `archaeology-worker` using `agyModelTiers["archaeology-worker"]` (default `inherit`) to scan languages, test runners, sibling APIs, and database configuration.
-3. Enforce Immediate Supervisory Halt (`tool_calls: []`) right after subagent dispatch (`SCAR-PROC-95`).
-4. Do not run live bug-reproduction shell commands in the supervisor during Target 15. Defer live reproduction to `tdd-worker` at Target 30.
-5. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
-6. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
-7. Classify failure mechanisms, query `workflow_query_scars` for detected languages and frameworks, and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
-8. On worker wakeup, tag each claim with a Belnap truth state (a four-state fact label). Write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
+2. Capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree` before `invoke_subagent`. If `repo-tree` exits `2` (`SCAR-TOOL-16`), interview the user before dispatch.
+3. Embed the file tree index in the prompt. Fork `archaeology-worker` using `agyModelTiers["archaeology-worker"]` (default `inherit`) to scan languages, test runners, sibling APIs, and database setup.
+4. Enforce Immediate Supervisory Halt (`tool_calls: []`) right after subagent dispatch (`SCAR-PROC-95`).
+5. Do not run live bug-reproduction shell commands in the supervisor during Target 15. Defer live reproduction to `tdd-worker` at Target 30.
+6. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
+7. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
+8. Classify failure mechanisms, query `workflow_query_scars` for detected languages and frameworks, and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
+9. On worker wakeup, tag each claim with a Belnap truth state (a four-state fact label). Write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
 
 ### Target 20: `approved-plan`
 

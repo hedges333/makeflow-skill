@@ -89,6 +89,11 @@ from lib.state_machine import (
     advance_workflow_target,
     run_makefile_advance,
 )
+from lib.repo_tree import (
+    DEFAULT_REPO_TREE_THRESHOLD,
+    RepoTreeCollector,
+    RepoTreeError,
+)
 from lib.workflow_gates import (
     inspect_main_sync,
 )
@@ -964,6 +969,45 @@ def handle_tools_list(request_id):
               },
           },
       },
+      {
+          "name": "workflow_repo_tree",
+          "description": (
+              "Lists the repository Git file tree index (tracked and"
+              " non-ignored untracked files) with SCAR-TOOL-16 volume triage."
+          ),
+          "inputSchema": {
+              "type": "object",
+              "properties": {
+                  "workspaceDir": {
+                      "type": "string",
+                      "description": "Optional absolute path to the Git repository root",
+                  },
+                  "pathPrefix": {
+                      "type": "string",
+                      "description": "Optional repository-relative path prefix to filter returned files",
+                  },
+                  "approvedLimit": {
+                      "type": "integer",
+                      "description": "Optional user-approved maximum number of file paths to return (>= 1)",
+                  },
+                  "countOnly": {
+                      "type": "boolean",
+                      "description": "Set true to return only file counts and top-level directory counts without paths",
+                  },
+                  "noLimit": {
+                      "type": "boolean",
+                      "description": "Set true when the user explicitly approved returning the full unbounded index",
+                  },
+                  "threshold": {
+                      "type": "integer",
+                      "description": (
+                          "Optional volume triage threshold (>= 1, default"
+                          f" {DEFAULT_REPO_TREE_THRESHOLD})"
+                      ),
+                  },
+              },
+          },
+      },
   ]
   return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
 
@@ -1015,6 +1059,104 @@ def _normalize_object_arg(raw_value, field_name):
       None,
       f"Invalid '{field_name}': expected JSON object, got {type(raw_value).__name__}.",
   )
+
+
+def _parse_optional_positive_int_arg(arguments, field_name, default=None):
+  """Validates an optional non-boolean positive integer argument."""
+  raw = arguments.get(field_name)
+  if raw is None:
+    return default, None
+  if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+    return (
+        None,
+        f"Invalid '{field_name}' argument '{raw}'. Provide a positive integer >= 1.",
+    )
+  return raw, None
+
+
+def _parse_optional_bool_arg(arguments, field_name):
+  """Validates an optional boolean argument defaulting to False."""
+  raw = arguments.get(field_name)
+  if raw is None:
+    return False, None
+  if not isinstance(raw, bool):
+    return None, f"Invalid '{field_name}' argument '{raw}'. Provide a boolean."
+  return raw, None
+
+
+def _handle_workflow_repo_tree(request_id, arguments):
+  """Handles read-only workflow_repo_tree MCP calls with SCAR-TOOL-16 triage."""
+  ws = resolve_workspace_dir(arguments)
+  if ws is None:
+    return _error_result(
+        request_id,
+        "BLOCKED: Running inside plugin installation directory without a workspaceDir. "
+        "Pass 'workspaceDir' with the absolute path to the Git repository.",
+    )
+
+  raw_prefix = arguments.get("pathPrefix")
+  if raw_prefix is None:
+    path_prefix = ""
+  elif isinstance(raw_prefix, str):
+    path_prefix = raw_prefix
+  else:
+    return _error_result(
+        request_id,
+        f"Invalid 'pathPrefix' argument '{raw_prefix}'. Provide a string.",
+    )
+
+  approved_limit, err = _parse_optional_positive_int_arg(
+      arguments, "approvedLimit", default=None
+  )
+  if err is not None:
+    return _error_result(request_id, err)
+
+  threshold, err = _parse_optional_positive_int_arg(
+      arguments, "threshold", default=DEFAULT_REPO_TREE_THRESHOLD
+  )
+  if err is not None:
+    return _error_result(request_id, err)
+
+  count_only, err = _parse_optional_bool_arg(arguments, "countOnly")
+  if err is not None:
+    return _error_result(request_id, err)
+
+  no_limit, err = _parse_optional_bool_arg(arguments, "noLimit")
+  if err is not None:
+    return _error_result(request_id, err)
+
+  if approved_limit is not None and no_limit:
+    return _error_result(
+        request_id,
+        "Invalid arguments: 'approvedLimit' and 'noLimit' cannot both be set.",
+    )
+  if count_only and (approved_limit is not None or no_limit):
+    return _error_result(
+        request_id,
+        "Invalid arguments: 'countOnly' cannot be combined with 'approvedLimit' or 'noLimit'.",
+    )
+
+  try:
+    index = RepoTreeCollector(ws).collect(prefix=path_prefix)
+  except RepoTreeError as exc:
+    return _error_result(request_id, str(exc))
+
+  payload = index.to_dict(
+      approved_limit=approved_limit,
+      threshold=threshold,
+      count_only=count_only,
+      no_limit=no_limit,
+  )
+  return {
+      "jsonrpc": "2.0",
+      "id": request_id,
+      "result": {
+          "content": [{
+              "type": "text",
+              "text": json.dumps(payload, indent=2),
+          }]
+      },
+  }
 
 
 def handle_tools_call(request_id, tool_name, arguments):
@@ -1540,6 +1682,9 @@ def handle_tools_call(request_id, tool_name, arguments):
             }]
         },
     }
+
+  elif tool_name == "workflow_repo_tree":
+    return _handle_workflow_repo_tree(request_id, arguments)
 
   return {
       "jsonrpc": "2.0",

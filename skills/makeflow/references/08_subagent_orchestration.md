@@ -66,7 +66,8 @@ The `PreToolUse` hook in `./hooks.json` runs `scripts/pre_tool_guard.py` and `li
 Do not prompt subagents with flat imperative commands alone. Frame dispatch prompts using directive-embedded Socratic questions to prune reckless reasoning branches:
 
 1. **`archaeology-worker` (Target 15)**:
-   > *"Can you discover all languages, subprojects, manifests, test runners, Tier 1 scars (`skills/makeflow/references/scars/`), Tier 2 scars (`.workflow/scars/`), and SQLite registry scars via `workflow_query_scars` across the repository? For every technical claim, what concrete file evidence proves it is ESTABLISHED before we plan changes?"*
+   Capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree` before `invoke_subagent`. If `repo-tree` exits `2` (`SCAR-TOOL-16`), interview the user first, then attach the index.
+   > *"Using the attached Git file tree index (or calling `workflow_repo_tree` if absent, and reporting greenfield immediately on `0 of 0 files`), can you discover all languages, subprojects, manifests, test runners, Tier 1 scars (`skills/makeflow/references/scars/`), Tier 2 scars (`.workflow/scars/`), and SQLite registry scars via `workflow_query_scars`? For every technical claim, what concrete file evidence proves it is ESTABLISHED before we plan changes?"*
 2. **`tdd-worker` (Target 30)**:
    > *"Would most comprehensive testing result from writing the smallest code change that makes the failing test pass while honoring `skills/makeflow/references/scars/`, `.workflow/scars/`, and `workflow_query_scars`? Did this test fail before you edited production code? Does this production change introduce any abstraction not required by the failing test, and if so, can you do without it to prevent unintended consequences?"*
 3. **`adversarial-critic` (Target 40)**:
