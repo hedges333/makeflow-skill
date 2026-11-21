@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, Optional, Tuple
 
-from lib.config import resolve_workflow_config
+from lib.config import resolve_workflow_config, sanitize_make_subprocess_env
 
 DEFAULT_REGRESSION_RECEIPT_REL = os.path.join(
     ".workflow", "state", "30_regression_receipt.json"
@@ -408,7 +408,7 @@ def _run_regression_shell(
     Tuple of ``(completed_process, error_message)``. ``completed_process`` is
     None on timeout or launch error.
   """
-  env = dict(os.environ)
+  env = sanitize_make_subprocess_env(os.environ)
   env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
   proc: Optional[subprocess.Popen] = None
   prev_sigterm: Any = None

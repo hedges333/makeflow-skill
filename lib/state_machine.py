@@ -15,7 +15,11 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
-from lib.config import is_ticket_active, resolve_workflow_config
+from lib.config import (
+    is_ticket_active,
+    resolve_workflow_config,
+    sanitize_make_subprocess_env,
+)
 from lib.safe_copy import safe_copy_file
 from lib.turn_boundary import (
     ACTIVE_SUBAGENT_FILENAME,
@@ -1208,23 +1212,18 @@ def _build_make_advance_env(
     next_t: str,
     ev: Dict[str, Any],
 ) -> Dict[str, str]:
-  """Builds sanitized process environment for GNU Make target execution."""
-  env = dict(os.environ)
-  for key in (
-      "FROM",
-      "TO",
-      "APPROVED",
-      "BLOCKERS",
-      "ALLOW_MAIN_CONFLICT",
-      "NO_FETCH",
-      "TRANSCRIPT",
-      "TICKET",
-      "ALLOW_BLOCKED",
-      "FILE",
-      "REGRESSION_CMD",
-      "SUBPROJECT",
-  ):
-    env.pop(key, None)
+  """Builds sanitized process environment for GNU Make target execution.
+
+  Args:
+    current: Source target ID (T00..T90).
+    next_t: Destination target ID (T00..T90).
+    ev: Transition evidence dictionary.
+
+  Returns:
+    Copied environment stripped of Make recursion and stale Makeflow
+    variables, populated with the active transition variables.
+  """
+  env = sanitize_make_subprocess_env(os.environ)
 
   gate_key = GATE_EVIDENCE_KEYS.get((current, next_t))
   env["PYTHON"] = sys.executable

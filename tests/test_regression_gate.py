@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -863,6 +864,265 @@ class TestRegressionGateRemediationBlockers(unittest.TestCase):
       )
       self.assertFalse(ok)
       self.assertEqual(payload["code"], "REGRESSION_TREE_DRIFT")
+
+
+class TestMakeSubprocessEnvSanitization(unittest.TestCase):
+  """Tests GNU Make recursion and Makeflow export sanitization (GH-258)."""
+
+  _MAKE_RECURSION_VARS = (
+      "MAKEFLAGS",
+      "MFLAGS",
+      "MAKEOVERRIDES",
+      "MAKELEVEL",
+      "GNUMAKEFLAGS",
+  )
+  _MAKEFLOW_EXPORTS = (
+      "TICKET",
+      "ALLOW_BLOCKED",
+      "FROM",
+      "TO",
+      "APPROVED",
+      "BLOCKERS",
+      "ALLOW_MAIN_CONFLICT",
+      "NO_FETCH",
+      "TRANSCRIPT",
+      "FILE",
+      "TEST_DIR",
+      "TEST_CMD",
+      "ALLOW_HEAD_MOVE",
+      "CITE",
+      "REGRESSION_CMD",
+      "SUBPROJECT",
+      "PATH_PREFIX",
+      "TREE_LIMIT",
+      "NO_LIMIT",
+      "COUNT_ONLY",
+  )
+
+  def _polluted_vars(self) -> dict:
+    """Returns a mapping polluting all 5 Make recursion and 20 Makeflow variables."""
+    polluted = {k: f"polluted_{k}" for k in self._MAKE_RECURSION_VARS}
+    for k in self._MAKEFLOW_EXPORTS:
+      polluted[k] = f"polluted_{k}"
+    polluted["MAKEFLAGS"] = "s -- REGRESSION_CMD=make\\ broken TEST_CMD=false"
+    polluted["MAKELEVEL"] = "3"
+    polluted["MY_APP_ENV"] = "staging"
+    polluted["CUSTOM_USER_FLAG"] = "keep-me"
+    return polluted
+
+  def test_sanitize_helper_strips_make_and_makeflow_vars_preserving_user_env(
+      self,
+  ) -> None:
+    """sanitize_make_subprocess_env removes all 25 Make/Makeflow vars without mutating source (GH-258)."""
+    from lib.config import (
+        MAKE_RECURSION_ENV_VARS,
+        MAKEFLOW_EXPORTED_ENV_VARS,
+        sanitize_make_subprocess_env,
+    )
+
+    self.assertEqual(
+        set(MAKE_RECURSION_ENV_VARS), set(self._MAKE_RECURSION_VARS)
+    )
+    self.assertEqual(set(MAKEFLOW_EXPORTED_ENV_VARS), set(self._MAKEFLOW_EXPORTS))
+
+    polluted = self._polluted_vars()
+    polluted["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
+    snapshot = dict(polluted)
+
+    cleaned = sanitize_make_subprocess_env(polluted)
+    self.assertIsNot(cleaned, polluted)
+    self.assertEqual(polluted, snapshot)
+    for var in self._MAKE_RECURSION_VARS + self._MAKEFLOW_EXPORTS:
+      self.assertNotIn(var, cleaned)
+    self.assertEqual(cleaned["MY_APP_ENV"], "staging")
+    self.assertEqual(cleaned["CUSTOM_USER_FLAG"], "keep-me")
+    self.assertEqual(cleaned["PATH"], snapshot["PATH"])
+
+    with mock.patch.dict(os.environ, polluted, clear=False):
+      cleaned_default = sanitize_make_subprocess_env()
+      for var in self._MAKE_RECURSION_VARS + self._MAKEFLOW_EXPORTS:
+        self.assertNotIn(var, cleaned_default)
+      self.assertEqual(cleaned_default["MY_APP_ENV"], "staging")
+      self.assertEqual(os.environ.get("MAKEFLAGS"), polluted["MAKEFLAGS"])
+
+  def test_makefile_export_contract_covers_all_workflow_exports(self) -> None:
+    """MAKEFLOW_EXPORTED_ENV_VARS matches every export directive in generate_state_makefile (GH-258)."""
+    from lib.config import MAKEFLOW_EXPORTED_ENV_VARS
+    from lib.workflow_gates import generate_state_makefile
+
+    makefile_text = generate_state_makefile(REPO_ROOT)
+    exported_vars = set()
+    for line in makefile_text.splitlines():
+      stripped = line.strip()
+      if stripped.startswith("export "):
+        exported_vars.update(stripped[len("export "):].split())
+
+    self.assertEqual(len(exported_vars), 20)
+    self.assertEqual(set(MAKEFLOW_EXPORTED_ENV_VARS), exported_vars)
+
+  def test_regression_shell_strips_make_recursion_and_makeflow_exports(
+      self,
+  ) -> None:
+    """_run_regression_shell strips all 5 Make recursion and 20 Makeflow exports while keeping user vars (GH-258)."""
+    from lib.regression_gate import _run_regression_shell
+
+    polluted = self._polluted_vars()
+    with mock.patch.dict(os.environ, polluted, clear=False):
+      os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
+      with mock.patch("lib.regression_gate.subprocess.Popen") as popen_mock:
+        dummy_proc = mock.MagicMock()
+        dummy_proc.communicate.return_value = ("ok", "")
+        dummy_proc.returncode = 0
+        dummy_proc.poll.return_value = 0
+        dummy_proc.stdout = None
+        dummy_proc.stderr = None
+        popen_mock.return_value = dummy_proc
+
+        proc, err = _run_regression_shell("true", REPO_ROOT, 5.0)
+
+    self.assertIsNotNone(proc)
+    self.assertEqual(err, "")
+    passed_env = popen_mock.call_args.kwargs["env"]
+    for var in self._MAKE_RECURSION_VARS + self._MAKEFLOW_EXPORTS:
+      self.assertNotIn(var, passed_env, f"{var} leaked into child shell env")
+    self.assertEqual(passed_env["MY_APP_ENV"], "staging")
+    self.assertEqual(passed_env["CUSTOM_USER_FLAG"], "keep-me")
+    self.assertEqual(passed_env["PYTHONDONTWRITEBYTECODE"], "1")
+
+  def test_verify_regression_make_test_isolates_nested_mcp_advance(
+      self,
+  ) -> None:
+    """Real GNU Make verify-regression REGRESSION_CMD='make test' isolates nested workflow_advance_target (GH-258)."""
+    from lib.state_machine import read_active_target
+    from lib.workflow_gates import WorkflowGatesScript
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      outer_repo = os.path.join(tmpdir, "outer_repo")
+      inner_repo = os.path.join(tmpdir, "inner_repo")
+      os.makedirs(outer_repo)
+      os.makedirs(inner_repo)
+
+      # Seed inner repo without a root Makefile (reproducing GH-258).
+      _init_git_repo(inner_repo)
+      _seed_two_test_files(inner_repo, beta_passes=True)
+      os.unlink(os.path.join(inner_repo, "Makefile"))
+      WorkflowGatesScript().execute(
+          args=["--repo-root", inner_repo, "init-makefile"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      inner_state_dir = os.path.join(inner_repo, ".workflow", "state")
+      _write_file(
+          os.path.join(inner_state_dir, "20_plan_approved.md"), "APPROVED\n"
+      )
+      _lock_approved_tree(inner_repo)
+      inner_cmd = (
+          f"{shlex.quote(sys.executable)} -m unittest discover"
+          " -s tests -p 'test_*.py'"
+      )
+
+      # Seed outer repo whose `make test` invokes nested MCP workflow_advance_target.
+      _init_git_repo(outer_repo)
+      nested_test_code = (
+          "import json\n"
+          "import os\n"
+          "import sys\n"
+          "import unittest\n\n"
+          f"REPO_ROOT = {repr(REPO_ROOT)}\n"
+          "if REPO_ROOT not in sys.path:\n"
+          "  sys.path.insert(0, REPO_ROOT)\n\n"
+          "from lib.state_machine import read_active_target\n"
+          "import mcp.server as mcp_server\n\n"
+          "class TestNestedMcpAdvance(unittest.TestCase):\n"
+          "  def test_nested_advance_succeeds_under_outer_make(self):\n"
+          "    self.assertNotIn('REGRESSION_CMD', os.environ)\n"
+          "    self.assertNotIn('REGRESSION_CMD', os.environ.get('MAKEFLAGS', ''))\n"
+          "    self.assertNotIn('MAKEOVERRIDES', os.environ)\n"
+          "    self.assertNotIn('GNUMAKEFLAGS', os.environ)\n"
+          "    self.assertEqual(os.environ.get('MAKELEVEL'), '1')\n"
+          f"    inner_repo = {repr(inner_repo)}\n"
+          f"    inner_cmd = {repr(inner_cmd)}\n"
+          "    resp = mcp_server.handle_tools_call(\n"
+          "        10,\n"
+          "        'workflow_advance_target',\n"
+          "        {\n"
+          "            'currentTarget': 'T30',\n"
+          "            'nextTarget': 'T40',\n"
+          "            'workspaceDir': inner_repo,\n"
+          "            'evidence': {\n"
+          "                'skipMainFetch': True,\n"
+          "                'regressionCmd': inner_cmd,\n"
+          "                'subproject': '.',\n"
+          "            },\n"
+          "        },\n"
+          "    )\n"
+          "    self.assertFalse(resp['result'].get('isError'), resp)\n"
+          "    inner_state = os.path.join(inner_repo, '.workflow', 'state')\n"
+          "    self.assertEqual(read_active_target(inner_state)['target'], 'T40')\n"
+          "    receipt_path = os.path.join(inner_state, '30_regression_receipt.json')\n"
+          "    self.assertTrue(os.path.isfile(receipt_path))\n"
+          "    with open(receipt_path, 'r', encoding='utf-8') as f:\n"
+          "      receipt = json.load(f)\n"
+          "    self.assertTrue(receipt['verified'])\n"
+          "    self.assertEqual(receipt['regression_cmd'], inner_cmd)\n\n"
+          "if __name__ == '__main__':\n"
+          "  unittest.main()\n"
+      )
+      _write_file(
+          os.path.join(outer_repo, "tests", "test_nested_advance.py"),
+          nested_test_code,
+      )
+      _write_file(
+          os.path.join(outer_repo, "Makefile"),
+          f"test:\n\t@{shlex.quote(sys.executable)} -m unittest discover -s tests -p 'test_*.py'\n",
+      )
+      _git(outer_repo, "add", "-A")
+      _git(outer_repo, "commit", "-q", "-m", "test: add nested MCP advance suite")
+      WorkflowGatesScript().execute(
+          args=["--repo-root", outer_repo, "init-makefile"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+
+      polluted_env = dict(os.environ)
+      polluted_env.update({
+          "MAKELEVEL": "4",
+          "GNUMAKEFLAGS": "--no-print-directory",
+          "TEST_CMD": "false",
+          "APPROVED": "1",
+          "TICKET": "GH-258",
+          "FROM": "T10",
+          "TO": "T15",
+          "TREE_LIMIT": "25",
+          "SUBPROJECT": ".",
+      })
+      res = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              os.path.join(".workflow", "state", "Makefile"),
+              f"PYTHON={sys.executable}",
+              "verify-regression",
+              "REGRESSION_CMD=make test",
+          ],
+          cwd=outer_repo,
+          env=polluted_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+      outer_receipt_path = os.path.join(
+          outer_repo, ".workflow", "state", "30_regression_receipt.json"
+      )
+      self.assertTrue(os.path.isfile(outer_receipt_path))
+      with open(outer_receipt_path, "r", encoding="utf-8") as f:
+        outer_receipt = json.load(f)
+      self.assertTrue(outer_receipt["verified"])
+      self.assertEqual(outer_receipt["regression_cmd"], "make test")
+      self.assertEqual(read_active_target(inner_state_dir)["target"], "T40")
 
 
 if __name__ == "__main__":

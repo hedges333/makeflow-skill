@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+from typing import Dict, Mapping, Optional
 
 ENV_MAPPINGS = {
     "MAKEFILE_WORKFLOW_CRITIC_MODEL": "adversarial-critic",
@@ -35,6 +36,64 @@ _CI_FIELD_SPECS = {
     "pollIntervalSeconds": (30, 1),
     "quiescenceSeconds": (180, 0),
 }
+
+MAKE_RECURSION_ENV_VARS = (
+    "MAKEFLAGS",
+    "MFLAGS",
+    "MAKEOVERRIDES",
+    "MAKELEVEL",
+    "GNUMAKEFLAGS",
+)
+
+MAKEFLOW_EXPORTED_ENV_VARS = (
+    "TICKET",
+    "ALLOW_BLOCKED",
+    "FROM",
+    "TO",
+    "APPROVED",
+    "BLOCKERS",
+    "ALLOW_MAIN_CONFLICT",
+    "NO_FETCH",
+    "TRANSCRIPT",
+    "FILE",
+    "TEST_DIR",
+    "TEST_CMD",
+    "ALLOW_HEAD_MOVE",
+    "CITE",
+    "REGRESSION_CMD",
+    "SUBPROJECT",
+    "PATH_PREFIX",
+    "TREE_LIMIT",
+    "NO_LIMIT",
+    "COUNT_ONLY",
+)
+
+_SANITIZED_MAKE_ENV_VARS = frozenset(MAKE_RECURSION_ENV_VARS) | frozenset(
+    MAKEFLOW_EXPORTED_ENV_VARS
+)
+
+
+def sanitize_make_subprocess_env(
+    base_env: Optional[Mapping[str, str]] = None,
+) -> Dict[str, str]:
+  """Returns a copied environment stripped of GNU Make and Makeflow exports.
+
+  Removes GNU Make recursion variables (``MAKEFLAGS``, ``MFLAGS``,
+  ``MAKEOVERRIDES``, ``MAKELEVEL``, ``GNUMAKEFLAGS``) and all Makeflow
+  ``.workflow/state/Makefile`` exported variables so child processes and
+  nested Make invocations do not inherit parent overrides.
+
+  Args:
+    base_env: Optional source environment mapping. Defaults to ``os.environ``.
+
+  Returns:
+    Fresh dictionary containing all other environment entries unchanged.
+  """
+  source = os.environ if base_env is None else base_env
+  env = dict(source)
+  for key in _SANITIZED_MAKE_ENV_VARS:
+    env.pop(key, None)
+  return env
 
 
 def _parse_int_min(val, default, min_val):

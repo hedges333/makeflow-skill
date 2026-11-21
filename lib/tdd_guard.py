@@ -21,6 +21,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
+from lib.config import sanitize_make_subprocess_env
 from lib.reflex import emit_reflex
 from lib.workflow_gates import generate_state_makefile
 
@@ -541,9 +542,11 @@ class TddGuardScript(BaseScript):
   ) -> Tuple[Optional[subprocess.CompletedProcess], str]:
     proc: Optional[subprocess.Popen] = None
     try:
+      env = sanitize_make_subprocess_env(os.environ)
       proc = subprocess.Popen(
           ["/bin/sh", "-c", cmd],
           cwd=self.repo_root,
+          env=env,
           stdout=subprocess.PIPE,
           stderr=subprocess.PIPE,
           text=True,
