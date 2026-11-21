@@ -115,8 +115,8 @@ BLOCKERS:
 ```
 Soft tokens (such as `REQUEST_CHANGES` or `NEEDS_WORK`) are prohibited. The critic must not supply copy-paste implementation code blocks.
 
-### 3.5 Single-Shot Subagent Lifecycle (`SCAR-PROC-89`)
-Never negotiate with, argue with, or send updated diffs to an existing critic subagent. Each review round requires a fresh, un-primed subagent instance.
+### 3.5 Single-Shot Subagent Lifecycle and Immediate Supervisory Halt (`SCAR-PROC-89`, `SCAR-PROC-95`)
+After dispatching `adversarial-critic` via `invoke_subagent`, enforce Immediate Supervisory Halt (`tool_calls: []`) until `<SYSTEM_MESSAGE>` wakeup (`SCAR-PROC-95`). Never negotiate with, argue with, or send updated diffs to an existing critic subagent. Each review round requires a fresh, un-primed subagent instance.
 
 ---
 

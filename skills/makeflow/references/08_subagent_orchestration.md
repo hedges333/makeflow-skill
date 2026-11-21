@@ -47,8 +47,19 @@ Never list `call_mcp_tool`, `list_resources`, or `read_resource` under `tools:` 
 Follow three rules when launching background subagents:
 
 1. When you start a long subagent task such as CI polling, pair `invoke_subagent` with `schedule(DurationSeconds: 60, TimerCondition: "<subagent-id>")`.
-2. Stop calling tools (`tool_calls: []`) right after dispatch and wait for the system notification. Never poll in a loop with shell `sleep` commands (`SCAR-PROC-53`).
+2. Enforce Immediate Supervisory Halt (`tool_calls: []`) right after dispatch and wait for the `<SYSTEM_MESSAGE>` notification (`SCAR-PROC-95`). Never poll in a loop with shell `sleep` commands (`SCAR-PROC-53`).
 3. If a timer conflict happens twice in a row, stop and yield to the user (`SCAR-PROC-138`).
+
+### 4.1 Deterministic Supervisory Halt Airlock (`SCAR-PROC-95`)
+
+The `PreToolUse` hook in `./hooks.json` runs `scripts/pre_tool_guard.py` and `lib/turn_boundary.py` across eight supervisor tools:
+
+1. When `invoke_subagent` starts `archaeology-worker`, `tdd-worker`, `adversarial-critic`, or `triage-worker`, the hook writes `.workflow/state/active_subagent.json`.
+2. The lock file records `supervisorConversationId`, `typeName`, and `dispatchedStepIdx` from `transcriptPath`.
+3. If a child subagent calls tools (`conversationId != supervisorConversationId`), the airlock passes while safety guards stay active.
+4. While the phase worker runs, concurrent supervisor calls are denied with a `SCAR-PROC-95` Vector 4 Reflex (a runtime recovery directive).
+5. If a human `USER_INPUT` step arrives before wakeup, supervisor inspection tools (`read_file`, `manage_subagents`, `ask_question`, `call_mcp_tool`, `run_command`) are allowed.
+6. When the subagent `<SYSTEM_MESSAGE>` wakeup arrives, the hook unlinks `.workflow/state/active_subagent.json` and resumes normal supervisor execution.
 
 ## 5. Socratic Subagent Delegation Protocol
 

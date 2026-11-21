@@ -103,10 +103,12 @@ Read `references/02` and `references/11` for discovery and 27-language scan rule
 
 1. Run `make -f .workflow/state/Makefile archaeology-verified` to enter Target 15.
 2. Fork `archaeology-worker` using `agyModelTiers["archaeology-worker"]` (default `inherit`) to scan languages, test runners, sibling APIs, and database configuration.
-3. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
-4. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
-5. Classify failure mechanisms, query `workflow_query_scars` for detected languages and frameworks, and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
-6. Tag each claim with a Belnap truth state (a four-state fact label) and write `.workflow/state/15_archaeology_receipt.md`.
+3. Enforce Immediate Supervisory Halt (`tool_calls: []`) right after subagent dispatch (`SCAR-PROC-95`).
+4. Do not run live bug-reproduction shell commands in the supervisor during Target 15. Defer live reproduction to `tdd-worker` at Target 30.
+5. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
+6. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
+7. Classify failure mechanisms, query `workflow_query_scars` for detected languages and frameworks, and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
+8. On worker wakeup, tag each claim with a Belnap truth state (a four-state fact label). Write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
 
 ### Target 20: `approved-plan`
 
@@ -121,7 +123,7 @@ Read `references/02` for Socratic deliberation and plan disclosures.
 
 Read `references/03`, `references/04_testing_isolation.md`, and `references/14` for TDD, isolation, and design patterns.
 
-1. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`) and query `workflow_query_scars` (`workflowPhase: "Target 30: tdd"`) for target languages, frameworks, and diagnostic codes.
+1. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`), then enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`). Have the worker query `workflow_query_scars` (`workflowPhase: "Target 30: tdd"`) for target languages, frameworks, and diagnostic codes.
 2. Red phase: Write failing tests first and witness a non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
 3. Green phase: Write minimal production code so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.
 4. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`), update docstrings, and prepare for Target 40.
@@ -132,7 +134,7 @@ Read `references/04_six_pillars_adversarial_review.md` and `references/13`.
 
 1. Lock the Git Merkle tree (staged file hash) via `git add -A && git write-tree > .workflow/state/approved_tree.txt` and run `make -f .workflow/state/Makefile adversarial-review`.
 2. If `.workflow/config.json` specifies models or 'inherit', bypass the model picker prompt. When unconfigured in interactive IDEs, prompt the user to select a deep-reasoning model. Stop tool calls (`tool_calls: []`) to pause for model selection before critic dispatch.
-3. In Antigravity, fork `adversarial-critic` using `agyModelTiers["adversarial-critic"]` (default `inherit`) with explicit path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) and `workflow_query_scars` (`workflowPhase: "Target 40: review"`), then write `40_critic_review.md`.
+3. In Antigravity, fork `adversarial-critic` using `agyModelTiers["adversarial-critic"]` (default `inherit`) with explicit path `skills/makeflow/references/04_six_pillars_adversarial_review.md` (`SCAR-PROC-105`) and `workflow_query_scars` (`workflowPhase: "Target 40: review"`). Enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`), then write `40_critic_review.md`.
 4. At Target 42 (`BLOCKERS > 0`), run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<n>`, print Blocker Digest and NBO summary with dispositions, then pause for `human-blocker-triage-approval`. After triage approval, run `make -f .workflow/state/Makefile implementation-diff APPROVED=1`.
 5. At Target 45 (`0 BLOCKERS`), run `make -f .workflow/state/Makefile approved-review BLOCKERS=0` and print the review with a `file://` link. Pause for `human-review-approval`, then write `45_review_approved.md`.
 
@@ -151,7 +153,7 @@ Read `references/05` and `references/06` for pre-commit hygiene and pull request
 Read `references/07`, `references/09`, and `references/12` for triage and ledger schemas.
 
 1. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1`. At Target 70 in Pure Git Mode, run `make all`, write `70_bot_triage.md`, and run `make -f .workflow/state/Makefile ready-to-land`.
-2. In Antigravity, fork `triage-worker` using `agyModelTiers["triage-worker"]` (default `inherit`) and stop tool calls. In single-agent sessions, call MCP `workflow_poll_ci` with `maxWaitSeconds: 1`.
+2. In Antigravity, fork `triage-worker` using `agyModelTiers["triage-worker"]` (default `inherit`) and enforce Immediate Supervisory Halt (`tool_calls: []`) (`SCAR-PROC-95`). In single-agent sessions, call MCP `workflow_poll_ci` with `maxWaitSeconds: 1`.
 3. Triage CI failures and bot findings using `workflow_query_scars` (`workflowPhase: "Target 70: ci-triage"`), and write `70_bot_triage.md`. If accepted bot findings require code edits, run `make -f .workflow/state/Makefile implementation-diff FROM=T70`.
 4. At Target 75, run `make -f .workflow/state/Makefile ready-to-land`, print CI status and the 7-criteria policy table, then pause for `human-landing-approval`.
 5. At Target 80, run `make -f .workflow/state/Makefile land APPROVED=1`, run `gh pr merge <PR> --squash --delete-branch`, and fast-forward `main`. In Pure Git Mode, run `git merge --squash` on `main` instead.

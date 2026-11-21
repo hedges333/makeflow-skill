@@ -14,7 +14,7 @@ Follow five rules before you modify any source file:
 
 ## 2. Red-Green-Refactor TDD Loop
 
-Execute every code change in three ordered phases.
+In multi-agent runtimes, fork `tdd-worker` via `invoke_subagent` and enforce Immediate Supervisory Halt (`tool_calls: []`) until `<SYSTEM_MESSAGE>` wakeup (`SCAR-PROC-95`). Execute every code change in three ordered phases.
 
 ### Phase 1: Red (Failing Test First)
 
@@ -38,7 +38,7 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 
 The `verify-citation` gate reads cited specification lines directly from immutable Git blobs at witnessed `HEAD`. It also verifies governance toolchain integrity. If a cited file does not exist in the witnessed `HEAD` commit, the gate rejects it with `UNCOMMITTED_WITNESS_FILE`. If a citation points to a blank line or comment line, the gate rejects it with `TRIVIAL_WITNESS_LINE`. Both violations return exit code `2` and roll back Green verification.
 
-The `scripts/pre_tool_guard.py` hook blocks direct tool writes and shell commands attempting output redirection (`>`, `>>`), truncation (`truncate`), in-place editing (`sed -i`), or deletion (`rm`, `unlink`) targeting makeflow governance files (`lib/state_machine.py`), `.workflow/state/active_target.json`, or `.workflow/state/Makefile`.
+The `scripts/pre_tool_guard.py` hook blocks direct tool writes and shell commands attempting output redirection (`>`, `>>`), truncation (`truncate`), in-place editing (`sed -i`), or deletion (`rm`, `unlink`) targeting makeflow governance files (`lib/state_machine.py`), `.workflow/state/active_target.json`, `.workflow/state/active_subagent.json`, or `.workflow/state/Makefile`.
 
 ### Phase 3: Refactor
 

@@ -1,9 +1,11 @@
-"""Declarative target configuration and transcript turn-boundary guard (GH-186, SCAR-PROC-102).
+"""Declarative target configuration, turn-boundary guard, and subagent halt airlock (GH-186, GH-220).
 
-Enforces that pause gates (T20, T42, T45, T50, T60, T75) and pause-gated shell
-commands (git commit, git push, gh pr merge) cannot be exited or executed in the
-same autonomous turn that entered the pause gate without an intervening human
-USER_INPUT turn.
+Enforces:
+1. Pause gates (T20, T42, T45, T50, T60, T75) and pause-gated shell commands
+   (git commit, git push, gh pr merge) require an intervening human USER_INPUT
+   turn (SCAR-PROC-102).
+2. Deterministic supervisory halt airlock (SCAR-PROC-95) blocking concurrent
+   Depth-0 supervisor tool calls while Makeflow phase subagents execute.
 """
 
 import io
@@ -20,6 +22,20 @@ from lib.shell_safety import (
 )
 
 GATE_ENTRY_FILENAME = "gate_entry.json"
+ACTIVE_SUBAGENT_FILENAME = "active_subagent.json"
+MAKEFLOW_PHASE_WORKERS = frozenset({
+    "archaeology-worker",
+    "tdd-worker",
+    "adversarial-critic",
+    "triage-worker",
+})
+SUPERVISOR_INSPECTION_TOOLS = frozenset({
+    "read_file",
+    "manage_subagents",
+    "ask_question",
+    "call_mcp_tool",
+    "run_command",
+})
 
 _MAKE_GOAL_TO_TARGET = {
     "ticket-assigned": "T10",
@@ -1056,3 +1072,270 @@ def verify_mcp_gate_exit(
       transcript_path,
       state_dir=state_dir,
   )
+
+
+def _step_effective_index(step, fallback_idx):
+  """Returns validated integer step_index from step, rejecting bool values.
+
+  Args:
+    step: Transcript step dictionary.
+    fallback_idx: Zero-based list index fallback when step_index is absent.
+
+  Returns:
+    Integer step index for ordering comparisons.
+  """
+  s_idx = step.get("step_index") if isinstance(step, dict) else None
+  if isinstance(s_idx, int) and not isinstance(s_idx, bool):
+    return s_idx
+  return fallback_idx
+
+
+def read_active_subagent(state_dir):
+  """Reads .workflow/state/active_subagent.json if present and valid.
+
+  Args:
+    state_dir: Path to .workflow/state directory.
+
+  Returns:
+    Parsed active subagent lock dictionary, or None when absent or invalid.
+  """
+  if not state_dir or not isinstance(state_dir, str):
+    return None
+  path = os.path.join(state_dir, ACTIVE_SUBAGENT_FILENAME)
+  if not os.path.isfile(path):
+    return None
+  try:
+    with open(path, "r", encoding="utf-8") as f:
+      data = json.load(f)
+    return data if isinstance(data, dict) else None
+  except (
+      OSError,
+      UnicodeDecodeError,
+      json.JSONDecodeError,
+      ValueError,
+      TypeError,
+  ):
+    return None
+
+
+def record_active_subagent(
+    state_dir, supervisor_cid, worker_type, transcript_path=""
+):
+  """Records Makeflow phase subagent dispatch in .workflow/state/active_subagent.json.
+
+  Args:
+    state_dir: Path to existing .workflow/state directory.
+    supervisor_cid: Supervisor conversationId string.
+    worker_type: Dispatched subagent TypeName string.
+    transcript_path: Optional supervisor transcript.jsonl path.
+  """
+  if (
+      not state_dir
+      or not isinstance(state_dir, str)
+      or not os.path.isdir(state_dir)
+      or worker_type not in MAKEFLOW_PHASE_WORKERS
+  ):
+    return
+
+  steps = load_transcript_steps(transcript_path) if transcript_path else []
+  last_step_idx = -1
+  for idx, st in enumerate(steps):
+    last_step_idx = _step_effective_index(st, idx)
+
+  payload = {
+      "supervisorConversationId": str(supervisor_cid or "").strip(),
+      "typeName": str(worker_type).strip(),
+      "dispatchedStepIdx": last_step_idx,
+      "dispatchedAt": time.time(),
+      "transcriptPath": str(transcript_path or ""),
+  }
+  path = os.path.join(state_dir, ACTIVE_SUBAGENT_FILENAME)
+  try:
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump(payload, f, indent=2, sort_keys=True)
+      f.write("\n")
+  except OSError:
+    pass
+
+
+def clear_active_subagent(state_dir):
+  """Unlinks .workflow/state/active_subagent.json when present.
+
+  Args:
+    state_dir: Path to .workflow/state directory.
+  """
+  if not state_dir or not isinstance(state_dir, str):
+    return
+  path = os.path.join(state_dir, ACTIVE_SUBAGENT_FILENAME)
+  if os.path.isfile(path):
+    try:
+      os.unlink(path)
+    except OSError:
+      pass
+
+
+def is_subagent_wakeup_step(step):
+  """Returns True when step represents a reactive subagent completion wakeup.
+
+  Excludes system "Reminder:" nudges so reminder injections do not prematurely
+  unlock an active phase subagent airlock.
+
+  Args:
+    step: Transcript step dictionary.
+
+  Returns:
+    True when step is a non-reminder SYSTEM_MESSAGE or SYSTEM message delivery.
+  """
+  if not isinstance(step, dict):
+    return False
+  step_type = str(step.get("type") or "").strip()
+  source = str(step.get("source") or "").strip()
+  raw_content = _unwrap_json_val(step.get("content"))
+  content = (
+      raw_content.strip()
+      if isinstance(raw_content, str)
+      else str(raw_content or "").strip()
+  )
+  if content.startswith("Reminder:"):
+    return False
+  if step_type == "SYSTEM_MESSAGE":
+    return True
+  if source == "SYSTEM" and (
+      "[Message]" in content or "<SYSTEM_MESSAGE>" in content
+  ):
+    return True
+  return False
+
+
+def is_human_user_input_step(step):
+  """Returns True when step represents an explicit human operator USER_INPUT turn.
+
+  Args:
+    step: Transcript step dictionary.
+
+  Returns:
+    True when step is USER_EXPLICIT or non-SYSTEM USER_INPUT.
+  """
+  if not isinstance(step, dict):
+    return False
+  source = str(step.get("source") or "").strip()
+  if source == "USER_EXPLICIT":
+    return True
+  step_type = str(step.get("type") or "").strip()
+  return step_type == "USER_INPUT" and source != "SYSTEM"
+
+
+def _maybe_record_phase_dispatch(
+    tool_name, args, state_dir, caller_cid, transcript_path
+):
+  """Records active_subagent.json when invoke_subagent starts a phase worker."""
+  if tool_name != "invoke_subagent":
+    return
+  worker_type = str(
+      _unwrap_json_val(args.get("TypeName") or args.get("typeName") or "")
+  ).strip()
+  if worker_type in MAKEFLOW_PHASE_WORKERS:
+    record_active_subagent(
+        state_dir, caller_cid, worker_type, transcript_path=transcript_path
+    )
+
+
+def evaluate_subagent_airlock(payload, state_dir):
+  """Enforces SCAR-PROC-95 deterministic supervisory halt while phase subagents run.
+
+  Args:
+    payload: PreToolUse hook payload dictionary.
+    state_dir: Resolved .workflow/state directory path.
+
+  Returns:
+    Tuple of (allowed, reason_string).
+  """
+  if not isinstance(payload, dict):
+    return True, ""
+
+  raw_tc = payload.get("toolCall")
+  tool_call = raw_tc if isinstance(raw_tc, dict) else {}
+  tool_name = str(_unwrap_json_val(tool_call.get("name") or "")).strip()
+  raw_args = _unwrap_json_val(tool_call.get("args") or {})
+  args = raw_args if isinstance(raw_args, dict) else {}
+
+  active = read_active_subagent(state_dir)
+  if active is None:
+    _maybe_record_phase_dispatch(
+        tool_name,
+        args,
+        state_dir,
+        str(payload.get("conversationId") or "").strip(),
+        str(payload.get("transcriptPath") or "").strip(),
+    )
+    return True, ""
+
+  caller_cid = str(payload.get("conversationId") or "").strip()
+  sup_cid = str(active.get("supervisorConversationId") or "").strip()
+  if caller_cid and caller_cid != sup_cid:
+    return True, ""
+
+  transcript_path = str(payload.get("transcriptPath") or "").strip()
+  eff_transcript = transcript_path or str(
+      active.get("transcriptPath") or ""
+  ).strip()
+  raw_disp = active.get("dispatchedStepIdx", -1)
+  dispatched_idx = (
+      raw_disp
+      if (isinstance(raw_disp, int) and not isinstance(raw_disp, bool))
+      else -1
+  )
+
+  has_wakeup = False
+  has_human_override = False
+  for idx, st in enumerate(load_transcript_steps(eff_transcript)):
+    if not isinstance(st, dict):
+      continue
+    if _step_effective_index(st, idx) <= dispatched_idx:
+      continue
+    if is_subagent_wakeup_step(st):
+      has_wakeup = True
+      break
+    if is_human_user_input_step(st):
+      has_human_override = True
+
+  if has_wakeup:
+    clear_active_subagent(state_dir)
+    _maybe_record_phase_dispatch(
+        tool_name, args, state_dir, caller_cid, eff_transcript
+    )
+    return True, ""
+
+  if has_human_override and tool_name in SUPERVISOR_INSPECTION_TOOLS:
+    if tool_name == "manage_subagents":
+      action = str(
+          _unwrap_json_val(args.get("Action") or args.get("action") or "")
+      ).strip().lower()
+      if action in ("kill", "kill_all"):
+        clear_active_subagent(state_dir)
+    return True, ""
+
+  active_worker = str(active.get("typeName") or "subagent").strip()
+  buf = io.StringIO()
+  emit_reflex(
+      stream=buf,
+      scar_id="SCAR-PROC-95",
+      violation_code="CONCURRENT_SUPERVISOR_TOOL_CALL",
+      trigger=(
+          f"Supervisor invoked '{tool_name}' while Makeflow phase subagent"
+          f" '{active_worker}' is still active"
+          f" (dispatchedStepIdx={dispatched_idx}, no completion"
+          " <SYSTEM_MESSAGE> wakeup recorded)."
+      ),
+      rejected=(
+          "Bundling or running concurrent Depth-0 supervisor tool calls"
+          " alongside an active phase subagent, duplicating worker scans"
+          " and inflating supervisor context (SCAR-PROC-95)."
+      ),
+      reflex=(
+          "Halt supervisor tool execution immediately (`tool_calls: []`) and"
+          " wait for the reactive <SYSTEM_MESSAGE> wakeup from"
+          f" '{active_worker}' before calling further tools."
+      ),
+  )
+  return False, buf.getvalue().strip()

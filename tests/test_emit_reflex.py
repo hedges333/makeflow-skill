@@ -936,6 +936,128 @@ class TestWorkflowGatesScript(unittest.TestCase):
       )
       self.assertEqual(code_unblocked, 0, err_unblocked.getvalue())
 
+  def test_stale_active_subagent_json_cleaned_on_intake_release_and_finish(
+      self,
+  ):
+    """Verifies stale active_subagent.json is unlinked cleanly across intake, release-intake, and finish (GH-220)."""
+    from lib.state_machine import write_active_target
+
+    with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as lockdir:
+      _init_git_repo(tmpdir)
+      _exclude_workflow_dirs(tmpdir)
+      exclude_path = os.path.join(tmpdir, ".git", "info", "exclude")
+      with open(exclude_path, "a", encoding="utf-8") as f:
+        f.write(".workflow/config.json\n")
+
+      cfg_dir = os.path.join(tmpdir, ".workflow")
+      os.makedirs(cfg_dir, exist_ok=True)
+      with open(
+          os.path.join(cfg_dir, "config.json"), "w", encoding="utf-8"
+      ) as f:
+        f.write(json.dumps({"state": {"completedCardAction": "archive"}}))
+
+      state_dir = os.path.join(cfg_dir, "state")
+      os.makedirs(state_dir, exist_ok=True)
+      lock_path = os.path.join(state_dir, "active_subagent.json")
+
+      # 1a. When a prior 10_ticket.md card still exists, intake fails and preserves active_subagent.json
+      with open(
+          os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# Active ticket\n")
+      with open(lock_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"typeName": "archaeology-worker"}))
+      code_blocked = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "intake"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(code_blocked, 2)
+      self.assertTrue(os.path.isfile(lock_path))
+
+      # 1b. Clean intake (zero leftover 10_..80_ cards) unlinks stale active_subagent.json
+      os.unlink(os.path.join(state_dir, "10_ticket.md"))
+      err_intake = io.StringIO()
+      code_intake = WorkflowGatesScript().execute(
+          args=["--repo-root", tmpdir, "intake"],
+          stdout=io.StringIO(),
+          stderr=err_intake,
+      )
+      self.assertEqual(code_intake, 0, err_intake.getvalue())
+      self.assertFalse(os.path.exists(lock_path))
+
+      # 2. release-intake unlinks active_subagent.json (with or without active ticket) without archiving it
+      for with_active_ticket in (True, False):
+        if with_active_ticket:
+          with open(
+              os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+          ) as f:
+            f.write("# Active ticket\n")
+        elif os.path.exists(os.path.join(state_dir, "10_ticket.md")):
+          os.unlink(os.path.join(state_dir, "10_ticket.md"))
+
+        with open(lock_path, "w", encoding="utf-8") as f:
+          f.write(json.dumps({"typeName": "tdd-worker"}))
+        err_rel = io.StringIO()
+        code_rel = WorkflowGatesScript().execute(
+            args=[
+                "--repo-root",
+                tmpdir,
+                "--lock-dir",
+                lockdir,
+                "release-intake",
+                "--ticket",
+                "GH-220",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_rel,
+        )
+        self.assertEqual(code_rel, 0, err_rel.getvalue())
+        self.assertFalse(os.path.exists(lock_path))
+        self.assertFalse(
+            os.path.exists(
+                os.path.join(cfg_dir, "archive", "GH-220", "active_subagent.json")
+            )
+        )
+
+      if os.path.exists(os.path.join(state_dir, "10_ticket.md")):
+        os.unlink(os.path.join(state_dir, "10_ticket.md"))
+
+      # 3. finish (_finalize_completed_ticket) unlinks active_subagent.json
+      with open(
+          os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# Ticket\n\n- **Ticket ID**: `GH-220`\n")
+      write_active_target(
+          state_dir,
+          {
+              "previousTarget": "T80",
+              "target": "T90",
+              "targetName": "codified-scars-consolidated",
+          },
+      )
+      with open(lock_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"typeName": "triage-worker"}))
+
+      err_fin = io.StringIO()
+      code_fin = WorkflowGatesScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "advance",
+              "--from",
+              "T90",
+              "--to",
+              "T90",
+              "--complete",
+              "--no-fetch",
+          ],
+          stdout=io.StringIO(),
+          stderr=err_fin,
+      )
+      self.assertEqual(code_fin, 0, err_fin.getvalue())
+      self.assertFalse(os.path.exists(lock_path))
+
   def test_release_intake_archives_tdd_receipt_when_configured(self):
     from lib.workspace_mutex import WorkspaceMutex
 

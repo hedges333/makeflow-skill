@@ -8130,6 +8130,15 @@ def _collect_compatibility_errors():
         " verified."
     )
 
+  # Deterministic Supervisory Halt Airlock Invariants (GH-220, SCAR-PROC-95)
+  airlock_95_errors = check_scar_proc_95_subagent_halt_airlock()
+  errors.extend(airlock_95_errors)
+  if not airlock_95_errors:
+    print(
+        "✔ Supervisory halt airlock and SCAR-PROC-95 invariants (GH-220)"
+        " verified."
+    )
+
   return errors
 
 
@@ -9766,6 +9775,258 @@ class TestTarget90ChangelogAndReleaseInvariants(unittest.TestCase):
         any("0.9.0" in e for e in errs_bad),
         f"Expected fabricated 0.9.0 rejection, got: {errs_bad}",
     )
+
+
+EXPECTED_PRE_TOOL_MATCHER = (
+    "invoke_subagent|read_file|write_file|edit_file|run_command|"
+    "call_mcp_tool|manage_subagents|ask_question"
+)
+
+SCAR_PROC_95_AIRLOCK_FILES = (
+    "hooks.json",
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "skills/makeflow/references/08_subagent_orchestration.md",
+    "skills/makeflow/references/scars/process.md",
+    "rules/AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def check_scar_proc_95_subagent_halt_airlock(
+    files_map: dict[str, str] | None = None,
+) -> list[str]:
+  """Validates GH-220 SCAR-PROC-95 PreToolUse matcher and Immediate Supervisory Halt docs."""
+  if files_map is None:
+    files_map = {}
+    for rel in SCAR_PROC_95_AIRLOCK_FILES:
+      fpath = repo_path(rel)
+      if os.path.isfile(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  errs: list[str] = []
+  for rel in SCAR_PROC_95_AIRLOCK_FILES:
+    if rel not in files_map:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. ./hooks.json PreToolUse matcher
+  try:
+    hooks_data = json.loads(files_map["hooks.json"])
+    pre_hooks = hooks_data.get("makeflow-guard", {}).get("PreToolUse", [])
+    actual_matcher = pre_hooks[0].get("matcher", "") if pre_hooks else ""
+    if actual_matcher != EXPECTED_PRE_TOOL_MATCHER:
+      errs.append(
+          f"hooks.json PreToolUse[0].matcher expected '{EXPECTED_PRE_TOOL_MATCHER}',"
+          f" got '{actual_matcher}'"
+      )
+  except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+    errs.append(f"hooks.json invalid JSON structure: {exc}")
+
+  # 2. skills/makeflow/SKILL.md across T15, T30, T40, and T70
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  for hdr in (
+      "### Target 15:",
+      "### Target 30:",
+      "### Target 40,",
+      "### Target 70,",
+  ):
+    if hdr not in skill_text:
+      errs.append(f"{skill_rel} missing section '{hdr}'")
+      continue
+    sec = re.split(r"\n###\s+|\n---\n", skill_text.split(hdr, 1)[1], maxsplit=1)[0]
+    for tok in ("Immediate Supervisory Halt", "tool_calls: []", "SCAR-PROC-95"):
+      if tok not in sec:
+        errs.append(f"{skill_rel} section '{hdr}' must document '{tok}'")
+  t15_sec = (
+      re.split(
+          r"\n###\s+",
+          skill_text.split("### Target 15:", 1)[1],
+          maxsplit=1,
+      )[0]
+      if "### Target 15:" in skill_text
+      else ""
+  )
+  if "Target 30" not in t15_sec or "reproduction" not in t15_sec.lower():
+    errs.append(
+        f"{skill_rel} Target 15 must defer live bug reproduction to Target 30"
+    )
+  if "without re-reading" not in t15_sec.lower():
+    errs.append(
+        f"{skill_rel} Target 15 must instruct writing 15_archaeology_receipt.md without re-reading scanned files"
+    )
+
+  # 3. Reference manuals 02, 03, 04, and 08
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  for tok in (
+      "Immediate Supervisory Halt",
+      "tool_calls: []",
+      "SCAR-PROC-95",
+      "tdd-worker",
+      "Target 30",
+      "15_archaeology_receipt.md",
+  ):
+    if tok not in r02_text:
+      errs.append(f"{r02_rel} must document '{tok}'")
+  if "without re-reading" not in r02_text.lower():
+    errs.append(
+        f"{r02_rel} must instruct synthesizing 15_archaeology_receipt.md without re-reading scanned files"
+    )
+
+  for ref_rel in (
+      "skills/makeflow/references/03_tdd_and_code_quality.md",
+      "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+  ):
+    ref_text = files_map[ref_rel]
+    for tok in ("Immediate Supervisory Halt", "tool_calls: []", "SCAR-PROC-95"):
+      if tok not in ref_text:
+        errs.append(f"{ref_rel} must document '{tok}'")
+
+  r08_rel = "skills/makeflow/references/08_subagent_orchestration.md"
+  r08_text = files_map[r08_rel]
+  for tok in (
+      "Immediate Supervisory Halt",
+      "tool_calls: []",
+      "SCAR-PROC-95",
+      "./hooks.json",
+      "scripts/pre_tool_guard.py",
+      ".workflow/state/active_subagent.json",
+      "archaeology-worker",
+      "tdd-worker",
+      "adversarial-critic",
+      "triage-worker",
+      "<SYSTEM_MESSAGE>",
+      "USER_INPUT",
+  ):
+    if tok not in r08_text:
+      errs.append(f"{r08_rel} must document '{tok}'")
+
+  # 4. Tier 1 scar spoke process.md (in-place SCAR-PROC-95 update)
+  proc_rel = "skills/makeflow/references/scars/process.md"
+  proc_text = files_map[proc_rel]
+  if "### SCAR-PROC-95" not in proc_text:
+    errs.append(f"{proc_rel} missing '### SCAR-PROC-95'")
+  else:
+    sec_95 = proc_text.split("### SCAR-PROC-95", 1)[1].split("### SCAR-", 1)[0]
+    for tok in (
+        "Immediate Supervisory Halt",
+        "tool_calls: []",
+        "scripts/pre_tool_guard.py",
+        ".workflow/state/active_subagent.json",
+    ):
+      if tok not in sec_95:
+        errs.append(f"{proc_rel} SCAR-PROC-95 must document '{tok}'")
+    m_probe = re.search(r"(?m)^-\s+\*\*Socratic Probe\*\*:\s*(.+)$", sec_95)
+    if not m_probe:
+      errs.append(f"{proc_rel} SCAR-PROC-95 missing Socratic Probe")
+    else:
+      errs.extend(
+          validate_socratic_probe(m_probe.group(1).strip(), scar_id="SCAR-PROC-95")
+      )
+
+  # 5. rules/AGENTS.md Section 1.13
+  agents_rel = "rules/AGENTS.md"
+  agents_text = files_map[agents_rel]
+  sec_hdr = "### 1.13 Immediate Supervisory Halt During Subagent Execution (SCAR-PROC-95)"
+  if sec_hdr not in agents_text:
+    errs.append(f"{agents_rel} missing '{sec_hdr}'")
+  else:
+    sec_1_13 = re.split(
+        r"\n#{2,3}\s+", agents_text.split(sec_hdr, 1)[1], maxsplit=1
+    )[0]
+    for tok in (
+        "Immediate Supervisory Halt",
+        "tool_calls: []",
+        "./hooks.json",
+        "scripts/pre_tool_guard.py",
+        ".workflow/state/active_subagent.json",
+        "Target 15",
+        "Target 30",
+        "15_archaeology_receipt.md",
+    ):
+      if tok not in sec_1_13:
+        errs.append(f"{agents_rel} Section 1.13 must document '{tok}'")
+
+  # 6. Cross-agent adapters
+  for adapter_rel in (
+      "CLAUDE.md",
+      ".cursorrules",
+      ".cursor/rules/makeflow.mdc",
+      ".github/copilot-instructions.md",
+      "adapters/chatgpt/instructions.md",
+  ):
+    adapter_text = files_map[adapter_rel]
+    for tok in (
+        "Immediate Supervisory Halt",
+        "tool_calls: []",
+        "SCAR-PROC-95",
+        "Target 15",
+        "Target 30",
+    ):
+      if tok not in adapter_text:
+        errs.append(f"{adapter_rel} must document '{tok}'")
+
+  return errs
+
+
+class TestScarProc95SubagentHaltAirlock(unittest.TestCase):
+  """Regression and negative falsification tests for GH-220 SCAR-PROC-95 airlock docs."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in SCAR_PROC_95_AIRLOCK_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_scar_proc_95_airlock_invariants(self):
+    self.assertEqual(check_scar_proc_95_subagent_halt_airlock(), [])
+
+  def test_negative_falsification_scar_proc_95_airlock(self):
+    base = self._load_base_files()
+    self.assertEqual(check_scar_proc_95_subagent_halt_airlock(base), [])
+
+    mut_hooks = dict(base)
+    mut_hooks["hooks.json"] = json.dumps({
+        "makeflow-guard": {
+            "PreToolUse": [{"matcher": "run_command|call_mcp_tool|ask_question"}]
+        }
+    })
+    self.assertTrue(
+        any(
+            "hooks.json" in e
+            for e in check_scar_proc_95_subagent_halt_airlock(mut_hooks)
+        )
+    )
+
+    for rel in (
+        "skills/makeflow/SKILL.md",
+        "skills/makeflow/references/02_archaeology_and_planning.md",
+        "skills/makeflow/references/08_subagent_orchestration.md",
+        "rules/AGENTS.md",
+        "CLAUDE.md",
+        ".cursorrules",
+        ".cursor/rules/makeflow.mdc",
+        ".github/copilot-instructions.md",
+        "adapters/chatgpt/instructions.md",
+    ):
+      mut = dict(base)
+      mut[rel] = mut[rel].replace("Immediate Supervisory Halt", "Optional Pause")
+      errs = check_scar_proc_95_subagent_halt_airlock(mut)
+      self.assertTrue(
+          any(rel in e for e in errs),
+          f"Expected rejection when Immediate Supervisory Halt omitted from {rel}, got: {errs}",
+      )
 
 
 if __name__ == "__main__":
