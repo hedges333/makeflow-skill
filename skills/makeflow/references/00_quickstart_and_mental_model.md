@@ -42,6 +42,7 @@ flowchart LR
     T40 --> T45["T45: Review Gate"]
     T45 --> T50["T50: Commit Gate"]
     T50 --> T60["T60: Push Gate"]
+    T50 -. "Pure Git (No Remote)" .-> T70
     T60 -. "Rebase Conflict" .-> T40
     T60 --> T70["T70: CI and Bots"]
     T70 --> T75["T75: Landing Gate"]
@@ -64,6 +65,6 @@ When the agent stops at a human pause gate, reply in chat to continue. After you
 - Plan Gate (`T20 -> T30`, `humanPlanApproved: true`): `"Plan approved. Proceed."`
 - Blocker Gate (`T42 -> T30`, `humanBlockerTriageApproved: true`): `"Approved. Fix blockers 1 and 2."`
 - Review Gate (`T45 -> T50`, `humanReviewApproved: true`): `"Review approved. Proceed to commit."`
-- Commit Gate (`T50 -> T60`, `humanCommitApproved: true`): `"Approved. Commit the changes."`
+- Commit Gate (`T50 -> T60` or `T50 -> T70` in Pure Git Mode, `humanCommitApproved: true`): `"Approved. Commit the changes."`
 - Push Gate (`T60 -> T70`, `humanPushApproved: true`): `"Approved. Push branch and open PR."`
 - Landing Gate (`T75 -> T80`, `humanLandingApproved: true`): `"CI is green. Squash and merge."`

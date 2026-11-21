@@ -42,6 +42,8 @@ Both `.workflow/state/Makefile` targets and the `workflow_advance_target` MCP to
 ## 2. Human Push Approval Gate
 
 Target 60 is a mandatory human pause gate.
+If zero Git remotes exist in Pure Git Mode (`SCAR-GIT-30`), skip Target 60 via `T50 -> T70`.
+If any Git remote exists, enter Target 60 even when `HOSTING_MODE: PURE_GIT` is active.
 
 1. Run `make -f .workflow/state/Makefile push APPROVED=1` to run `check-main-sync` and render `AWAITING_DECLARATION (human-push-approval)` in `.workflow/state/99_next_action.md`.
 2. Print the branch name, remote repository name, and local `HEAD` commit hash in chat.
@@ -62,5 +64,5 @@ After the user approves the push, run these steps:
    - Blast radius review.
    - Readability notes.
    - Error handling and edge cases covered.
-3. If in Pure Git Mode (`SCAR-GIT-30`), record `HOSTING_MODE: PURE_GIT` in `.workflow/state/15_archaeology_receipt.md` and skip `gh pr create`.
+3. If a non-GitHub remote uses Pure Git Mode (`SCAR-GIT-30`), push the branch and skip `gh pr create`. Record `HOSTING_MODE: PURE_GIT` in `.workflow/state/15_archaeology_receipt.md`.
 4. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (or `humanPushApproved: true`) to advance to Target 70.

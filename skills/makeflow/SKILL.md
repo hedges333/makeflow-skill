@@ -76,7 +76,7 @@ At turn start or after context compaction (automatic chat history compression), 
 | `42` | Review has `BLOCKERS > 0` | `triaged-blockers` | Run `triaged-blockers BLOCKERS=<n>`, pause for `human-blocker-triage-approval`, return to T30. |
 | `45` | Review has `0 BLOCKERS` | `approved-review` | Run `make -f .workflow/state/Makefile approved-review BLOCKERS=0` and pause for `human-review-approval`. |
 | `50` | Approved review, uncommitted | `commit` | Run full tests, write `50_commit_msg.txt`, run `commit APPROVED=1`, pause for `human-commit-approval`. |
-| `60` | Committed, unpushed | `push` | Commit changes, run `push APPROVED=1`, pause for `human-push-approval`, push, open PR. |
+| `60` | Committed, unpushed | `push` | Commit changes, run `push APPROVED=1` (or `T50 -> T70` if no remote), pause, push, open PR. |
 | `70` | PR open, CI or bots active | `bot-quiescence` | Run `bot-quiescence APPROVED=1`, poll CI and bots, write `70_bot_triage.md`, triage comments. |
 | `75` | CI green, zero open comments | `ready-to-land` | Run `ready-to-land`, print CI summary and 7-criteria table, pause for `human-landing-approval`. |
 | `80` | Landing approved | `land` | Run `land APPROVED=1`, squash-merge, delete ticket branch, fast-forward default branch. |
@@ -147,17 +147,17 @@ Read `references/05` and `references/06` for pre-commit hygiene and pull request
 2. Run `make -f .workflow/state/Makefile commit APPROVED=1`, which enforces `check-approved-tree` and `check-commit-msg` (`closes #<N>` trap on `LOCAL-<N>` tasks).
 3. Print the commit proposal, pause for `human-commit-approval`, then run `git commit -F .workflow/state/50_commit_msg.txt`.
 4. At Target 60, run `make -f .workflow/state/Makefile push APPROVED=1` (`git merge-tree`) and pause for `human-push-approval`. If operator-approved rebase resolves conflicts, re-lock `approved_tree.txt`, run `make test-static`, and run `make -f .workflow/state/Makefile adversarial-review FROM=T60`. Otherwise, push the branch and run `gh pr create`.
-5. In Pure Git Mode (`SCAR-GIT-30`), set `HOSTING_MODE: PURE_GIT` and skip PR creation.
+5. In Pure Git Mode (`SCAR-GIT-30`), set `HOSTING_MODE: PURE_GIT`. If zero Git remotes exist, skip Target 60 via `T50 -> T70` (`bot-quiescence APPROVED=1`). If a remote exists, enter Target 60 to push and skip `gh pr create`.
 
 ### Target 70, Target 75, Target 80, and Target 90: CI, Landing, and Ledger
 
 Read `references/07`, `references/09`, and `references/12` for triage and ledger schemas.
 
-1. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1`. At Target 70 in Pure Git Mode, run `make all`, write `70_bot_triage.md`, and run `make -f .workflow/state/Makefile ready-to-land`.
+1. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (from `T60`, or from `T50` when no remote exists). At Target 70 in Pure Git Mode, run `make all`, write `70_bot_triage.md`, and run `make -f .workflow/state/Makefile ready-to-land`.
 2. In Antigravity, fork `triage-worker` using `agyModelTiers["triage-worker"]` (default `inherit`) and enforce Immediate Supervisory Halt (`tool_calls: []`) (`SCAR-PROC-95`). In single-agent sessions, call MCP `workflow_poll_ci` with `maxWaitSeconds: 1`.
 3. Triage CI failures and bot findings using `workflow_query_scars` (`workflowPhase: "Target 70: ci-triage"`), and write `70_bot_triage.md`. If accepted bot findings require code edits, run `make -f .workflow/state/Makefile implementation-diff FROM=T70`.
 4. At Target 75, run `make -f .workflow/state/Makefile ready-to-land`, print CI status and the 7-criteria policy table, then pause for `human-landing-approval`.
-5. At Target 80, run `make -f .workflow/state/Makefile land APPROVED=1`, run `gh pr merge <PR> --squash --delete-branch`, and fast-forward `main`. In Pure Git Mode, run `git merge --squash` on `main` instead.
+5. At Target 80, run `make -f .workflow/state/Makefile land APPROVED=1`, run `gh pr merge <PR> --squash --delete-branch`, and fast-forward `main`. In Pure Git Mode, run `git merge --squash <branch>`, commit on `main`, and run `git branch -D <branch>` under `SCAR-GIT-25` confirmation.
 6. At Target 90, run `make -f .workflow/state/Makefile codified-scars-consolidated` first. Update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md` `## [Unreleased]` without editing core catalog files on `main`. Start each `CHANGELOG.md` bullet with the ticket ID, such as `- GH-1234:` or `- LOCAL-1234:`. In external projects, record project-local lessons in `.workflow/scars/` and update an existing `CHANGELOG.md`. If direct push is permitted, push `origin main`. Comment the `"Target 90: Workflow Complete"` summary on the ticket with `gh issue comment <number> --body-file <file>` or `python3 scripts/local_tickets.py close --ticket <id> --comment-file <file>`. Ask the user via `ask_question` whether to cut a new release or stay unreleased. Run `make -f .workflow/state/Makefile finish` to clean state cards and mark `99_next_action.md` `COMPLETE`.
 
 ---

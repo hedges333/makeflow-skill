@@ -119,4 +119,4 @@ Target 50 is a mandatory human pause gate.
    ```bash
    test "$(git rev-parse HEAD^{tree})" = "$(cat .workflow/state/approved_tree.txt)"
    ```
-6. Run `make -f .workflow/state/Makefile push APPROVED=1` (or `humanCommitApproved: true`) to advance to Target 60.
+6. If a Git remote exists, run `make -f .workflow/state/Makefile push APPROVED=1` (or `humanCommitApproved: true`) to advance to Target 60. If zero remotes exist in Pure Git Mode (`SCAR-GIT-30`), run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (`T50 -> T70`).

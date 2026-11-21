@@ -94,7 +94,7 @@
       "gatedCommands": []
     },
     "T50": {
-      "next": ["T60"],
+      "next": ["T60", "T70"],
       "recoveryNext": ["T30"],
       "pauseGate": true,
       "evidenceKey": "humanCommitApproved",
