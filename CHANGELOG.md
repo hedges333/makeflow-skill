@@ -48,3 +48,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-258: Sanitize MAKEFLAGS, GNU Make recursion flags, and Makeflow exports in child regression, TDD, and Make advance subprocesses.
 - GH-257: Anchor receipt hosting mode detection in lib/commit_msg.py and lib/workflow_gates.py to ignore prose quotes.
 - GH-240: Persist structured ticket JSON in lib/ticket_state.py, remove Markdown regex scraping, deduplicate terminal titles, and codify SCAR-ARCH-10.
+- GH-263: Restrict numeric fallback in WorkspaceMutex.is_session_active to bare ASCII digits so explicit ticket prefixes never cross-match.
