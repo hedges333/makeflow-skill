@@ -2747,5 +2747,23 @@
     "closes_issue": true,
     "tests_added": 3,
     "scars_earned": []
+  },
+  {
+    "id": "GH-269",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/269",
+    "title": "[BUG] Isolate hook and pre_tool_guard tests from live active_subagent.json",
+    "request": "Isolate all seven failing hook and pre_tool_guard tests, test_hook_mcp_parity, and remaining hook and guard tests in tests/test_hooks.py and tests/test_pre_tool_guard.py from live active_subagent.json, live 99_next_action.md, host HOME, and ambient MAKEFILE_WORKFLOW_* variables without modifying scripts/pre_tool_guard.py (deferred to #204).",
+    "branch": "fix/269-isolate-hook-tests",
+    "subprojects": [
+      "tests"
+    ],
+    "started_at": "2026-11-22T02:30:58Z",
+    "completed_at": "2026-11-22T04:04:34Z",
+    "commit_sha": "82e1d68afae527a3807cdbc532ad0cea7664b48f",
+    "pr_number": 280,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/280",
+    "closes_issue": true,
+    "tests_added": 0,
+    "scars_earned": []
   }
 ]

@@ -52,3 +52,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-245: Adapt synthesized ast-lint and AstScrubScript to external Python consumer layouts, and document BaseScript SCAR-AST-01 compliance in Reference 14.
 - GH-249: Replace raw Git index copying with ephemeral native plumbing in lib/git_index.py, and surface Make stderr diagnostics.
 - GH-247: Replace literal zero-tool wakeup rule in Reference 04 and SCAR-PROC-89 with bounded Target 42 entry.
+- GH-269: Isolate tests/test_hooks.py and tests/test_pre_tool_guard.py from live active_subagent.json, 99_next_action.md, host HOME, and MAKEFILE_WORKFLOW_* variables.
