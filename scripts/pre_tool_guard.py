@@ -23,6 +23,9 @@ from lib.config import (
     load_database_config,
     resolve_state_dir,
 )
+from lib.git_safety import (
+    classify_git_tokens,
+)
 from lib.target90_guard import (
     is_target_90_commit_command,
     is_target_90_state_dir,
@@ -94,6 +97,46 @@ def _detect_target_90(cmd, state_dir=None):
   return is_history_msg, is_t90_state
 
 
+_HOOK_DENY_REASONS = {
+    "git_clean": (
+        "Blocked destructive Git command 'git clean'. "
+        "Do not delete untracked working-tree files automatically."
+    ),
+    "git_checkout_force": (
+        "Blocked 'git checkout' with worktree-overwriting flags. "
+        "Do not overwrite uncommitted working-tree changes."
+    ),
+    "git_checkout_double_dash": (
+        "Blocked 'git checkout -- <path>'. "
+        "Do not overwrite working-tree files with git checkout."
+    ),
+    "git_checkout_path": (
+        "Blocked path-based 'git checkout'. "
+        "Do not overwrite working-tree files or directories."
+    ),
+    "git_checkout_tree_path": (
+        "Blocked 'git checkout <tree> <path>'. "
+        "Do not overwrite working-tree files with git checkout."
+    ),
+    "git_switch_force": (
+        "Blocked 'git switch' with force or discard-changes. "
+        "Do not discard uncommitted working-tree edits."
+    ),
+    "git_restore_worktree": (
+        "Blocked working-tree 'git restore'. "
+        "Only 'git restore --staged' is allowed to unstage index entries."
+    ),
+    "git_update_ref": (
+        "Blocked 'git update-ref'. "
+        "Do not delete or batch-rewrite Git references."
+    ),
+    "git_push_force": (
+        "Blocked force-push command. "
+        "Force-pushing is forbidden across all branches in the agent workflow."
+    ),
+}
+
+
 def _evaluate_git_tokens(
     tokens,
     has_review,
@@ -103,246 +146,49 @@ def _evaluate_git_tokens(
     transcript_path="",
 ):
   """Returns ('deny'|'force_ask'|'allow', reason) for a single command's tokens."""
-  exe, rem = _unwrap_command_tokens(tokens)
-  if not exe or exe == "SHELL_C":
+  verdict = classify_git_tokens(tokens)
+  if verdict.decision == "allow":
     return "allow", ""
 
-  if exe == "gh":
-    _, _, _, gh_pos, _ = _split_git_args(
-        rem,
-        short_value_chars="R",
-        long_value_flags=("--repo", "--hostname"),
-    )
-    if len(gh_pos) >= 2 and gh_pos[0] == "pr" and gh_pos[1] == "merge":
-      if transcript_path or state_dir:
-        ok, reason = evaluate_command_turn_boundary(
-            "T75", transcript_path, state_dir=state_dir
-        )
-        if not ok:
-          return "deny", reason
-      return (
-          "force_ask",
-          "Target 75 Landing Gate: gh pr merge requires operator approval. "
-          "Make sure that CI is green and the 180-second quiet period passed.",
-      )
-    return "allow", ""
-
-  if exe != "git":
-    return "allow", ""
-
-  subcmd, sub_args, git_configs = _parse_git_subcommand(rem)
-  if not subcmd:
-    return "allow", ""
-
-  if subcmd == "reset":
-    long_opts, _, _, _, _ = _split_git_args(sub_args)
-    for bad_flag in ("--hard", "--merge", "--keep"):
-      if bad_flag in long_opts:
-        return (
-            "deny",
-            f"Blocked destructive Git command 'git reset {bad_flag}'. "
-            "Do not discard uncommitted working-tree changes.",
-        )
-    return "allow", ""
-
-  if subcmd == "clean":
-    _, _, ordered_opts, _, _ = _split_git_args(
-        sub_args,
-        short_value_chars="e",
-        long_value_flags=("--exclude",),
-    )
-    cfg_force = _has_clean_force_config(git_configs)
-    dry_run = False
-    force = cfg_force
-    interactive = False
-    for opt in ordered_opts:
-      if opt in {"-n", "--dry-run"}:
-        dry_run = True
-      elif opt == "--no-dry-run":
-        dry_run = False
-      elif opt in {"-f", "--force"}:
-        force = True
-      elif opt == "--no-force":
-        force = cfg_force
-      elif opt in {"-i", "--interactive"}:
-        interactive = True
-      elif opt == "--no-interactive":
-        interactive = False
-    if (force or interactive) and not dry_run:
+  if verdict.decision == "deny":
+    if verdict.rule == "git_reset":
       return (
           "deny",
-          "Blocked destructive Git command 'git clean'. "
-          "Do not delete untracked working-tree files automatically.",
+          f"Blocked destructive Git command 'git reset {verdict.detail}'. "
+          "Do not discard uncommitted working-tree changes.",
       )
-    return "allow", ""
+    if verdict.rule == "git_stash":
+      return (
+          "deny",
+          f"Blocked 'git stash {verdict.detail}'. Do not delete stashed changes.",
+      )
+    if verdict.rule == "git_filter":
+      return (
+          "deny",
+          f"Blocked '{verdict.detail}'. History-rewriting repository filters are forbidden.",
+      )
+    if verdict.rule == "git_reflog":
+      return (
+          "deny",
+          f"Blocked 'git reflog {verdict.detail}'. Do not erase Git recovery reflogs.",
+      )
+    return "deny", _HOOK_DENY_REASONS[verdict.rule]
 
-  if subcmd == "checkout":
-    long_opts, short_opts, _, pos, has_dd = _split_git_args(
-        sub_args,
-        short_value_chars="bBU",
-        long_value_flags=(
-            "--orphan",
-            "--conflict",
-            "--inter-hunk-context",
-            "--pathspec-from-file",
-        ),
-    )
-    if (
-        any(ch in short_opts for ch in ("f", "p", "2", "3"))
-        or any(
-            opt
-            in {
-                "--force",
-                "--discard-changes",
-                "--patch",
-                "--ours",
-                "--theirs",
-                "--pathspec-from-file",
-            }
-            or opt.startswith("--pathspec-from-file=")
-            for opt in long_opts
-        )
-    ):
-      return (
-          "deny",
-          "Blocked 'git checkout' with worktree-overwriting flags. "
-          "Do not overwrite uncommitted working-tree changes.",
+  if verdict.rule == "gh_pr_merge":
+    if transcript_path or state_dir:
+      ok, reason = evaluate_command_turn_boundary(
+          "T75", transcript_path, state_dir=state_dir
       )
-    if has_dd:
-      return (
-          "deny",
-          "Blocked 'git checkout -- <path>'. "
-          "Do not overwrite working-tree files with git checkout.",
-      )
-    if any(
-        p in {".", ".."}
-        or p.startswith(("./", "../"))
-        or any(ch in p for ch in "*?[")
-        for p in pos
-    ):
-      return (
-          "deny",
-          "Blocked path-based 'git checkout'. "
-          "Do not overwrite working-tree files or directories.",
-      )
-    creating_branch = (
-        "b" in short_opts or "B" in short_opts or "--orphan" in long_opts
-    )
-    if not creating_branch and len(pos) >= 2:
-      return (
-          "deny",
-          "Blocked 'git checkout <tree> <path>'. "
-          "Do not overwrite working-tree files with git checkout.",
-      )
-    return "allow", ""
-
-  if subcmd == "switch":
-    long_opts, short_opts, _, _, _ = _split_git_args(
-        sub_args,
-        short_value_chars="cC",
-        long_value_flags=("--orphan", "--conflict"),
-    )
-    if (
-        "f" in short_opts
-        or "--force" in long_opts
-        or "--discard-changes" in long_opts
-    ):
-      return (
-          "deny",
-          "Blocked 'git switch' with force or discard-changes. "
-          "Do not discard uncommitted working-tree edits.",
-      )
-    return "allow", ""
-
-  if subcmd == "restore":
-    _, _, ordered_opts, _, _ = _split_git_args(
-        sub_args,
-        short_value_chars="s",
-        long_value_flags=("--source", "--conflict", "--pathspec-from-file"),
-    )
-    staged = False
-    worktree = False
-    for opt in ordered_opts:
-      if opt in {"-S", "--staged"}:
-        staged = True
-      elif opt == "--no-staged":
-        staged = False
-      elif opt in {"-W", "--worktree"}:
-        worktree = True
-      elif opt == "--no-worktree":
-        worktree = False
-    if not staged or worktree:
-      return (
-          "deny",
-          "Blocked working-tree 'git restore'. "
-          "Only 'git restore --staged' is allowed to unstage index entries.",
-      )
-    return "allow", ""
-
-  if subcmd == "stash":
-    _, _, _, pos, _ = _split_git_args(
-        sub_args,
-        short_value_chars="m",
-        long_value_flags=("--message", "--pathspec-from-file"),
-    )
-    if pos and pos[0] in {"drop", "clear"}:
-      return (
-          "deny",
-          f"Blocked 'git stash {pos[0]}'. Do not delete stashed changes.",
-      )
-    return "allow", ""
-
-  if subcmd in {"filter-branch", "filter-repo"}:
+      if not ok:
+        return "deny", reason
     return (
-        "deny",
-        f"Blocked '{subcmd}'. History-rewriting repository filters are forbidden.",
+        "force_ask",
+        "Target 75 Landing Gate: gh pr merge requires operator approval. "
+        "Make sure that CI is green and the 180-second quiet period passed.",
     )
 
-  if subcmd == "reflog":
-    _, _, _, pos, _ = _split_git_args(sub_args)
-    if pos and pos[0] in {"delete", "expire"}:
-      return (
-          "deny",
-          f"Blocked 'git reflog {pos[0]}'. Do not erase Git recovery reflogs.",
-      )
-    return "allow", ""
-
-  if subcmd == "update-ref":
-    long_opts, short_opts, _, _, _ = _split_git_args(
-        sub_args, short_value_chars="m"
-    )
-    if "d" in short_opts or "--stdin" in long_opts:
-      return (
-          "deny",
-          "Blocked 'git update-ref'. Do not delete or batch-rewrite Git references.",
-      )
-    return "allow", ""
-
-  if subcmd == "push":
-    long_opts, short_opts, _, pos, _ = _split_git_args(
-        sub_args,
-        short_value_chars="o",
-        long_value_flags=("--repo", "--receive-pack", "--exec", "--push-option"),
-    )
-    has_force_flag = (
-        "f" in short_opts
-        or any(
-            opt
-            in {"--force", "--force-with-lease", "--force-if-includes", "--mirror"}
-            or opt.startswith("--force-with-lease=")
-            for opt in long_opts
-        )
-    )
-    has_plus_refspec = (
-        any(p.startswith("+") and len(p) > 1 for p in pos)
-        or _has_push_force_config(git_configs)
-    )
-    if has_force_flag or has_plus_refspec:
-      return (
-          "deny",
-          "Blocked force-push command. "
-          "Force-pushing is forbidden across all branches in the agent workflow.",
-      )
+  if verdict.rule == "git_push":
+    pos = verdict.positionals
     if is_t90_state and (
         "main" in pos
         or "master" in pos
@@ -370,29 +216,21 @@ def _evaluate_git_tokens(
       )
     return "force_ask", reason
 
-  if subcmd == "rebase":
+  if verdict.rule == "git_rebase":
     return (
         "force_ask",
         "Git Rebase Gate: git rebase rewrites commit history. "
         "Make sure that upstream merge conflicts require a rebase before you approve.",
     )
 
-  if subcmd == "branch":
-    long_opts, short_opts, _, _, _ = _split_git_args(
-        sub_args,
-        short_value_chars="u",
-        long_value_flags=("--set-upstream-to",),
+  if verdict.rule == "git_branch_force":
+    return (
+        "force_ask",
+        "Git Branch Force Gate: force-deleting, force-renaming, or force-moving "
+        "a branch requires operator approval.",
     )
-    has_force_short = any(ch in short_opts for ch in ("D", "M", "C", "f"))
-    if has_force_short or "--force" in long_opts:
-      return (
-          "force_ask",
-          "Git Branch Force Gate: force-deleting, force-renaming, or force-moving "
-          "a branch requires operator approval.",
-      )
-    return "allow", ""
 
-  if subcmd == "commit":
+  if verdict.rule == "git_commit":
     if is_history_msg:
       return (
           "force_ask",
@@ -471,6 +309,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/emit_reflex.py",
     "lib/base_script.py",
     "lib/git_index.py",
+    "lib/git_safety.py",
     "lib/regression_gate.py",
     "lib/tdd_guard.py",
     "lib/workflow_gates.py",
