@@ -2804,5 +2804,27 @@
     "closes_issue": true,
     "tests_added": 10,
     "scars_earned": []
+  },
+  {
+    "id": "GH-221",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/221",
+    "title": "[FEAT] Reduce Target 40/45 review token duplication and resolve NBO pause-gate rule conflict",
+    "request": "Add deterministic promote-review Makefile/CLI card validation and safe_copy_file promotion in lib/review_promotion.py and lib/workflow_gates.py, switch Target 45 chat output to concise 1-to-2 sentence per-pillar summaries linking 40_critic_review.md, and resolve the N >= 2 vs N = 1 ask_question conflict so Target 42 and Target 45 remain plain-chat pause gates when presenting NBO recommendations across rules, manuals, SKILL.md, and all five cross-agent adapters.",
+    "branch": "feat/221-reduce-review-token-duplication",
+    "subprojects": [
+      "lib",
+      "skills",
+      "rules",
+      "adapters",
+      "tests"
+    ],
+    "started_at": "2026-11-22T04:14:21Z",
+    "completed_at": "2026-11-22T06:43:18Z",
+    "commit_sha": "9989bac1e4b28023ae5d05a2ae78bf8308bcc0de",
+    "pr_number": 284,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/284",
+    "closes_issue": true,
+    "tests_added": 27,
+    "scars_earned": []
   }
 ]
