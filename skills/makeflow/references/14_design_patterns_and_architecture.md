@@ -174,6 +174,8 @@ if __name__ == "__main__":
     sys.exit(BaseScript().execute())
 ```
 
+Calling `self.stderr.write(...)` inside `except Exception as exc:` logs the error and satisfies `SCAR-AST-01` (the structural syntax tree check). Run `make -f .workflow/state/Makefile ast-lint` directly without inspecting `scripts/ast_scrub.py`.
+
 #### 2. TypeScript / Node (`BaseScript`)
 ```typescript
 import { Writable } from 'node:stream';

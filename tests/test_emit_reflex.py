@@ -1838,6 +1838,255 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
           "[SCAR-ID: DOC-16] MISSING_REQUIRED_PLUGIN_FILE", proc.stderr
       )
 
+  def test_synthesized_ast_lint_handles_consumer_layouts_src_dir_cwd_and_non_python(self):
+    """Synthesized .workflow/state/Makefile ast-lint supports consumer layouts, SRC_DIR, -C, and non-Python repos (GH-245)."""
+    clean_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("MAKEFLAGS", "GNUMAKEFLAGS", "MFLAGS", "MAKELEVEL", "SRC_DIR")
+    }
+
+    def _write(path: str, content: str) -> None:
+      os.makedirs(os.path.dirname(path), exist_ok=True)
+      with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    def _init_consumer(repo_dir: str, files: dict[str, str]) -> str:
+      os.makedirs(repo_dir, exist_ok=True)
+      _init_git_repo(repo_dir)
+      for rel, body in files.items():
+        _write(os.path.join(repo_dir, rel), body)
+      subprocess.run(
+          ["git", "add", "."],
+          cwd=repo_dir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: seed consumer files"],
+          cwd=repo_dir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      out_i = io.StringIO()
+      err_i = io.StringIO()
+      rc = WorkflowGatesScript().execute(
+          args=["--repo-root", repo_dir, "init-makefile"],
+          stdout=out_i,
+          stderr=err_i,
+      )
+      self.assertEqual(rc, 0, err_i.getvalue())
+      return os.path.join(repo_dir, ".workflow", "state", "Makefile")
+
+    # 1. Consumer repo with src/ silent exception fails with exit 2
+    with tempfile.TemporaryDirectory() as base_tmp:
+      repo_src_bad = os.path.join(base_tmp, "src_bad_repo")
+      mk_src_bad = _init_consumer(
+          repo_src_bad, {"src/handler.py": "def ok() -> int:\n    return 1\n"}
+      )
+      _write(
+          os.path.join(repo_src_bad, "src", "handler.py"),
+          "def bad():\n    try:\n        work()\n    except Exception:\n        pass\n",
+      )
+      p_src_bad = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              mk_src_bad,
+              "ast-lint",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo_src_bad,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_src_bad.returncode, 2, p_src_bad.stdout + p_src_bad.stderr)
+      self.assertIn("SILENT_EXCEPTION_HANDLER", p_src_bad.stderr)
+
+    # 2. Clean app/ + root .py with untracked .venv/ and .workflow/ passes with exit 0
+    with tempfile.TemporaryDirectory() as base_tmp:
+      repo_clean = os.path.join(base_tmp, "app_root_clean")
+      mk_clean = _init_consumer(
+          repo_clean,
+          {
+              "app/views.py": "def view() -> str:\n    return 'ok'\n",
+              "manage.py": "def main() -> int:\n    return 0\n",
+          },
+      )
+      _write(
+          os.path.join(repo_clean, "app", "views.py"),
+          "def view() -> str:\n    return 'updated'\n",
+      )
+      _write(
+          os.path.join(repo_clean, "manage.py"),
+          "def main() -> int:\n    return 1\n",
+      )
+      _write(
+          os.path.join(repo_clean, ".venv", "lib", "bad.py"),
+          "try:\n    x()\nexcept:\n    pass\n",
+      )
+      _write(
+          os.path.join(repo_clean, ".workflow", "scratch.py"),
+          "try:\n    x()\nexcept:\n    pass\n",
+      )
+      p_clean = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              mk_clean,
+              "ast-lint",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo_clean,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_clean.returncode, 0, p_clean.stderr)
+      self.assertIn("scanned 2 files", p_clean.stdout)
+      self.assertEqual(p_clean.stderr, "")
+
+    # 3 & 4. SRC_DIR override and -C <other_dir> arbitrary CWD execution
+    with tempfile.TemporaryDirectory() as base_tmp:
+      repo_override = os.path.join(base_tmp, "override repo")
+      other_cwd = os.path.join(base_tmp, "outside_cwd")
+      os.makedirs(other_cwd, exist_ok=True)
+      mk_override = _init_consumer(
+          repo_override,
+          {
+              "src/clean.py": "def clean() -> int:\n    return 1\n",
+              "app/broken.py": "def broken() -> int:\n    return 1\n",
+          },
+      )
+      _write(
+          os.path.join(repo_override, "src", "clean.py"),
+          "def clean() -> int:\n    return 2\n",
+      )
+      _write(
+          os.path.join(repo_override, "app", "broken.py"),
+          "def broken():\n    try:\n        fetch()\n    except Exception:\n        return None\n",
+      )
+
+      p_src_only = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              ".workflow/state/Makefile",
+              "ast-lint",
+              "SRC_DIR=src",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo_override,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_src_only.returncode, 0, p_src_only.stderr)
+      self.assertIn("scanned 1 files", p_src_only.stdout)
+
+      p_app_only = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              ".workflow/state/Makefile",
+              "ast-lint",
+              "SRC_DIR=app",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo_override,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_app_only.returncode, 2)
+      self.assertIn("TRIVIAL_FALLBACK_RETURN", p_app_only.stderr)
+
+      # Arbitrary CWD via -C <other_dir> still resolves --repo-root correctly
+      p_cwd_default = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-C",
+              other_cwd,
+              "-f",
+              mk_override,
+              "ast-lint",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=other_cwd,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_cwd_default.returncode, 2)
+      self.assertIn("TRIVIAL_FALLBACK_RETURN", p_cwd_default.stderr)
+
+      p_cwd_src = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-C",
+              other_cwd,
+              "-f",
+              mk_override,
+              "ast-lint",
+              "SRC_DIR=src",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=other_cwd,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_cwd_src.returncode, 0, p_cwd_src.stderr)
+      self.assertIn("scanned 1 files", p_cwd_src.stdout)
+
+    # 5. Non-Python repo exits 0
+    with tempfile.TemporaryDirectory() as base_tmp:
+      repo_non_py = os.path.join(base_tmp, "js_consumer")
+      mk_non_py = _init_consumer(
+          repo_non_py,
+          {"src/index.js": "export const x = 1;\n", "package.json": "{}\n"},
+      )
+      _write(
+          os.path.join(repo_non_py, "src", "index.js"),
+          "export const x = 2;\n",
+      )
+      _write(
+          os.path.join(repo_non_py, "node_modules", "dep", "bad.py"),
+          "try:\n    x()\nexcept:\n    pass\n",
+      )
+      p_non_py = subprocess.run(
+          [
+              "make",
+              "-s",
+              "-f",
+              mk_non_py,
+              "ast-lint",
+              f"PYTHON={sys.executable}",
+          ],
+          cwd=repo_non_py,
+          env=clean_env,
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+      self.assertEqual(p_non_py.returncode, 0, p_non_py.stderr)
+      self.assertEqual(p_non_py.stderr, "")
+
   def test_consumer_workspace_init_makefile_and_isolated_gates(self):
     consumer_makefile_bytes = b"build:\n\t@echo consumer-build\n"
     with tempfile.TemporaryDirectory() as base_tmp:
@@ -1875,8 +2124,17 @@ class TestCliAndMakefileIntegration(unittest.TestCase):
       self.assertTrue(os.path.isfile(synth_mk))
       with open(synth_mk, "r", encoding="utf-8") as f:
         synth_mk_text = f.read()
-      for scan_dir in ("lib", "scripts", "mcp", "tests"):
-        self.assertIn(f"--src-dir {scan_dir} --strict", synth_mk_text)
+      self.assertIn("SRC_DIR ?=", synth_mk_text)
+      self.assertIn("ast-lint:", synth_mk_text)
+      for line in synth_mk_text.splitlines():
+        if line.strip().startswith("export "):
+          self.assertNotIn("SRC_DIR", line)
+      ast_lint_block = synth_mk_text.split("ast-lint:", 1)[1].split("\n\n", 1)[0]
+      self.assertIn("--repo-root", ast_lint_block)
+      self.assertIn("--strict", ast_lint_block)
+      self.assertIn('$(if $(SRC_DIR), --src-dir "$(SRC_DIR)",)', ast_lint_block)
+      for legacy_dir in ("lib", "scripts", "mcp", "tests"):
+        self.assertNotIn(f"--src-dir {legacy_dir} --strict", synth_mk_text)
 
       # 1. init-makefile auto-populates .git/info/exclude so check-intake exits 0 immediately
       p_intake_auto = subprocess.run(
