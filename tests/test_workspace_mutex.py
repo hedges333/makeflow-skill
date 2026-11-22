@@ -1393,5 +1393,260 @@ class TestWorkspaceMutexSubparserRepoRootGH243(unittest.TestCase):
     )
 
 
+class TestWorkspaceMutexTicketNamespaceMatching(unittest.TestCase):
+  """Hermetic tests for ticket namespace matching in WorkspaceMutex (GH-263)."""
+
+  def setUp(self):
+    """Create isolated temporary workspace and lock directories."""
+    self.temp_dir = tempfile.TemporaryDirectory()
+    self.repo_root = os.path.join(self.temp_dir.name, "repo")
+    self.other_workspace = os.path.join(self.temp_dir.name, "other_workspace")
+    self.lock_dir = os.path.join(self.temp_dir.name, "locks")
+    for directory in (self.repo_root, self.other_workspace, self.lock_dir):
+      os.makedirs(directory, exist_ok=True)
+    self.mutex = WorkspaceMutex(repo_root=self.repo_root, lock_dir=self.lock_dir)
+
+  def tearDown(self):
+    """Clean temporary directories."""
+    self.temp_dir.cleanup()
+
+  def _write_workspace_state(
+      self,
+      workspace_path,
+      active_ticket_id,
+      next_action_body="# 99_next_action\nActive Target: Target 30\n",
+  ):
+    """Write .workflow/state/10_ticket.json and 99_next_action.md for a workspace.
+
+    Args:
+      workspace_path: Target workspace directory path.
+      active_ticket_id: Active ticket identifier stored in 10_ticket.json.
+      next_action_body: Content written to 99_next_action.md.
+    """
+    state_dir = os.path.join(workspace_path, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(
+        os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
+    ) as f:
+      json.dump({"ticket_id": active_ticket_id, "title": "Namespace test"}, f)
+    with open(
+        os.path.join(state_dir, "99_next_action.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write(next_action_body)
+
+  def _write_stale_lock(self, lock_ticket_id, workspace_path, repo_root=None):
+    """Create a stale atomic lock directory with pid=None on disk.
+
+    Args:
+      lock_ticket_id: Ticket identifier recorded in lock path and session.json.
+      workspace_path: Workspace path recorded in session.json.
+      repo_root: Repository root whose hash prefixes the lock directory.
+
+    Returns:
+      Absolute path to the created lock directory.
+    """
+    target_repo = repo_root or self.repo_root
+    target_mutex = WorkspaceMutex(repo_root=target_repo, lock_dir=self.lock_dir)
+    lp = target_mutex.lock_path(lock_ticket_id)
+    os.makedirs(lp, exist_ok=True)
+    session = {
+        "repo_root": target_repo,
+        "repo_hash": target_mutex.get_repo_hash(),
+        "ticket_id": lock_ticket_id,
+        "workspace_path": workspace_path,
+        "branch_name": "fix/namespace-test",
+        "pid": None,
+    }
+    with open(os.path.join(lp, "session.json"), "w", encoding="utf-8") as f:
+      json.dump(session, f)
+    return lp
+
+  def test_bare_ascii_digits_match_github_and_local(self):
+    """Bare ASCII digits match active GH-<N> and LOCAL-<N> sessions (GH-263)."""
+    for active_id in ("GH-100", "LOCAL-100"):
+      with self.subTest(active_id=active_id):
+        self._write_workspace_state(self.other_workspace, active_id)
+        self.assertTrue(
+            self.mutex.is_session_active(
+                {
+                    "pid": None,
+                    "ticket_id": "100",
+                    "workspace_path": self.other_workspace,
+                }
+            )
+        )
+    self._write_workspace_state(self.other_workspace, "PROJ-100")
+    self.assertFalse(
+        self.mutex.is_session_active(
+            {
+                "pid": None,
+                "ticket_id": "100",
+                "workspace_path": self.other_workspace,
+            }
+        )
+    )
+
+  def test_explicit_gh_and_local_prefixes_do_not_cross_match(self):
+    """Explicit GH-<N> and LOCAL-<N> prefixes never cross-match each other (GH-263)."""
+    cases = (
+        ("GH-100", "LOCAL-100"),
+        ("gh-100", "LOCAL-100"),
+        ("LOCAL-100", "GH-100"),
+        ("local-100", "GH-100"),
+    )
+    for session_ticket_id, active_ticket_id in cases:
+      with self.subTest(
+          session_ticket_id=session_ticket_id,
+          active_ticket_id=active_ticket_id,
+      ):
+        self._write_workspace_state(self.other_workspace, active_ticket_id)
+        self.assertFalse(
+            self.mutex.is_session_active(
+                {
+                    "pid": None,
+                    "ticket_id": session_ticket_id,
+                    "workspace_path": self.other_workspace,
+                }
+            )
+        )
+
+  def test_arbitrary_explicit_prefix_does_not_match(self):
+    """Arbitrary explicit prefixes such as PROJ-100 do not match GH-<N> or LOCAL-<N> (GH-263)."""
+    for active_id in ("GH-100", "LOCAL-100"):
+      for session_id in ("PROJ-100", "#100", "GH100"):
+        with self.subTest(session_id=session_id, active_id=active_id):
+          self._write_workspace_state(self.other_workspace, active_id)
+          self.assertFalse(
+              self.mutex.is_session_active(
+                  {
+                      "pid": None,
+                      "ticket_id": session_id,
+                      "workspace_path": self.other_workspace,
+                  }
+              )
+          )
+
+  def test_non_ascii_empty_and_non_numeric_do_not_match(self):
+    """Non-ASCII digits, empty values, and non-numeric strings do not match (GH-263)."""
+    invalid_session_ids = (
+        "",
+        "   ",
+        None,
+        "abc",
+        "GH-",
+        "foo100",
+        "\u0661\u0660\u0660",
+        "\uff11\uff10\uff10",
+        "\u0661100",
+        "100\u0661",
+    )
+    for active_id in ("GH-100", "LOCAL-100"):
+      self._write_workspace_state(self.other_workspace, active_id)
+      for session_id in invalid_session_ids:
+        with self.subTest(session_id=session_id, active_id=active_id):
+          self.assertFalse(
+              self.mutex.is_session_active(
+                  {
+                      "pid": None,
+                      "ticket_id": session_id,
+                      "workspace_path": self.other_workspace,
+                  }
+              )
+          )
+
+    for unicode_active_id in ("GH-\u0661\u0660\u0660", "LOCAL-\u0661\u0660\u0660"):
+      with self.subTest(active_id=unicode_active_id):
+        self._write_workspace_state(self.other_workspace, unicode_active_id)
+        self.assertFalse(
+            self.mutex.is_session_active(
+                {
+                    "pid": None,
+                    "ticket_id": "\u0661\u0660\u0660",
+                    "workspace_path": self.other_workspace,
+                }
+            )
+        )
+
+  def test_same_namespace_case_insensitive_and_complete_guard(self):
+    """Same-namespace IDs match case-insensitively when active and stop when COMPLETE (GH-263)."""
+    for session_id, active_id in (
+        ("gh-100", "GH-100"),
+        ("local-100", "LOCAL-100"),
+    ):
+      with self.subTest(
+          session_id=session_id, active_id=active_id, status="active"
+      ):
+        self._write_workspace_state(self.other_workspace, active_id)
+        self.assertTrue(
+            self.mutex.is_session_active(
+                {
+                    "pid": None,
+                    "ticket_id": session_id,
+                    "workspace_path": self.other_workspace,
+                }
+            )
+        )
+      with self.subTest(
+          session_id=session_id, active_id=active_id, status="complete"
+      ):
+        self._write_workspace_state(
+            self.other_workspace,
+            active_id,
+            next_action_body="# 99_next_action\nStatus: COMPLETE\n",
+        )
+        self.assertFalse(
+            self.mutex.is_session_active(
+                {
+                    "pid": None,
+                    "ticket_id": session_id,
+                    "workspace_path": self.other_workspace,
+                }
+            )
+        )
+
+  def test_acquire_recovers_stale_cross_namespace_lock(self):
+    """WorkspaceMutex.acquire recovers stale locks whose workspace holds a different namespace (GH-263)."""
+    scenarios = (
+        ("GH-100", "LOCAL-100"),
+        ("LOCAL-100", "GH-100"),
+    )
+    for lock_ticket_id, active_workspace_ticket_id in scenarios:
+      with self.subTest(
+          lock_ticket_id=lock_ticket_id,
+          active_workspace_ticket_id=active_workspace_ticket_id,
+      ):
+        ws_dir = os.path.join(
+            self.temp_dir.name,
+            f"ws_{lock_ticket_id}_{active_workspace_ticket_id}",
+        )
+        os.makedirs(ws_dir, exist_ok=True)
+        self._write_workspace_state(ws_dir, active_workspace_ticket_id)
+        self._write_stale_lock(lock_ticket_id, ws_dir)
+
+        res = self.mutex.acquire(
+            ticket_id=lock_ticket_id,
+            workspace_path=self.repo_root,
+            branch_name="fix/263-recovered",
+            pid=42424,
+        )
+        self.assertTrue(res["acquired"])
+        self.assertEqual(res["session"]["workspace_path"], self.repo_root)
+        self.assertEqual(res["session"]["ticket_id"], lock_ticket_id)
+        self.mutex.release(lock_ticket_id)
+
+  def test_local_ticket_store_ignores_cross_namespace_lock(self):
+    """LocalTicketStore._active_locked_local_nums ignores LOCAL-<N> lock pointing to GH-<N> workspace (GH-263)."""
+    from lib.local_tickets import LocalTicketStore
+
+    store = LocalTicketStore(repo_root=self.repo_root, lock_dir=self.lock_dir)
+
+    self._write_workspace_state(self.other_workspace, "GH-100")
+    self._write_stale_lock("LOCAL-100", self.other_workspace)
+    self.assertNotIn(100, store._active_locked_local_nums())
+
+    self._write_workspace_state(self.other_workspace, "LOCAL-100")
+    self.assertIn(100, store._active_locked_local_nums())
+
+
 if __name__ == "__main__":
   unittest.main()
