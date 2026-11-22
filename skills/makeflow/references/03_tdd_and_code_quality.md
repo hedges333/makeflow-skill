@@ -4,13 +4,14 @@ This manual covers test-driven development (TDD, writing tests before production
 
 ## 1. Review Before Edit (`SCAR-PROC-104`)
 
-Follow five rules before you modify any source file:
+Follow six rules before you modify any source file:
 
 1. Read the file, its imports, its type signatures, and its comments first (`SCAR-PROC-104`).
 2. Make minimal, confident edits that solve the ticket. Do not rewrite an entire module when a three-line fix works.
 3. Leave unrelated defects or style issues untouched, and note them for a separate ticket.
-4. Read and enforce applicable Tier 1 core scars in `skills/makeflow/references/scars/` and Tier 2 project-local scars in `.workflow/scars/`, and call `workflow_query_scars` (`workflowPhase: "Target 30: tdd"`) for active languages, frameworks, and diagnostic codes.
+4. Read applicable Tier 1 core scars (`09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`) and Tier 2 project-local scars (`.workflow/scars/`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`). Query active languages, frameworks, and diagnostic codes first, then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
 5. Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`) under `SCAR-ARCH-08` and `SCAR-ARCH-05`.
+6. Read `.workflow/state/20_plan.md`, `04_testing_isolation.md`, `10_security_and_data_isolation.md`, and `14_design_patterns_and_architecture.md` before writing Red tests. Follow planned OO design patterns, module cohesion boundaries, and carried-forward scar guardrails.
 
 ## 2. Red-Green-Refactor TDD Loop
 

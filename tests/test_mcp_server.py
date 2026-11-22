@@ -4284,5 +4284,368 @@ class TestMcpPureGitTransitions(unittest.TestCase):
     self.assertIn("Pure Git", desc)
 
 
+class TestMcpQueryScarsExcludeCategories(unittest.TestCase):
+  """Tests workflow_query_scars excludeCategories schema, filtering, and validation (GH-252)."""
+
+  def _build_scars_db(self, db_path: str) -> None:
+    """Populate a temporary SQLite scars database with universal dev and workflow scars."""
+    conn = sqlite3.connect(db_path)
+    try:
+      conn.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT PRIMARY KEY,
+              ss_id TEXT,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              ss_targets TEXT,
+              mf_targets TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT,
+              source TEXT DEFAULT 'upstream',
+              original_id TEXT,
+              raw_hash TEXT,
+              keywords TEXT,
+              languages TEXT,
+              frameworks TEXT,
+              diagnostic_codes TEXT
+          )
+          """
+      )
+      conn.execute(
+          """
+          CREATE VIRTUAL TABLE scars_fts USING fts5(
+              id,
+              ss_id,
+              original_id,
+              title,
+              category,
+              applies_when,
+              wound,
+              trap,
+              reflex,
+              socratic_probe,
+              keywords,
+              languages,
+              frameworks,
+              diagnostic_codes,
+              workflow_phases,
+              source UNINDEXED
+          )
+          """
+      )
+      rows = [
+          ("SCAR-ARCH-0001", "ARCH", "arch", "Did you check cohesion?"),
+          ("SCAR-API-0001", "API", "api", "Is the parameter composable?"),
+          ("SCAR-TEST-0001", "TEST", "test", "Is the test isolated?"),
+          ("SCAR-ARCH-0098", "ARCH", "arch", ""),
+          ("SCAR-PROC-0001", "PROC", "proc", "Did you run the gate?"),
+          ("SCAR-REVIEW-0001", "REVIEW", "review", "Did critic audit?"),
+          ("SCAR-GIT-0001", "GIT", "git", "Did you lock the tree?"),
+      ]
+      phases = json.dumps(["Target 15: archaeology", "Target 20: plan", "Target 30: tdd"])
+      for scar_id, cat, slug, probe in rows:
+        conn.execute(
+            """
+            INSERT INTO scars (
+                id, ss_id, title, category, category_slug, visibility,
+                workflow_phases, ss_targets, mf_targets, applies_when,
+                graduation_status, wound, trap, circuit_breaker, reflex,
+                socratic_probe, source, original_id, raw_hash, keywords,
+                languages, frameworks, diagnostic_codes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scar_id,
+                None,
+                f"{scar_id} title",
+                cat,
+                slug,
+                "public",
+                phases,
+                phases,
+                json.dumps([15, 20, 30]),
+                "General development",
+                "graduated",
+                "Observed defect wound.",
+                "Observed shortcut trap.",
+                "",
+                "Apply the permanent reflex.",
+                probe,
+                "upstream",
+                None,
+                f"hash-{scar_id}",
+                json.dumps([cat.lower()]),
+                json.dumps(["universal"]),
+                json.dumps([]),
+                json.dumps([]),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO scars_fts (
+                id, ss_id, original_id, title, category, applies_when,
+                wound, trap, reflex, socratic_probe, keywords, languages,
+                frameworks, diagnostic_codes, workflow_phases, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scar_id,
+                "",
+                "",
+                f"{scar_id} title",
+                cat,
+                "General development",
+                "Observed defect wound.",
+                "Observed shortcut trap.",
+                "Apply the permanent reflex.",
+                probe or "",
+                cat.lower(),
+                "universal",
+                "",
+                "",
+                "Target 15: archaeology Target 20: plan Target 30: tdd",
+                "upstream",
+            ),
+        )
+      conn.commit()
+    finally:
+      conn.close()
+
+  def test_workflow_query_scars_schema_declares_exclude_categories(self):
+    mcp_server = _load_mcp_server_module()
+    tools_resp = mcp_server.handle_tools_list(901)
+    tools = {t["name"]: t for t in tools_resp["result"]["tools"]}
+    props = tools["workflow_query_scars"]["inputSchema"]["properties"]
+    self.assertIn("excludeCategories", props)
+    ex_schema = props["excludeCategories"]
+    self.assertEqual(ex_schema.get("type"), "array")
+    self.assertEqual(ex_schema.get("items"), {"type": "string"})
+    self.assertTrue(
+        ex_schema.get("description", "").startswith("Optional "),
+        f"Expected Optional description, got {ex_schema!r}",
+    )
+
+  def test_workflow_query_scars_excludes_workflow_camel_and_snake_case(self):
+    mcp_server = _load_mcp_server_module()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_exclude.db")
+      self._build_scars_db(db_path)
+
+      for req_id, key_name in ((902, "excludeCategories"), (903, "exclude_categories")):
+        with self.subTest(key_name=key_name):
+          resp = mcp_server.handle_tools_call(
+              req_id,
+              "workflow_query_scars",
+              {
+                  "language": "universal",
+                  "workflowPhase": "Target 20: plan",
+                  key_name: ["WORKFLOW"],
+                  "limit": 10,
+                  "dbPath": db_path,
+                  "workspaceDir": tmp_dir,
+                  "refreshLoaded": True,
+              },
+          )
+          self.assertFalse(resp["result"].get("isError"), resp)
+          payload = json.loads(resp["result"]["content"][0]["text"])
+          self.assertEqual(payload["status"], "OK")
+          returned_ids = {row["id"] for row in payload["scars"]}
+          self.assertEqual(
+              returned_ids,
+              {"SCAR-ARCH-0001", "SCAR-API-0001", "SCAR-TEST-0001"},
+          )
+
+  def test_workflow_query_scars_rejects_invalid_exclude_categories(self):
+    mcp_server = _load_mcp_server_module()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_exclude_err.db")
+      self._build_scars_db(db_path)
+
+      invalid_values = (
+          "PROC",
+          "",
+          True,
+          False,
+          123,
+          0,
+          {"WORKFLOW": True},
+          ["PROC", 42],
+          ["PROC", True],
+          ["PROC", None],
+          ["PROC", {"WORKFLOW": True}],
+      )
+      for idx, bad_val in enumerate(invalid_values, start=910):
+        with self.subTest(bad_val=bad_val):
+          resp = mcp_server.handle_tools_call(
+              idx,
+              "workflow_query_scars",
+              {
+                  "language": "universal",
+                  "excludeCategories": bad_val,
+                  "dbPath": db_path,
+                  "workspaceDir": tmp_dir,
+              },
+          )
+          self.assertIs(resp["result"].get("isError"), True, resp)
+          err_text = resp["result"]["content"][0]["text"]
+          self.assertIn("excludeCategories", err_text)
+
+  def test_workflow_query_scars_standalone_exclude_categories_and_empty_rejection(self):
+    """Standalone excludeCategories succeeds without positive filters; empty or blank lists fail (GH-252)."""
+    mcp_server = _load_mcp_server_module()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_exclude_standalone.db")
+      self._build_scars_db(db_path)
+
+      resp = mcp_server.handle_tools_call(
+          930,
+          "workflow_query_scars",
+          {
+              "excludeCategories": ["WORKFLOW"],
+              "limit": 10,
+              "dbPath": db_path,
+              "workspaceDir": tmp_dir,
+              "refreshLoaded": True,
+          },
+      )
+      self.assertFalse(resp["result"].get("isError"), resp)
+      payload = json.loads(resp["result"]["content"][0]["text"])
+      self.assertEqual(payload["status"], "OK")
+      self.assertEqual(
+          {row["id"] for row in payload["scars"]},
+          {"SCAR-ARCH-0001", "SCAR-API-0001", "SCAR-TEST-0001"},
+      )
+
+      for req_id, empty_val in (
+          (931, []),
+          (932, ["   "]),
+          (933, ["", " \t "]),
+      ):
+        with self.subTest(empty_val=empty_val):
+          err_resp = mcp_server.handle_tools_call(
+              req_id,
+              "workflow_query_scars",
+              {
+                  "excludeCategories": empty_val,
+                  "dbPath": db_path,
+                  "workspaceDir": tmp_dir,
+              },
+          )
+          self.assertIs(err_resp["result"].get("isError"), True, err_resp)
+          err_text = err_resp["result"]["content"][0]["text"]
+          self.assertIn("Missing required argument 'query' or filter", err_text)
+
+  def test_workflow_query_scars_empty_exclude_list_and_camel_case_precedence(self):
+    """Empty excludeCategories returns unfiltered scars and overrides snake_case exclude_categories (GH-252)."""
+    mcp_server = _load_mcp_server_module()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_exclude_precedence.db")
+      self._build_scars_db(db_path)
+
+      all_processed_ids = {
+          "SCAR-ARCH-0001",
+          "SCAR-API-0001",
+          "SCAR-TEST-0001",
+          "SCAR-PROC-0001",
+          "SCAR-REVIEW-0001",
+          "SCAR-GIT-0001",
+      }
+
+      resp_empty = mcp_server.handle_tools_call(
+          940,
+          "workflow_query_scars",
+          {
+              "language": "universal",
+              "excludeCategories": [],
+              "limit": 10,
+              "dbPath": db_path,
+              "workspaceDir": tmp_dir,
+              "refreshLoaded": True,
+          },
+      )
+      self.assertFalse(resp_empty["result"].get("isError"), resp_empty)
+      payload_empty = json.loads(resp_empty["result"]["content"][0]["text"])
+      self.assertEqual(payload_empty["status"], "OK")
+      self.assertEqual(
+          {row["id"] for row in payload_empty["scars"]},
+          all_processed_ids,
+      )
+
+      resp_override = mcp_server.handle_tools_call(
+          941,
+          "workflow_query_scars",
+          {
+              "language": "universal",
+              "excludeCategories": [],
+              "exclude_categories": ["WORKFLOW"],
+              "limit": 10,
+              "dbPath": db_path,
+              "workspaceDir": tmp_dir,
+              "refreshLoaded": True,
+          },
+      )
+      self.assertFalse(resp_override["result"].get("isError"), resp_override)
+      payload_override = json.loads(resp_override["result"]["content"][0]["text"])
+      self.assertEqual(payload_override["status"], "OK")
+      self.assertEqual(
+          {row["id"] for row in payload_override["scars"]},
+          all_processed_ids,
+      )
+
+  def test_workflow_query_scars_combined_category_and_exclude_categories(self):
+    """Combined category and excludeCategories handles compatible and contradictory MCP queries (GH-252)."""
+    mcp_server = _load_mcp_server_module()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "mcp_exclude_combined.db")
+      self._build_scars_db(db_path)
+
+      resp_compat = mcp_server.handle_tools_call(
+          950,
+          "workflow_query_scars",
+          {
+              "category": "ARCH",
+              "excludeCategories": ["WORKFLOW"],
+              "limit": 10,
+              "dbPath": db_path,
+              "workspaceDir": tmp_dir,
+              "refreshLoaded": True,
+          },
+      )
+      self.assertFalse(resp_compat["result"].get("isError"), resp_compat)
+      payload_compat = json.loads(resp_compat["result"]["content"][0]["text"])
+      self.assertEqual(payload_compat["status"], "OK")
+      self.assertEqual(
+          {row["id"] for row in payload_compat["scars"]},
+          {"SCAR-ARCH-0001"},
+      )
+
+      resp_contra = mcp_server.handle_tools_call(
+          951,
+          "workflow_query_scars",
+          {
+              "category": "PROC",
+              "excludeCategories": ["WORKFLOW"],
+              "limit": 10,
+              "dbPath": db_path,
+              "workspaceDir": tmp_dir,
+              "refreshLoaded": True,
+          },
+      )
+      self.assertFalse(resp_contra["result"].get("isError"), resp_contra)
+      payload_contra = json.loads(resp_contra["result"]["content"][0]["text"])
+      self.assertEqual(payload_contra["status"], "OK")
+      self.assertEqual(payload_contra["totalResults"], 0)
+      self.assertEqual(payload_contra["scars"], [])
+
+
 if __name__ == "__main__":
   unittest.main()

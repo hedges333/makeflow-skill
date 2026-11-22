@@ -4137,5 +4137,496 @@ class TestUnifiedBatchSyncAgyCli(unittest.TestCase):
     self.assertEqual(uncommitted, [])
 
 
+class TestExcludeCategoriesQuery(unittest.TestCase):
+  """Tests WORKFLOW_CATEGORY_TAGS, exclude_categories filtering, and mandatory socratic_probe (GH-252)."""
+
+  def _build_scars_db_with_rows(
+      self,
+      db_path: str,
+      rows: list[tuple[str, str | None, str | None, str | None]],
+  ) -> None:
+    """Create a hermetic SQLite scars database populated with custom test rows."""
+    conn = sqlite3.connect(db_path)
+    try:
+      conn.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT PRIMARY KEY,
+              ss_id TEXT,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              ss_targets TEXT,
+              mf_targets TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT,
+              source TEXT DEFAULT 'upstream',
+              original_id TEXT,
+              raw_hash TEXT,
+              keywords TEXT,
+              languages TEXT,
+              frameworks TEXT,
+              diagnostic_codes TEXT
+          )
+          """
+      )
+      conn.execute(
+          """
+          CREATE VIRTUAL TABLE scars_fts USING fts5(
+              id,
+              ss_id,
+              original_id,
+              title,
+              category,
+              applies_when,
+              wound,
+              trap,
+              reflex,
+              socratic_probe,
+              keywords,
+              languages,
+              frameworks,
+              diagnostic_codes,
+              workflow_phases,
+              source UNINDEXED
+          )
+          """
+      )
+      for scar_id, cat, slug, probe in rows:
+        title = f"{scar_id} sharedmarker title"
+        phases = json.dumps(["Target 15: archaeology", "Target 20: plan", "Target 30: tdd"])
+        mf_targets = json.dumps([15, 20, 30])
+        languages = json.dumps(["universal"])
+        cat_label = (cat or slug or "").lower()
+        keywords_list = ["sharedmarker", cat_label] if cat_label else ["sharedmarker"]
+        conn.execute(
+            """
+            INSERT INTO scars (
+                id, ss_id, title, category, category_slug, visibility,
+                workflow_phases, ss_targets, mf_targets, applies_when,
+                graduation_status, wound, trap, circuit_breaker, reflex,
+                socratic_probe, source, original_id, raw_hash, keywords,
+                languages, frameworks, diagnostic_codes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scar_id,
+                None,
+                title,
+                cat,
+                slug,
+                "public",
+                phases,
+                phases,
+                mf_targets,
+                "Planning and coding",
+                "graduated",
+                "Observed defect wound.",
+                "Observed shortcut trap.",
+                "",
+                "Apply the permanent reflex.",
+                probe,
+                "upstream",
+                None,
+                f"hash-{scar_id}",
+                json.dumps(keywords_list),
+                languages,
+                json.dumps([]),
+                json.dumps([]),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO scars_fts (
+                id, ss_id, original_id, title, category, applies_when,
+                wound, trap, reflex, socratic_probe, keywords, languages,
+                frameworks, diagnostic_codes, workflow_phases, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scar_id,
+                "",
+                "",
+                title,
+                cat or "",
+                "Planning and coding",
+                "Observed defect wound.",
+                "Observed shortcut trap.",
+                "Apply the permanent reflex.",
+                probe or "",
+                f"sharedmarker {cat_label}".strip(),
+                "universal",
+                "",
+                "",
+                "Target 15: archaeology Target 20: plan Target 30: tdd",
+                "upstream",
+            ),
+        )
+      conn.commit()
+    finally:
+      conn.close()
+
+  def _build_universal_scars_db(self, db_path: str) -> None:
+    """Create a hermetic SQLite database with universal dev and workflow scars."""
+    rows = [
+        ("SCAR-ARCH-0001", "ARCH", "arch", "Did you check module boundaries?"),
+        ("SCAR-API-0001", "API", None, "Is the parameter composable?"),
+        ("SCAR-TEST-0001", "TEST", "test", "Is the test fixture isolated?"),
+        ("SCAR-CRAFT-0001", "CRAFT", "craft", "Is the helper direct and simple?"),
+        ("SCAR-ARCH-0099", "ARCH", "arch", ""),
+        ("SCAR-API-0099", "API", "api", None),
+        ("SCAR-PROC-0001", "PROC", "proc", "Did you run the workflow gate?"),
+        ("SCAR-REVIEW-0001", "REVIEW", "review", "Did the critic audit the diff?"),
+        ("SCAR-HCI-0001", "HCI", "hci", "Did you present facts clearly?"),
+        ("SCAR-GIT-0001", "GIT", "git", "Did you lock the tree hash?"),
+        ("SCAR-GOV-0001", "GOV", "gov", "Is the guard invariant intact?"),
+        ("SCAR-META-0001", "META", "meta", "Did you inspect reflection logs?"),
+        ("SCAR-LEGACY-PROC-01", "Process", "process", "Did legacy process pass?"),
+        ("SCAR-LEGACY-TOOL-01", "Tooling", "tooling", "Did legacy tooling pass?"),
+    ]
+    self._build_scars_db_with_rows(db_path, rows)
+
+  def test_workflow_category_tags_ontology_membership(self):
+    from lib.scar_ontology import DOMAIN_CATEGORY_ONTOLOGY, WORKFLOW_CATEGORY_TAGS
+
+    expected_workflow_tags = {
+        "PROC",
+        "REVIEW",
+        "HCI",
+        "GOV",
+        "META",
+        "METRIC",
+        "DIFF",
+        "COLLAB",
+        "PEDAGOGY",
+        "VERIF",
+        "SKILL",
+        "HOOK",
+        "TOOL",
+        "CI",
+        "GIT",
+    }
+    self.assertEqual(len(WORKFLOW_CATEGORY_TAGS), 15)
+    self.assertEqual(set(WORKFLOW_CATEGORY_TAGS), expected_workflow_tags)
+    for tag in WORKFLOW_CATEGORY_TAGS:
+      self.assertIn(tag, DOMAIN_CATEGORY_ONTOLOGY)
+
+    for dev_tag in (
+        "ARCH",
+        "API",
+        "CRAFT",
+        "TEST",
+        "ASYNC",
+        "DATA",
+        "SEC",
+        "DB",
+        "STORAGE",
+        "STATE",
+        "PERF",
+        "UI",
+        "DOC",
+        "BUILD",
+        "DEP",
+        "DIR",
+        "ERR",
+        "FAIL",
+        "INV",
+        "WIRE",
+    ):
+      self.assertNotIn(dev_tag, WORKFLOW_CATEGORY_TAGS)
+
+  def test_resolve_excluded_category_tokens_expansion_and_deduplication(self):
+    from lib.scar_ontology import (
+        WORKFLOW_CATEGORY_TAGS,
+        resolve_excluded_category_tokens,
+    )
+
+    self.assertEqual(resolve_excluded_category_tokens(None), ())
+    self.assertEqual(resolve_excluded_category_tokens([]), ())
+    self.assertEqual(resolve_excluded_category_tokens(["", "   ", None]), ())
+
+    workflow_tokens = resolve_excluded_category_tokens(["WORKFLOW"])
+    self.assertEqual(len(workflow_tokens), len(set(workflow_tokens)))
+    for tag in WORKFLOW_CATEGORY_TAGS:
+      self.assertIn(tag, workflow_tokens)
+    self.assertIn("PROCESS", workflow_tokens)
+    self.assertIn("TOOLING", workflow_tokens)
+    for dev_tag in ("ARCH", "API", "TEST", "CRAFT"):
+      self.assertNotIn(dev_tag, workflow_tokens)
+
+    deduped = resolve_excluded_category_tokens(
+        ["WORKFLOW", "proc", "Process", "tooling", "WORKFLOW", "  "]
+    )
+    self.assertEqual(deduped, workflow_tokens)
+
+    explicit = resolve_excluded_category_tokens(["Process", "GIT", "proc"])
+    self.assertEqual(explicit, ("PROC", "PROCESS", "GIT"))
+
+  def test_query_scars_universal_excludes_workflow_and_requires_socratic_probe(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "exclude_workflow.db")
+      self._build_universal_scars_db(db_path)
+
+      expected_dev_ids = {
+          "SCAR-ARCH-0001",
+          "SCAR-API-0001",
+          "SCAR-TEST-0001",
+          "SCAR-CRAFT-0001",
+      }
+
+      # Filter-only path
+      filter_rows = query_scars(
+          db_path=db_path,
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in filter_rows}, expected_dev_ids)
+
+      # FTS5 keyword search path
+      fts_rows = query_scars(
+          db_path=db_path,
+          query="sharedmarker",
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in fts_rows}, expected_dev_ids)
+
+  def test_query_scars_explicit_category_exclusions(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "exclude_explicit.db")
+      self._build_universal_scars_db(db_path)
+
+      rows = query_scars(
+          db_path=db_path,
+          language="universal",
+          exclude_categories=["PROC", "GIT"],
+          limit=20,
+      )
+      returned_ids = {r["id"] for r in rows}
+      self.assertNotIn("SCAR-PROC-0001", returned_ids)
+      self.assertNotIn("SCAR-LEGACY-PROC-01", returned_ids)
+      self.assertNotIn("SCAR-GIT-0001", returned_ids)
+      self.assertNotIn("SCAR-ARCH-0099", returned_ids)
+      self.assertNotIn("SCAR-API-0099", returned_ids)
+      self.assertEqual(
+          returned_ids,
+          {
+              "SCAR-ARCH-0001",
+              "SCAR-API-0001",
+              "SCAR-TEST-0001",
+              "SCAR-CRAFT-0001",
+              "SCAR-REVIEW-0001",
+              "SCAR-HCI-0001",
+              "SCAR-GOV-0001",
+              "SCAR-META-0001",
+              "SCAR-LEGACY-TOOL-01",
+          },
+      )
+
+  def test_resolve_excluded_category_tokens_string_case_hyphen_and_unknown(self):
+    """Covers bare strings, lowercase workflow, hyphen normalization, and unknown tokens (GH-252)."""
+    from lib.scar_ontology import resolve_excluded_category_tokens
+
+    workflow_tokens = resolve_excluded_category_tokens(["WORKFLOW"])
+    self.assertEqual(
+        resolve_excluded_category_tokens("WORKFLOW"),
+        workflow_tokens,
+    )
+    self.assertEqual(
+        resolve_excluded_category_tokens("proc"),
+        ("PROC", "PROCESS"),
+    )
+    self.assertEqual(
+        resolve_excluded_category_tokens(["workflow"]),
+        workflow_tokens,
+    )
+    self.assertEqual(
+        resolve_excluded_category_tokens("workflow"),
+        workflow_tokens,
+    )
+    self.assertEqual(
+        resolve_excluded_category_tokens(["custom-tag"]),
+        ("CUSTOM_TAG",),
+    )
+    self.assertEqual(
+        resolve_excluded_category_tokens(["unknown_domain", "mystery-cat"]),
+        ("UNKNOWN_DOMAIN", "MYSTERY_CAT"),
+    )
+
+  def test_query_scars_standalone_exclude_categories_without_positive_filter(self):
+    """Standalone exclude_categories works without positive filters; empty list returns empty (GH-252)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "exclude_standalone.db")
+      self._build_universal_scars_db(db_path)
+
+      rows = query_scars(
+          db_path=db_path,
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual(
+          {r["id"] for r in rows},
+          {
+              "SCAR-ARCH-0001",
+              "SCAR-API-0001",
+              "SCAR-TEST-0001",
+              "SCAR-CRAFT-0001",
+          },
+      )
+      self.assertEqual(
+          query_scars(db_path=db_path, exclude_categories=[], limit=20),
+          [],
+      )
+      self.assertEqual(
+          query_scars(db_path=db_path, exclude_categories=["   "], limit=20),
+          [],
+      )
+
+  def test_query_scars_stacked_databases_with_list_and_single_pass_generator(self):
+    """Stacked multi-DB query_scars preserves exclude_categories across all DBs for lists and generators (GH-252)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db1_path = os.path.join(tmp_dir, "stack_workspace.db")
+      db2_path = os.path.join(tmp_dir, "stack_bundled.db")
+      self._build_scars_db_with_rows(
+          db1_path,
+          [
+              ("SCAR-ARCH-0001", "ARCH", "arch", "Is module cohesive?"),
+              ("SCAR-PROC-0001", "PROC", "proc", "Did workflow gate pass?"),
+          ],
+      )
+      self._build_scars_db_with_rows(
+          db2_path,
+          [
+              ("SCAR-API-0001", "API", "api", "Is parameter composable?"),
+              ("SCAR-GIT-0001", "GIT", "git", "Did tree lock match?"),
+              ("SCAR-REVIEW-0001", "REVIEW", "review", "Did critic audit diff?"),
+          ],
+      )
+
+      expected_ids = {"SCAR-ARCH-0001", "SCAR-API-0001"}
+
+      list_rows = query_scars(
+          db_path=[db1_path, db2_path],
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in list_rows}, expected_ids)
+
+      gen_rows = query_scars(
+          db_path=[db1_path, db2_path],
+          language="universal",
+          exclude_categories=(tag for tag in ["WORKFLOW"]),
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in gen_rows}, expected_ids)
+
+      standalone_gen_rows = query_scars(
+          db_path=[db1_path, db2_path],
+          exclude_categories=(tag for tag in ["WORKFLOW"]),
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in standalone_gen_rows}, expected_ids)
+
+  def test_query_scars_combined_category_and_exclude_categories(self):
+    """Combined category and exclude_categories supports compatible and contradictory filters (GH-252)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "exclude_combined.db")
+      self._build_universal_scars_db(db_path)
+
+      compatible = query_scars(
+          db_path=db_path,
+          category="ARCH",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in compatible}, {"SCAR-ARCH-0001"})
+
+      contradictory_group = query_scars(
+          db_path=db_path,
+          category="PROC",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual(contradictory_group, [])
+
+      contradictory_alias = query_scars(
+          db_path=db_path,
+          category="Process",
+          exclude_categories=["PROC"],
+          limit=20,
+      )
+      self.assertEqual(contradictory_alias, [])
+
+  def test_query_scars_null_category_coalesce_protection(self):
+    """COALESCE protects NULL s.category rows with non-NULL s.category_slug from SQLite NULL NOT IN traps (GH-252)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "exclude_null_cat.db")
+      self._build_scars_db_with_rows(
+          db_path,
+          [
+              ("SCAR-NULLCAT-ARCH-01", None, "arch", "Is module cohesive?"),
+              ("SCAR-NULLCAT-PROC-01", None, "proc", "Did workflow gate pass?"),
+              ("SCAR-NULLBOTH-01", None, None, "Does null metadata survive?"),
+          ],
+      )
+
+      expected_ids = {"SCAR-NULLCAT-ARCH-01", "SCAR-NULLBOTH-01"}
+
+      filter_rows = query_scars(
+          db_path=db_path,
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in filter_rows}, expected_ids)
+
+      fts_rows = query_scars(
+          db_path=db_path,
+          query="sharedmarker",
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          limit=20,
+      )
+      self.assertEqual({r["id"] for r in fts_rows}, expected_ids)
+
+  def test_query_scars_sql_limit_starvation_immunity(self):
+    """SQL-level NOT IN executes before LIMIT so leading workflow IDs never starve dev scars (GH-252)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_path = os.path.join(tmp_dir, "exclude_limit_starvation.db")
+      self._build_scars_db_with_rows(
+          db_path,
+          [
+              ("SCAR-AAA-0001", "PROC", "proc", "Did gate pass?"),
+              ("SCAR-AAA-0002", "GIT", "git", "Did tree lock pass?"),
+              ("SCAR-ZZZ-0001", "ARCH", "arch", "Is module boundary clean?"),
+          ],
+      )
+
+      rows = query_scars(
+          db_path=db_path,
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          limit=1,
+      )
+      self.assertEqual([r["id"] for r in rows], ["SCAR-ZZZ-0001"])
+
+      standalone_rows = query_scars(
+          db_path=db_path,
+          exclude_categories=["WORKFLOW"],
+          limit=1,
+      )
+      self.assertEqual([r["id"] for r in standalone_rows], ["SCAR-ZZZ-0001"])
+
+
 if __name__ == "__main__":
   unittest.main()

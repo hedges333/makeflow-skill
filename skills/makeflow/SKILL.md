@@ -99,35 +99,37 @@ Memento state files (numbered markdown progress cards on disk) preserve task pro
 
 ### Target 15: `archaeology-verified`
 
-Read `references/02` and `references/11` for discovery and 27-language scan rules.
+Read `references/02`, `references/08`, `references/09`, `references/11`, and `references/14` for discovery, OO patterns, cohesion, and scars.
 
 1. Run `make -f .workflow/state/Makefile archaeology-verified` to enter Target 15.
 2. Capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree` before `invoke_subagent`. If `repo-tree` exits `2` (`SCAR-TOOL-16`), interview the user before dispatch.
-3. Embed the file tree index in the prompt. Fork `archaeology-worker` using `agyModelTiers["archaeology-worker"]` (default `inherit`) to scan languages, test runners, sibling APIs, and database setup.
+3. Embed the file tree index and explicit reference paths (`SCAR-PROC-105`) in the prompt. Fork `archaeology-worker` using `agyModelTiers["archaeology-worker"]` (default `inherit`). Scan languages, test runners, sibling OO patterns, module cohesion boundaries, available reference manuals, and database setup.
 4. Enforce Immediate Supervisory Halt (`tool_calls: []`) right after subagent dispatch (`SCAR-PROC-95`).
 5. Do not run live bug-reproduction shell commands in the supervisor during Target 15. Defer live reproduction to `tdd-worker` at Target 30.
 6. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
 7. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
-8. Classify failure mechanisms, query `workflow_query_scars` for detected languages and frameworks, and evaluate testing feasibility and burden balance (`SCAR-TEST-11`).
+8. Classify failure mechanisms and evaluate testing feasibility and burden balance (`SCAR-TEST-11`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 15: archaeology"`, `limit: 5`): one for detected languages and frameworks, and one for `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
 9. On worker wakeup, tag each claim with a Belnap truth state (a four-state fact label). Write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
 
 ### Target 20: `approved-plan`
 
-Read `references/02` for Socratic deliberation and plan disclosures.
+Read `references/02`, `references/03`, `references/04_testing_isolation.md`, `references/09`, and `references/14` for Socratic planning, Red-Green TDD, OO patterns, cohesion, and scars.
 
-1. Evaluate Socratic deliberation questions on fail-fast loops, hermetic isolation, existing test edits, and scoped boundaries, and query `workflow_query_scars` (`workflowPhase: "Target 20: plan"`).
-2. Write `.workflow/state/20_plan.md` with the Socratic Invariant Audit table, file paths, test commands, isolation facts, and burden balance (`SCAR-TEST-11`).
-3. Run `make -f .workflow/state/Makefile approved-plan`, print the plan summary with a `file://` link, and stop tool calls (`tool_calls: []`) for `human-plan-approval`.
-4. After human approval, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1`.
+1. Evaluate Socratic deliberation questions on fail-fast loops, Red-Green-Refactor TDD, OO design patterns, and module cohesion. Also verify hermetic isolation, existing test edits, available reference manuals, and scoped boundaries.
+2. Run two `workflow_query_scars` calls (`workflowPhase: "Target 20: plan"`, `limit: 5`): one for active languages and frameworks, and one for `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
+3. Write `.workflow/state/20_plan.md` with the Socratic Invariant Audit table, file paths, OO and cohesion choices, and Red-Green TDD steps. Disclose test commands, isolation facts, burden balance (`SCAR-TEST-11`), consulted reference paths, scar IDs, and Socratic probes for `tdd-worker`.
+4. Run `make -f .workflow/state/Makefile approved-plan`, print the plan summary with a `file://` link, and stop tool calls (`tool_calls: []`) for `human-plan-approval`.
+5. After human approval, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1`.
 
 ### Target 30: `implementation-diff`
 
-Read `references/03`, `references/04_testing_isolation.md`, and `references/14` for TDD, isolation, and design patterns.
+Read `references/03`, `references/04_testing_isolation.md`, `references/08`, `references/09`, `references/10`, and `references/14` for TDD, isolation, dispatch, scars, security, and design patterns.
 
-1. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`), then enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`). Have the worker query `workflow_query_scars` (`workflowPhase: "Target 30: tdd"`) for target languages, frameworks, and diagnostic codes.
-2. Red phase: Write failing tests first and witness a non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
-3. Green phase: Write minimal production code so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.
-4. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`) and update docstrings. Run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json` before Target 40.
+1. Anchor explicit workspace manual paths (`20_plan.md`, `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `polyglot/<lang>.md`) in the prompt (`SCAR-PROC-105`). Also pass active plan scar IDs and Socratic probes to `tdd-worker`.
+2. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`), then enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`). Have the worker run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`). Query target languages, frameworks, and diagnostic codes first, then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
+3. Red phase: Write failing tests first and witness a non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
+4. Green phase: Write minimal production code following planned OO patterns and cohesion rules so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.
+5. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`) and update docstrings. Run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json` before Target 40.
 
 ### Target 40, Target 42, and Target 45: Adversarial Review and Sign-Off
 

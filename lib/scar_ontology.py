@@ -151,6 +151,24 @@ def _build_category_synonym_map() -> Dict[str, Tuple[str, ...]]:
 
 CATEGORY_SYNONYM_MAP: Dict[str, Tuple[str, ...]] = _build_category_synonym_map()
 
+WORKFLOW_CATEGORY_TAGS: Tuple[str, ...] = (
+    "PROC",
+    "REVIEW",
+    "HCI",
+    "GOV",
+    "META",
+    "METRIC",
+    "DIFF",
+    "COLLAB",
+    "PEDAGOGY",
+    "VERIF",
+    "SKILL",
+    "HOOK",
+    "TOOL",
+    "CI",
+    "GIT",
+)
+
 TARGET_INT_TO_PHASE_LABEL: Dict[int, str] = {
     10: "Target 10: intake",
     15: "Target 15: archaeology",
@@ -357,6 +375,46 @@ def resolve_category_filter_tokens(category: str) -> Tuple[str, ...]:
       tokens.append(key)
     return tuple(tokens)
   return (key,)
+
+
+def resolve_excluded_category_tokens(
+    exclude_categories: Optional[Iterable[str]],
+) -> Tuple[str, ...]:
+  """Expand excluded category tokens and ``WORKFLOW`` into uppercase tokens.
+
+  Resolves ``WORKFLOW`` into all canonical ``WORKFLOW_CATEGORY_TAGS`` plus their
+  prose aliases, ignores blank or ``None`` entries, and deduplicates in
+  deterministic order.
+
+  Args:
+    exclude_categories: Optional iterable of category codes, prose aliases, or
+      ``WORKFLOW``.
+
+  Returns:
+    Deduplicated tuple of uppercase category and prose-alias tokens to exclude.
+  """
+  if exclude_categories is None:
+    return ()
+  items: Iterable[Any] = (
+      (exclude_categories,)
+      if isinstance(exclude_categories, str)
+      else exclude_categories
+  )
+  resolved: List[str] = []
+  seen: Set[str] = set()
+  for raw_item in items:
+    if raw_item is None:
+      continue
+    key = str(raw_item).strip().upper().replace("-", "_")
+    if not key:
+      continue
+    source_keys = WORKFLOW_CATEGORY_TAGS if key == "WORKFLOW" else (key,)
+    for src_key in source_keys:
+      for tok in resolve_category_filter_tokens(src_key):
+        if tok not in seen:
+          seen.add(tok)
+          resolved.append(tok)
+  return tuple(resolved)
 
 
 def select_primary_language(
