@@ -17,6 +17,9 @@ from lib.reflex import emit_reflex
 from lib.shell_safety import (
     ENV_ASSIGN_RE,
     _expand_shell_subcommands,
+    _extract_redirection_targets,
+    _extract_shell_substitutions,
+    _preprocess_shell,
     _tokenize_subcommand,
     _unwrap_command_tokens,
 )
@@ -666,8 +669,134 @@ def is_human_approval_step(step, gate=None):
   return False
 
 
+def _matches_entry_card_basename(raw_path, card_names):
+  """Returns True when raw_path points to a filename in card_names.
+
+  Args:
+    raw_path: Candidate path string from CLI flags or redirections.
+    card_names: Collection of entry-card basenames for the target gate.
+
+  Returns:
+    True if the normalized basename matches an entry in ``card_names``.
+  """
+  if not raw_path or not isinstance(raw_path, str):
+    return False
+  clean = raw_path.strip().strip("'\"").replace("\\", "/")
+  return bool(clean) and os.path.basename(clean) in card_names
+
+
+def _consume_commit_msg_entry(exe, args):
+  """Strips python/module wrapper tokens if invocation targets commit_msg.
+
+  Args:
+    exe: Unwrapped executable name or path.
+    args: Mutable argument token list modified in place when matched.
+
+  Returns:
+    True if the invocation targets ``commit_msg.py`` or its module forms.
+  """
+  base = os.path.basename(exe).lower()
+  if base.startswith("python"):
+    is_mod = False
+    while args and args[0].startswith("-"):
+      flag = args.pop(0)
+      if flag == "-m":
+        is_mod = True
+        break
+      if flag.startswith("-m") and len(flag) > 2:
+        args.insert(0, flag[2:])
+        is_mod = True
+        break
+    if not args:
+      return False
+    target = args.pop(0).replace("\\", "/")
+    if is_mod:
+      return target in ("scripts.commit_msg", "lib.commit_msg", "commit_msg")
+    return target.endswith("commit_msg.py")
+  return base == "commit_msg.py"
+
+
+def _shell_command_writes_entry_card(cmd, entry_cards):
+  """Returns True if a shell command writes any pause-gate entry card.
+
+  Detects ``commit_msg.py format --out <path>`` (and ``--out=<path>``),
+  explicit shell output redirections (``>``, ``>>``, ``>|``, ``&>``), and
+  ``tee`` targeting an ``entry_cards`` basename while ignoring read-only
+  commands such as ``git commit -F``, ``commit_msg.py validate``, and ``cat``.
+
+  Args:
+    cmd: Raw shell command string from a tool call.
+    entry_cards: Iterable of entry-card basenames for the pause gate.
+
+  Returns:
+    True if ``cmd`` writes to a file matching ``entry_cards``.
+  """
+  if not cmd or not isinstance(cmd, str) or not entry_cards:
+    return False
+  card_names = set(entry_cards)
+
+  preprocessed = _preprocess_shell(cmd)
+  for candidate in [preprocessed] + _extract_shell_substitutions(preprocessed):
+    for target in _extract_redirection_targets(candidate):
+      if _matches_entry_card_basename(target, card_names):
+        return True
+
+  for subcmd in _expand_shell_subcommands(cmd):
+    for tokens in _tokenize_subcommand(subcmd):
+      exe, rem = _unwrap_command_tokens(tokens)
+      if not exe or exe == "SHELL_C":
+        continue
+      base_exe = os.path.basename(exe).lower()
+
+      if base_exe == "tee":
+        for arg in rem:
+          if arg.startswith("-"):
+            continue
+          if _matches_entry_card_basename(arg, card_names):
+            return True
+        continue
+
+      cli_args = list(rem)
+      if _consume_commit_msg_entry(exe, cli_args):
+        idx = 0
+        while idx < len(cli_args):
+          tok = cli_args[idx]
+          if tok == "--repo-root" and idx + 1 < len(cli_args):
+            idx += 2
+            continue
+          if tok.startswith("--repo-root=") or tok == "--json":
+            idx += 1
+            continue
+          break
+        if idx < len(cli_args) and cli_args[idx] == "format":
+          j = idx + 1
+          while j < len(cli_args):
+            tok = cli_args[j]
+            if tok == "--out" and j + 1 < len(cli_args):
+              if _matches_entry_card_basename(cli_args[j + 1], card_names):
+                return True
+              j += 2
+              continue
+            if tok.startswith("--out="):
+              if _matches_entry_card_basename(
+                  tok.split("=", 1)[1], card_names
+              ):
+                return True
+            j += 1
+
+  return False
+
+
 def step_enters_gate(step, gate):
-  """Checks if a PLANNER_RESPONSE step entered the specified pause gate."""
+  """Checks if a PLANNER_RESPONSE step entered the specified pause gate.
+
+  Args:
+    step: Transcript step dictionary.
+    gate: Canonical pause-gate target ID (for example ``T20`` or ``T50``).
+
+  Returns:
+    True if the step advances into ``gate`` or writes one of its ``entryCards``.
+  """
   if not isinstance(step, dict) or step.get("type") != "PLANNER_RESPONSE":
     return False
 
@@ -699,6 +828,17 @@ def step_enters_gate(step, gate):
       )
       base = os.path.basename(path_val.replace("\\", "/"))
       if base in entry_cards:
+        return True
+    elif tc_name in _SHELL_TOOL_NAMES:
+      cmd_line = str(
+          _unwrap_json_val(
+              tc_args.get("CommandLine")
+              or tc_args.get("command")
+              or tc_args.get("cmd")
+              or ""
+          )
+      )
+      if _shell_command_writes_entry_card(cmd_line, entry_cards):
         return True
 
   return False

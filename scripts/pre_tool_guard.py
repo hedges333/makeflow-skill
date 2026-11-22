@@ -42,6 +42,7 @@ from lib.shell_safety import (
     _contains_identifier,
     _evaluate_single_subcommand,
     _expand_shell_subcommands,
+    _extract_redirection_targets,
     _extract_shell_substitutions,
     _has_clean_force_config,
     _has_prod_host_token,
@@ -51,6 +52,7 @@ from lib.shell_safety import (
     _split_git_args,
     _split_shell_subcommands,
     _strip_identifier,
+    _strip_line_continuations,
     _strip_shell_redirections,
     _tokenize_subcommand,
     _unwrap_command_tokens,
@@ -502,108 +504,22 @@ def _is_governance_target(raw_token):
   return False
 
 
-def _extract_redirection_targets(cmd):
-  """Extracts output redirection target paths from a shell command string."""
-  targets = []
-  quote = None
-  escaped = False
-  i = 0
-  n = len(cmd)
-  while i < n:
-    ch = cmd[i]
-    if escaped:
-      escaped = False
-      i += 1
-      continue
-    if ch == "\\" and quote != "'":
-      escaped = True
-      i += 1
-      continue
-    if quote:
-      if ch == quote:
-        quote = None
-      i += 1
-      continue
-    if ch in ("'", '"'):
-      quote = ch
-      i += 1
-      continue
-
-    op_start = -1
-    op_len = 0
-    if ch.isdigit() and (i == 0 or cmd[i - 1] in " \t\r\n;|&()"):
-      k = i
-      while k < n and cmd[k].isdigit():
-        k += 1
-      if k < n and cmd[k] == ">":
-        op_start = i
-        if cmd[k : k + 2] in (">>", ">|"):
-          op_len = (k - i) + 2
-        else:
-          op_len = (k - i) + 1
-    elif ch == ">":
-      op_start = i
-      if cmd[i : i + 2] in (">>", ">|"):
-        op_len = 2
-      else:
-        op_len = 1
-    elif cmd[i : i + 2] == "&>":
-      op_start = i
-      if cmd[i : i + 3] == "&>>":
-        op_len = 3
-      else:
-        op_len = 2
-
-    if op_start != -1:
-      j = op_start + op_len
-      while j < n and cmd[j] in (" ", "\t"):
-        j += 1
-      w_buf = []
-      w_quote = None
-      w_esc = False
-      while j < n:
-        wc = cmd[j]
-        if w_esc:
-          w_buf.append(wc)
-          w_esc = False
-          j += 1
-          continue
-        if wc == "\\" and w_quote != "'":
-          w_esc = True
-          j += 1
-          continue
-        if w_quote:
-          if wc == w_quote:
-            w_quote = None
-          else:
-            w_buf.append(wc)
-          j += 1
-          continue
-        if wc in ("'", '"'):
-          w_quote = wc
-          j += 1
-          continue
-        if wc in (" ", "\t", "\r", "\n", ";", "|", "&", "<", ">", ")"):
-          break
-        w_buf.append(wc)
-        j += 1
-      target = "".join(w_buf).strip()
-      if target:
-        targets.append(target)
-      i = j
-      continue
-
-    i += 1
-  return targets
-
-
 def evaluate_self_modification_safety(cmd, workspace_paths=None):
-  """Evaluates whether cmd attempts to truncate, overwrite, or delete makeflow governance files."""
+  """Evaluates whether cmd attempts to truncate, overwrite, or delete makeflow governance files.
+
+  Args:
+    cmd: Raw shell command string.
+    workspace_paths: Optional list of active workspace root paths.
+
+  Returns:
+    Tuple of ``(is_safe, deny_reason)``.
+  """
   if not cmd or not isinstance(cmd, str):
     return True, ""
 
-  # 1. Check output redirections in raw command and any subshell strings
-  all_cmds = [cmd] + _extract_shell_substitutions(cmd)
+  # 1. Check output redirections in preprocessed command and any subshell strings
+  preprocessed = _preprocess_shell(cmd)
+  all_cmds = [preprocessed] + _extract_shell_substitutions(preprocessed)
   for c in all_cmds:
     redir_targets = _extract_redirection_targets(c)
     for target in redir_targets:

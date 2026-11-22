@@ -105,8 +105,100 @@ def is_database_command(cmd):
   return False
 
 
+def _strip_line_continuations(cmd):
+  """Strips POSIX backslash-newline line continuations outside single quotes and comments.
+
+  Handles both LF (``\\\\\\n``) and CRLF (``\\\\\\r\\n``) continuations in
+  unquoted and double-quoted contexts (POSIX 2.2.3), preserves literal
+  continuations inside single quotes (POSIX 2.2.2) and ANSI-C ``$'...'``
+  literals, distinguishes even vs. odd backslash runs, and terminates ``#``
+  comments at ``\\n`` even when preceded by a backslash (SCAR-SH-03).
+
+  Args:
+    cmd: Raw shell command string.
+
+  Returns:
+    Command string with active POSIX line continuations removed.
+  """
+  if not cmd or not isinstance(cmd, str):
+    return "" if not cmd else cmd
+  out = []
+  quote = None
+  i = 0
+  n = len(cmd)
+  while i < n:
+    ch = cmd[i]
+    if quote == "'":
+      out.append(ch)
+      if ch == "'":
+        quote = None
+      i += 1
+      continue
+
+    if ch == "\\":
+      if i + 1 < n and cmd[i + 1] == "\n":
+        i += 2
+        continue
+      if i + 2 < n and cmd[i + 1] == "\r" and cmd[i + 2] == "\n":
+        i += 3
+        continue
+      if i + 1 < n:
+        out.append("\\")
+        out.append(cmd[i + 1])
+        i += 2
+        continue
+      out.append("\\")
+      i += 1
+      continue
+
+    if quote == '"':
+      out.append(ch)
+      if ch == '"':
+        quote = None
+      i += 1
+      continue
+
+    if ch == "#" and (not out or out[-1][-1] in " \t\r\n;|&()"):
+      while i < n and cmd[i] != "\n":
+        out.append(cmd[i])
+        i += 1
+      continue
+    if cmd[i : i + 2] == "$'":
+      out.append("$'")
+      i += 2
+      while i < n:
+        c2 = cmd[i]
+        if c2 == "\\" and i + 1 < n:
+          out.append("\\")
+          out.append(cmd[i + 1])
+          i += 2
+          continue
+        out.append(c2)
+        i += 1
+        if c2 == "'":
+          break
+      continue
+    if ch in ("'", '"'):
+      quote = ch
+      out.append(ch)
+      i += 1
+      continue
+    out.append(ch)
+    i += 1
+
+  return "".join(out)
+
+
 def _preprocess_shell(cmd):
-  """Strips unquoted # comments and normalizes ANSI-C $'...' literals."""
+  """Strips line continuations, unquoted # comments, and normalizes ANSI-C $'...' literals.
+
+  Args:
+    cmd: Raw shell command string.
+
+  Returns:
+    Normalized shell command string ready for subcommand splitting.
+  """
+  cmd = _strip_line_continuations(cmd)
   out = []
   quote = None
   escaped = False
@@ -125,7 +217,7 @@ def _preprocess_shell(cmd):
         escaped = True
         i += 1
         continue
-      if ch == "#" and (i == 0 or cmd[i - 1] in " \t\r\n;|&()"):
+      if ch == "#" and (not out or out[-1][-1] in " \t\r\n;|&()"):
         while i < n and cmd[i] != "\n":
           i += 1
         continue
@@ -136,7 +228,11 @@ def _preprocess_shell(cmd):
         while j < n:
           c2 = cmd[j]
           if c2 == "\\" and j + 1 < n:
-            body.append(cmd[j + 1])
+            if cmd[j + 1] in ("\n", "\r"):
+              body.append("\\")
+              body.append(cmd[j + 1])
+            else:
+              body.append(cmd[j + 1])
             j += 2
             continue
           if c2 == "'":
@@ -284,6 +380,108 @@ def _strip_shell_redirections(seg):
   if escaped:
     out.append("\\")
   return "".join(out)
+
+
+def _extract_redirection_targets(cmd):
+  """Extracts output redirection target paths from a shell command string.
+
+  Args:
+    cmd: Shell command string (preprocessed for continuations and comments).
+
+  Returns:
+    List of extracted output redirection target paths.
+  """
+  targets = []
+  quote = None
+  escaped = False
+  i = 0
+  n = len(cmd)
+  while i < n:
+    ch = cmd[i]
+    if escaped:
+      escaped = False
+      i += 1
+      continue
+    if ch == "\\" and quote != "'":
+      escaped = True
+      i += 1
+      continue
+    if quote:
+      if ch == quote:
+        quote = None
+      i += 1
+      continue
+    if ch in ("'", '"'):
+      quote = ch
+      i += 1
+      continue
+
+    op_start = -1
+    op_len = 0
+    if ch.isdigit() and (i == 0 or cmd[i - 1] in " \t\r\n;|&()"):
+      k = i
+      while k < n and cmd[k].isdigit():
+        k += 1
+      if k < n and cmd[k] == ">":
+        op_start = i
+        if cmd[k : k + 2] in (">>", ">|"):
+          op_len = (k - i) + 2
+        else:
+          op_len = (k - i) + 1
+    elif ch == ">":
+      op_start = i
+      if cmd[i : i + 2] in (">>", ">|"):
+        op_len = 2
+      else:
+        op_len = 1
+    elif cmd[i : i + 2] == "&>":
+      op_start = i
+      if cmd[i : i + 3] == "&>>":
+        op_len = 3
+      else:
+        op_len = 2
+
+    if op_start != -1:
+      j = op_start + op_len
+      while j < n and cmd[j] in (" ", "\t"):
+        j += 1
+      w_buf = []
+      w_quote = None
+      w_esc = False
+      while j < n:
+        wc = cmd[j]
+        if w_esc:
+          w_buf.append(wc)
+          w_esc = False
+          j += 1
+          continue
+        if wc == "\\" and w_quote != "'":
+          w_esc = True
+          j += 1
+          continue
+        if w_quote:
+          if wc == w_quote:
+            w_quote = None
+          else:
+            w_buf.append(wc)
+          j += 1
+          continue
+        if wc in ("'", '"'):
+          w_quote = wc
+          j += 1
+          continue
+        if wc in (" ", "\t", "\r", "\n", ";", "|", "&", "<", ">", ")"):
+          break
+        w_buf.append(wc)
+        j += 1
+      target = "".join(w_buf).strip()
+      if target:
+        targets.append(target)
+      i = j
+      continue
+
+    i += 1
+  return targets
 
 
 def _split_shell_subcommands(cmd):
@@ -463,13 +661,25 @@ def _extract_shell_substitutions(cmd):
 
 
 def _tokenize_subcommand(subcmd):
-  """Splits a shell segment into token lists, failing closed on bad quotes."""
+  """Splits a shell segment into token lists, failing closed on bad quotes.
+
+  Strips active POSIX backslash-newline line continuations before calling
+  ``shlex.split`` (and before malformed-quote fallback splitting) so direct
+  callers never receive leading ``\\n`` prefixes on executables.
+
+  Args:
+    subcmd: Shell subcommand segment string.
+
+  Returns:
+    List of token lists extracted from ``subcmd``.
+  """
+  cleaned = _strip_line_continuations(subcmd)
   try:
-    toks = shlex.split(subcmd, posix=True)
+    toks = shlex.split(cleaned, posix=True)
     return [toks] if toks else []
   except ValueError:
     groups = []
-    for chunk in re.split(r"(?:&&|\|\||[;|&\n])", subcmd):
+    for chunk in re.split(r"(?:&&|\|\||[;|&\n])", cleaned):
       words = [t for t in re.split(r"[\s'\"]+", chunk.strip()) if t]
       if words:
         groups.append(words)
