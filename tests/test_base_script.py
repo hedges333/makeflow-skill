@@ -317,6 +317,46 @@ class TestBaseScript(unittest.TestCase):
     finally:
       sys.argv = orig_argv
 
+  def test_execute_positional_and_keyword_backward_compatibility(self):
+    """Verifies appending stdin preserves positional and keyword execute() signatures (GH-203, SCAR-API-0002)."""
+    class PositionalScript(BaseScript):
+      def run(self):
+        self.stdout.write(f"{','.join(self.raw_args)}|{self.stdin.read()}")
+        return 0
+
+    # 3-arg positional call (existing callers)
+    out_3 = io.StringIO()
+    err_3 = io.StringIO()
+    orig_stdin = sys.stdin
+    try:
+      sys.stdin = io.StringIO("three-arg")
+      code_3 = PositionalScript().execute(["a", "b"], out_3, err_3)
+    finally:
+      sys.stdin = orig_stdin
+    self.assertEqual(code_3, 0)
+    self.assertEqual(out_3.getvalue(), "a,b|three-arg")
+    self.assertEqual(err_3.getvalue(), "")
+
+    # 4-arg positional call (with stdin appended as 4th optional parameter)
+    out_4 = io.StringIO()
+    err_4 = io.StringIO()
+    in_4 = io.StringIO("four-arg")
+    code_4 = PositionalScript().execute(["x"], out_4, err_4, in_4)
+    self.assertEqual(code_4, 0)
+    self.assertEqual(out_4.getvalue(), "x|four-arg")
+    self.assertEqual(err_4.getvalue(), "")
+
+    # Keyword call (with explicit stdin=)
+    out_kw = io.StringIO()
+    err_kw = io.StringIO()
+    in_kw = io.StringIO("kw-arg")
+    code_kw = PositionalScript().execute(
+        args=["k"], stdout=out_kw, stderr=err_kw, stdin=in_kw
+    )
+    self.assertEqual(code_kw, 0)
+    self.assertEqual(out_kw.getvalue(), "k|kw-arg")
+    self.assertEqual(err_kw.getvalue(), "")
+
 
 class TestThreeLayerArchitectureInvariants(unittest.TestCase):
   """Verifies GH-169 / SCAR-ARCH-05 three-layer separation of lib/, scripts/, and tests/."""
@@ -507,7 +547,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     self.assertEqual(err.getvalue(), "")
 
   def test_all_cli_scripts_root_help(self):
-    """Verifies all 14 CLI BaseScript classes return 0 and print usage on --help and -h."""
+    """Verifies all 15 CLI BaseScript classes return 0 and print usage on --help and -h."""
     from lib.ast_scrub import AstScrubScript
     from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
@@ -516,6 +556,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     from lib.reflex import EmitReflexScript
     from lib.scar_candidate import ScarCandidateTestScript
     from lib.scars_db import SyncSyntheticScarsScript
+    from lib.session_start import SessionStartScript
     from lib.signal_trap import SignalTrapScript
     from lib.static_check import StaticCheckScript
     from lib.tdd_guard import TddGuardScript
@@ -538,6 +579,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (SignalTrapScript, "signal_trap.py"),
         (ChangelogScript, "changelog.py"),
         (PreToolGuardScript, "pre_tool_guard.py"),
+        (SessionStartScript, "session_start.py"),
     ]
 
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
@@ -644,6 +686,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     from lib.reflex import EmitReflexScript
     from lib.scar_candidate import ScarCandidateTestScript
     from lib.scars_db import SyncSyntheticScarsScript
+    from lib.session_start import SessionStartScript
     from lib.signal_trap import SignalTrapScript
     from lib.static_check import StaticCheckScript
     from lib.tdd_guard import TddGuardScript
@@ -666,6 +709,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (SignalTrapScript, 1),
         (ChangelogScript, 2),
         (PreToolGuardScript, 1),
+        (SessionStartScript, 1),
     ]
 
     for cls, expected_code in expected_exit_codes:
