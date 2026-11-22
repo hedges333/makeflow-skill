@@ -1529,6 +1529,126 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       })
       self.assertEqual(post_human_exit["decision"], "allow", post_human_exit)
 
+  def test_promote_review_allowed_after_critic_wakeup_for_t42_and_t45(self):
+    """GH-221: Verifies promote-review ROUND=1 passes pre_tool_guard after critic wakeup."""
+    scenarios = (
+        (
+            "target_42_blockers",
+            "VERDICT: REJECTED (2 BLOCKERS)",
+            "make -f .workflow/state/Makefile triaged-blockers BLOCKERS=2",
+            "T42",
+        ),
+        (
+            "target_45_approved",
+            "VERDICT: APPROVED (0 BLOCKERS)",
+            "make -f .workflow/state/Makefile approved-review BLOCKERS=0",
+            "T45",
+        ),
+    )
+    for label, verdict_summary, gate_cmd, expected_gate in scenarios:
+      with self.subTest(scenario=label):
+        with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+          state_dir = os.path.join(ws_dir, ".workflow", "state")
+          os.makedirs(state_dir)
+          with open(
+              os.path.join(state_dir, "active_target.json"),
+              "w",
+              encoding="utf-8",
+          ) as f:
+            json.dump(
+                {
+                    "previousTarget": "T30",
+                    "target": "T40",
+                    "targetName": "adversarial-review",
+                },
+                f,
+            )
+
+          transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+          steps = [
+              {
+                  "step_index": 5,
+                  "type": "USER_INPUT",
+                  "content": "Approved Target 20 plan.",
+              },
+              {
+                  "step_index": 10,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Dispatching adversarial-critic for Round 1.",
+              },
+          ]
+          _write_transcript(transcript_path, steps)
+          record_active_subagent(
+              state_dir,
+              "sup-1",
+              "adversarial-critic",
+              transcript_path=transcript_path,
+          )
+          self.assertIsNotNone(read_active_subagent(state_dir))
+
+          # Critic wakeup arrives via <SYSTEM_MESSAGE>
+          steps.append({
+              "step_index": 11,
+              "type": "SYSTEM_MESSAGE",
+              "content": f"[Message] sender=critic-1 {verdict_summary}",
+          })
+          _write_transcript(transcript_path, steps)
+
+          # 1. Supervisor writes round 1 once
+          round_card = os.path.join(state_dir, "40_critic_review_round1.md")
+          write_round_res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "write_file",
+                  "args": {
+                      "Path": round_card,
+                      "Content": f"# Round 1\n{verdict_summary}\n",
+                  },
+              },
+          })
+          self.assertEqual(write_round_res["decision"], "allow", write_round_res)
+          self.assertIsNone(read_active_subagent(state_dir))
+
+          # 2. Supervisor runs promote-review ROUND=1 cleanly
+          promote_res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          "make -f .workflow/state/Makefile promote-review"
+                          " ROUND=1"
+                      )
+                  },
+              },
+          })
+          self.assertEqual(promote_res["decision"], "allow", promote_res)
+          self.assertFalse(
+              os.path.exists(os.path.join(state_dir, "gate_entry.json"))
+          )
+
+          # 3. Supervisor enters Target 42 or Target 45 and seals gate_entry.json
+          gate_res = evaluate_tool_call({
+              "conversationId": "sup-1",
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": gate_cmd},
+              },
+          })
+          self.assertEqual(gate_res["decision"], "allow", gate_res)
+          with open(
+              os.path.join(state_dir, "gate_entry.json"), "r", encoding="utf-8"
+          ) as f:
+            entry = json.load(f)
+          self.assertEqual(entry["gate"], expected_gate)
+          self.assertEqual(entry["fromTarget"], "T40")
+
 
 class TestSubagentHaltAirlock(unittest.TestCase):
   """Hermetic unit and boundary tests for SCAR-PROC-95 subagent halt airlock (GH-220)."""

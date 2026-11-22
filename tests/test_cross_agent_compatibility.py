@@ -12328,5 +12328,250 @@ class TestTarget42BoundedBlockerAirlockContract(unittest.TestCase):
     )
 
 
+REVIEW_PROMOTION_CONTRACT_FILES = (
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "skills/makeflow/references/scars/process.md",
+    "rules/AGENTS.md",
+    "skills/makeflow/SKILL.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+REVIEW_PROMOTION_ADAPTER_FILES = (
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def check_review_promotion_and_nbo_gate_contract(
+    files_by_relpath: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-221 review promotion, concise chat summaries, and plain-chat NBO rules.
+
+  Args:
+    files_by_relpath: Optional in-memory map of repo-relative paths to contents.
+    repo_root: Optional repository root directory override.
+
+  Returns:
+    List of diagnostic error strings (empty when all GH-221 contracts hold).
+  """
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if files_by_relpath is not None:
+    files_map = dict(files_by_relpath)
+  else:
+    for rel in REVIEW_PROMOTION_CONTRACT_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in REVIEW_PROMOTION_CONTRACT_FILES:
+    if rel not in files_map and f"Missing {rel}" not in errs:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. skills/makeflow/references/04_six_pillars_adversarial_review.md
+  r04_rel = "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+  r04_text = files_map[r04_rel]
+  sec2 = _extract_markdown_h2_section(r04_text, "## 2. The Progressive Three-Tier")
+  sec51 = _extract_target_42_intro_and_airlock_section(r04_text)
+  sec6 = _extract_markdown_h2_section(r04_text, "## 6. Target 45:")
+  sec62 = _extract_markdown_h3_section(r04_text, "### 6.2 Canonical Prose Presentation")
+  sec63 = _extract_markdown_h3_section(r04_text, "### 6.3 Non-Blocking Observations")
+
+  for sec_label, sec_text in (
+      ("Section 2", sec2),
+      ("Section 5.1", sec51),
+      ("Section 6", sec6),
+  ):
+    if "make -f .workflow/state/Makefile promote-review ROUND=<N>" not in sec_text:
+      errs.append(
+          f"{r04_rel} {sec_label} must specify 'make -f .workflow/state/Makefile promote-review ROUND=<N>'"
+      )
+
+  if not sec62:
+    errs.append(f"{r04_rel} missing '### 6.2 Canonical Prose Presentation'")
+  else:
+    for tok in ("1 to 2", ".workflow/state/40_critic_review.md", "file://"):
+      if tok not in sec62:
+        errs.append(f"{r04_rel} Section 6.2 must document '{tok}'")
+    if "summary table" not in sec62.lower():
+      errs.append(f"{r04_rel} Section 6.2 must keep prohibition on summary tables")
+    errs.extend(_check_section_simple_english(f"{r04_rel} [Section 6.2]", sec62))
+
+  if not sec63:
+    errs.append(f"{r04_rel} missing '### 6.3 Non-Blocking Observations'")
+  else:
+    for tok in ("Target 42", "Target 45", "ask_question", "tool_calls: []"):
+      if tok not in sec63:
+        errs.append(f"{r04_rel} Section 6.3 must document '{tok}'")
+    if "never call `ask_question`" not in sec63.lower() and "do not call `ask_question`" not in sec63.lower():
+      errs.append(
+          f"{r04_rel} Section 6.3 must prohibit calling ask_question at Target 42 and Target 45"
+      )
+    errs.extend(_check_section_simple_english(f"{r04_rel} [Section 6.3]", sec63))
+
+  # 2. skills/makeflow/references/scars/process.md (SCAR-PROC-89)
+  proc_rel = "skills/makeflow/references/scars/process.md"
+  scar89 = _extract_scar_block(files_map[proc_rel], "SCAR-PROC-89")
+  if "make -f .workflow/state/Makefile promote-review ROUND=<N>" not in scar89:
+    errs.append(
+        f"{proc_rel} SCAR-PROC-89 must specify 'make -f .workflow/state/Makefile promote-review ROUND=<N>'"
+    )
+
+  # 3. rules/AGENTS.md (Section 1.2 and Section 1.8)
+  agents_rel = "rules/AGENTS.md"
+  agents_text = files_map[agents_rel]
+  sec12 = _extract_markdown_h3_section(agents_text, "### 1.2 Pause Gates")
+  sec18 = _extract_markdown_h3_section(agents_text, "### 1.8 Critic Observation Triage")
+  if not sec12:
+    errs.append(f"{agents_rel} missing '### 1.2 Pause Gates'")
+  else:
+    for tok in (
+        "$N \\ge 2$",
+        "$N = 1$",
+        "ask_question",
+        "Target 42",
+        "Target 45",
+        "Non-Blocking Observation",
+        "1 to 2",
+        ".workflow/state/40_critic_review.md",
+        "tool_calls: []",
+    ):
+      if tok not in sec12:
+        errs.append(f"{agents_rel} Section 1.2 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.2]", sec12))
+  if not sec18:
+    errs.append(f"{agents_rel} missing '### 1.8 Critic Observation Triage'")
+  else:
+    if "plain chat" not in sec18.lower() or "ask_question" not in sec18:
+      errs.append(
+          f"{agents_rel} Section 1.8 must specify plain chat choices without calling ask_question"
+      )
+    errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.8]", sec18))
+
+  # 4. skills/makeflow/SKILL.md (Target 40/42/45 + budget + platform neutrality)
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  skill_bytes = len(skill_text.encode("utf-8"))
+  if skill_bytes > 24576:
+    errs.append(
+        f"{skill_rel} exceeds 24,576-byte budget ({skill_bytes} bytes)"
+    )
+  if "<brain>" in skill_text:
+    errs.append(f"{skill_rel} must stay platform-neutral without '<brain>'")
+  t40_sec = _extract_markdown_h3_section(skill_text, "### Target 40, Target 42, and Target 45:")
+  if not t40_sec:
+    errs.append(f"{skill_rel} missing '### Target 40, Target 42, and Target 45:'")
+  else:
+    for tok in (
+        "make -f .workflow/state/Makefile promote-review ROUND=<N>",
+        "1 to 2",
+        ".workflow/state/40_critic_review.md",
+        "ask_question",
+        "tool_calls: []",
+    ):
+      if tok not in t40_sec:
+        errs.append(f"{skill_rel} Target 40/42/45 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{skill_rel} [Target 40/42/45]", t40_sec))
+
+  # 5. All 5 cross-agent adapters
+  for adapter_rel in REVIEW_PROMOTION_ADAPTER_FILES:
+    ad_text = files_map[adapter_rel]
+    for tok in (
+        "promote-review ROUND=<N>",
+        "1 to 2",
+        "40_critic_review.md",
+        "ask_question",
+    ):
+      if tok not in ad_text:
+        errs.append(f"{adapter_rel} must document '{tok}'")
+    if "plain chat" not in ad_text.lower():
+      errs.append(
+          f"{adapter_rel} must specify plain chat pause gates at Target 42 and Target 45"
+      )
+
+  return errs
+
+
+class TestReviewPromotionAndNboGateContract(unittest.TestCase):
+  """Section-anchored contract and negative falsification tests for GH-221."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in REVIEW_PROMOTION_CONTRACT_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_review_promotion_and_nbo_gate_contract(self) -> None:
+    """Verifies live manuals, rules, SKILL.md, and all 5 adapters satisfy GH-221."""
+    self.assertEqual(check_review_promotion_and_nbo_gate_contract(), [])
+
+  def test_negative_falsification_rejects_missing_promote_review_or_nbo_rules(
+      self,
+  ) -> None:
+    """In-memory mutations removing GH-221 invariants must trigger deterministic failures."""
+    base = self._load_base_files()
+    self.assertEqual(check_review_promotion_and_nbo_gate_contract(base), [])
+
+    mutations = (
+        (
+            "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+            "make -f .workflow/state/Makefile promote-review ROUND=<N>",
+            "REMOVED_PROMOTE_CMD",
+        ),
+        (
+            "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+            "1 to 2",
+            "verbatim full",
+        ),
+        (
+            "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+            "ask_question",
+            "REMOVED_TOOL",
+        ),
+        (
+            "skills/makeflow/references/scars/process.md",
+            "make -f .workflow/state/Makefile promote-review ROUND=<N>",
+            "REMOVED_PROMOTE_CMD",
+        ),
+        ("rules/AGENTS.md", "Non-Blocking Observation", "REMOVED_NBO"),
+        ("rules/AGENTS.md", "plain chat", "modal dialog"),
+        (
+            "skills/makeflow/SKILL.md",
+            "make -f .workflow/state/Makefile promote-review ROUND=<N>",
+            "REMOVED_PROMOTE_CMD",
+        ),
+        ("CLAUDE.md", "promote-review ROUND=<N>", "REMOVED_PROMOTE"),
+        (".cursorrules", "promote-review ROUND=<N>", "REMOVED_PROMOTE"),
+        (".cursor/rules/makeflow.mdc", "promote-review ROUND=<N>", "REMOVED_PROMOTE"),
+        (".github/copilot-instructions.md", "promote-review ROUND=<N>", "REMOVED_PROMOTE"),
+        ("adapters/chatgpt/instructions.md", "promote-review ROUND=<N>", "REMOVED_PROMOTE"),
+    )
+    for rel, token, repl in mutations:
+      with self.subTest(file=rel, mutated=token):
+        mut = dict(base)
+        mut[rel] = mut[rel].replace(token, repl)
+        self.assertNotEqual(mut[rel], base[rel])
+        errs = check_review_promotion_and_nbo_gate_contract(mut)
+        self.assertTrue(
+            any(rel in e for e in errs),
+            f"Expected rejection when '{token}' mutated in {rel}, got: {errs}",
+        )
+
+
 if __name__ == "__main__":
   unittest.main()

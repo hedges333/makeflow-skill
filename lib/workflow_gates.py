@@ -452,7 +452,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "codified-scars-consolidated finish advance "
       "check-intake release-intake check-approved-tree check-commit-msg "
       "check-main-sync verify-regression check-regression repo-tree "
-      "witness-red verify-green verify-citation ast-lint"
+      "promote-review witness-red verify-green verify-citation ast-lint"
   )
   recipes = _workflow_target_recipes(gates_script, quoted_root)
   return (
@@ -479,6 +479,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "NO_LIMIT ?=\n"
       "COUNT_ONLY ?=\n"
       "SRC_DIR ?=\n"
+      "ROUND ?=\n"
       "export TICKET ALLOW_BLOCKED FROM TO APPROVED BLOCKERS ALLOW_MAIN_CONFLICT NO_FETCH TRANSCRIPT FILE\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n"
       "export REGRESSION_CMD SUBPROJECT\n"
@@ -501,6 +502,8 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} check-regression --make-env\n\n"
       "repo-tree:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} repo-tree --make-env\n\n"
+      "promote-review:\n"
+      f'\t@$(PYTHON) {gates_script} --repo-root {quoted_root} promote-review --round "$(ROUND)"\n\n'
       "witness-red:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
       "verify-green:\n"
@@ -547,6 +550,7 @@ class WorkflowGatesScript(BaseScript):
     self.tree_count_only: bool = False
     self.tree_no_limit: bool = False
     self.tree_threshold: int = DEFAULT_REPO_TREE_THRESHOLD
+    self.review_round: str = ""
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -854,14 +858,15 @@ class WorkflowGatesScript(BaseScript):
     self._register_read_init_subparser(subparsers)
     self._register_regression_subparsers(subparsers)
     self._register_repo_tree_subparser(subparsers)
+    self._register_promote_review_subparser(subparsers)
 
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
           "intake, approved-tree, commit-msg, main-sync, verify-regression, "
-          "check-regression, repo-tree, terminal-title, release-intake, "
-          "release-lock, read-init-d, or advance."
+          "check-regression, repo-tree, promote-review, terminal-title, "
+          "release-intake, release-lock, read-init-d, or advance."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
@@ -896,6 +901,8 @@ class WorkflowGatesScript(BaseScript):
       self.tree_count_only = bool(getattr(ns, "tree_count_only", False))
       self.tree_no_limit = bool(getattr(ns, "tree_no_limit", False))
       self.tree_threshold = ns.tree_threshold
+    elif ns.gate == "promote-review":
+      self.review_round = str(getattr(ns, "review_round", "") or "").strip()
     elif ns.gate == "read-init-d":
       self.adv_from = str(getattr(ns, "adv_from", "") or "").strip()
     elif ns.gate == "advance":
@@ -969,6 +976,29 @@ class WorkflowGatesScript(BaseScript):
       self.tree_no_limit = True
     if not self.tree_count_only and _env_truthy("COUNT_ONLY"):
       self.tree_count_only = True
+
+  @staticmethod
+  def _register_promote_review_subparser(subparsers: Any) -> None:
+    """Registers the promote-review subparser for Target 40 review promotion."""
+    p_prom = subparsers.add_parser(
+        "promote-review",
+        help="Validate 40_critic_review_round<N>.md and promote it to 40_critic_review.md.",
+        description="Validate Six-Pillar headings and binary verdict syntax, then copy the round card via safe_copy_file.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . promote-review --round 1",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_prom.add_argument(
+        "--round",
+        dest="review_round",
+        default="",
+        help="Positive integer critic review round number (for example 1).",
+    )
+    p_prom.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit output or Vector 4 Reflex errors as JSON.",
+    )
 
   @staticmethod
   def _register_repo_tree_subparser(subparsers: Any) -> None:
@@ -2139,6 +2169,62 @@ class WorkflowGatesScript(BaseScript):
     )
     return 0
 
+  def _promote_review(self) -> int:
+    """Validates and promotes a critic review round via lib/review_promotion.py."""
+    from lib.review_promotion import promote_review_round
+
+    try:
+      outcome = promote_review_round(self.repo_root, self.review_round)
+    except ValueError as exc:
+      return self._fail(
+          scar_id="PROC-89",
+          code="INVALID_REVIEW_ROUND",
+          trigger=str(exc),
+          rejected="Promoting a critic review round without a valid positive integer ROUND.",
+          reflex="Run make -f .workflow/state/Makefile promote-review ROUND=<N> with a positive integer N (>= 1).",
+      )
+    except FileNotFoundError as exc:
+      return self._fail(
+          scar_id="PROC-89",
+          code="MISSING_REVIEW_ROUND_FILE",
+          trigger=str(exc),
+          rejected="Promoting a critic review round whose source file does not exist.",
+          reflex=(
+              "Write .workflow/state/40_critic_review_round<N>.md once from the "
+              "critic output, then re-run promote-review ROUND=<N>."
+          ),
+      )
+    except OSError as exc:
+      return self._fail(
+          scar_id="SYS-05",
+          code="REVIEW_PROMOTION_IO_ERROR",
+          trigger=str(exc),
+          rejected="Failed to read or copy the critic review artifact.",
+          reflex="Check file permissions in .workflow/state/ and re-run promote-review ROUND=<N>.",
+      )
+
+    if not outcome.promoted:
+      return self._fail(
+          scar_id="PROC-89",
+          code="INVALID_CRITIC_REVIEW",
+          trigger="; ".join(outcome.validation.errors),
+          rejected="Promoting a critic review missing canonical Six-Pillar headings, prose bodies, or a valid binary VERDICT.",
+          reflex=(
+              "Ensure .workflow/state/40_critic_review_round<N>.md contains all "
+              "six canonical headings in order with prose bodies and one exact "
+              "VERDICT header, then re-run promote-review ROUND=<N>."
+          ),
+      )
+
+    if self.as_json:
+      self.stdout.write(json.dumps(outcome.to_dict()) + "\n")
+    else:
+      self.stdout.write(
+          f"Promoted {outcome.source_path} -> {outcome.destination_path} "
+          f"({outcome.validation.verdict}, {outcome.validation.blocker_count} blockers)\n"
+      )
+    return 0
+
   def run(self) -> int:
     if self.gate == "init-makefile":
       return self._init_makefile()
@@ -2160,6 +2246,8 @@ class WorkflowGatesScript(BaseScript):
       return self._check_regression()
     if self.gate == "repo-tree":
       return self._repo_tree()
+    if self.gate == "promote-review":
+      return self._promote_review()
     if self.gate == "terminal-title":
       return self._gate_terminal_title()
     if self.gate in ("release-intake", "release-lock"):

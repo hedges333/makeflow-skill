@@ -50,7 +50,7 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 - **Wound**: An independent critic subagent rejects a code change with blockers. The main agent fails to halt at the triage gate and argues with the critic through chat messages.
 - **Trap**: The agent treats the critic as a chat partner. It attempts to explain away blockers instead of halting.
 - **Circuit Breaker**: If the critic reports blockers, never message the critic or edit code. Persist review cards, enter Target 42, then stop tool calls (`tool_calls: []`).
-- **Permanent Reflex**: If a critic returns blockers, write `.workflow/state/40_critic_review_round<N>.md` and `.workflow/state/40_critic_review.md`. Run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>` to enter Target 42. Present the Blocker Digest and stop tool calls (`tool_calls: []`) until human triage arrives. Never edit source or test files, run tests, message the critic, or advance past Target 42 before approval.
+- **Permanent Reflex**: If a critic returns blockers, write `.workflow/state/40_critic_review_round<N>.md` and promote `.workflow/state/40_critic_review.md` with `make -f .workflow/state/Makefile promote-review ROUND=<N>`. Run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>` to enter Target 42. Present the Blocker Digest and stop tool calls (`tool_calls: []`) until human triage arrives. Never edit source or test files, run tests, message the critic, or advance past Target 42 before approval.
 - **Socratic Probe**: Did you only persist review cards and enter Target 42? Why are you running extra tools instead of halting (`tool_calls: []`) for human triage?
 
 ### SCAR-PROC-95: Depth-0 Supervisor and Subagent Isolation
