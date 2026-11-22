@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Test suite for SessionStart and PreToolUse hook scripts."""
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -41,64 +42,110 @@ def _load_module(name, path):
   return mod
 
 
+def _clean_hook_env(home_dir, **overrides):
+  """Returns an environment isolated from host HOME and MAKEFILE_WORKFLOW_* vars (GH-269).
+
+  Args:
+    home_dir: Ephemeral directory path assigned to ``HOME``.
+    **overrides: Explicit environment variables applied after scrubbing.
+
+  Returns:
+    Environment dictionary safe for hook subprocesses and ``os.environ`` patches.
+  """
+  env = {
+      k: v
+      for k, v in os.environ.items()
+      if not k.startswith("MAKEFILE_WORKFLOW_")
+  }
+  env["HOME"] = home_dir
+  env.update(overrides)
+  return env
+
+
+@contextlib.contextmanager
+def _isolated_hook_dirs():
+  """Yields isolated workspace, seeded hook_cwd, fake HOME, and clean env (GH-269).
+
+  Seeds ``active_subagent.json`` inside ``hook_cwd/.workflow/state`` so hook
+  subprocesses honoring ``workspacePaths`` prove independence from ambient
+  ``cwd`` airlock state, host ``HOME``, and ``MAKEFILE_WORKFLOW_*`` variables.
+
+  Yields:
+    Tuple of ``(ws_dir, hook_cwd, fake_home, clean_env)``.
+  """
+  with (
+      tempfile.TemporaryDirectory() as ws_dir,
+      tempfile.TemporaryDirectory() as hook_cwd,
+      tempfile.TemporaryDirectory() as fake_home,
+  ):
+    hook_state = os.path.join(hook_cwd, ".workflow", "state")
+    os.makedirs(hook_state)
+    with open(
+        os.path.join(hook_state, "active_subagent.json"),
+        "w",
+        encoding="utf-8",
+    ) as f:
+      json.dump(
+          {
+              "supervisorConversationId": "sup-live",
+              "typeName": "tdd-worker",
+              "dispatchedStepIdx": 20,
+              "transcriptPath": "",
+          },
+          f,
+      )
+    yield ws_dir, hook_cwd, fake_home, _clean_hook_env(fake_home)
+
+
 class TestHooksLifecycleAndParity(unittest.TestCase):
   """Test suite for SessionStart, PreToolUse, MCP parity, and isolation (GH-205)."""
 
   def test_pre_tool_guard(self):
-    # 1. Hostname with 'production' is denied
-    r1 = run_hook(
-        PRE_TOOL,
-        {
-            "toolCall": {
-                "name": "run_command",
-                "args": {"CommandLine": "psql -h production.db.internal myapp"},
-            }
-        },
-    )
-    assert r1["decision"] == "deny"
-
-    # 2. Underscore database name 'myapp_prod' with mariadb is denied
-    r2 = run_hook(
-        PRE_TOOL,
-        {
-            "toolCall": {
-                "name": "run_command",
-                "args": {"CommandLine": "mariadb -u root myapp_prod"},
-            }
-        },
-    )
-    assert r2["decision"] == "deny"
-
-    # 3. Safe *_test database and 'product' table name are allowed
-    r3 = run_hook(
-        PRE_TOOL,
-        {
-            "toolCall": {
-                "name": "run_command",
-                "args": {
-                    "CommandLine": (
-                        "psql -h localhost myapp_test -c 'SELECT * FROM product'"
-                    )
+    """Verifies PreToolUse database, destructive Git, and milestone gate checks in isolation (GH-269)."""
+    with _isolated_hook_dirs() as (ws_dir, hook_cwd, _fake_home, env):
+      def _run_isolated_case(cmd):
+        return run_hook(
+            PRE_TOOL,
+            {
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": cmd},
                 },
-            }
-        },
-    )
-    assert r3["decision"] == "allow"
+            },
+            cwd=hook_cwd,
+            env=env,
+        )
 
-    # 4. Force-push to main is denied
-    r4 = run_hook(
-        PRE_TOOL,
-        {
-            "toolCall": {
-                "name": "run_command",
-                "args": {"CommandLine": "git push --force origin main"},
-            }
-        },
-    )
-    assert r4["decision"] == "deny"
+      # 1. Hostname with 'production' is denied
+      r1 = _run_isolated_case("psql -h production.db.internal myapp")
+      assert r1["decision"] == "deny", r1
+      assert (
+          "Blocked database command targeting a production host"
+          in r1["reason"]
+      ), r1
 
-    # 5. git commit checks workspacePaths/.workflow/state/ even when cwd is /tmp
-    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as hook_cwd:
+      # 2. Underscore database name 'myapp_prod' with mariadb is denied
+      r2 = _run_isolated_case("mariadb -u root myapp_prod")
+      assert r2["decision"] == "deny", r2
+      assert (
+          "Blocked database command with production name 'prod'"
+          in r2["reason"]
+      ), r2
+
+      # 3. Safe *_test database and 'product' table name are allowed
+      r3 = _run_isolated_case(
+          "psql -h localhost myapp_test -c 'SELECT * FROM product'"
+      )
+      assert r3["decision"] == "allow", r3
+
+      # 4. Force-push to main is denied
+      r4 = _run_isolated_case("git push --force origin main")
+      assert r4["decision"] == "deny", r4
+      assert "Blocked force-push command" in r4["reason"], r4
+
+    # 5. git commit checks workspacePaths/.workflow/state/ even when cwd is isolated
+    with _isolated_hook_dirs() as (ws_dir, hook_cwd, fake_home, env):
       r5_missing = run_hook(
           PRE_TOOL,
           {
@@ -109,6 +156,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r5_missing["decision"] == "force_ask"
       assert "missing" in r5_missing["reason"]
@@ -128,6 +176,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r5_present["decision"] == "force_ask"
       assert "present" in r5_present["reason"]
@@ -168,6 +217,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r5_milestones_present["decision"] == "force_ask"
       assert "Target 50 Commit Gate" in r5_milestones_present["reason"]
@@ -186,6 +236,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r5_milestones_missing["decision"] == "force_ask"
       assert "Target 50 Commit Gate" in r5_milestones_missing["reason"]
@@ -207,6 +258,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r6["decision"] == "force_ask"
 
@@ -220,6 +272,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r7["decision"] == "force_ask"
 
@@ -237,6 +290,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r_t90_commit_msg["decision"] == "force_ask"
       assert "Target 90 History Ledger Gate" in r_t90_commit_msg["reason"]
@@ -263,6 +317,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r_t90_commit_state["decision"] == "force_ask"
       assert "Target 90 History Ledger Gate" in r_t90_commit_state["reason"]
@@ -279,6 +334,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r_t90_push["decision"] == "force_ask"
       assert "Target 90 History Push Gate" in r_t90_push["reason"]
@@ -311,6 +367,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r8_custom_prod["decision"] == "deny"
 
@@ -324,6 +381,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r9_custom_host["decision"] == "deny"
 
@@ -341,6 +399,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r10_test_db_prod_col["decision"] == "allow"
 
@@ -358,14 +417,17 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=hook_cwd,
+          env=env,
       )
       assert r10_prod_host_still_denied["decision"] == "deny"
 
       # 8. Environment variable database overrides
-      custom_env = dict(os.environ)
-      custom_env["MAKEFILE_WORKFLOW_PROD_DBS"] = "core_live,analytics_main"
-      custom_env["MAKEFILE_WORKFLOW_TEST_DBS"] = "analytics_sandbox"
-      custom_env["MAKEFILE_WORKFLOW_PROD_HOSTS"] = "rds.live.internal"
+      custom_env = _clean_hook_env(
+          fake_home,
+          MAKEFILE_WORKFLOW_PROD_DBS="core_live,analytics_main",
+          MAKEFILE_WORKFLOW_TEST_DBS="analytics_sandbox",
+          MAKEFILE_WORKFLOW_PROD_HOSTS="rds.live.internal",
+      )
 
       r11_env_prod = run_hook(
           PRE_TOOL,
@@ -456,6 +518,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         assert res_blocked["decision"] == "deny", (
             f"Expected deny for '{blocked_cmd}', got {res_blocked}"
@@ -476,6 +539,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         assert res_allowed["decision"] == "allow", (
             f"Expected allow for '{allowed_cmd}', got {res_allowed}"
@@ -604,6 +668,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         assert res_git_deny["decision"] == "deny", (
             f"Expected deny for '{denied_git_cmd}', got {res_git_deny}"
@@ -637,6 +702,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         assert res_git_ask["decision"] == "force_ask", (
             f"Expected force_ask for '{ask_git_cmd}', got {res_git_ask}"
@@ -687,6 +753,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         assert res_git_safe["decision"] == "allow", (
             f"Expected allow for '{safe_git_cmd}', got {res_git_safe}"
@@ -696,7 +763,8 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
 
 
   def test_session_start(self):
-    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as hook_cwd:
+    """Verifies SessionStart config loading, env overrides, and ticket lifecycle in isolation (GH-269)."""
+    with _isolated_hook_dirs() as (ws_dir, hook_cwd, fake_home, env):
       # 1. Valid config with models and database lists
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
@@ -726,6 +794,7 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
           SESSION_START,
           {"workspacePaths": [ws_dir]},
           cwd=hook_cwd,
+          env=env,
       )
       steps = res.get("injectSteps", [])
       assert len(steps) == 1
@@ -749,18 +818,21 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
           SESSION_START,
           {"workspacePaths": [ws_dir]},
           cwd=hook_cwd,
+          env=env,
       )
       msg_partial = res_partial["injectSteps"][0]["systemMessage"]["systemMessage"]
       assert "ci.quiescence=20s" in msg_partial
       assert "ci.poll=30s" in msg_partial
 
       # 2. Environment variable database overrides in SessionStart
-      env_override = dict(os.environ)
-      env_override["MAKEFILE_WORKFLOW_PROD_DBS"] = "warehouse_live"
-      env_override["MAKEFILE_WORKFLOW_TEST_DBS"] = "warehouse_test"
-      env_override["MAKEFILE_WORKFLOW_PROD_HOSTS"] = "warehouse.internal"
-      env_override["MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS"] = "25"
-      env_override["MAKEFILE_WORKFLOW_CI_POLL_INTERVAL"] = "5"
+      env_override = _clean_hook_env(
+          fake_home,
+          MAKEFILE_WORKFLOW_PROD_DBS="warehouse_live",
+          MAKEFILE_WORKFLOW_TEST_DBS="warehouse_test",
+          MAKEFILE_WORKFLOW_PROD_HOSTS="warehouse.internal",
+          MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="25",
+          MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="5",
+      )
       res_env = run_hook(
           SESSION_START,
           {"workspacePaths": [ws_dir]},
@@ -798,9 +870,8 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
         assert "1 state card(s)" in steps_bad[0]["systemMessage"]["systemMessage"]
 
       # 4. GH-152: SessionStart must not emit external simple-english plugin or ASD-STE100 advisories
-      with tempfile.TemporaryDirectory(prefix="fake_home_") as fake_home:
-        env_no_se = dict(os.environ)
-        env_no_se["HOME"] = fake_home
+      with tempfile.TemporaryDirectory(prefix="fake_home_") as se_fake_home:
+        env_no_se = _clean_hook_env(se_fake_home)
         res_no_se = run_hook(
             SESSION_START,
             {"workspacePaths": [ws_dir]},
@@ -820,12 +891,14 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
             SESSION_START,
             {"workspacePaths": [empty_ws]},
             cwd=hook_cwd,
+            env=env,
         )
         steps_empty = res_empty.get("injectSteps", [])
         assert len(steps_empty) == 1
         msg_empty = steps_empty[0]["systemMessage"]["systemMessage"]
         assert "clean and ready for Target 10 intake" in msg_empty
         assert "Read all state cards at Target 00" not in msg_empty
+        assert "loaded configuration" not in msg_empty
 
       # 5b. Completed ticket (99_next_action.md indicating COMPLETE) reports clean intake readiness
       with tempfile.TemporaryDirectory() as completed_ws:
@@ -839,12 +912,14 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
             SESSION_START,
             {"workspacePaths": [completed_ws]},
             cwd=hook_cwd,
+            env=env,
         )
         steps_comp = res_comp.get("injectSteps", [])
         assert len(steps_comp) == 1
         msg_comp = steps_comp[0]["systemMessage"]["systemMessage"]
         assert "clean and ready for Target 10 intake" in msg_comp
         assert "Read all state cards at Target 00" not in msg_comp
+        assert "loaded configuration" not in msg_comp
 
       # 5c. Active ticket in progress reports state cards and prompts Target 00
       with tempfile.TemporaryDirectory() as active_ws:
@@ -858,17 +933,20 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
             SESSION_START,
             {"workspacePaths": [active_ws]},
             cwd=hook_cwd,
+            env=env,
         )
         steps_active = res_active.get("injectSteps", [])
         assert len(steps_active) == 1
         msg_active = steps_active[0]["systemMessage"]["systemMessage"]
         assert "2 state card(s)" in msg_active
         assert "Read all state cards at Target 00" in msg_active
+        assert "loaded configuration" not in msg_active
 
     print("✔ SessionStart hook assertions passed.")
 
 
   def test_hook_mcp_parity(self):
+    """Verifies hook and MCP Git guard parity with an isolated empty state directory (GH-269)."""
     guard_mod = _load_module("pre_tool_guard", PRE_TOOL)
     mcp_mod = _load_module("mcp_server", MCP_SERVER)
 
@@ -933,31 +1011,41 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
         "echo $'a\\'b';git reset --hard",
     )
 
-    for cmd in parity_commands:
-      hook_res = guard_mod.evaluate_git_command(cmd, has_review=True)
-      mcp_safe, mcp_reason = mcp_mod.evaluate_git_safety(cmd)
-      assert (hook_res["decision"] == "deny") == (not mcp_safe), (
-          f"Deny parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
-      )
-      assert (hook_res["decision"] == "force_ask") == (
-          mcp_safe and mcp_reason.startswith("Requires human operator approval")
-      ), (
-          f"Gate parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
-      )
-      hook_is_t90 = "Target 90 History Ledger Gate" in hook_res.get("reason", "")
-      mcp_is_t90 = "Target 90 History Ledger Gate" in mcp_reason
-      assert hook_is_t90 == mcp_is_t90, (
-          f"Target 90 vs 50 parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
-      )
+    with tempfile.TemporaryDirectory() as tmp_state_dir:
+      for cmd in parity_commands:
+        hook_res = guard_mod.evaluate_git_command(
+            cmd, has_review=True, state_dir=tmp_state_dir
+        )
+        mcp_safe, mcp_reason = mcp_mod.evaluate_git_safety(
+            cmd, state_dir=tmp_state_dir
+        )
+        assert (hook_res["decision"] == "deny") == (not mcp_safe), (
+            f"Deny parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
+        )
+        assert (hook_res["decision"] == "force_ask") == (
+            mcp_safe and mcp_reason.startswith("Requires human operator approval")
+        ), (
+            f"Gate parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
+        )
+        hook_is_t90 = "Target 90 History Ledger Gate" in hook_res.get("reason", "")
+        mcp_is_t90 = "Target 90 History Ledger Gate" in mcp_reason
+        assert hook_is_t90 == mcp_is_t90, (
+            f"Target 90 vs 50 parity mismatch on '{cmd}': hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})"
+        )
 
     print("✔ Hook and MCP Git guard parity assertions passed.")
 
 
   def test_plugin_directory_isolation(self):
-    """Tests that plugin installation directory never leaks state cards to user workspaces."""
+    """Tests that plugin installation directory never leaks state cards or host config (GH-269)."""
     guard_mod = _load_module("pre_tool_guard", PRE_TOOL)
 
-    with tempfile.TemporaryDirectory() as mock_plugin_dir, tempfile.TemporaryDirectory() as ws_dir:
+    with (
+        tempfile.TemporaryDirectory() as mock_plugin_dir,
+        tempfile.TemporaryDirectory() as ws_dir,
+        tempfile.TemporaryDirectory() as fake_home,
+    ):
+      clean_env = _clean_hook_env(fake_home)
       # 1. Setup mock plugin directory with leftover state cards
       with open(os.path.join(mock_plugin_dir, "plugin.json"), "w", encoding="utf-8") as f:
         json.dump({"name": "makeflow"}, f)
@@ -975,11 +1063,13 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
           SESSION_START,
           {"workspacePaths": [ws_dir]},
           cwd=mock_plugin_dir,
+          env=clean_env,
       )
       if "injectSteps" in res:
         msg = res["injectSteps"][0]["systemMessage"]["systemMessage"]
         assert "state card(s)" not in msg, f"Leaked state cards into session message: {msg}"
         assert "GH-999" not in msg
+        assert "loaded configuration" not in msg
 
       # 3. Test pre_tool_guard: commit in pristine workspace is Target 50, NOT Target 90
       commit_res = run_hook(
@@ -992,24 +1082,26 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               },
           },
           cwd=mock_plugin_dir,
+          env=clean_env,
       )
       assert commit_res["decision"] == "force_ask"
       assert "Target 50 Commit Gate" in commit_res["reason"], f"Wrong gate: {commit_res['reason']}"
       assert "Target 90" not in commit_res["reason"]
 
       # 4. Test resolve_state_dir: strictly returns workspace state, never plugin dir
-      state_dir = guard_mod.resolve_state_dir({"workspacePaths": [ws_dir]})
-      assert state_dir == os.path.join(ws_dir, ".workflow", "state")
-      assert state_dir != plugin_state
+      with mock.patch.dict(os.environ, clean_env, clear=True):
+        state_dir = guard_mod.resolve_state_dir({"workspacePaths": [ws_dir]})
+        assert state_dir == os.path.join(ws_dir, ".workflow", "state")
+        assert state_dir != plugin_state
 
-      # When workspacePaths is empty and cwd is plugin directory, resolve_state_dir returns ""
-      old_cwd = os.getcwd()
-      try:
-        os.chdir(mock_plugin_dir)
-        state_dir_no_ws = guard_mod.resolve_state_dir({})
-        assert state_dir_no_ws == "", f"Expected empty string, got: {state_dir_no_ws}"
-      finally:
-        os.chdir(old_cwd)
+        # When workspacePaths is empty and cwd is plugin directory, resolve_state_dir returns ""
+        old_cwd = os.getcwd()
+        try:
+          os.chdir(mock_plugin_dir)
+          state_dir_no_ws = guard_mod.resolve_state_dir({})
+          assert state_dir_no_ws == "", f"Expected empty string, got: {state_dir_no_ws}"
+        finally:
+          os.chdir(old_cwd)
 
     print("✔ Plugin directory state isolation assertions passed.")
 
@@ -1056,10 +1148,8 @@ class TestTarget90ScarsHook(unittest.TestCase):
       self.assertFalse(is_hist_4)
 
   def test_pre_tool_guard_allows_target_90_scars_commit_gate(self):
-    with (
-        tempfile.TemporaryDirectory() as ws_dir,
-        tempfile.TemporaryDirectory() as hook_cwd,
-    ):
+    """Verifies Target 90 scar commit gate routing under isolated HOME and cwd (GH-269)."""
+    with _isolated_hook_dirs() as (ws_dir, hook_cwd, _fake_home, env):
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       with open(
@@ -1084,6 +1174,7 @@ class TestTarget90ScarsHook(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         self.assertEqual(res["decision"], "force_ask")
         self.assertIn("Target 90 History Ledger Gate", res["reason"])
@@ -1245,10 +1336,8 @@ class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
       self.assertFalse(is_hist_stale_feat)
 
   def test_pre_tool_guard_changelog_and_release_gate_routing(self):
-    with (
-        tempfile.TemporaryDirectory() as ws_dir,
-        tempfile.TemporaryDirectory() as hook_cwd,
-    ):
+    """Verifies Target 90 changelog and release gate routing in isolation (GH-269)."""
+    with _isolated_hook_dirs() as (ws_dir, hook_cwd, _fake_home, env):
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       next_card = os.path.join(state_dir, "99_next_action.md")
@@ -1277,6 +1366,7 @@ class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         self.assertEqual(res["decision"], "force_ask", msg=cmd)
         self.assertIn("Target 90 History Ledger Gate", res["reason"], msg=cmd)
@@ -1306,6 +1396,7 @@ class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
                 },
             },
             cwd=hook_cwd,
+            env=env,
         )
         self.assertEqual(stale_res["decision"], "force_ask", msg=t50_cmd)
         self.assertIn("Target 50 Commit Gate", stale_res["reason"], msg=t50_cmd)
@@ -1313,10 +1404,7 @@ class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
             "Target 90 History Ledger Gate", stale_res["reason"], msg=t50_cmd
         )
 
-      with (
-          tempfile.TemporaryDirectory() as t30_ws,
-          tempfile.TemporaryDirectory() as t30_cwd,
-      ):
+      with _isolated_hook_dirs() as (t30_ws, t30_cwd, _t30_home, t30_env):
         t30_state = os.path.join(t30_ws, ".workflow", "state")
         os.makedirs(t30_state)
         with open(
@@ -1346,6 +1434,7 @@ class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
                   },
               },
               cwd=t30_cwd,
+              env=t30_env,
           )
           self.assertEqual(smuggle_res["decision"], "deny", msg=smuggle_cmd)
           self.assertIn("T50", smuggle_res["reason"], msg=smuggle_cmd)
@@ -1354,7 +1443,35 @@ class TestTarget90ChangelogAndReleaseHook(unittest.TestCase):
 class TestPreToolGuardSelfModification(unittest.TestCase):
   """Unit tests verifying pre_tool_guard denies self-modification of governance files."""
 
+  def _run_commands_isolated(self, commands):
+    """Runs PreToolUse commands inside isolated workspace, cwd, and HOME (GH-269).
+
+    Args:
+      commands: Iterable of shell command strings to evaluate.
+
+    Yields:
+      Tuples of ``(cmd, hook_result_dict)``.
+    """
+    with _isolated_hook_dirs() as (ws_dir, hook_cwd, _fake_home, env):
+      for subdir in ("scripts", "lib", os.path.join(".workflow", "state")):
+        os.makedirs(os.path.join(ws_dir, subdir), exist_ok=True)
+      for cmd in commands:
+        res = run_hook(
+            PRE_TOOL,
+            {
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": cmd},
+                },
+            },
+            cwd=hook_cwd,
+            env=env,
+        )
+        yield cmd, res
+
   def test_denies_shell_redirection_targeting_governance_files(self):
+    """Verifies shell redirection targeting governance files is denied in isolation (GH-269)."""
     bad_commands = [
         "echo 'hacked' > scripts/tdd_guard.py",
         "echo 'hacked' >> scripts/pre_tool_guard.py",
@@ -1368,16 +1485,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "echo 'x' > lib/tdd_guard.py",
         "echo 'x' > lib/target90_guard.py",
     ]
-    for cmd in bad_commands:
-      res = run_hook(
-          PRE_TOOL,
-          {
-              "toolCall": {
-                  "name": "run_command",
-                  "args": {"CommandLine": cmd},
-              }
-          },
-      )
+    for cmd, res in self._run_commands_isolated(bad_commands):
       self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
       self.assertIn(
           "Blocked self-modification attempt on makeflow governance file",
@@ -1386,6 +1494,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
       )
 
   def test_denies_removal_and_truncation_of_governance_files(self):
+    """Verifies removal, truncation, and in-place edits of governance files are denied in isolation (GH-269)."""
     bad_commands = [
         "rm scripts/tdd_guard.py",
         "rm -f scripts/pre_tool_guard.py",
@@ -1406,16 +1515,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "truncate -s 0 lib/target90_guard.py",
         "sed -i 's/foo/bar/' lib/target90_guard.py",
     ]
-    for cmd in bad_commands:
-      res = run_hook(
-          PRE_TOOL,
-          {
-              "toolCall": {
-                  "name": "run_command",
-                  "args": {"CommandLine": cmd},
-              }
-          },
-      )
+    for cmd, res in self._run_commands_isolated(bad_commands):
       self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
       self.assertIn(
           "Blocked self-modification attempt on makeflow governance file",
@@ -1424,6 +1524,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
       )
 
   def test_allows_safe_operations_on_non_governance_files(self):
+    """Verifies safe commands and reads on governance files are allowed in isolation (GH-269)."""
     safe_commands = [
         "echo 'print(1)' > src/app.py",
         "rm -f /tmp/test_scratch.txt",
@@ -1433,19 +1534,11 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "python3 scripts/tdd_guard.py --help",
         "grep -n 'def ' scripts/workflow_gates.py",
     ]
-    for cmd in safe_commands:
-      res = run_hook(
-          PRE_TOOL,
-          {
-              "toolCall": {
-                  "name": "run_command",
-                  "args": {"CommandLine": cmd},
-              }
-          },
-      )
+    for cmd, res in self._run_commands_isolated(safe_commands):
       self.assertEqual(res["decision"], "allow", f"Expected allow for safe cmd={cmd!r}")
 
   def test_allows_copying_and_moving_into_governance_directories(self):
+    """Verifies copying and moving non-protected files into governance directories is allowed in isolation (GH-269)."""
     allowed_commands = [
         "cp file.txt .workflow/state/",
         "cp helper.py scripts/",
@@ -1454,19 +1547,11 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "cp 10_ticket.md .workflow/state/",
         "cp 20_plan.md .workflow/state/",
     ]
-    for cmd in allowed_commands:
-      res = run_hook(
-          PRE_TOOL,
-          {
-              "toolCall": {
-                  "name": "run_command",
-                  "args": {"CommandLine": cmd},
-              }
-          },
-      )
+    for cmd, res in self._run_commands_isolated(allowed_commands):
       self.assertEqual(res["decision"], "allow", f"Expected allow for cmd={cmd!r}, got: {res}")
 
   def test_denies_copying_and_moving_over_protected_governance_files(self):
+    """Verifies copying and moving files over protected governance targets is denied in isolation (GH-269)."""
     denied_commands = [
         "cp evil.py scripts/tdd_guard.py",
         "cp evil.py lib/workflow_gates.py",
@@ -1479,16 +1564,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "cp evil.py lib/target90_guard.py",
         "mv evil.py lib/target90_guard.py",
     ]
-    for cmd in denied_commands:
-      res = run_hook(
-          PRE_TOOL,
-          {
-              "toolCall": {
-                  "name": "run_command",
-                  "args": {"CommandLine": cmd},
-              }
-          },
-      )
+    for cmd, res in self._run_commands_isolated(denied_commands):
       self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
       self.assertIn(
           "Blocked self-modification attempt on makeflow governance file",
@@ -1505,30 +1581,40 @@ class TestPreToolGuardSpecificExceptions(unittest.TestCase):
     cls.guard = _load_module("pre_tool_guard", PRE_TOOL)
 
   def test_is_plugin_dir_handles_expected_exceptions(self):
-    # 1. json.JSONDecodeError: invalid JSON in plugin.json
-    with tempfile.TemporaryDirectory() as td:
-      manifest = os.path.join(td, "plugin.json")
-      with open(manifest, "w", encoding="utf-8") as f:
-        f.write("{invalid json")
-      self.assertFalse(self.guard.is_plugin_dir(td))
-
-    # 2. UnicodeDecodeError: invalid UTF-8 bytes in plugin.json
-    with tempfile.TemporaryDirectory() as td:
-      manifest = os.path.join(td, "plugin.json")
-      with open(manifest, "wb") as f:
-        f.write(b"\xff\xfe\x00\x01")
-      self.assertFalse(self.guard.is_plugin_dir(td))
-
-    # 3. OSError: file read I/O error
-    with tempfile.TemporaryDirectory() as td:
-      manifest = os.path.join(td, "plugin.json")
-      with open(manifest, "w", encoding="utf-8") as f:
-        f.write("{}")
-      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+    """Verifies is_plugin_dir handles malformed manifests under isolated env (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+    ):
+      # 1. json.JSONDecodeError: invalid JSON in plugin.json
+      with tempfile.TemporaryDirectory() as td:
+        manifest = os.path.join(td, "plugin.json")
+        with open(manifest, "w", encoding="utf-8") as f:
+          f.write("{invalid json")
         self.assertFalse(self.guard.is_plugin_dir(td))
 
+      # 2. UnicodeDecodeError: invalid UTF-8 bytes in plugin.json
+      with tempfile.TemporaryDirectory() as td:
+        manifest = os.path.join(td, "plugin.json")
+        with open(manifest, "wb") as f:
+          f.write(b"\xff\xfe\x00\x01")
+        self.assertFalse(self.guard.is_plugin_dir(td))
+
+      # 3. OSError: file read I/O error
+      with tempfile.TemporaryDirectory() as td:
+        manifest = os.path.join(td, "plugin.json")
+        with open(manifest, "w", encoding="utf-8") as f:
+          f.write("{}")
+        with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+          self.assertFalse(self.guard.is_plugin_dir(td))
+
   def test_is_plugin_dir_does_not_suppress_unrelated_exceptions(self):
-    with tempfile.TemporaryDirectory() as td:
+    """Verifies is_plugin_dir re-raises unexpected errors under isolated env (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+        tempfile.TemporaryDirectory() as td,
+    ):
       manifest = os.path.join(td, "plugin.json")
       with open(manifest, "w", encoding="utf-8") as f:
         f.write('{"name": "makeflow"}')
@@ -1540,42 +1626,52 @@ class TestPreToolGuardSpecificExceptions(unittest.TestCase):
           self.guard.is_plugin_dir(td)
 
   def test_load_database_config_handles_expected_exceptions(self):
-    # 1. json.JSONDecodeError: invalid JSON in config.json
-    with tempfile.TemporaryDirectory() as td:
-      wf_dir = os.path.join(td, ".workflow")
-      os.makedirs(wf_dir)
-      cfg = os.path.join(wf_dir, "config.json")
-      with open(cfg, "w", encoding="utf-8") as f:
-        f.write("{invalid json")
-      res = self.guard.load_database_config({"workspacePaths": [td]})
-      self.assertEqual(res["prodDatabases"], [])
-      self.assertEqual(res["testDatabases"], [])
-
-    # 2. UnicodeDecodeError: invalid UTF-8 bytes in config.json
-    with tempfile.TemporaryDirectory() as td:
-      wf_dir = os.path.join(td, ".workflow")
-      os.makedirs(wf_dir)
-      cfg = os.path.join(wf_dir, "config.json")
-      with open(cfg, "wb") as f:
-        f.write(b"\xff\xfe\x00\x01")
-      res = self.guard.load_database_config({"workspacePaths": [td]})
-      self.assertEqual(res["prodDatabases"], [])
-      self.assertEqual(res["testDatabases"], [])
-
-    # 3. OSError: file read I/O error
-    with tempfile.TemporaryDirectory() as td:
-      wf_dir = os.path.join(td, ".workflow")
-      os.makedirs(wf_dir)
-      cfg = os.path.join(wf_dir, "config.json")
-      with open(cfg, "w", encoding="utf-8") as f:
-        f.write("{}")
-      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+    """Verifies load_database_config handles parse errors without host HOME leakage (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+    ):
+      # 1. json.JSONDecodeError: invalid JSON in config.json
+      with tempfile.TemporaryDirectory() as td:
+        wf_dir = os.path.join(td, ".workflow")
+        os.makedirs(wf_dir)
+        cfg = os.path.join(wf_dir, "config.json")
+        with open(cfg, "w", encoding="utf-8") as f:
+          f.write("{invalid json")
         res = self.guard.load_database_config({"workspacePaths": [td]})
         self.assertEqual(res["prodDatabases"], [])
         self.assertEqual(res["testDatabases"], [])
 
+      # 2. UnicodeDecodeError: invalid UTF-8 bytes in config.json
+      with tempfile.TemporaryDirectory() as td:
+        wf_dir = os.path.join(td, ".workflow")
+        os.makedirs(wf_dir)
+        cfg = os.path.join(wf_dir, "config.json")
+        with open(cfg, "wb") as f:
+          f.write(b"\xff\xfe\x00\x01")
+        res = self.guard.load_database_config({"workspacePaths": [td]})
+        self.assertEqual(res["prodDatabases"], [])
+        self.assertEqual(res["testDatabases"], [])
+
+      # 3. OSError: file read I/O error
+      with tempfile.TemporaryDirectory() as td:
+        wf_dir = os.path.join(td, ".workflow")
+        os.makedirs(wf_dir)
+        cfg = os.path.join(wf_dir, "config.json")
+        with open(cfg, "w", encoding="utf-8") as f:
+          f.write("{}")
+        with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+          res = self.guard.load_database_config({"workspacePaths": [td]})
+          self.assertEqual(res["prodDatabases"], [])
+          self.assertEqual(res["testDatabases"], [])
+
   def test_load_database_config_does_not_suppress_unrelated_exceptions(self):
-    with tempfile.TemporaryDirectory() as td:
+    """Verifies load_database_config re-raises unexpected errors under isolated env (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+        tempfile.TemporaryDirectory() as td,
+    ):
       wf_dir = os.path.join(td, ".workflow")
       os.makedirs(wf_dir)
       cfg = os.path.join(wf_dir, "config.json")
@@ -1667,30 +1763,40 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
             self.session_start.load_default_config()
 
   def test_is_plugin_dir_handles_expected_exceptions(self):
-    # 1. json.JSONDecodeError: invalid JSON in plugin.json
-    with tempfile.TemporaryDirectory() as td:
-      manifest = os.path.join(td, "plugin.json")
-      with open(manifest, "w", encoding="utf-8") as f:
-        f.write("{invalid json")
-      self.assertFalse(self.session_start.is_plugin_dir(td))
-
-    # 2. UnicodeDecodeError: invalid UTF-8 bytes in plugin.json
-    with tempfile.TemporaryDirectory() as td:
-      manifest = os.path.join(td, "plugin.json")
-      with open(manifest, "wb") as f:
-        f.write(b"\xff\xfe\x00\x01")
-      self.assertFalse(self.session_start.is_plugin_dir(td))
-
-    # 3. OSError: file read I/O error
-    with tempfile.TemporaryDirectory() as td:
-      manifest = os.path.join(td, "plugin.json")
-      with open(manifest, "w", encoding="utf-8") as f:
-        f.write("{}")
-      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+    """Verifies session_start is_plugin_dir handles expected errors under isolated env (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+    ):
+      # 1. json.JSONDecodeError: invalid JSON in plugin.json
+      with tempfile.TemporaryDirectory() as td:
+        manifest = os.path.join(td, "plugin.json")
+        with open(manifest, "w", encoding="utf-8") as f:
+          f.write("{invalid json")
         self.assertFalse(self.session_start.is_plugin_dir(td))
 
+      # 2. UnicodeDecodeError: invalid UTF-8 bytes in plugin.json
+      with tempfile.TemporaryDirectory() as td:
+        manifest = os.path.join(td, "plugin.json")
+        with open(manifest, "wb") as f:
+          f.write(b"\xff\xfe\x00\x01")
+        self.assertFalse(self.session_start.is_plugin_dir(td))
+
+      # 3. OSError: file read I/O error
+      with tempfile.TemporaryDirectory() as td:
+        manifest = os.path.join(td, "plugin.json")
+        with open(manifest, "w", encoding="utf-8") as f:
+          f.write("{}")
+        with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+          self.assertFalse(self.session_start.is_plugin_dir(td))
+
   def test_is_plugin_dir_does_not_suppress_unrelated_exceptions(self):
-    with tempfile.TemporaryDirectory() as td:
+    """Verifies session_start is_plugin_dir re-raises unexpected errors under isolated env (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+        tempfile.TemporaryDirectory() as td,
+    ):
       manifest = os.path.join(td, "plugin.json")
       with open(manifest, "w", encoding="utf-8") as f:
         f.write('{"name": "makeflow"}')
@@ -1710,39 +1816,52 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
           self.session_start.is_plugin_dir(td)
 
   def test_get_workflow_config_handles_expected_exceptions(self):
-    # 1. json.JSONDecodeError: invalid JSON in config.json
-    with tempfile.TemporaryDirectory() as td:
-      wf_dir = os.path.join(td, ".workflow")
-      os.makedirs(wf_dir)
-      cfg = os.path.join(wf_dir, "config.json")
-      with open(cfg, "w", encoding="utf-8") as f:
-        f.write("{invalid json")
-      cfg_dict, src = self.session_start.get_workflow_config([td])
-      self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
-
-    # 2. UnicodeDecodeError: invalid UTF-8 bytes in config.json
-    with tempfile.TemporaryDirectory() as td:
-      wf_dir = os.path.join(td, ".workflow")
-      os.makedirs(wf_dir)
-      cfg = os.path.join(wf_dir, "config.json")
-      with open(cfg, "wb") as f:
-        f.write(b"\xff\xfe\x00\x01")
-      cfg_dict, src = self.session_start.get_workflow_config([td])
-      self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
-
-    # 3. OSError: file read I/O error
-    with tempfile.TemporaryDirectory() as td:
-      wf_dir = os.path.join(td, ".workflow")
-      os.makedirs(wf_dir)
-      cfg = os.path.join(wf_dir, "config.json")
-      with open(cfg, "w", encoding="utf-8") as f:
-        f.write("{}")
-      with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+    """Verifies get_workflow_config handles parse errors without host HOME leakage (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+    ):
+      # 1. json.JSONDecodeError: invalid JSON in config.json
+      with tempfile.TemporaryDirectory() as td:
+        wf_dir = os.path.join(td, ".workflow")
+        os.makedirs(wf_dir)
+        cfg = os.path.join(wf_dir, "config.json")
+        with open(cfg, "w", encoding="utf-8") as f:
+          f.write("{invalid json")
         cfg_dict, src = self.session_start.get_workflow_config([td])
         self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
+        self.assertIsNone(src)
+
+      # 2. UnicodeDecodeError: invalid UTF-8 bytes in config.json
+      with tempfile.TemporaryDirectory() as td:
+        wf_dir = os.path.join(td, ".workflow")
+        os.makedirs(wf_dir)
+        cfg = os.path.join(wf_dir, "config.json")
+        with open(cfg, "wb") as f:
+          f.write(b"\xff\xfe\x00\x01")
+        cfg_dict, src = self.session_start.get_workflow_config([td])
+        self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
+        self.assertIsNone(src)
+
+      # 3. OSError: file read I/O error
+      with tempfile.TemporaryDirectory() as td:
+        wf_dir = os.path.join(td, ".workflow")
+        os.makedirs(wf_dir)
+        cfg = os.path.join(wf_dir, "config.json")
+        with open(cfg, "w", encoding="utf-8") as f:
+          f.write("{}")
+        with mock.patch("builtins.open", side_effect=OSError("Disk failure")):
+          cfg_dict, src = self.session_start.get_workflow_config([td])
+          self.assertEqual(cfg_dict["models"]["tdd-worker"], "inherit")
+          self.assertIsNone(src)
 
   def test_get_workflow_config_does_not_suppress_unrelated_exceptions(self):
-    with tempfile.TemporaryDirectory() as td:
+    """Verifies get_workflow_config re-raises unexpected errors under isolated env (GH-269)."""
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+        tempfile.TemporaryDirectory() as td,
+    ):
       wf_dir = os.path.join(td, ".workflow")
       os.makedirs(wf_dir)
       cfg = os.path.join(wf_dir, "config.json")
@@ -1833,34 +1952,29 @@ class TestSessionStartSpecificExceptions(unittest.TestCase):
           set_dyn("/fake/ws")
 
   def test_main_dynamic_terminal_title_integration(self):
-    with tempfile.TemporaryDirectory() as td:
+    """Verifies session_start.main handles terminal title errors under isolated env and cwd (GH-269)."""
+    with _isolated_hook_dirs() as (td, hook_cwd, fake_home, _env):
       state_dir = os.path.join(td, ".workflow", "state")
       os.makedirs(state_dir)
       with open(os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8") as f:
         f.write("# Ticket\n")
-      for exc in (ImportError("Synthetic ImportError"), OSError("Synthetic OSError")):
-        with mock.patch("lib.terminal_title.set_terminal_title", side_effect=exc):
-          with mock.patch("sys.stdin", io.StringIO(json.dumps({"workspacePaths": [td]}))):
-            with mock.patch("sys.stdout", new_callable=io.StringIO) as mock_out:
-              self.session_start.main()
-              res = json.loads(mock_out.getvalue())
-              self.assertIn("injectSteps", res)
+      with (
+          mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True),
+          mock.patch("os.getcwd", return_value=hook_cwd),
+      ):
+        for exc in (ImportError("Synthetic ImportError"), OSError("Synthetic OSError")):
+          with mock.patch("lib.terminal_title.set_terminal_title", side_effect=exc):
+            with mock.patch("sys.stdin", io.StringIO(json.dumps({"workspacePaths": [td]}))):
+              with mock.patch("sys.stdout", new_callable=io.StringIO) as mock_out:
+                self.session_start.main()
+                res = json.loads(mock_out.getvalue())
+                self.assertIn("injectSteps", res)
+                msg = res["injectSteps"][0]["systemMessage"]["systemMessage"]
+                self.assertNotIn("loaded configuration", msg)
 
 
 class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
   """Regression tests for ci.quiescenceSeconds=0 and CI config validation (GH-217)."""
-
-  def _clean_env(self, home_dir, **extra):
-    env = dict(os.environ)
-    env["HOME"] = home_dir
-    for key in (
-        "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS",
-        "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL",
-        "MAKEFILE_WORKFLOW_WORKSPACE",
-    ):
-      env.pop(key, None)
-    env.update(extra)
-    return env
 
   def test_parse_ci_integers_bounds_and_type_safety(self):
     """Tests _parse_non_negative_int and _parse_positive_int boundaries (GH-217)."""
@@ -1897,7 +2011,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
       os.makedirs(wf_dir)
       cfg_path = os.path.join(wf_dir, "config.json")
 
-      with mock.patch.dict(os.environ, self._clean_env(fake_home), clear=True):
+      with mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True):
         # Default when no config file exists
         hook_cfg, hook_src = config_mod.get_workflow_config([ws_dir])
         mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
@@ -1951,7 +2065,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
       # Env "0" overrides JSON 120 in both loaders and appears in source/envOverrides
       with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump({"ci": {"quiescenceSeconds": 120}}, f)
-      env_zero = self._clean_env(
+      env_zero = _clean_hook_env(
           fake_home, MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0"
       )
       with mock.patch.dict(os.environ, env_zero, clear=True):
@@ -1969,7 +2083,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
       # Env POLL_INTERVAL="0" is ignored and omitted while valid JSON pollIntervalSeconds=15 is preserved
       with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump({"ci": {"pollIntervalSeconds": 15}}, f)
-      env_poll_zero = self._clean_env(
+      env_poll_zero = _clean_hook_env(
           fake_home, MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="0"
       )
       with mock.patch.dict(os.environ, env_poll_zero, clear=True):
@@ -2013,7 +2127,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
       with open(global_cfg, "w", encoding="utf-8") as f:
         json.dump({"ci": {"quiescenceSeconds": 0}}, f)
 
-      with mock.patch.dict(os.environ, self._clean_env(fake_home), clear=True):
+      with mock.patch.dict(os.environ, _clean_hook_env(fake_home), clear=True):
         hook_cfg, hook_src = config_mod.get_workflow_config([ws_dir])
         mcp_cfg = config_mod.resolve_workflow_config(ws_dir)
         self.assertEqual(hook_src, "~/.gemini/config/makeflow.json")
@@ -2041,7 +2155,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
           SESSION_START,
           {"workspacePaths": [ws_dir]},
           cwd=hook_cwd,
-          env=self._clean_env(fake_home),
+          env=_clean_hook_env(fake_home),
       )
       msg = res["injectSteps"][0]["systemMessage"]["systemMessage"]
       self.assertIn("ci.quiescence=0s", msg)
@@ -2054,7 +2168,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
           SESSION_START,
           {"workspacePaths": [ws_dir]},
           cwd=hook_cwd,
-          env=self._clean_env(
+          env=_clean_hook_env(
               fake_home, MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS="0"
           ),
       )
@@ -2073,7 +2187,7 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
             SESSION_START,
             {"workspacePaths": [ws_dir]},
             cwd=hook_cwd,
-            env=self._clean_env(
+            env=_clean_hook_env(
                 fake_home, MAKEFILE_WORKFLOW_CI_POLL_INTERVAL="0"
             ),
         )
