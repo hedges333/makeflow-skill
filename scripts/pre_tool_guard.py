@@ -459,6 +459,11 @@ STATE_GOVERNANCE_RELPATHS = frozenset({
     ".workflow/state/active_subagent.json",
 })
 
+STATE_GOVERNANCE_DIR_RELPATHS = frozenset({
+    ".workflow",
+    ".workflow/state",
+})
+
 GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/tdd_guard.py",
     "scripts/pre_tool_guard.py",
@@ -489,19 +494,185 @@ def _normalize_gov_path(raw_token):
   return token.rstrip("/")
 
 
-def _is_governance_target(raw_token):
-  token = _normalize_gov_path(raw_token)
-  if not token:
-    return False
+_PLUGIN_CACHE_RAW_PREFIXES = (
+    "~/.gemini/config/plugins",
+    "~/.gemini/plugins",
+    "~/.claude/plugins",
+)
 
-  if token in GOVERNANCE_FILE_RELPATHS:
-    return True
 
-  for rel in GOVERNANCE_FILE_RELPATHS:
-    if token.endswith("/" + rel):
+def _is_plugin_cache_path(abs_target):
+  """Checks whether abs_target or its realpath lies inside a plugin cache root.
+
+  Args:
+    abs_target: Absolute target path to inspect.
+
+  Returns:
+    True if abs_target or its resolved realpath falls under a known plugin
+    cache directory. Returns False otherwise.
+  """
+  prefixes = set(_KNOWN_PLUGIN_CACHE_PREFIXES)
+  for raw_pref in _PLUGIN_CACHE_RAW_PREFIXES:
+    prefixes.add(os.path.abspath(os.path.expanduser(raw_pref)))
+  all_prefixes = prefixes | {os.path.realpath(p) for p in prefixes}
+  for cand in (abs_target, os.path.realpath(abs_target)):
+    if any(
+        cand == pref or cand.startswith(pref + os.sep) for pref in all_prefixes
+    ):
       return True
-
   return False
+
+
+def _extract_cd_roots(cmd, base_roots):
+  """Extracts cumulative resolved directory targets from cd and pushd commands.
+
+  Args:
+    cmd: Shell command string to scan.
+    base_roots: Optional workspace root paths for resolving relative targets.
+
+  Returns:
+    Deduplicated list of absolute directory paths referenced by cd or pushd.
+  """
+  active_roots = [
+      os.path.abspath(os.path.expanduser(ws))
+      for ws in (base_roots or [])
+      if ws
+  ]
+  if not active_roots:
+    active_roots = [os.getcwd()]
+  seen_active = set(active_roots)
+  extra = []
+  seen_extra = set()
+  for subcmd in _expand_shell_subcommands(cmd):
+    for tokens in _tokenize_subcommand(subcmd):
+      exe, rem = _unwrap_command_tokens(tokens)
+      if exe in ("cd", "pushd"):
+        pos = [a for a in rem if not a.startswith("-")]
+        if pos:
+          resolved = _resolve_direct_target_paths(pos[0], active_roots)
+        else:
+          resolved = [os.path.abspath(os.path.expanduser("~"))]
+        for path in resolved:
+          if path not in seen_extra:
+            seen_extra.add(path)
+            extra.append(path)
+          if path not in seen_active:
+            seen_active.add(path)
+            active_roots.append(path)
+  return extra
+
+
+def _is_protected_governance_file(raw_token, search_roots):
+  """Checks whether raw_token targets a protected Makeflow governance file.
+
+  Always protects .workflow/state runtime governance files in every repository
+  and any file inside a Makeflow plugin cache directory. Protects plugin
+  source governance files and Makeflow plugin.json only when they resolve
+  inside a Makeflow plugin repository root.
+
+  Args:
+    raw_token: Raw path token from a shell redirection or command argument.
+    search_roots: Optional workspace and cd root paths for resolving relative
+      targets.
+
+  Returns:
+    True if mutating raw_token violates Makeflow governance protection. Returns
+    False for external consumer repository files.
+  """
+  if _is_state_governance_target(raw_token):
+    return True
+  if not raw_token or not isinstance(raw_token, str):
+    return False
+  cleaned = raw_token.strip().strip("'\"")
+  if not cleaned:
+    return False
+  abs_candidates = _resolve_direct_target_paths(cleaned, search_roots)
+  for abs_target in abs_candidates:
+    if _is_plugin_cache_path(abs_target):
+      return True
+    for cand in (abs_target, os.path.realpath(abs_target)):
+      if _is_state_governance_target(cand):
+        return True
+      plugin_root = _find_makeflow_plugin_root(cand)
+      if plugin_root is None:
+        continue
+      rel_to_plugin = os.path.relpath(cand, plugin_root).replace(os.sep, "/")
+      if (
+          rel_to_plugin in GOVERNANCE_FILE_RELPATHS
+          or rel_to_plugin == "plugin.json"
+      ):
+        return True
+  return False
+
+
+def _is_protected_governance_dir(raw_token, search_roots):
+  """Checks whether raw_token targets a protected governance directory.
+
+  Always protects .workflow and .workflow/state directories in every repository
+  and any path inside a Makeflow plugin cache directory. Protects scripts/ and
+  lib/ directories only when they resolve inside a Makeflow plugin repository
+  root.
+
+  Args:
+    raw_token: Raw path token from a destructive file command.
+    search_roots: Optional workspace and cd root paths for resolving relative
+      targets.
+
+  Returns:
+    True if raw_token resolves to .workflow, .workflow/state, a plugin cache
+    directory, or scripts/ or lib/ inside a Makeflow plugin repository. Returns
+    False otherwise.
+  """
+  if _is_state_governance_dir(raw_token):
+    return True
+  if not raw_token or not isinstance(raw_token, str):
+    return False
+  cleaned = raw_token.strip().strip("'\"")
+  if not cleaned:
+    return False
+  for abs_target in _resolve_direct_target_paths(cleaned, search_roots):
+    if _is_plugin_cache_path(abs_target):
+      return True
+    for cand in (abs_target, os.path.realpath(abs_target)):
+      if _is_state_governance_dir(cand):
+        return True
+      plugin_root = _find_makeflow_plugin_root(cand)
+      if plugin_root is None:
+        continue
+      rel_to_plugin = os.path.relpath(cand, plugin_root).replace(os.sep, "/")
+      if rel_to_plugin in {"scripts", "lib"}:
+        return True
+  return False
+
+
+def _collect_redirection_scan_commands(cmd):
+  """Collects preprocessed command strings preserving output redirections.
+
+  Includes the preprocessed top-level command, nested shell substitutions, and
+  preprocessed SHELL_C payloads (such as bash -c, sh -c, and eval).
+
+  Args:
+    cmd: Shell command string to scan.
+
+  Returns:
+    Deduplicated list of command strings preserving output redirections.
+  """
+  preprocessed = _preprocess_shell(cmd)
+  candidates = [preprocessed] + _extract_shell_substitutions(preprocessed)
+  for subcmd in _expand_shell_subcommands(cmd):
+    for tokens in _tokenize_subcommand(subcmd):
+      exe, rem = _unwrap_command_tokens(tokens)
+      if exe == "SHELL_C" and rem and rem[0]:
+        payload = _preprocess_shell(rem[0])
+        candidates.append(payload)
+        candidates.extend(_extract_shell_substitutions(payload))
+  seen = set()
+  unique = []
+  for item in candidates:
+    if item and item not in seen:
+      seen.add(item)
+      unique.append(item)
+  return unique
 
 
 def evaluate_self_modification_safety(cmd, workspace_paths=None):
@@ -517,13 +688,18 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
   if not cmd or not isinstance(cmd, str):
     return True, ""
 
-  # 1. Check output redirections in preprocessed command and any subshell strings
-  preprocessed = _preprocess_shell(cmd)
-  all_cmds = [preprocessed] + _extract_shell_substitutions(preprocessed)
-  for c in all_cmds:
+  cd_roots = _extract_cd_roots(cmd, workspace_paths)
+  if cd_roots:
+    base = list(workspace_paths) if workspace_paths else [os.getcwd()]
+    search_roots = base + cd_roots
+  else:
+    search_roots = workspace_paths
+
+  # 1. Check output redirections in preprocessed command, subshells, and bash -c/sh -c payloads
+  for c in _collect_redirection_scan_commands(cmd):
     redir_targets = _extract_redirection_targets(c)
     for target in redir_targets:
-      if _is_governance_target(target):
+      if _is_protected_governance_file(target, search_roots):
         return (
             False,
             f"Blocked self-modification attempt on makeflow governance file '{target}' (redirection).",
@@ -541,13 +717,9 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
         for arg in rem:
           if arg.startswith("-"):
             continue
-          norm_arg = _normalize_gov_path(arg)
-          if (
-              _is_governance_target(arg)
-              or norm_arg in {"scripts", "scripts/", "lib", "lib/"}
-              or norm_arg.endswith("/scripts")
-              or norm_arg.endswith("/lib")
-          ):
+          if _is_protected_governance_file(
+              arg, search_roots
+          ) or _is_protected_governance_dir(arg, search_roots):
             return (
                 False,
                 f"Blocked self-modification attempt on makeflow governance file '{arg}' ({base_exe}).",
@@ -564,7 +736,7 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
             continue
           if arg.startswith("-"):
             continue
-          if _is_governance_target(arg):
+          if _is_protected_governance_file(arg, search_roots):
             return (
                 False,
                 f"Blocked self-modification attempt on makeflow governance file '{arg}' (truncate).",
@@ -581,7 +753,7 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
           for arg in rem:
             if arg.startswith("-"):
               continue
-            if _is_governance_target(arg):
+            if _is_protected_governance_file(arg, search_roots):
               return (
                   False,
                   f"Blocked self-modification attempt on makeflow governance file '{arg}' (sed -i).",
@@ -591,7 +763,7 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
         for arg in rem:
           if arg.startswith("-"):
             continue
-          if _is_governance_target(arg):
+          if _is_protected_governance_file(arg, search_roots):
             return (
                 False,
                 f"Blocked self-modification attempt on makeflow governance file '{arg}' (tee).",
@@ -611,12 +783,15 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
               or norm_dest.endswith("/lib")
               or norm_dest.endswith("/.workflow")
               or norm_dest.endswith("/.workflow/state")
-              or os.path.isdir(dest)
+              or os.path.isdir(os.path.expanduser(dest))
               or (
-                  workspace_paths
+                  search_roots
                   and any(
-                      os.path.isdir(os.path.join(ws, norm_dest))
-                      for ws in workspace_paths
+                      ws
+                      and os.path.isdir(
+                          os.path.join(os.path.expanduser(ws), norm_dest)
+                      )
+                      for ws in search_roots
                   )
               )
               or len(srcs) > 1
@@ -627,13 +802,13 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
               effective_dest = (
                   f"{norm_dest}/{src_base}" if norm_dest else src_base
               )
-              if _is_governance_target(effective_dest):
+              if _is_protected_governance_file(effective_dest, search_roots):
                 return (
                     False,
                     f"Blocked self-modification attempt on makeflow governance file '{effective_dest}' ({base_exe}).",
                 )
           else:
-            if _is_governance_target(dest):
+            if _is_protected_governance_file(dest, search_roots):
               return (
                   False,
                   f"Blocked self-modification attempt on makeflow governance file '{dest}' ({base_exe}).",
@@ -652,20 +827,60 @@ def _is_state_governance_target(raw_token):
   return any(token.endswith("/" + rel) for rel in STATE_GOVERNANCE_RELPATHS)
 
 
+def _is_state_governance_dir(raw_token):
+  """Checks whether raw_token targets the .workflow or .workflow/state directory.
+
+  Args:
+    raw_token: Raw or resolved path string to inspect.
+
+  Returns:
+    True if raw_token matches .workflow or .workflow/state. Returns False
+    otherwise.
+  """
+  token = _normalize_gov_path(raw_token)
+  if not token:
+    return False
+  if token in STATE_GOVERNANCE_DIR_RELPATHS:
+    return True
+  return any(token.endswith("/" + rel) for rel in STATE_GOVERNANCE_DIR_RELPATHS)
+
+
 _KNOWN_PLUGIN_CACHE_PREFIXES = tuple(
     os.path.abspath(os.path.expanduser(p))
-    for p in (
-        "~/.gemini/config/plugins",
-        "~/.gemini/plugins",
-        "~/.claude/plugins",
-    )
+    for p in _PLUGIN_CACHE_RAW_PREFIXES
+)
+
+
+_MAKEFLOW_REPO_ROOT_REAL = os.path.realpath(_REPO_ROOT)
+_MAKEFLOW_REPO_MARKERS = (
+    "hooks.json",
+    os.path.join("skills", "makeflow", "SKILL.md"),
+    os.path.join("rules", "AGENTS.md"),
 )
 
 
 def _find_makeflow_plugin_root(abs_target):
-  """Returns ancestor directory containing makeflow plugin.json, or None."""
+  """Returns the enclosing Makeflow plugin root directory for abs_target.
+
+  Recognizes Makeflow's own repository root, directories containing co-located
+  Makeflow repository markers, and directories containing a Makeflow
+  plugin.json manifest.
+
+  Args:
+    abs_target: Target path to resolve upward.
+
+  Returns:
+    Absolute path to the enclosing Makeflow plugin root directory, or None if
+    no Makeflow root encloses abs_target.
+  """
   curr = os.path.dirname(os.path.abspath(abs_target))
   while curr and curr != os.path.dirname(curr):
+    if os.path.realpath(curr) == _MAKEFLOW_REPO_ROOT_REAL:
+      return curr
+    if all(
+        os.path.isfile(os.path.join(curr, m)) for m in _MAKEFLOW_REPO_MARKERS
+    ):
+      return curr
     pj = os.path.join(curr, "plugin.json")
     if os.path.isfile(pj):
       try:

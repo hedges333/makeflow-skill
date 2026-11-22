@@ -1453,6 +1453,10 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
       Tuples of ``(cmd, hook_result_dict)``.
     """
     with _isolated_hook_dirs() as (ws_dir, hook_cwd, _fake_home, env):
+      with open(
+          os.path.join(ws_dir, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
       for subdir in ("scripts", "lib", os.path.join(".workflow", "state")):
         os.makedirs(os.path.join(ws_dir, subdir), exist_ok=True)
       for cmd in commands:

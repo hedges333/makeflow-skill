@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.config import sanitize_make_subprocess_env
 from lib.reflex import emit_reflex
-from lib.workflow_gates import generate_state_makefile
+from lib.workflow_gates import REQUIRED_PLUGIN_FILES, generate_state_makefile
 
 _DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS_DIR = os.path.join(_DEFAULT_REPO_ROOT, "scripts")
@@ -215,21 +215,110 @@ CORE_GOVERNANCE_FILES = (
 )
 
 
-def compute_toolchain_hash(repo_root: str) -> str:
-  """Computes a deterministic SHA-256 digest over core makeflow governance scripts."""
-  hasher = hashlib.sha256()
+def _is_makeflow_plugin_repo(repo_root: str) -> bool:
+  """Checks whether repo_root is a Makeflow plugin repository checkout.
+
+  Args:
+    repo_root: Repository root directory to inspect.
+
+  Returns:
+    True if repo_root resolves to _DEFAULT_REPO_ROOT or contains all
+    REQUIRED_PLUGIN_FILES markers. Returns False for external consumer
+    repositories.
+  """
   abs_repo = os.path.abspath(repo_root)
+  if os.path.realpath(abs_repo) == os.path.realpath(_DEFAULT_REPO_ROOT):
+    return True
+  return all(
+      os.path.isfile(os.path.join(abs_repo, rel_path))
+      for rel_path in REQUIRED_PLUGIN_FILES
+  )
+
+
+def _is_makeflow_plugin_repo_at_commit(repo_root: str, commit_sha: str) -> bool:
+  """Checks whether an immutable Git commit contains all Makeflow plugin markers.
+
+  Args:
+    repo_root: Repository root directory containing the Git repository.
+    commit_sha: Witnessed Git commit SHA to inspect.
+
+  Returns:
+    True if commit_sha exists in repo_root and its tree contains every path in
+    REQUIRED_PLUGIN_FILES. Returns False otherwise.
+  """
+  cleaned_sha = commit_sha.strip() if isinstance(commit_sha, str) else ""
+  if (
+      not cleaned_sha
+      or cleaned_sha.startswith("-")
+      or not os.path.isdir(repo_root)
+  ):
+    return False
+  try:
+    proc = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.quotepath=false",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            cleaned_sha,
+            "--",
+            *REQUIRED_PLUGIN_FILES,
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        check=False,
+        timeout=15,
+    )
+  except (subprocess.SubprocessError, OSError):
+    return False
+  if proc.returncode != 0:
+    return False
+  present = {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+  return all(rel_path in present for rel_path in REQUIRED_PLUGIN_FILES)
+
+
+def _hash_toolchain_from_root(toolchain_root: str) -> str:
+  """Computes a deterministic SHA-256 digest of CORE_GOVERNANCE_FILES from one root.
+
+  Args:
+    toolchain_root: Root directory to hash governance files from.
+
+  Returns:
+    Hex-encoded SHA-256 digest over sorted CORE_GOVERNANCE_FILES.
+  """
+  hasher = hashlib.sha256()
   for rel_path in sorted(CORE_GOVERNANCE_FILES):
-    target = os.path.join(abs_repo, rel_path)
-    if not os.path.isfile(target):
-      alt = os.path.join(_DEFAULT_REPO_ROOT, rel_path)
-      if os.path.isfile(alt):
-        target = alt
+    target = os.path.join(toolchain_root, rel_path)
     if os.path.isfile(target):
       hasher.update(f"{rel_path}\0{_hash_file_sha256(target)}\n".encode("utf-8"))
     else:
       hasher.update(f"{rel_path}\0missing\n".encode("utf-8"))
   return hasher.hexdigest()
+
+
+def compute_toolchain_hash(repo_root: str) -> str:
+  """Computes a deterministic SHA-256 digest over core makeflow governance scripts.
+
+  Hashes governance files from repo_root when repo_root is a Makeflow plugin
+  repository, or strictly from _DEFAULT_REPO_ROOT when running inside an
+  external consumer repository. Never falls back across roots for individual
+  missing files.
+
+  Args:
+    repo_root: Target repository root directory.
+
+  Returns:
+    Hex-encoded SHA-256 digest over sorted CORE_GOVERNANCE_FILES.
+  """
+  abs_repo = os.path.abspath(repo_root)
+  toolchain_root = (
+      abs_repo if _is_makeflow_plugin_repo(abs_repo) else _DEFAULT_REPO_ROOT
+  )
+  return _hash_toolchain_from_root(toolchain_root)
 
 
 def _compute_receipt_seal(
@@ -1073,41 +1162,49 @@ class TddGuardScript(BaseScript):
       self, receipt: Dict[str, Any], sealed_head: str
   ) -> Optional[int]:
     sealed_hash = receipt.get("toolchain_hash")
-    current_hash = compute_toolchain_hash(self.repo_root)
+    is_plugin_repo = _is_makeflow_plugin_repo(
+        self.repo_root
+    ) or _is_makeflow_plugin_repo_at_commit(self.repo_root, sealed_head)
+    current_hash = (
+        _hash_toolchain_from_root(os.path.abspath(self.repo_root))
+        if is_plugin_repo
+        else _hash_toolchain_from_root(_DEFAULT_REPO_ROOT)
+    )
     hasher_mismatch = bool(sealed_hash and current_hash != sealed_hash)
 
     diff_tampered = False
     diff_desc = ""
-    try:
-      diff_proc = subprocess.run(
-          ["git", "diff", "--name-only", sealed_head, "--", "scripts/", "lib/"],
-          cwd=self.repo_root,
-          capture_output=True,
-          text=True,
-          errors="replace",
-          check=False,
-          timeout=15,
-      )
-      if diff_proc.returncode == 0 and diff_proc.stdout.strip():
-        raw_lines = [
-            f.strip().replace(os.sep, "/")
-            for f in diff_proc.stdout.splitlines()
-            if f.strip()
-        ]
-        modified = [
-            f
-            for f in raw_lines
-            if f in CORE_GOVERNANCE_FILES
-            or any(
-                f.endswith("/" + os.path.basename(p))
-                for p in CORE_GOVERNANCE_FILES
-            )
-        ]
-        if modified:
-          diff_tampered = True
-          diff_desc = ", ".join(modified)
-    except (subprocess.SubprocessError, OSError):
-      pass
+    if is_plugin_repo:
+      try:
+        diff_proc = subprocess.run(
+            ["git", "diff", "--name-only", sealed_head, "--", "scripts/", "lib/"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=15,
+        )
+        if diff_proc.returncode == 0 and diff_proc.stdout.strip():
+          raw_lines = [
+              f.strip().replace(os.sep, "/")
+              for f in diff_proc.stdout.splitlines()
+              if f.strip()
+          ]
+          modified = [
+              f
+              for f in raw_lines
+              if f in CORE_GOVERNANCE_FILES
+              or any(
+                  f.endswith("/" + os.path.basename(p))
+                  for p in CORE_GOVERNANCE_FILES
+              )
+          ]
+          if modified:
+            diff_tampered = True
+            diff_desc = ", ".join(modified)
+      except (subprocess.SubprocessError, OSError):
+        pass
 
     if hasher_mismatch or diff_tampered:
       details = (

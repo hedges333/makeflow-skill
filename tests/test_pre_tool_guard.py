@@ -2264,6 +2264,8 @@ class TestPosixLineContinuationGuards(unittest.TestCase):
   ):
     """Blocks destructive Git, DB, and governance self-modification across line continuations (GH-279)."""
     with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      with open(os.path.join(ws_dir, "plugin.json"), "w", encoding="utf-8") as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
       denied_commands = (
           "echo ok && \\\ngit reset --hard",
           "echo ok && \\\r\ngit push --force origin main",
@@ -2550,6 +2552,597 @@ class TestPosixLineContinuationGuards(unittest.TestCase):
           },
       })
       self.assertEqual(advance_push["decision"], "allow", advance_push)
+
+
+
+class TestPreToolGuardConsumerVsPluginSelfModification(unittest.TestCase):
+  """Hermetic tests distinguishing external consumer repos from Makeflow plugin repos in shell self-modification guard (GH-242)."""
+
+  def test_external_consumer_repo_allows_shell_mutations_on_consumer_governance_named_files(
+      self,
+  ):
+    """External consumer repositories allow shell mutations on consumer lib/base_script.py, scripts/workflow_gates.py, and lib/scripts dirs (GH-242)."""
+    consumer_commands = [
+        "echo 'class BaseScript: pass' > lib/base_script.py",
+        "echo '# update' >> scripts/workflow_gates.py",
+        "rm lib/base_script.py",
+        "unlink scripts/workflow_gates.py",
+        "truncate -s 0 lib/base_script.py",
+        "sed -i 's/a/b/' lib/base_script.py",
+        "echo 'x' | tee lib/base_script.py",
+        "mv tmp.py lib/base_script.py",
+        "cp tmp.py scripts/workflow_gates.py",
+        "mv base_script.py lib/",
+        "rm -rf lib",
+        "rm -rf scripts/",
+    ]
+    for non_makeflow_manifest in (None, '{"name": "consumer-app"}\n'):
+      with (
+          self.subTest(manifest=non_makeflow_manifest),
+          _isolated_guard_env(),
+          tempfile.TemporaryDirectory() as consumer_ws,
+      ):
+        os.makedirs(os.path.join(consumer_ws, "lib"), exist_ok=True)
+        os.makedirs(os.path.join(consumer_ws, "scripts"), exist_ok=True)
+        if non_makeflow_manifest is not None:
+          with open(
+              os.path.join(consumer_ws, "plugin.json"), "w", encoding="utf-8"
+          ) as f:
+            f.write(non_makeflow_manifest)
+        for cmd in consumer_commands:
+          res = evaluate_tool_call({
+              "workspacePaths": [consumer_ws],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              },
+          })
+          self.assertEqual(
+              res["decision"],
+              "allow",
+              f"Expected allow in external consumer repo for cmd={cmd!r}, got {res}",
+          )
+
+  def test_external_consumer_repo_still_denies_workflow_state_and_plugin_targets(
+      self,
+  ):
+    """External consumer repositories still deny mutations targeting .workflow/state governance files, plugin cache paths, or Makeflow checkouts (GH-242)."""
+    with (
+        _isolated_guard_env() as (_hook_cwd, fake_home, _clean_env),
+        tempfile.TemporaryDirectory() as consumer_ws,
+        tempfile.TemporaryDirectory() as plugin_checkout,
+    ):
+      with open(
+          os.path.join(plugin_checkout, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      os.makedirs(os.path.join(plugin_checkout, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(plugin_checkout, "scripts"), exist_ok=True)
+
+      cache_target = os.path.join(
+          fake_home,
+          ".gemini",
+          "config",
+          "plugins",
+          "makeflow",
+          "lib",
+          "tdd_guard.py",
+      )
+      checkout_lib_target = os.path.join(
+          plugin_checkout, "lib", "tdd_guard.py"
+      )
+      checkout_lib_dir = os.path.join(plugin_checkout, "lib")
+
+      denied_commands = [
+          "echo 'all:' > .workflow/state/Makefile",
+          "rm -f .workflow/state/30_regression_receipt.json",
+          "rm -f .workflow/state/30_tdd_receipt.json",
+          "rm ~/.gemini/config/plugins/makeflow/lib/tdd_guard.py",
+          f"echo '# hack' > {cache_target}",
+          f"echo '# hack' > {checkout_lib_target}",
+          f"rm -rf {checkout_lib_dir}",
+          f"cd {plugin_checkout} && echo '# hack' > lib/tdd_guard.py",
+      ]
+      for cmd in denied_commands:
+        res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny from consumer repo for cmd={cmd!r}, got {res}",
+        )
+        self.assertIn(
+            "Blocked self-modification attempt on makeflow governance file",
+            res.get("reason", ""),
+        )
+
+  def test_makeflow_plugin_workspace_still_denies_shell_mutations_on_governance_files(
+      self,
+  ):
+    """Makeflow plugin workspace still denies shell mutations targeting governance files and lib/scripts directories (GH-242)."""
+    with (
+        _isolated_guard_env(),
+        tempfile.TemporaryDirectory() as plugin_ws,
+    ):
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      os.makedirs(os.path.join(plugin_ws, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(plugin_ws, "scripts"), exist_ok=True)
+      os.makedirs(
+          os.path.join(plugin_ws, ".workflow", "state"), exist_ok=True
+      )
+
+      denied_commands = [
+          "echo '# hack' > lib/base_script.py",
+          "rm scripts/tdd_guard.py",
+          "truncate -s 0 lib/regression_gate.py",
+          "sed -i 's/a/b/' lib/base_script.py",
+          "echo 'x' | tee lib/base_script.py",
+          "mv evil.py lib/base_script.py",
+          "cp evil.py scripts/tdd_guard.py",
+          "mv base_script.py lib/",
+          "rm -rf lib",
+          "rm -rf scripts/",
+      ]
+      for cmd in denied_commands:
+        res = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny in Makeflow plugin workspace for cmd={cmd!r}, got {res}",
+        )
+        self.assertIn(
+            "Blocked self-modification attempt on makeflow governance file",
+            res.get("reason", ""),
+        )
+
+  def test_blocker1_normalized_paths_subdir_cd_and_symlinks(self):
+    """Denies dot-segments, subdir cd, and symlinks to Makeflow governance targets while allowing consumer equivalents (GH-242)."""
+    with (
+        _isolated_guard_env(),
+        tempfile.TemporaryDirectory() as plugin_ws,
+        tempfile.TemporaryDirectory() as consumer_ws,
+    ):
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      os.makedirs(os.path.join(plugin_ws, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(plugin_ws, "scripts"), exist_ok=True)
+      os.makedirs(
+          os.path.join(plugin_ws, ".workflow", "state"), exist_ok=True
+      )
+      os.makedirs(os.path.join(consumer_ws, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(consumer_ws, "scripts"), exist_ok=True)
+      os.makedirs(
+          os.path.join(consumer_ws, ".workflow", "state"), exist_ok=True
+      )
+
+      file_link = os.path.join(consumer_ws, "alias_guard")
+      dir_link = os.path.join(consumer_ws, "alias_lib")
+      state_link = os.path.join(consumer_ws, "alias_mk")
+      os.symlink(os.path.join(plugin_ws, "lib", "tdd_guard.py"), file_link)
+      os.symlink(os.path.join(plugin_ws, "lib"), dir_link)
+      os.symlink(
+          os.path.join(consumer_ws, ".workflow", "state", "Makefile"),
+          state_link,
+      )
+
+      plugin_denied = [
+          "echo '# hack' > lib/./tdd_guard.py",
+          "rm lib/../lib/base_script.py",
+          "rm -rf lib/.",
+          "rm -rf scripts/.",
+          "cd lib && echo '# hack' > tdd_guard.py",
+          "cd lib && rm -rf .",
+          "cd .workflow/state && echo 'all:' > Makefile",
+      ]
+      for cmd in plugin_denied:
+        res = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny in plugin workspace for cmd={cmd!r}, got {res}",
+        )
+
+      consumer_denied = [
+          "echo '# hack' > alias_guard",
+          "rm -rf alias_lib",
+          "echo 'all:' > alias_mk",
+          "cd .workflow/state && echo 'all:' > Makefile",
+      ]
+      for cmd in consumer_denied:
+        res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny in consumer workspace for cmd={cmd!r}, got {res}",
+        )
+
+      consumer_allowed = [
+          "echo '# ok' > lib/./base_script.py",
+          "cd lib && echo '# ok' > base_script.py",
+          "rm -rf lib/.",
+          "cd lib && rm -rf .",
+      ]
+      for cmd in consumer_allowed:
+        res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "allow",
+            f"Expected allow in consumer workspace for cmd={cmd!r}, got {res}",
+        )
+
+  def test_blocker2_chained_relative_cd_and_pushd_denied(self):
+    """Denies chained relative cd and pushd commands escaping from a consumer repo into a Makeflow checkout (GH-242)."""
+    with (
+        _isolated_guard_env(),
+        tempfile.TemporaryDirectory() as parent_dir,
+    ):
+      consumer_ws = os.path.join(parent_dir, "consumer_repo")
+      plugin_dir = os.path.join(parent_dir, "makeflow_plugin")
+      os.makedirs(os.path.join(consumer_ws, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(plugin_dir, "lib"), exist_ok=True)
+      with open(
+          os.path.join(plugin_dir, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+
+      chained_cmds = [
+          "cd .. && cd makeflow_plugin && rm lib/tdd_guard.py",
+          f"cd {parent_dir} && cd makeflow_plugin && echo '# hack' > lib/tdd_guard.py",
+          "pushd .. && pushd makeflow_plugin && rm lib/tdd_guard.py",
+          "cd .. && cd makeflow_plugin && cd lib && echo '# hack' > tdd_guard.py",
+      ]
+      for cmd in chained_cmds:
+        res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny for chained cd/pushd cmd={cmd!r}, got {res}",
+        )
+
+  def test_blocker3_plugin_json_shell_protection_and_resilient_root_detection(
+      self,
+  ):
+    """Protects Makeflow plugin.json from shell mutations and detects Makeflow roots even when plugin.json is missing or corrupted (GH-242)."""
+    self.assertNotIn("plugin.json", GOVERNANCE_FILE_RELPATHS)
+
+    with (
+        _isolated_guard_env(),
+        tempfile.TemporaryDirectory() as plugin_ws,
+        tempfile.TemporaryDirectory() as consumer_ws,
+    ):
+      os.makedirs(os.path.join(plugin_ws, ".git"), exist_ok=True)
+      os.makedirs(os.path.join(plugin_ws, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(plugin_ws, "scripts"), exist_ok=True)
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      with open(
+          os.path.join(consumer_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "consumer-app", "version": "1.0.0"}, f)
+
+      for cmd in ("rm plugin.json", "echo '{}' > plugin.json"):
+        plugin_res = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            plugin_res["decision"],
+            "deny",
+            f"Expected deny for plugin.json shell cmd={cmd!r}, got {plugin_res}",
+        )
+
+        consumer_res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            consumer_res["decision"],
+            "allow",
+            f"Expected allow for consumer plugin.json cmd={cmd!r}, got {consumer_res}",
+        )
+
+      direct_write_res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "write_file",
+              "args": {
+                  "Path": os.path.join(plugin_ws, "plugin.json"),
+                  "Content": '{"name": "makeflow", "version": "1.0.1"}\n',
+              },
+          },
+      })
+      self.assertEqual(
+          direct_write_res["decision"],
+          "allow",
+          f"Expected direct write_file to Makeflow plugin.json allowed, got {direct_write_res}",
+      )
+
+    for manifest_content in (None, "{bad"):
+      with (
+          self.subTest(manifest_content=manifest_content),
+          _isolated_guard_env(),
+          tempfile.TemporaryDirectory() as marker_ws,
+      ):
+        os.makedirs(
+            os.path.join(marker_ws, "skills", "makeflow"), exist_ok=True
+        )
+        os.makedirs(os.path.join(marker_ws, "rules"), exist_ok=True)
+        os.makedirs(os.path.join(marker_ws, "lib"), exist_ok=True)
+        os.makedirs(os.path.join(marker_ws, "scripts"), exist_ok=True)
+        for marker_rel in (
+            "hooks.json",
+            os.path.join("skills", "makeflow", "SKILL.md"),
+            os.path.join("rules", "AGENTS.md"),
+        ):
+          with open(
+              os.path.join(marker_ws, marker_rel), "w", encoding="utf-8"
+          ) as f:
+            f.write("# marker\n")
+        if manifest_content is not None:
+          with open(
+              os.path.join(marker_ws, "plugin.json"), "w", encoding="utf-8"
+          ) as f:
+            f.write(manifest_content)
+
+        for cmd in (
+            "echo '# hack' > lib/tdd_guard.py",
+            "rm -rf scripts/",
+        ):
+          res = evaluate_tool_call({
+              "workspacePaths": [marker_ws],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              },
+          })
+          self.assertEqual(
+              res["decision"],
+              "deny",
+              f"Expected deny with markers and manifest={manifest_content!r} for cmd={cmd!r}, got {res}",
+          )
+
+    with mock.patch("os.path.isfile", return_value=False):
+      ok_repo, _ = evaluate_self_modification_safety(
+          "echo '# hack' > lib/tdd_guard.py",
+          workspace_paths=[REPO_ROOT],
+      )
+      self.assertFalse(ok_repo)
+
+  def test_nbo2_subshell_c_redirections_denied_for_protected_targets(self):
+    """Denies output redirections inside bash -c and sh -c targeting protected governance files while allowing consumer targets (GH-242)."""
+    with (
+        _isolated_guard_env(),
+        tempfile.TemporaryDirectory() as plugin_ws,
+        tempfile.TemporaryDirectory() as consumer_ws,
+    ):
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      os.makedirs(os.path.join(plugin_ws, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(consumer_ws, "lib"), exist_ok=True)
+
+      for ws in (consumer_ws, plugin_ws):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": (
+                        'bash -c "echo x > .workflow/state/Makefile"'
+                    ),
+                },
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny for bash -c Makefile redir in {ws}, got {res}",
+        )
+
+      plugin_sh_res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": 'sh -c "echo x > lib/tdd_guard.py"',
+              },
+          },
+      })
+      self.assertEqual(
+          plugin_sh_res["decision"],
+          "deny",
+          f"Expected deny for sh -c lib/tdd_guard.py redir, got {plugin_sh_res}",
+      )
+
+      consumer_sh_res = evaluate_tool_call({
+          "workspacePaths": [consumer_ws],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": 'bash -c "echo x > lib/base_script.py"',
+              },
+          },
+      })
+      self.assertEqual(
+          consumer_sh_res["decision"],
+          "allow",
+          f"Expected allow for consumer bash -c redir, got {consumer_sh_res}",
+      )
+
+  def test_nbo4_tilde_workspace_mv_cp_directory_detection(self):
+    """Expands tilde workspace roots when detecting mv and cp directory destinations (GH-242)."""
+    with _isolated_guard_env() as (_hook_cwd, fake_home, _clean_env):
+      plugin_ws = os.path.join(fake_home, "plugin_repo")
+      os.makedirs(os.path.join(plugin_ws, "lib"), exist_ok=True)
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      os.symlink(
+          os.path.join(plugin_ws, "lib"),
+          os.path.join(plugin_ws, "lib_alias"),
+      )
+
+      for cmd in (
+          "mv tdd_guard.py lib/.",
+          "cp tdd_guard.py lib_alias",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": ["~/plugin_repo"],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny for tilde workspace cmd={cmd!r}, got {res}",
+        )
+
+  def test_workflow_state_directory_deletion_denied_in_consumer_and_plugin_repos(
+      self,
+  ):
+    """Denies deleting .workflow or .workflow/state directories in both consumer and plugin repos while allowing non-state subdirectories (GH-242)."""
+    with (
+        _isolated_guard_env(),
+        tempfile.TemporaryDirectory() as consumer_ws,
+        tempfile.TemporaryDirectory() as plugin_ws,
+    ):
+      os.makedirs(
+          os.path.join(consumer_ws, ".workflow", "state"), exist_ok=True
+      )
+      os.makedirs(
+          os.path.join(consumer_ws, ".workflow", "archive"), exist_ok=True
+      )
+      os.makedirs(os.path.join(consumer_ws, ".workflow", "tmp"), exist_ok=True)
+      os.makedirs(os.path.join(consumer_ws, "lib"), exist_ok=True)
+      state_dir_link = os.path.join(consumer_ws, "alias_workflow_state")
+      os.symlink(
+          os.path.join(consumer_ws, ".workflow", "state"), state_dir_link
+      )
+
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      os.makedirs(os.path.join(plugin_ws, ".workflow", "state"), exist_ok=True)
+
+      consumer_denied = [
+          "rm -rf .workflow/state",
+          "rm -rf .workflow/state/.",
+          "rm -rf .workflow",
+          "cd .workflow && rm -rf state",
+          "rm -rf alias_workflow_state",
+          f"rm -rf {state_dir_link}",
+      ]
+      for cmd in consumer_denied:
+        res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny in consumer repo for cmd={cmd!r}, got {res}",
+        )
+        self.assertIn(
+            "Blocked self-modification attempt on makeflow governance file",
+            res.get("reason", ""),
+        )
+
+      plugin_denied = [
+          "rm -rf .workflow/state",
+          "rm -rf .workflow",
+      ]
+      for cmd in plugin_denied:
+        res = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny in plugin repo for cmd={cmd!r}, got {res}",
+        )
+        self.assertIn(
+            "Blocked self-modification attempt on makeflow governance file",
+            res.get("reason", ""),
+        )
+
+      consumer_allowed = [
+          "rm -rf .workflow/archive",
+          "rm -rf .workflow/tmp",
+          "rm -rf lib",
+      ]
+      for cmd in consumer_allowed:
+        res = evaluate_tool_call({
+            "workspacePaths": [consumer_ws],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "allow",
+            f"Expected allow in consumer repo for cmd={cmd!r}, got {res}",
+        )
 
 
 if __name__ == "__main__":
