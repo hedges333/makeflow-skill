@@ -2728,5 +2728,24 @@
     "closes_issue": true,
     "tests_added": 11,
     "scars_earned": []
+  },
+  {
+    "id": "GH-247",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/247",
+    "title": "[BUG] Resolve Target 42 zero-tool airlock contradiction in 04_six_pillars_adversarial_review.md causing double human pause",
+    "request": "Replace the literal zero-tool wakeup contradiction in Section 5 and Section 5.1 of 04_six_pillars_adversarial_review.md with the Bounded Target 42 Blocker Airlock, align SCAR-PROC-89 in scars/process.md, and add contract, falsification, and hermetic PreToolUse single-pause tests.",
+    "branch": "fix/247-target42-zero-tool-airlock",
+    "subprojects": [
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-22T02:01:00Z",
+    "completed_at": "2026-11-22T03:39:06Z",
+    "commit_sha": "1da7c98de9f9c447b4d2dc1380fdd9aa9ff2dccb",
+    "pr_number": 278,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/278",
+    "closes_issue": true,
+    "tests_added": 3,
+    "scars_earned": []
   }
 ]
