@@ -1,38 +1,34 @@
 #!/usr/bin/env python3
-"""Hermetic unit tests for scripts/validate_scar_candidate.py.
+"""Hermetic unit tests for lib/scar_candidate.py (GH-146, GH-209).
 
-Validates synthetic scar candidate JSON files against Simple English rules,
-sentence word count limits, span preservation, schema, and BaseScript execution.
-Zero socket or external daemon dependencies (SCAR-TEST-08, SCAR-TEST-11).
+Validates synthetic scar prose against Simple English rules, contraction bans,
+sentence word count limits, standalone math/code sentence splitting, byte-for-byte
+span preservation, and Socratic probe rules. Zero socket or external daemon
+dependencies (SCAR-TEST-08, SCAR-TEST-11).
 """
 
-import io
-import json
 import os
-import sqlite3
 import sys
-import tempfile
 import time
 import unittest
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
-for _p in (_REPO_ROOT, _SCRIPTS_DIR):
-  if _p not in sys.path:
-    sys.path.insert(0, _p)
+if _REPO_ROOT not in sys.path:
+  sys.path.insert(0, _REPO_ROOT)
 
-from lib.base_script import BaseScript
+import lib.scar_candidate as scar_candidate_mod
 from lib.scar_candidate import (
-    ScarCandidateTestScript,
+    _CONTRACTION_RE,
     ScarCandidateValidator,
-    ValidateScarCandidateScript,
     count_words_in_sentence,
+    mask_code_and_math_spans,
     split_into_sentences,
     validate_socratic_probe,
 )
 
 
 def _make_valid_candidate(scar_id: str = "SCAR-PROC-99") -> dict:
+  """Build a valid synthetic scar candidate dictionary for testing."""
   return {
       "id": scar_id,
       "raw_wound": "Raw wound with $a + b = c$ and `$ENV_VAR`.",
@@ -48,18 +44,30 @@ def _make_valid_candidate(scar_id: str = "SCAR-PROC-99") -> dict:
 
 
 class TestScarCandidateValidator(unittest.TestCase):
-  """Unit tests for ScarCandidateValidator."""
+  """Unit tests for ScarCandidateValidator and sentence tokenization helpers."""
 
-  def setUp(self):
+  def setUp(self) -> None:
     self.validator = ScarCandidateValidator()
 
-  def test_schema_required_fields(self):
-    """Test that id, wound, trap, reflex must be non-empty strings while socratic_probe is optional."""
-    valid = _make_valid_candidate()
-    errors = self.validator.validate(valid)
-    self.assertEqual(errors, [])
+  def test_obsolete_cli_classes_removed(self) -> None:
+    """Verify deleted CLI wrapper classes are absent from lib.scar_candidate."""
+    for removed_name in (
+        "ScarCandidateCliError",
+        "CandidateArgumentParser",
+        "ScarCandidateTestScript",
+        "ValidateScarCandidateScript",
+    ):
+      self.assertFalse(
+          hasattr(scar_candidate_mod, removed_name),
+          f"Removed symbol '{removed_name}' should not exist in lib.scar_candidate",
+      )
+    self.assertIsNotNone(_CONTRACTION_RE)
 
-    # Missing or empty 'id'
+  def test_schema_required_fields(self) -> None:
+    """Verify id, wound, trap, reflex must be non-empty while socratic_probe is optional."""
+    valid = _make_valid_candidate()
+    self.assertEqual(self.validator.validate(valid), [])
+
     bad_id = dict(valid, id="")
     errs = self.validator.validate(bad_id)
     self.assertTrue(any("id" in e for e in errs), f"Expected 'id' error in {errs}")
@@ -69,7 +77,6 @@ class TestScarCandidateValidator(unittest.TestCase):
     errs = self.validator.validate(no_id)
     self.assertTrue(any("id" in e for e in errs), f"Expected 'id' error in {errs}")
 
-    # Missing or empty required fields
     for field in ("wound", "trap", "reflex"):
       bad_field = dict(valid, **{field: ""})
       errs = self.validator.validate(bad_field)
@@ -86,23 +93,19 @@ class TestScarCandidateValidator(unittest.TestCase):
           f"Expected '{field}' error for missing field in {errs}",
       )
 
-    # socratic_probe is optional (None, empty, or omitted passes validation)
     self.assertEqual(self.validator.validate(dict(valid, socratic_probe=None)), [])
     self.assertEqual(self.validator.validate(dict(valid, socratic_probe="")), [])
     no_probe = dict(valid)
     del no_probe["socratic_probe"]
     self.assertEqual(self.validator.validate(no_probe), [])
 
-  def test_circuit_breaker_empty_and_non_empty(self):
-    """Test circuit breaker validation against raw circuit breaker."""
-    # When raw circuit breaker is empty, circuit_breaker must be "" (not None or non-empty)
+  def test_circuit_breaker_empty_and_non_empty(self) -> None:
+    """Verify circuit_breaker matches presence of raw_circuit_breaker."""
     no_cb_candidate = _make_valid_candidate("SCAR-NOCB-01")
     no_cb_candidate["raw_circuit_breaker"] = ""
     no_cb_candidate["circuit_breaker"] = ""
-    errs = self.validator.validate(no_cb_candidate)
-    self.assertEqual(errs, [])
+    self.assertEqual(self.validator.validate(no_cb_candidate), [])
 
-    # None when raw is empty -> rejected
     bad_none = dict(no_cb_candidate, circuit_breaker=None)
     errs = self.validator.validate(bad_none)
     self.assertTrue(
@@ -110,7 +113,6 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected circuit_breaker error in {errs}",
     )
 
-    # Non-empty when raw is empty -> rejected
     bad_extra = dict(no_cb_candidate, circuit_breaker="Stop now.")
     errs = self.validator.validate(bad_extra)
     self.assertTrue(
@@ -118,7 +120,6 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected circuit_breaker error in {errs}",
     )
 
-    # When raw circuit breaker is non-empty, circuit_breaker must be non-empty
     has_cb = _make_valid_candidate("SCAR-HASCB-01")
     has_cb["raw_circuit_breaker"] = "Raw stop rule."
     has_cb["circuit_breaker"] = ""
@@ -135,20 +136,18 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected circuit_breaker error in {errs}",
     )
 
-  def test_omitted_circuit_breaker_defaults_to_empty_when_raw_empty(self):
-    """Test that omitting circuit_breaker key is accepted when raw_circuit_breaker is empty."""
+  def test_omitted_circuit_breaker_defaults_to_empty_when_raw_empty(self) -> None:
+    """Verify omitting circuit_breaker is accepted when raw_circuit_breaker is empty."""
     no_cb_candidate = _make_valid_candidate("SCAR-NOCB-02")
     no_cb_candidate["raw_circuit_breaker"] = ""
     del no_cb_candidate["circuit_breaker"]
     del no_cb_candidate["socratic_probe"]
-    errs = self.validator.validate(no_cb_candidate)
-    self.assertEqual(errs, [])
+    self.assertEqual(self.validator.validate(no_cb_candidate), [])
 
-  def test_span_preservation(self):
-    """Test byte-for-byte span preservation across math and code blocks."""
+  def test_span_preservation(self) -> None:
+    """Verify byte-for-byte span preservation across math and code blocks."""
     base = _make_valid_candidate()
 
-    # Drop inline math -> error
     bad_inline = dict(base, wound="Simple wound without formula.")
     errs = self.validator.validate(bad_inline)
     self.assertTrue(
@@ -156,7 +155,6 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected inline_math mismatch in {errs}",
     )
 
-    # Modify display math -> error
     bad_display = dict(base, trap="Simple trap with $$E = mc^3$$ equation.")
     errs = self.validator.validate(bad_display)
     self.assertTrue(
@@ -164,7 +162,6 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected display_math mismatch in {errs}",
     )
 
-    # Modify fenced code block -> error
     bad_fenced = dict(
         base, reflex="Run ```python\nx = 99\n``` in the test."
     )
@@ -174,11 +171,10 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected fenced_code mismatch in {errs}",
     )
 
-  def test_prose_punctuation_restrictions(self):
-    """Test zero semicolons and em-dashes outside protected code/math."""
+  def test_prose_punctuation_and_contraction_restrictions(self) -> None:
+    """Verify zero semicolons, em-dashes, and contractions outside code/math."""
     base = _make_valid_candidate()
 
-    # Semicolon in prose -> rejected
     bad_semi = dict(base, wound="Simple wound; bad semicolon.")
     errs = self.validator.validate(bad_semi)
     self.assertTrue(
@@ -186,34 +182,51 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected semicolon error in {errs}",
     )
 
-    # Em-dash in prose -> rejected
-    bad_emdash = dict(base, trap="Simple trap — with em-dash.")
+    bad_emdash = dict(base, trap="Simple trap \u2014 with em-dash.")
     errs = self.validator.validate(bad_emdash)
     self.assertTrue(
         any("em-dash" in e for e in errs),
         f"Expected em-dash error in {errs}",
     )
 
-    # Semicolon inside code span or fenced code -> allowed!
-    good_semi_code = dict(
-        base,
-        circuit_breaker="Run `var a = 1;` before proceeding.",
-        raw_circuit_breaker="Run `var a = 1;` before proceeding.",
-    )
-    errs = self.validator.validate(good_semi_code)
-    self.assertEqual(errs, [])
+    # Contractions in prose across all prose fields must be rejected (GH-209)
+    for field, bad_text in (
+        ("wound", "The worker doesn't check $a + b = c$ or `$ENV_VAR`."),
+        ("trap", "It's easy to misread $$E = mc^2$$ during review."),
+        ("circuit_breaker", "Don't run `x` when inputs fail."),
+        ("reflex", "We won't skip ```python\nx = 1; y = 2\n``` in tests."),
+        ("socratic_probe", "Isn't $a + b = c$ verified before the test?"),
+    ):
+      with self.subTest(field=field):
+        bad_contraction = dict(base, **{field: bad_text})
+        errs = self.validator.validate(bad_contraction)
+        self.assertTrue(
+            any("contraction" in e.lower() and field in e for e in errs),
+            f"Expected contraction error for '{field}' in {errs}",
+        )
 
-  def test_simple_english_sentence_word_count_limits(self):
-    """Test sentence word count limits for descriptive, procedural, and probe fields."""
+    # Semicolons and contractions inside inline code or fenced code are allowed
+    good_code = dict(
+        base,
+        circuit_breaker="Run `don't_fail();` before proceeding.",
+        raw_circuit_breaker="Run `don't_fail();` before proceeding.",
+        reflex="Run ```python\nmsg = \"don't fail\"\nx = 1; y = 2\n``` in the test.",
+        raw_reflex="Run ```python\nmsg = \"don't fail\"\nx = 1; y = 2\n``` in test.",
+    )
+    self.assertEqual(self.validator.validate(good_code), [])
+
+  def test_simple_english_sentence_word_count_limits(self) -> None:
+    """Verify word count limits for descriptive, procedural, and probe fields."""
     base = _make_valid_candidate()
 
-    # Descriptive limit: <= 25 words (wound, trap)
-    # Exactly 25 words -> valid
-    desc_25 = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five."
+    desc_25 = (
+        "One two three four five six seven eight nine ten eleven twelve thirteen "
+        "fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one "
+        "twenty-two twenty-three twenty-four twenty-five."
+    )
     base_25 = dict(base, wound=desc_25, raw_wound=desc_25)
     self.assertEqual(self.validator.validate(base_25), [])
 
-    # 26 words -> invalid
     desc_26 = desc_25[:-1] + " twenty-six."
     base_26 = dict(base, wound=desc_26, raw_wound=desc_26)
     errs = self.validator.validate(base_26)
@@ -222,9 +235,10 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected 26 > 25 error in {errs}",
     )
 
-    # Procedural limit: <= 20 words (circuit_breaker, reflex)
-    # Exactly 20 words -> valid
-    proc_20 = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty."
+    proc_20 = (
+        "One two three four five six seven eight nine ten eleven twelve thirteen "
+        "fourteen fifteen sixteen seventeen eighteen nineteen twenty."
+    )
     base_proc_20 = dict(
         base,
         circuit_breaker=proc_20,
@@ -232,7 +246,6 @@ class TestScarCandidateValidator(unittest.TestCase):
     )
     self.assertEqual(self.validator.validate(base_proc_20), [])
 
-    # 21 words -> invalid
     proc_21 = proc_20[:-1] + " twenty-one."
     base_proc_21 = dict(
         base,
@@ -245,56 +258,124 @@ class TestScarCandidateValidator(unittest.TestCase):
         f"Expected 21 > 20 error in {errs}",
     )
 
-    # Socratic probe questions: <= 20 words per question sentence, ending in ?, up to 3 questions
-    probe_2_questions = "Did you run the test? Did you check the code?"
-    base_probe_2 = dict(base, socratic_probe=probe_2_questions)
-    self.assertEqual(self.validator.validate(base_probe_2), [])
+    probe_2 = "Did you run the test? Did you check the code?"
+    self.assertEqual(
+        self.validator.validate(dict(base, socratic_probe=probe_2)), []
+    )
+    probe_3 = "Did you check? Did you run? Did you log?"
+    self.assertEqual(
+        self.validator.validate(dict(base, socratic_probe=probe_3)), []
+    )
 
-    probe_3_questions = "Did you check? Did you run? Did you log?"
-    base_probe_3 = dict(base, socratic_probe=probe_3_questions)
-    self.assertEqual(self.validator.validate(base_probe_3), [])
-
-    # 4 questions -> invalid
-    probe_4_questions = "Did you check? Did you run? Did you log? Did you review?"
-    base_probe_4 = dict(base, socratic_probe=probe_4_questions)
-    errs = self.validator.validate(base_probe_4)
+    probe_4 = "Did you check? Did you run? Did you log? Did you review?"
+    errs = self.validator.validate(dict(base, socratic_probe=probe_4))
     self.assertTrue(
-        any("socratic_probe" in e and ("3" in e or "exceeds" in e) for e in errs),
+        any("socratic_probe" in e and "3" in e for e in errs),
         f"Expected question count error in {errs}",
     )
 
-    # Probe question ending with . instead of ? -> invalid
-    probe_statement = "Check the code before running. Did you test?"
-    base_probe_stmt = dict(base, socratic_probe=probe_statement)
-    errs = self.validator.validate(base_probe_stmt)
+    probe_stmt = "Check the code before running. Did you test?"
+    errs = self.validator.validate(dict(base, socratic_probe=probe_stmt))
     self.assertTrue(
         any("socratic_probe" in e and "?" in e for e in errs),
         f"Expected probe question mark error in {errs}",
     )
 
-    # Probe sentence exceeding 20 words -> invalid
-    probe_21 = "Did you verify that every single component in the entire layout tree is completely and thoroughly validated before starting execution now?"
-    base_probe_21 = dict(base, socratic_probe=probe_21)
-    errs = self.validator.validate(base_probe_21)
+    probe_21 = (
+        "Did you verify that every single component in the entire layout tree "
+        "is completely and thoroughly validated before starting execution now?"
+    )
+    errs = self.validator.validate(dict(base, socratic_probe=probe_21))
     self.assertTrue(
         any("socratic_probe" in e and "21 > 20" in e for e in errs),
         f"Expected probe word count error in {errs}",
     )
 
-  def test_code_and_math_spans_do_not_split_sentences(self):
-    """Test that punctuation inside inline code or math does not split sentences."""
+  def test_code_and_math_spans_do_not_split_sentences(self) -> None:
+    """Verify inline code and inline display math do not split sentences prematurely."""
     base = _make_valid_candidate()
     reflex_code = "Run `import os.path` before continuing. Check `file.py` now."
-    candidate = dict(
-        base,
-        reflex=reflex_code,
-        raw_reflex=reflex_code,
-    )
-    errs = self.validator.validate(candidate)
-    self.assertEqual(errs, [])
+    candidate = dict(base, reflex=reflex_code, raw_reflex=reflex_code)
+    self.assertEqual(self.validator.validate(candidate), [])
 
-  def test_actionable_diagnostics_formatting(self):
-    """Test that error messages clearly cite scar ID, field name, word counts, limits, or mismatched spans."""
+    inline_math_sentences = split_into_sentences(
+        "Simple trap with $$E = mc^2$$ equation."
+    )
+    self.assertEqual(len(inline_math_sentences), 1)
+    self.assertIn("__DISPLAY_MATH__", inline_math_sentences[0])
+
+    inline_code_sentences = split_into_sentences(
+        "Run ```python\nx = 1; y = 2\n``` in the test."
+    )
+    self.assertEqual(len(inline_code_sentences), 1)
+    self.assertIn("__FENCED_CODE__", inline_code_sentences[0])
+
+  def test_split_into_sentences_splits_across_standalone_math_and_code_blocks(
+      self,
+  ) -> None:
+    """Verify standalone newline-delimited $$...$$ and fenced code act as sentence boundaries (GH-209)."""
+    math_text = (
+        "Verify the invariant before committing:\n"
+        "$$a + b = c$$\n"
+        "Then run the targeted unit test suite."
+    )
+    math_sentences = split_into_sentences(math_text)
+    self.assertEqual(
+        math_sentences,
+        [
+            "Verify the invariant before committing:",
+            "Then run the targeted unit test suite.",
+        ],
+    )
+
+    code_text = (
+        "Run this safe verification script:\n"
+        "```python\n"
+        "print('ok')\n"
+        "```\n"
+        "Check the exit status before returning."
+    )
+    code_sentences = split_into_sentences(code_text)
+    self.assertEqual(
+        code_sentences,
+        [
+            "Run this safe verification script:",
+            "Check the exit status before returning.",
+        ],
+    )
+
+    # Two 15-word procedural sentences separated by a standalone math block
+    # must pass the 20-word procedural limit (GH-209)
+    proc_before = (
+        "Run the schema migration check before applying the upstream update "
+        "to the local database:"
+    )
+    proc_after = (
+        "Verify that every row in the registry table preserves its original "
+        "identifier after updates."
+    )
+    self.assertLessEqual(count_words_in_sentence(proc_before), 20)
+    self.assertLessEqual(count_words_in_sentence(proc_after), 20)
+
+    reflex_with_math = f"{proc_before}\n$$N_{{\\text{{before}}}} = N_{{\\text{{after}}}}$$\n{proc_after}"
+    candidate = _make_valid_candidate("SCAR-MATH-01")
+    candidate["raw_reflex"] = reflex_with_math
+    candidate["reflex"] = reflex_with_math
+    self.assertEqual(self.validator.validate(candidate), [])
+
+    reflex_with_code = f"{proc_before}\n```bash\nmake test\n```\n{proc_after}"
+    candidate_code = _make_valid_candidate("SCAR-CODE-01")
+    candidate_code["raw_reflex"] = reflex_with_code
+    candidate_code["reflex"] = reflex_with_code
+    self.assertEqual(self.validator.validate(candidate_code), [])
+
+    # Verify mask_code_and_math_spans remains exported and intact
+    masked = mask_code_and_math_spans("Check `x` and $y$.")
+    self.assertIn("__INLINE_CODE__", masked)
+    self.assertIn("__INLINE_MATH__", masked)
+
+  def test_actionable_diagnostics_formatting(self) -> None:
+    """Verify error messages cite scar ID, field name, limits, and mismatched spans."""
     scar_id = "SCAR-DIAG-01"
     candidate = _make_valid_candidate(scar_id)
     candidate["wound"] = (
@@ -306,319 +387,18 @@ class TestScarCandidateValidator(unittest.TestCase):
     candidate["reflex"] = "Run ```python\nx = 999\n``` in test."
 
     errs = self.validator.validate(candidate)
-    self.assertTrue(len(errs) >= 2)
-
-    # Check scar ID cited in errors
+    self.assertGreaterEqual(len(errs), 2)
     for err in errs:
       self.assertIn(scar_id, err)
 
-    # Check field name and word count cited
     wound_err = [e for e in errs if "wound" in e][0]
     self.assertIn("26 > 25", wound_err)
 
-    # Check span mismatch cited
     reflex_err = [e for e in errs if "reflex" in e][0]
     self.assertIn("fenced_code mismatch", reflex_err)
 
-
-class TestScarCandidateCLI(unittest.TestCase):
-  """Unit tests for ScarCandidateTestScript CLI and BaseScript lifecycle."""
-
-  def test_inherits_basescript(self):
-    """Test that ScarCandidateTestScript inherits from BaseScript (SCAR-ARCH-05)."""
-    self.assertTrue(issubclass(ScarCandidateTestScript, BaseScript))
-
-  def test_valid_candidate_file_exits_0(self):
-    """Test that valid candidate JSON file returns exit code 0."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      cand_path = os.path.join(tmpdir, "candidate.json")
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(_make_valid_candidate(), f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute([cand_path], stdout=out, stderr=err)
-      self.assertEqual(code, 0)
-      self.assertIn("passed", out.getvalue().lower())
-
-  def test_validation_failure_exits_1(self):
-    """Test that validation failures return exit code 1."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      cand_path = os.path.join(tmpdir, "invalid.json")
-      bad = _make_valid_candidate()
-      bad["wound"] = "Simple wound with forbidden semicolon; here."
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(bad, f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute([cand_path], stdout=out, stderr=err)
-      self.assertEqual(code, 1)
-      output = out.getvalue() + err.getvalue()
-      self.assertIn("semicolon", output)
-
-  def test_file_not_found_exits_2(self):
-    """Test that non-existent candidate file returns exit code 2."""
-    out = io.StringIO()
-    err = io.StringIO()
-    script = ScarCandidateTestScript()
-    code = script.execute(["/non/existent/candidate.json"], stdout=out, stderr=err)
-    self.assertEqual(code, 2)
-    self.assertIn("not found", err.getvalue().lower())
-
-  def test_unparseable_json_exits_2(self):
-    """Test that malformed JSON returns exit code 2."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      bad_json_path = os.path.join(tmpdir, "bad.json")
-      with open(bad_json_path, "w", encoding="utf-8") as f:
-        f.write("{invalid: json,")
-
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute([bad_json_path], stdout=out, stderr=err)
-      self.assertEqual(code, 2)
-      self.assertIn("failed to parse json", err.getvalue().lower())
-
-  def test_help_output_exits_0_and_writes_usage_to_stdout(self):
-    """Test that --help and -h return exit code 0 and write usage to stdout without touching stderr."""
-    orig_stdout, orig_stderr = sys.stdout, sys.stderr
-    try:
-      sys.stdout = None
-      sys.stderr = None
-      for flag in ("--help", "-h"):
-        out = io.StringIO()
-        err = io.StringIO()
-        script = ScarCandidateTestScript()
-        code = script.execute([flag], stdout=out, stderr=err)
-        self.assertEqual(code, 0)
-        self.assertEqual(err.getvalue(), "")
-        self.assertIn("usage: validate_scar_candidate.py", out.getvalue())
-        self.assertIn("--candidate", out.getvalue())
-        self.assertIn("--json", out.getvalue())
-    finally:
-      sys.stdout = orig_stdout
-      sys.stderr = orig_stderr
-
-  def test_candidate_named_flag_exits_0(self):
-    """Test that --candidate <file> option works alongside positional candidate_file."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      cand_path = os.path.join(tmpdir, "candidate.json")
-      db_path = os.path.join(tmpdir, "scars.db")
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(_make_valid_candidate(), f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute(
-          ["--candidate", cand_path, "--db-path", db_path],
-          stdout=out,
-          stderr=err,
-      )
-      self.assertEqual(code, 0)
-      self.assertEqual(err.getvalue(), "")
-      self.assertIn("passed", out.getvalue().lower())
-
-  def test_cli_argument_errors_exit_2(self):
-    """Test that missing arguments or invalid flags return exit code 2."""
-    out = io.StringIO()
-    err = io.StringIO()
-    script = ScarCandidateTestScript()
-    # Missing candidate file argument
-    code = script.execute([], stdout=out, stderr=err)
-    self.assertEqual(code, 2)
-
-    # Unknown flag
-    code_bad_flag = script.execute(["--unknown-flag"], stdout=out, stderr=err)
-    self.assertEqual(code_bad_flag, 2)
-
-  def test_sqlite_fallback_resolution(self):
-    """Test resolving raw fields from an isolated temporary SQLite database."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      db_path = os.path.join(tmpdir, "test_scars.db")
-      conn = sqlite3.connect(db_path)
-      cur = conn.cursor()
-      cur.execute(
-          """
-          CREATE TABLE scars (
-              id TEXT PRIMARY KEY,
-              raw_wound TEXT,
-              raw_trap TEXT,
-              raw_circuit_breaker TEXT,
-              raw_reflex TEXT,
-              wound TEXT,
-              trap TEXT,
-              circuit_breaker TEXT,
-              reflex TEXT,
-              socratic_probe TEXT
-          )
-          """
-      )
-      cur.execute(
-          """
-          INSERT INTO scars (id, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex)
-          VALUES (?, ?, ?, ?, ?)
-          """,
-          (
-              "SCAR-SQL-01",
-              "Raw wound with formula $x = 1$.",
-              "Raw trap text.",
-              "Stop if error occurs.",
-              "Run ```bash\nmake test\n``` now.",
-          ),
-      )
-      conn.commit()
-      conn.close()
-
-      # Candidate JSON with only transformed fields (no raw_* fields embedded)
-      cand_path = os.path.join(tmpdir, "candidate.json")
-      candidate = {
-          "id": "SCAR-SQL-01",
-          "wound": "Transformed wound with formula $x = 1$.",
-          "trap": "Transformed trap text.",
-          "circuit_breaker": "Stop if error occurs.",
-          "reflex": "Run ```bash\nmake test\n``` now.",
-          "socratic_probe": "Did you run the test before making changes?",
-      }
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(candidate, f)
-
-      # Run with --db-path pointing to the temporary database
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute(
-          [cand_path, "--db-path", db_path], stdout=out, stderr=err
-      )
-      self.assertEqual(code, 0, f"Expected 0, got {code}. err: {err.getvalue()}")
-
-      # If candidate alters a code/math span compared to DB -> validation error (exit code 1)
-      candidate_altered = dict(
-          candidate, wound="Transformed wound without formula."
-      )
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(candidate_altered, f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      code_altered = script.execute(
-          [cand_path, "--db-path", db_path], stdout=out, stderr=err
-      )
-      self.assertEqual(code_altered, 1)
-      self.assertIn("inline_math mismatch", out.getvalue() + err.getvalue())
-
-      # If scar ID is not in DB -> validation error (exit code 1)
-      candidate_missing_id = dict(candidate, id="SCAR-NONEXISTENT")
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(candidate_missing_id, f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      code_missing = script.execute(
-          [cand_path, "--db-path", db_path], stdout=out, stderr=err
-      )
-      self.assertEqual(code_missing, 1)
-      self.assertIn("not found in database", out.getvalue() + err.getvalue())
-
-  def test_json_output_mode(self):
-    """Test --json flag emits machine-readable JSON on stdout."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      cand_path = os.path.join(tmpdir, "candidate.json")
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(_make_valid_candidate(), f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute([cand_path, "--json"], stdout=out, stderr=err)
-      self.assertEqual(code, 0)
-      payload = json.loads(out.getvalue())
-      self.assertTrue(payload.get("valid"))
-      self.assertEqual(payload.get("errors"), [])
-
-  def test_execution_time_budget(self):
-    """Verify entire test candidate validation executes well under 100 ms (SCAR-TEST-11)."""
-    validator = ScarCandidateValidator()
-    candidate = _make_valid_candidate()
-
-    start = time.perf_counter()
-    for _ in range(10):
-      validator.validate(candidate)
-    elapsed = time.perf_counter() - start
-
-    # 10 validations should comfortably finish within 100 ms (0.10s)
-    self.assertLess(
-        elapsed,
-        0.10,
-        f"Validation of 10 candidates took {elapsed:.4f}s (budget: 0.10s)",
-    )
-
-  def test_sqlite_fallback_resolves_by_ss_id(self):
-    """Test resolving raw fields from SQLite when candidate specifies ss_id."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      db_path = os.path.join(tmpdir, "test_scars_ss_id.db")
-      conn = sqlite3.connect(db_path)
-      cur = conn.cursor()
-      cur.execute(
-          """
-          CREATE TABLE scars (
-              id TEXT NOT NULL PRIMARY KEY,
-              ss_id TEXT,
-              raw_wound TEXT,
-              raw_trap TEXT,
-              raw_circuit_breaker TEXT,
-              raw_reflex TEXT,
-              wound TEXT,
-              trap TEXT,
-              circuit_breaker TEXT,
-              reflex TEXT,
-              socratic_probe TEXT
-          )
-          """
-      )
-      cur.execute(
-          """
-          INSERT INTO scars (
-              id, ss_id, raw_wound, raw_trap, raw_circuit_breaker, raw_reflex
-          ) VALUES (?, ?, ?, ?, ?, ?)
-          """,
-          (
-              "SCAR-LANG-SQL-DB-0001",
-              "SCAR-SQL-01",
-              "Raw wound with formula $x = 1$.",
-              "Raw trap text.",
-              "Stop if error occurs.",
-              "Run ```bash\nmake test\n``` now.",
-          ),
-      )
-      conn.commit()
-      conn.close()
-
-      cand_path = os.path.join(tmpdir, "candidate_ss_id.json")
-      candidate = {
-          "id": "SCAR-SQL-01",
-          "wound": "Transformed wound with formula $x = 1$.",
-          "trap": "Transformed trap text.",
-          "circuit_breaker": "Stop if error occurs.",
-          "reflex": "Run ```bash\nmake test\n``` now.",
-          "socratic_probe": "Did you run the test before editing?",
-      }
-      with open(cand_path, "w", encoding="utf-8") as f:
-        json.dump(candidate, f)
-
-      out = io.StringIO()
-      err = io.StringIO()
-      script = ScarCandidateTestScript()
-      code = script.execute(
-          [cand_path, "--db-path", db_path], stdout=out, stderr=err
-      )
-      self.assertEqual(code, 0, f"Expected 0, got {code}. err: {err.getvalue()}")
-
-  def test_validate_socratic_probe_helper(self):
-    """Test standalone validate_socratic_probe() rules."""
+  def test_validate_socratic_probe_helper(self) -> None:
+    """Verify standalone validate_socratic_probe() rules."""
     self.assertEqual(
         validate_socratic_probe(
             "Did you inspect `$ENV_VAR` and $x = 1$ before editing?"
@@ -647,6 +427,19 @@ class TestScarCandidateCLI(unittest.TestCase):
 
     errs_many = validate_socratic_probe("One? Two? Three? Four?")
     self.assertTrue(any("maximum is 3" in e for e in errs_many))
+
+  def test_execution_time_budget(self) -> None:
+    """Verify 10 candidate validations finish well under 100 ms (SCAR-TEST-11)."""
+    candidate = _make_valid_candidate()
+    start = time.perf_counter()
+    for _ in range(10):
+      self.validator.validate(candidate)
+    elapsed = time.perf_counter() - start
+    self.assertLess(
+        elapsed,
+        0.10,
+        f"Validation of 10 candidates took {elapsed:.4f}s (budget: 0.10s)",
+    )
 
 
 if __name__ == "__main__":

@@ -279,7 +279,7 @@ Two internal accessibility exceptions apply within composite sentences:
 
 When recency binds a bare pronoun (`it`) to the wrong noun (`If a credit-card has a signature then it is valid.` binds `it` to `a signature`), replace the pronoun with the exact definite noun phrase (`If a credit-card has a signature then the credit-card is valid.`).
 
-## Part VII: Interrogative Sentences, Commands, and Socratic Probes (Construction Rules Sections 8 and 9)
+## Part VII: Interrogative Sentences and Commands (Construction Rules Sections 8 and 9)
 
 ### 1. Interrogative Sentences (`Yes/No`, `wh-queries`, and `how much/many` Queries)
 

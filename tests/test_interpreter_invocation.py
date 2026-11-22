@@ -186,14 +186,15 @@ class TestInterpreterInvocation(unittest.TestCase):
           f"rules/AGENTS.md Section 3.1 Item 5 sentence exceeds 20 words ({wcount} words): '{sentence}'",
       )
 
-    # Verify notes/simple_english_scar_import_goal.md references scripts/validate_scar_candidate.py
-    goal_rel = "notes/simple_english_scar_import_goal.md"
-    goal_path = repo_path(goal_rel)
-    self.assertTrue(os.path.isfile(goal_path), f"Missing {goal_rel}")
-    with open(goal_path, "r", encoding="utf-8") as f:
-      goal_text = f.read()
-    self.assertIn("scripts/validate_scar_candidate.py", goal_text)
-    self.assertNotIn("scripts/test_scar_candidate.py", goal_text)
+    # Verify the three GH-209 scar pipeline scripts exist as thin entrypoints
+    for script_rel in (
+        "scripts/sync_synthetic_scars.py",
+        "scripts/import_synthetic_scars.py",
+        "scripts/write_scar_probes.py",
+    ):
+      self.assertTrue(os.path.isfile(repo_path(script_rel)), f"Missing {script_rel}")
+    self.assertFalse(os.path.exists(repo_path("scripts/validate_scar_candidate.py")))
+    self.assertFalse(os.path.exists(repo_path("notes/simple_english_scar_import_goal.md")))
 
 
 if __name__ == "__main__":

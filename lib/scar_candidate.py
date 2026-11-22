@@ -1,54 +1,46 @@
-"""Persistent validation library for synthetic scar candidate JSON files (SCAR-ARCH-05, SCAR-SH-01).
+"""Validation library for synthetic scar prose and Socratic probes (GH-146, GH-209).
 
-Validates synthetic scar candidate JSON files against Simple English rules, sentence
-word count constraints, byte-for-byte LaTeX and code span preservation, and schema.
+Validates synthetic scar fields against Simple English rules, contraction bans,
+sentence word count limits, standalone display math and fenced code sentence
+boundaries, byte-for-byte LaTeX and code span preservation, and Socratic probe
+rules.
 """
 
-import argparse
-import json
-import os
 import re
-import sqlite3
 import string
-from typing import Any, Dict, List, NoReturn, Optional
+from typing import Any, Dict, List, Optional
 
-from lib.base_script import BaseScript, SilentArgumentParser
 from lib.scars_db import (
     _strip_protected_and_inline_code,
     extract_protected_spans,
-    resolve_scars_db_path,
 )
 
 _PUNCTUATION_CHARS = string.punctuation + "«»“”‘’"
 
+_STANDALONE_MASKED_BLOCK_RE = re.compile(
+    r"(?:^|\r?\n)[ \t]*(?:__FENCED_CODE__|__DISPLAY_MATH__)[ \t]*(?=\r?\n|$)"
+)
 
-class ScarCandidateCliError(Exception):
-  """Raised on invalid CLI arguments or invocations without calling sys.exit()."""
-
-  exit_code = 2
-
-
-class CandidateArgumentParser(SilentArgumentParser):
-  """ArgumentParser subclass that raises ScarCandidateCliError with exit_code = 2 on errors."""
-
-  def error(self, message: str) -> NoReturn:
-    self._printed_messages.clear()
-    raise ScarCandidateCliError(message)
-
-  def exit(self, status: int = 0, message: Optional[str] = None) -> NoReturn:
-    if status == 0:
-      super().exit(status, message)
-    buffered = "".join(self._printed_messages)
-    self._printed_messages.clear()
-    raise ScarCandidateCliError(
-        message or buffered or f"Argument parser exited with status {status}"
-    )
+_CONTRACTION_RE = re.compile(
+    r"\b(?:don't|doesn't|didn't|won't|can't|cannot't|isn't|aren't|wasn't|weren't|"
+    r"haven't|hasn't|hadn't|wouldn't|shouldn't|couldn't|mustn't|"
+    r"i'm|you're|we're|they're|i've|you've|we've|they've|"
+    r"i'll|you'll|we'll|they'll|i'd|you'd|we'd|they'd|"
+    r"it's|that's|there's|here's|what's|who's|let's)\b",
+    re.IGNORECASE,
+)
 
 
 def mask_code_and_math_spans(text: str) -> str:
-  """Masks fenced code, inline code, display math, and inline math with atomic tokens.
+  """Mask fenced code, inline code, display math, and inline math with atomic tokens.
 
   Prevents punctuation and periods inside code or math from splitting sentences.
+
+  Args:
+    text: Input prose string containing optional code or math spans.
+
+  Returns:
+    Masked string where code and math spans are replaced by placeholder tokens.
   """
   content = text or ""
   masked = re.sub(r"```[\s\S]*?```", " __FENCED_CODE__ ", content)
@@ -61,30 +53,44 @@ def mask_code_and_math_spans(text: str) -> str:
 
 
 def split_into_sentences(text: str) -> List[str]:
-  """Tokenizes text into sentences on [.!?] followed by whitespace or end of string.
+  """Tokenize text into sentences across punctuation and standalone math/code blocks.
 
-  Protects code and math spans before tokenization so periods/punctuation inside
-  code and math do not split sentences prematurely.
+  Protects inline code, inline math, inline display math, and inline fenced code
+  before tokenization. Splits sentences across standalone newline-delimited
+  ``$$...$$`` display math blocks and standalone fenced code blocks so lead-in
+  lines ending in ``:`` or ``.`` are measured separately from following prose.
+
+  Args:
+    text: Input prose string.
+
+  Returns:
+    Ordered list of non-empty masked sentence strings.
   """
   if not text:
     return []
   masked = mask_code_and_math_spans(text)
-  raw_sentences = re.split(r"(?<=[.!?])(?:\s+|$)", masked)
-  return [s.strip() for s in raw_sentences if s.strip()]
-
-
-_CONTRACTION_RE = re.compile(
-    r"\b(?:don't|doesn't|didn't|won't|can't|cannot't|isn't|aren't|wasn't|weren't|"
-    r"haven't|hasn't|hadn't|wouldn't|shouldn't|couldn't|mustn't|"
-    r"i'm|you're|we're|they're|i've|you've|we've|they've|"
-    r"i'll|you'll|we'll|they'll|i'd|you'd|we'd|they'd|"
-    r"it's|that's|there's|here's|what's|who's|let's)\b",
-    re.IGNORECASE,
-)
+  segments = _STANDALONE_MASKED_BLOCK_RE.split(masked)
+  sentences: List[str] = []
+  for segment in segments:
+    stripped_seg = segment.strip()
+    if not stripped_seg:
+      continue
+    for raw_sentence in re.split(r"(?<=[.!?])(?:\s+|$)", stripped_seg):
+      cleaned = raw_sentence.strip()
+      if cleaned:
+        sentences.append(cleaned)
+  return sentences
 
 
 def count_words_in_sentence(sentence: str) -> int:
-  """Counts words in a sentence by splitting on whitespace and stripping punctuation."""
+  """Count words in a sentence by splitting on whitespace and stripping punctuation.
+
+  Args:
+    sentence: Single masked sentence string.
+
+  Returns:
+    Number of non-empty word tokens.
+  """
   words: List[str] = []
   for token in sentence.split():
     cleaned = token.strip(_PUNCTUATION_CHARS)
@@ -123,7 +129,7 @@ def _check_socratic_probe_questions(probe_str: str, scar_id: str) -> List[str]:
 def validate_socratic_probe(
     probe: Any, scar_id: str = "<probe>"
 ) -> List[str]:
-  """Validate a standalone ``socratic_probe`` against Pass 2 rules.
+  """Validate a standalone ``socratic_probe`` against Simple English probe rules.
 
   Args:
     probe: Candidate ``socratic_probe`` value.
@@ -133,7 +139,9 @@ def validate_socratic_probe(
     List of validation error strings (empty when valid).
   """
   if not isinstance(probe, str) or not probe.strip():
-    return [f"Scar '{scar_id}' field 'socratic_probe' must be a non-empty string."]
+    return [
+        f"Scar '{scar_id}' field 'socratic_probe' must be a non-empty string."
+    ]
 
   probe_str = probe.strip()
   errors: List[str] = []
@@ -144,7 +152,7 @@ def validate_socratic_probe(
     )
   if "\u2014" in prose_only:
     errors.append(
-        f"Scar '{scar_id}' field 'socratic_probe' contains forbidden em-dash '—' in prose."
+        f"Scar '{scar_id}' field 'socratic_probe' contains forbidden em-dash '\u2014' in prose."
     )
   if _CONTRACTION_RE.search(prose_only):
     errors.append(
@@ -155,14 +163,22 @@ def validate_socratic_probe(
 
 
 class ScarCandidateValidator:
-  """Validates synthetic scar candidate fields against schema, spans, and Simple English rules."""
+  """Validate synthetic scar prose against schema, spans, and Simple English rules."""
 
   def validate(
       self,
       candidate: Dict[str, Any],
       raw_data: Optional[Dict[str, Any]] = None,
   ) -> List[str]:
-    """Validates candidate fields and returns list of actionable diagnostic error strings."""
+    """Validate candidate fields and return actionable diagnostic error strings.
+
+    Args:
+      candidate: Candidate dictionary containing transformed scar fields.
+      raw_data: Optional dictionary supplying ``raw_*`` reference fields.
+
+    Returns:
+      List of diagnostic error strings (empty when candidate is valid).
+    """
     errors: List[str] = []
 
     scar_id = str(candidate.get("id") or "").strip()
@@ -170,7 +186,6 @@ class ScarCandidateValidator:
       errors.append("Candidate missing or empty 'id'.")
       scar_id = "<unknown>"
 
-    # 1. Schema & Required non-empty string fields
     for req_field in ("wound", "trap", "reflex"):
       val = candidate.get(req_field)
       if not isinstance(val, str) or not val.strip():
@@ -178,7 +193,6 @@ class ScarCandidateValidator:
             f"Scar '{scar_id}' field '{req_field}' must be a non-empty string."
         )
 
-    # 2. Circuit Breaker validation
     raw_source = raw_data if raw_data is not None else candidate
     raw_cb_raw = raw_source.get("raw_circuit_breaker")
     raw_cb_str = str(raw_cb_raw or "").strip() if raw_cb_raw is not None else ""
@@ -187,19 +201,16 @@ class ScarCandidateValidator:
     if not raw_cb_str:
       if "circuit_breaker" not in candidate:
         trans_cb = ""
-      # Raw circuit breaker is empty: transformed must be "" (not None or non-empty string)
       if trans_cb is None or trans_cb != "":
         errors.append(
             f"Scar '{scar_id}' field 'circuit_breaker' must be '' (not None or non-empty) when raw circuit breaker is empty."
         )
     else:
-      # Raw circuit breaker is non-empty: transformed must be non-empty string
       if not isinstance(trans_cb, str) or not trans_cb.strip():
         errors.append(
             f"Scar '{scar_id}' field 'circuit_breaker' must be non-empty when raw circuit breaker is non-empty."
         )
 
-    # 3. Span Preservation across code and math blocks
     field_pairs = (
         ("raw_wound", "wound"),
         ("raw_trap", "trap"),
@@ -222,7 +233,6 @@ class ScarCandidateValidator:
               f"expected {raw_spans[span_kind]}, got {trans_spans[span_kind]}."
           )
 
-    # 4. Prose Punctuation Restrictions (zero semicolons or em-dashes outside code/math)
     for prose_field in (
         "wound",
         "trap",
@@ -238,11 +248,13 @@ class ScarCandidateValidator:
         )
       if "\u2014" in prose_only:
         errors.append(
-            f"Scar '{scar_id}' field '{prose_field}' contains forbidden em-dash '—' in prose."
+            f"Scar '{scar_id}' field '{prose_field}' contains forbidden em-dash '\u2014' in prose."
+        )
+      if _CONTRACTION_RE.search(prose_only):
+        errors.append(
+            f"Scar '{scar_id}' field '{prose_field}' contains forbidden contraction in prose."
         )
 
-    # 5. Simple English Sentence Word Count Limits
-    # Descriptive sentences (wound, trap): <= 25 words per sentence
     for desc_field in ("wound", "trap"):
       desc_val = candidate.get(desc_field)
       if isinstance(desc_val, str) and desc_val.strip():
@@ -254,7 +266,6 @@ class ScarCandidateValidator:
                 f"({wcount} > 25 words): '{sentence}'."
             )
 
-    # Procedural sentences (circuit_breaker, reflex): <= 20 words per sentence
     for proc_field in ("circuit_breaker", "reflex"):
       proc_val = candidate.get(proc_field)
       if isinstance(proc_val, str) and proc_val.strip():
@@ -266,7 +277,6 @@ class ScarCandidateValidator:
                 f"({wcount} > 20 words): '{sentence}'."
             )
 
-    # Socratic probe questions: <= 20 words per question sentence, ending in ?, up to 3 questions
     probe_val = candidate.get("socratic_probe")
     if isinstance(probe_val, str) and probe_val.strip():
       errors.extend(
@@ -274,201 +284,3 @@ class ScarCandidateValidator:
       )
 
     return errors
-
-
-class ScarCandidateTestScript(BaseScript):
-  """CLI runner validating synthetic scar candidate JSON files (SCAR-ARCH-05)."""
-
-  def __init__(self) -> None:
-    super().__init__()
-    self.candidate_file: str = ""
-    self.db_path: Optional[str] = None
-    self.json_output: bool = False
-    self.validator = ScarCandidateValidator()
-
-  def parse_args(self, args: Optional[List[str]] = None) -> None:
-    super().parse_args(args)
-    parser = CandidateArgumentParser(
-        prog="validate_scar_candidate.py",
-        description="Validate synthetic scar candidate JSON files against Simple English rules and spans.",
-        epilog=(
-            "Examples:\n"
-            "  python3 scripts/validate_scar_candidate.py candidate.json\n"
-            "  python3 scripts/validate_scar_candidate.py --candidate candidate.json --json"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "candidate_file",
-        nargs="?",
-        default=None,
-        help="Path to synthetic scar candidate JSON file.",
-    )
-    parser.add_argument(
-        "--candidate",
-        dest="candidate_opt",
-        default=None,
-        help="Path to synthetic scar candidate JSON file (named flag alternative).",
-    )
-    parser.add_argument(
-        "--db-path",
-        default=None,
-        help="Optional path to SQLite scars registry database for raw field fallback.",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Output validation results as machine-readable JSON.",
-    )
-
-    parsed = parser.parse_args(self.raw_args)
-    resolved_candidate = parsed.candidate_opt or parsed.candidate_file
-    if not resolved_candidate:
-      parser.error("the following arguments are required: candidate_file")
-    self.candidate_file = resolved_candidate
-    self.db_path = parsed.db_path
-    self.json_output = parsed.json_output
-
-  def _lookup_raw_fields_from_db(
-      self, scar_id: str, db_path: str
-  ) -> Optional[Dict[str, Any]]:
-    """Looks up raw fields from SQLite database if file exists."""
-    if not os.path.isfile(db_path):
-      return None
-
-    conn = None
-    try:
-      conn = sqlite3.connect(db_path)
-      cur = conn.cursor()
-      cols = {
-          row_info[1]
-          for row_info in cur.execute("PRAGMA table_info(scars)").fetchall()
-      }
-      if "ss_id" in cols:
-        cur.execute(
-            """
-            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
-                    wound, trap, circuit_breaker, reflex
-            FROM scars
-            WHERE id = ? OR ss_id = ?
-            """,
-            (scar_id, scar_id),
-        )
-      else:
-        cur.execute(
-            """
-            SELECT raw_wound, raw_trap, raw_circuit_breaker, raw_reflex,
-                    wound, trap, circuit_breaker, reflex
-            FROM scars
-            WHERE id = ?
-            """,
-            (scar_id,),
-        )
-      row = cur.fetchone()
-      if not row:
-        return None
-      return {
-          "raw_wound": row[0] if row[0] is not None else (row[4] or ""),
-          "raw_trap": row[1] if row[1] is not None else (row[5] or ""),
-          "raw_circuit_breaker": (
-              row[2] if row[2] is not None else (row[6] or "")
-          ),
-          "raw_reflex": row[3] if row[3] is not None else (row[7] or ""),
-      }
-    except sqlite3.Error:
-      return None
-    finally:
-      if conn:
-        conn.close()
-
-  def run(self) -> int:
-    if not self.candidate_file or not os.path.isfile(self.candidate_file):
-      self.stderr.write(
-          f"Error: Candidate file not found: '{self.candidate_file}'.\n"
-      )
-      return 2
-
-    try:
-      with open(self.candidate_file, "r", encoding="utf-8") as f:
-        payload = json.load(f)
-    except (OSError, ValueError) as exc:
-      self.stderr.write(
-          f"Error: Failed to parse JSON in '{self.candidate_file}': {exc}\n"
-      )
-      return 2
-
-    items = payload if isinstance(payload, list) else [payload]
-    if not items or not all(isinstance(x, dict) for x in items):
-      self.stderr.write(
-          f"Error: Candidate JSON in '{self.candidate_file}' must be an object or list of objects.\n"
-      )
-      return 2
-
-    resolved_db = resolve_scars_db_path(db_path=self.db_path)
-    all_errors: List[str] = []
-    validated_ids: List[str] = []
-
-    for item in items:
-      scar_id = str(item.get("id") or "").strip()
-      if not scar_id:
-        all_errors.append("Candidate item is missing 'id'.")
-        continue
-
-      validated_ids.append(scar_id)
-
-      # Check if raw fields are embedded in candidate JSON
-      has_embedded_raw = any(
-          k in item
-          for k in (
-              "raw_wound",
-              "raw_trap",
-              "raw_circuit_breaker",
-              "raw_reflex",
-          )
-      )
-
-      raw_data: Optional[Dict[str, Any]] = None
-      if has_embedded_raw:
-        raw_data = item
-      else:
-        # Fallback to SQLite database lookup
-        raw_data = self._lookup_raw_fields_from_db(scar_id, resolved_db)
-        if raw_data is None:
-          all_errors.append(
-              f"Scar '{scar_id}' not found in database '{resolved_db}' and no raw fields provided in candidate JSON."
-          )
-          continue
-
-      errors = self.validator.validate(item, raw_data=raw_data)
-      all_errors.extend(errors)
-
-    if self.json_output:
-      result = {
-          "valid": len(all_errors) == 0,
-          "scar_ids": validated_ids,
-          "errors": all_errors,
-      }
-      self.stdout.write(json.dumps(result, indent=2) + "\n")
-      return 0 if len(all_errors) == 0 else 1
-
-    if all_errors:
-      self.stderr.write(
-          f"Validation failed with {len(all_errors)} error(s) for candidate '{self.candidate_file}':\n"
-      )
-      for err in all_errors:
-        self.stderr.write(f"  ✖ {err}\n")
-      return 1
-
-    if len(validated_ids) == 1:
-      self.stdout.write(
-          f"✔ Scar candidate '{validated_ids[0]}' passed all validations.\n"
-      )
-    else:
-      self.stdout.write(
-          f"✔ Verified {len(validated_ids)} candidate scar(s) with 0 errors.\n"
-      )
-    return 0
-
-
-ValidateScarCandidateScript = ScarCandidateTestScript

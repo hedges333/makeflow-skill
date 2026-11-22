@@ -19,6 +19,8 @@ from lib.base_script import (
     BaseScript,
     HelpExit,
     ReflexArgumentError,
+    ScriptArgumentError,
+    ScriptArgumentParser,
     SilentArgumentParser,
 )
 
@@ -382,15 +384,29 @@ class TestThreeLayerArchitectureInvariants(unittest.TestCase):
       )
 
   def test_lib_base_script_exports_argument_parser_primitives(self):
-    """Verifies lib.base_script exports BaseScript, ReflexArgumentError, and SilentArgumentParser."""
+    """Verifies lib.base_script exports BaseScript, ReflexArgumentError, SilentArgumentParser, and ScriptArgumentParser."""
     self.assertTrue(issubclass(ReflexArgumentError, Exception))
+    self.assertTrue(issubclass(ScriptArgumentError, Exception))
     parser = SilentArgumentParser(prog="test_prog")
     with self.assertRaises(ReflexArgumentError) as ctx:
       parser.error("bad flag")
     self.assertIn("bad flag", str(ctx.exception))
 
+    script_parser = ScriptArgumentParser(prog="script_prog")
+    script_parser.add_argument("--db-path", default=None)
+    with self.assertRaises(HelpExit) as help_ctx:
+      script_parser.parse_args(["--help"])
+    self.assertIn("usage: script_prog", str(help_ctx.exception))
+    with self.assertRaises(ScriptArgumentError) as err_ctx:
+      script_parser.parse_args(["--unknown-flag"])
+    self.assertEqual(err_ctx.exception.exit_code, 2)
+    with self.assertRaises(ScriptArgumentError) as exit_ctx:
+      script_parser.exit(status=3, message="bad cli exit")
+    self.assertEqual(exit_ctx.exception.exit_code, 2)
+    self.assertIn("bad cli exit", str(exit_ctx.exception))
+
   def test_scripts_dir_contains_only_thin_cli_entrypoints(self):
-    """Verifies scripts/ has zero test_*.py files, zero pure libraries, and validate_scar_candidate.py."""
+    """Verifies scripts/ has zero test_*.py files, zero pure libraries, and the three GH-209 scar CLIs."""
     script_files = sorted(
         f for f in os.listdir(_SCRIPTS_DIR) if f.endswith(".py")
     )
@@ -402,7 +418,11 @@ class TestThreeLayerArchitectureInvariants(unittest.TestCase):
     self.assertNotIn("base_script.py", script_files)
     self.assertNotIn("safe_copy.py", script_files)
     self.assertNotIn("test_scar_candidate.py", script_files)
-    self.assertIn("validate_scar_candidate.py", script_files)
+    self.assertNotIn("validate_scar_candidate.py", script_files)
+    self.assertNotIn("enrich_scars_index.py", script_files)
+    self.assertIn("sync_synthetic_scars.py", script_files)
+    self.assertIn("import_synthetic_scars.py", script_files)
+    self.assertIn("write_scar_probes.py", script_files)
 
   def test_scripts_have_shebang_main_guard_and_zero_cross_script_imports(self):
     """Verifies every scripts/*.py file has a shebang, __main__ guard, and zero imports from other scripts."""
@@ -547,22 +567,23 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     self.assertEqual(err.getvalue(), "")
 
   def test_all_cli_scripts_root_help(self):
-    """Verifies all 15 CLI BaseScript classes return 0 and print usage on --help and -h."""
+    """Verifies all 16 CLI BaseScript classes return 0 and print usage on --help and -h."""
     from lib.ast_scrub import AstScrubScript
     from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.env_preflight import EnvPreflightScript
+    from lib.import_synthetic_scars import ImportSyntheticScarsScript
     from lib.pre_tool_guard import PreToolGuardScript
     from lib.reflex import EmitReflexScript
-    from lib.scar_candidate import ScarCandidateTestScript
-    from lib.scars_db import SyncSyntheticScarsScript
     from lib.session_start import SessionStartScript
     from lib.signal_trap import SignalTrapScript
     from lib.static_check import StaticCheckScript
+    from lib.sync_synthetic_scars import SyncSyntheticScarsScript
     from lib.tdd_guard import TddGuardScript
     from lib.terminal_title import TerminalTitleScript
     from lib.workflow_gates import WorkflowGatesScript
     from lib.workspace_mutex import WorkspaceMutexScript
+    from lib.write_scar_probes import WriteScarProbesScript
 
     script_classes = [
         (CommitMsgScript, "commit_msg.py"),
@@ -570,12 +591,13 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (TddGuardScript, "tdd_guard.py"),
         (WorkspaceMutexScript, "workspace_mutex.py"),
         (TerminalTitleScript, "terminal_title.py"),
-        (ScarCandidateTestScript, "validate_scar_candidate.py"),
         (StaticCheckScript, "static_check.py"),
         (EmitReflexScript, "emit_reflex.py"),
         (EnvPreflightScript, "env_preflight.py"),
         (AstScrubScript, "ast_scrub.py"),
         (SyncSyntheticScarsScript, "sync_synthetic_scars.py"),
+        (ImportSyntheticScarsScript, "import_synthetic_scars.py"),
+        (WriteScarProbesScript, "write_scar_probes.py"),
         (SignalTrapScript, "signal_trap.py"),
         (ChangelogScript, "changelog.py"),
         (PreToolGuardScript, "pre_tool_guard.py"),
@@ -682,17 +704,18 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.env_preflight import EnvPreflightScript
+    from lib.import_synthetic_scars import ImportSyntheticScarsScript
     from lib.pre_tool_guard import PreToolGuardScript
     from lib.reflex import EmitReflexScript
-    from lib.scar_candidate import ScarCandidateTestScript
-    from lib.scars_db import SyncSyntheticScarsScript
     from lib.session_start import SessionStartScript
     from lib.signal_trap import SignalTrapScript
     from lib.static_check import StaticCheckScript
+    from lib.sync_synthetic_scars import SyncSyntheticScarsScript
     from lib.tdd_guard import TddGuardScript
     from lib.terminal_title import TerminalTitleScript
     from lib.workflow_gates import WorkflowGatesScript
     from lib.workspace_mutex import WorkspaceMutexScript
+    from lib.write_scar_probes import WriteScarProbesScript
 
     expected_exit_codes = [
         (CommitMsgScript, 1),
@@ -700,12 +723,13 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (TddGuardScript, 1),
         (WorkspaceMutexScript, 1),
         (TerminalTitleScript, 1),
-        (ScarCandidateTestScript, 2),
         (StaticCheckScript, 1),
         (EmitReflexScript, 1),
         (EnvPreflightScript, 1),
         (AstScrubScript, 1),
         (SyncSyntheticScarsScript, 2),
+        (ImportSyntheticScarsScript, 2),
+        (WriteScarProbesScript, 2),
         (SignalTrapScript, 1),
         (ChangelogScript, 2),
         (PreToolGuardScript, 1),
