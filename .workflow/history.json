@@ -2765,5 +2765,24 @@
     "closes_issue": true,
     "tests_added": 0,
     "scars_earned": []
+  },
+  {
+    "id": "GH-271",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/271",
+    "title": "[BUG] WorkflowGatesScript._check_intake persists bare ticket_id instead of GH-<N> when TICKET=<N>",
+    "request": "Canonicalize bare numeric GitHub ticket identifiers (and #N, gh-N, local-N) before persisting .workflow/state/10_ticket.json and acquiring locks during WorkflowGatesScript._check_intake and _release_intake.",
+    "branch": "fix/271-canonicalize-intake-ticket-id",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-22T04:12:34Z",
+    "completed_at": "2026-11-22T05:57:02Z",
+    "commit_sha": "3152e1df45dc67a9f163e14e46ac94677f11cff5",
+    "pr_number": 282,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/282",
+    "closes_issue": true,
+    "tests_added": 11,
+    "scars_earned": []
   }
 ]
