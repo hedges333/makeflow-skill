@@ -2772,6 +2772,62 @@ def validate_tdd_guard_scar():
   return errors
 
 
+def check_ref14_basescript_ast_lint_note(ref14_text: str) -> list[str]:
+  """Verifies Reference 14 Section 4 documents ast-lint (SCAR-AST-01) compatibility in Simple English."""
+  if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+  from lib.scar_candidate import count_words_in_sentence, split_into_sentences
+
+  rel = "skills/makeflow/references/14_design_patterns_and_architecture.md"
+  errs: list[str] = []
+  sec4 = _extract_markdown_h2_section(
+      ref14_text, "## 4. Testable Object-Oriented Script Pattern"
+  )
+  if not sec4:
+    return [f"{rel} missing Section 4 'Testable Object-Oriented Script Pattern'"]
+
+  m_py = re.search(
+      r"(?ms)^#### 1\. Python \(`BaseScript`\)\s*\n(.*?)(?=^#### 2\.|\n## |\Z)",
+      sec4,
+  )
+  if not m_py:
+    return [f"{rel} Section 4 missing '#### 1. Python (`BaseScript`)' subsection"]
+
+  py_sub = m_py.group(1)
+  for tok in (
+      "self.stderr.write",
+      "except Exception as exc:",
+      "SCAR-AST-01",
+      "make -f .workflow/state/Makefile ast-lint",
+      "scripts/ast_scrub.py",
+  ):
+    if tok not in py_sub:
+      errs.append(f"{rel} Python BaseScript section must document '{tok}'")
+
+  prose_lines: list[str] = []
+  in_fence = False
+  for line in py_sub.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+      continue
+    if not in_fence and stripped:
+      prose_lines.append(stripped)
+
+  prose_text = "\n".join(prose_lines)
+  if not prose_text:
+    errs.append(f"{rel} Python BaseScript section missing Simple English ast-lint note")
+  else:
+    errs.extend(_check_section_simple_english(f"{rel} [Section 4 Python]", prose_text))
+    for sent in split_into_sentences(prose_text):
+      wc = count_words_in_sentence(sent)
+      if wc > 25:
+        errs.append(
+            f"{rel} [Section 4 Python] exceeds 25-word Simple English sentence ceiling ({wc} words): {sent}"
+        )
+  return errs
+
+
 def validate_ast_scrubber_scar_ast_01():
   """Validates structural AST scrubber gate and SCAR-AST-01 (GH-56)."""
   errors = []
@@ -2844,11 +2900,35 @@ def validate_ast_scrubber_scar_ast_01():
       gates_text = f.read()
     if "ast-lint:" not in gates_text:
       errors.append(f"{gates_rel} _init_makefile must include 'ast-lint:'")
-    for scan_dir in ("lib", "scripts", "mcp", "tests"):
-      if f"--src-dir {scan_dir} --strict" not in gates_text:
+    if "SRC_DIR ?=" not in gates_text:
+      errors.append(
+          f"{gates_rel} generate_state_makefile must declare 'SRC_DIR ?='"
+      )
+    if "ast-lint:" in gates_text:
+      ast_lint_gen_block = gates_text.split("ast-lint:", 1)[1].split("\n  )", 1)[0]
+      for required_tok in (
+          "--repo-root",
+          '--src-dir "$(SRC_DIR)"',
+          "--strict",
+      ):
+        if required_tok not in ast_lint_gen_block:
+          errors.append(
+              f"{gates_rel} generate_state_makefile ast-lint must include '{required_tok}'"
+          )
+    for legacy_dir in ("lib", "scripts", "mcp", "tests"):
+      if f"--src-dir {legacy_dir} --strict" in gates_text:
         errors.append(
-            f"{gates_rel} generate_state_makefile ast-lint must include '--src-dir {scan_dir} --strict'"
+            f"{gates_rel} generate_state_makefile ast-lint must not hardcode '--src-dir {legacy_dir} --strict'"
         )
+
+  ref14_rel = "skills/makeflow/references/14_design_patterns_and_architecture.md"
+  ref14_path = repo_path(ref14_rel)
+  if not os.path.exists(ref14_path):
+    errors.append(f"Missing {ref14_rel}")
+  else:
+    with open(ref14_path, "r", encoding="utf-8") as f:
+      ref14_text = f.read()
+    errors.extend(check_ref14_basescript_ast_lint_note(ref14_text))
 
   for script_rel in ("scripts/ast_scrub.py", "lib/ast_scrub.py", "tests/test_ast_scrub.py"):
     script_path = repo_path(script_rel)
@@ -9479,6 +9559,38 @@ class TestCrossAgentCompatibility(unittest.TestCase):
   def test_scar_arch_10_structured_data_invariants(self):
     """Verifies SCAR-ARCH-10 codification, routing, probe validation, and negative falsifications (GH-240)."""
     self.assertEqual(validate_scar_arch_10_structured_data(), [])
+
+  def test_ref14_basescript_ast_lint_note_simple_english_and_falsifications(self):
+    """Verifies Reference 14 Section 4 ast-lint note passes and rejects missing tokens or Simple English violations (GH-245)."""
+    ref14_path = repo_path("skills/makeflow/references/14_design_patterns_and_architecture.md")
+    with open(ref14_path, "r", encoding="utf-8") as f:
+      ref14_text = f.read()
+    self.assertEqual(check_ref14_basescript_ast_lint_note(ref14_text), [])
+
+    for missing_tok in ("SCAR-AST-01", "make -f .workflow/state/Makefile ast-lint", "scripts/ast_scrub.py"):
+      mut = ref14_text.replace(missing_tok, "REMOVED")
+      self.assertTrue(
+          check_ref14_basescript_ast_lint_note(mut),
+          f"Expected error when '{missing_tok}' is removed",
+      )
+
+    # Contraction, semicolon, em-dash, and >25 word sentence must fail
+    anchor = "#### 1. Python (`BaseScript`)\n"
+    for bad_note in (
+        "Don't inspect `ast_scrub.py` when running `make -f .workflow/state/Makefile ast-lint` for `SCAR-AST-01`.\n",
+        "Check `SCAR-AST-01`; run `make -f .workflow/state/Makefile ast-lint` without reading `ast_scrub.py`.\n",
+        "Check `SCAR-AST-01` \u2014 run `make -f .workflow/state/Makefile ast-lint` without reading `ast_scrub.py`.\n",
+        (
+            "This intentionally verbose sentence uses way too many words when explaining how "
+            "workers should execute the ast-lint target directly without inspecting ast_scrub.py "
+            "or violating Simple English word ceilings for SCAR-AST-01 compliance today.\n"
+        ),
+    ):
+      mut_bad = ref14_text.replace(anchor, anchor + bad_note, 1)
+      self.assertTrue(
+          check_ref14_basescript_ast_lint_note(mut_bad),
+          f"Expected Simple English rejection for: {bad_note!r}",
+      )
 
 
   def test_check_makefile_test_discovery_requires_single_active_command(self):

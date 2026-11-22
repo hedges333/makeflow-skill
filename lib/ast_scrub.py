@@ -32,6 +32,20 @@ _FIXED_TMP_SLASH_PREFIXES = ("/tmp/", "/var/tmp/")
 _FORBIDDEN_TEMPFILE_FUNCS = frozenset({"mkdtemp", "mkstemp", "mktemp"})
 _WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
 _PATH_MUTATION_METHODS = frozenset({"write_text", "write_bytes", "mkdir", "touch"})
+_SKIP_SCAN_DIRS = frozenset({
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".git",
+    ".tmp",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
+    ".workflow",
+})
 
 _COMMENT_EXEMPTION_RE = re.compile(
     r"#.*(?:pylint:\s*disable=(?:broad-except|bare-except)|noqa|ast-scrub:\s*(?:ignore|disable)|nosec)",
@@ -596,8 +610,36 @@ def scrub_file(filepath: str) -> List[Violation]:
   return scrub_source(content, filename=filepath)
 
 
+def _has_ignored_dir_segment(base_dir: str, target_path: str) -> bool:
+  """Returns True when target_path contains any ignored directory under base_dir.
+
+  Args:
+    base_dir: Base repository directory used to compute relative segments.
+    target_path: Candidate file or directory path to inspect.
+
+  Returns:
+    True if any relative path component belongs to ``_SKIP_SCAN_DIRS``.
+  """
+  rel = os.path.relpath(os.path.abspath(target_path), os.path.abspath(base_dir))
+  parts = [
+      part
+      for part in rel.replace(os.sep, "/").split("/")
+      if part not in ("", ".", "..")
+  ]
+  return any(part in _SKIP_SCAN_DIRS for part in parts)
+
+
 def get_git_modified_files(repo_root: str, src_dir: str) -> Optional[List[str]]:
-  """Discovers git modified or untracked Python files inside src_dir."""
+  """Discovers git modified or untracked Python files inside src_dir.
+
+  Args:
+    repo_root: Repository root directory path.
+    src_dir: Target directory path (absolute or relative to ``repo_root``).
+
+  Returns:
+    Sorted list of modified or untracked ``.py`` paths, or ``None`` when
+    ``repo_root`` is not a Git repository.
+  """
   abs_repo = os.path.abspath(repo_root)
   abs_src = os.path.abspath(src_dir if os.path.isabs(src_dir) else os.path.join(abs_repo, src_dir))
 
@@ -631,6 +673,8 @@ def get_git_modified_files(repo_root: str, src_dir: str) -> Optional[List[str]]:
             if os.path.isabs(path_part)
             else os.path.join(abs_repo, path_part)
         )
+        if _has_ignored_dir_segment(abs_repo, full_path):
+          continue
         if full_path.endswith(".py") and os.path.isfile(full_path):
           modified_files.add(os.path.abspath(full_path))
         elif os.path.isdir(full_path):
@@ -675,6 +719,8 @@ def get_git_modified_files(repo_root: str, src_dir: str) -> Optional[List[str]]:
           rel_file = rel_file.strip()
           if rel_file.endswith(".py"):
             full_path = os.path.abspath(os.path.join(abs_repo, rel_file))
+            if _has_ignored_dir_segment(abs_repo, full_path):
+              continue
             if os.path.isfile(full_path):
               modified_files.add(full_path)
   except (subprocess.SubprocessError, OSError):
@@ -684,10 +730,20 @@ def get_git_modified_files(repo_root: str, src_dir: str) -> Optional[List[str]]:
 
 
 def collect_python_files(src_dir: str) -> List[str]:
-  """Recursively collects Python files in src_dir skipping caches."""
+  """Recursively collects Python files in src_dir skipping caches and tooling dirs.
+
+  Args:
+    src_dir: Directory path to walk recursively.
+
+  Returns:
+    Sorted list of absolute paths to discovered ``.py`` files.
+  """
+  abs_src = os.path.abspath(src_dir)
+  if os.path.basename(abs_src) in _SKIP_SCAN_DIRS:
+    return []
   collected = []
-  for root, dirs, files in os.walk(src_dir):
-    dirs[:] = [d for d in dirs if d not in {".venv", "venv", "__pycache__", ".git", ".tmp"}]
+  for root, dirs, files in os.walk(abs_src):
+    dirs[:] = [d for d in dirs if d not in _SKIP_SCAN_DIRS]
     for fname in files:
       if fname.endswith(".py"):
         collected.append(os.path.abspath(os.path.join(root, fname)))
@@ -756,7 +812,28 @@ class AstScrubScript(BaseScript):
     self.all_files = parsed.all_files
     self.repo_root = os.path.abspath(parsed.repo_root)
 
+  def _resolve_directory_targets(self, src_abs: str) -> List[str]:
+    """Resolves Python target files inside src_abs via --all, Git diff, or walk.
+
+    Args:
+      src_abs: Absolute directory path to scan.
+
+    Returns:
+      List of absolute Python file paths to scrub.
+    """
+    if self.all_files:
+      return collect_python_files(src_abs)
+    git_files = get_git_modified_files(self.repo_root, src_abs)
+    if git_files is not None:
+      return git_files
+    return collect_python_files(src_abs)
+
   def run(self) -> int:
+    """Executes structural AST scrubbing over resolved file or directory targets.
+
+    Returns:
+      Zero when no violations are found, or ``REFLEX_EXIT_CODE`` on violations.
+    """
     targets: List[str] = []
 
     if self.files:
@@ -770,27 +847,9 @@ class AstScrubScript(BaseScript):
       src_abs = os.path.abspath(
           self.src_dir if os.path.isabs(self.src_dir) else os.path.join(self.repo_root, self.src_dir)
       )
-      if self.all_files:
-        targets = collect_python_files(src_abs)
-      else:
-        git_files = get_git_modified_files(self.repo_root, src_abs)
-        if git_files is not None:
-          targets = git_files
-        else:
-          targets = collect_python_files(src_abs)
+      targets = self._resolve_directory_targets(src_abs)
     else:
-      for subdir in DEFAULT_SCAN_DIRS:
-        src_abs = os.path.abspath(os.path.join(self.repo_root, subdir))
-        if not os.path.isdir(src_abs):
-          continue
-        if self.all_files:
-          targets.extend(collect_python_files(src_abs))
-        else:
-          git_files = get_git_modified_files(self.repo_root, src_abs)
-          if git_files is not None:
-            targets.extend(git_files)
-          else:
-            targets.extend(collect_python_files(src_abs))
+      targets = self._resolve_directory_targets(self.repo_root)
 
     all_violations: List[Violation] = []
     for target_path in targets:

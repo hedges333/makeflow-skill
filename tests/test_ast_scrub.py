@@ -16,6 +16,7 @@ Verifies AST scrubbing rules for:
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,8 @@ try:
       AstScrubScript,
       AstScrubberVisitor,
       Violation,
+      collect_python_files,
+      get_git_modified_files,
       scrub_file,
       scrub_source,
   )
@@ -43,6 +46,8 @@ except ImportError:
   AstScrubScript = None
   AstScrubberVisitor = None
   Violation = None
+  collect_python_files = None
+  get_git_modified_files = None
   scrub_file = None
   scrub_source = None
 
@@ -519,6 +524,348 @@ class TestAstScrubScriptLifecycle(unittest.TestCase):
       )
       self.assertEqual(code2, 2)
       self.assertIn("SILENT_EXCEPTION_HANDLER", err2.getvalue())
+
+
+class TestAstScrubConsumerLayouts(unittest.TestCase):
+  """Tests consumer-adaptive scanning, ignored tooling dirs, and Reference 14 snippet (GH-245)."""
+
+  def setUp(self):
+    if ast_scrub is None:
+      self.skipTest("ast_scrub not implemented yet")
+
+  @staticmethod
+  def _init_git_repo(repo_dir: str) -> None:
+    subprocess.run(
+        ["git", "init", "-q"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Makeflow Test"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-M", "main"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+  @staticmethod
+  def _write_file(path: str, content: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+      f.write(content)
+
+  def test_consumer_layout_src_app_and_root_without_mcp_non_git(self):
+    """Non-Git consumer repo with src/, app/, and root .py (no mcp/) scans all 3 files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._write_file(
+          os.path.join(tmpdir, "src", "service.py"),
+          "def ok() -> int:\n    return 1\n",
+      )
+      self._write_file(
+          os.path.join(tmpdir, "app", "routes.py"),
+          "def route() -> str:\n    return 'ok'\n",
+      )
+      self._write_file(
+          os.path.join(tmpdir, "manage.py"),
+          "def main() -> int:\n    return 0\n",
+      )
+
+      out = io.StringIO()
+      err = io.StringIO()
+      code = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 0, err.getvalue())
+      self.assertIn("scanned 3 files", out.getvalue())
+
+      # Violation inside src/ fails with exit 2
+      self._write_file(
+          os.path.join(tmpdir, "src", "service.py"),
+          "def bad():\n    try:\n        run()\n    except Exception:\n        pass\n",
+      )
+      out_src = io.StringIO()
+      err_src = io.StringIO()
+      code_src = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out_src,
+          stderr=err_src,
+      )
+      self.assertEqual(code_src, 2)
+      self.assertIn("SILENT_EXCEPTION_HANDLER", err_src.getvalue())
+
+      # Restore src/service.py and place violation in root manage.py
+      self._write_file(
+          os.path.join(tmpdir, "src", "service.py"),
+          "def ok() -> int:\n    return 1\n",
+      )
+      self._write_file(
+          os.path.join(tmpdir, "manage.py"),
+          "def bad_root():\n    try:\n        run()\n    except Exception:\n        return None\n",
+      )
+      out_root = io.StringIO()
+      err_root = io.StringIO()
+      code_root = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out_root,
+          stderr=err_root,
+      )
+      self.assertEqual(code_root, 2)
+      self.assertIn("TRIVIAL_FALLBACK_RETURN", err_root.getvalue())
+
+  def test_consumer_git_repo_detects_branch_src_and_modified_root_without_mcp(self):
+    """Git consumer repo without mcp/ detects branch-committed src/ and root .py changes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_git_repo(tmpdir)
+      self._write_file(
+          os.path.join(tmpdir, "src", "api.py"),
+          "def ok() -> int:\n    return 1\n",
+      )
+      self._write_file(
+          os.path.join(tmpdir, "app", "models.py"),
+          "class Item:\n    pass\n",
+      )
+      self._write_file(
+          os.path.join(tmpdir, "cli.py"),
+          "def main() -> int:\n    return 0\n",
+      )
+      subprocess.run(
+          ["git", "add", "."],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: initial consumer app"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      subprocess.run(
+          ["git", "checkout", "-q", "-b", "feat/consumer-change"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      self._write_file(
+          os.path.join(tmpdir, "src", "api.py"),
+          "def broken():\n    try:\n        call()\n    except:\n        pass\n",
+      )
+      subprocess.run(
+          ["git", "add", "src/api.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "feat: break src/api.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      out = io.StringIO()
+      err = io.StringIO()
+      code = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 2)
+      self.assertIn("SILENT_EXCEPTION_HANDLER", err.getvalue())
+
+      # Fix src/api.py and modify root cli.py in working tree
+      self._write_file(
+          os.path.join(tmpdir, "src", "api.py"),
+          "def ok() -> int:\n    return 2\n",
+      )
+      subprocess.run(
+          ["git", "add", "src/api.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "fix: repair src/api.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      self._write_file(
+          os.path.join(tmpdir, "cli.py"),
+          "def bad_cli():\n    try:\n        run()\n    except Exception:\n        return {}\n",
+      )
+
+      out2 = io.StringIO()
+      err2 = io.StringIO()
+      code2 = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out2,
+          stderr=err2,
+      )
+      self.assertEqual(code2, 2)
+      self.assertIn("TRIVIAL_FALLBACK_RETURN", err2.getvalue())
+
+  def test_collect_and_git_modified_skip_venv_workflow_and_cache_dirs(self):
+    """Ignored tooling dirs (.venv, .workflow, caches) are skipped directly and in Git scans."""
+    ignored_dirs = (
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".git",
+        ".tmp",
+        ".tox",
+        ".nox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "node_modules",
+        ".workflow",
+    )
+    bad_py = "def bad():\n    try:\n        run()\n    except:\n        pass\n"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_git_repo(tmpdir)
+      clean_src = os.path.abspath(os.path.join(tmpdir, "src", "clean.py"))
+      self._write_file(clean_src, "def clean() -> int:\n    return 1\n")
+      subprocess.run(
+          ["git", "add", "src/clean.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: seed clean src"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      for dname in ignored_dirs:
+        if dname == ".git":
+          self._write_file(os.path.join(tmpdir, ".git", "hooks_helper.py"), bad_py)
+        else:
+          self._write_file(os.path.join(tmpdir, dname, "nested", "bad.py"), bad_py)
+
+      # Direct collect_python_files on root skips all ignored dirs
+      self.assertEqual(collect_python_files(tmpdir), [clean_src])
+
+      # Direct collect_python_files when ignored directory path itself is passed
+      for direct_skip in (".venv", ".workflow", "node_modules", ".pytest_cache"):
+        dpath = os.path.join(tmpdir, direct_skip)
+        self.assertEqual(collect_python_files(dpath), [])
+        self.assertEqual(collect_python_files(dpath + os.sep), [])
+
+      # Force git status --porcelain to emit nested untracked paths inside .venv/.workflow
+      self._write_file(os.path.join(tmpdir, ".venv", ".keep"), "")
+      self._write_file(os.path.join(tmpdir, ".workflow", ".keep"), "")
+      subprocess.run(
+          ["git", "add", "-f", ".venv/.keep", ".workflow/.keep"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      self._write_file(os.path.join(tmpdir, "src", "clean.py"), "def clean() -> int:\n    return 2\n")
+
+      git_targets = get_git_modified_files(tmpdir, tmpdir)
+      self.assertEqual(git_targets, [clean_src])
+
+      out = io.StringIO()
+      err = io.StringIO()
+      code = AstScrubScript().execute(
+          args=["--repo-root", tmpdir, "--strict"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(code, 0, err.getvalue())
+      self.assertIn("scanned 1 files", out.getvalue())
+
+  def test_non_python_repo_returns_exit_zero(self):
+    """Non-Python repositories (with or without .git) pass ast-lint cleanly with exit 0."""
+    for with_git in (False, True):
+      with self.subTest(with_git=with_git):
+        with tempfile.TemporaryDirectory() as tmpdir:
+          if with_git:
+            self._init_git_repo(tmpdir)
+          self._write_file(os.path.join(tmpdir, "README.md"), "# JS Project\n")
+          self._write_file(os.path.join(tmpdir, "src", "index.js"), "console.log(1);\n")
+          self._write_file(
+              os.path.join(tmpdir, "node_modules", "pkg", "bad.py"),
+              "try:\n    x()\nexcept:\n    pass\n",
+          )
+          if with_git:
+            subprocess.run(
+                ["git", "add", "README.md", "src/index.js"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "chore: js seed"],
+                cwd=tmpdir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self._write_file(os.path.join(tmpdir, "src", "index.js"), "console.log(2);\n")
+
+          out = io.StringIO()
+          err = io.StringIO()
+          code = AstScrubScript().execute(
+              args=["--repo-root", tmpdir, "--strict"],
+              stdout=out,
+              stderr=err,
+          )
+          self.assertEqual(code, 0, err.getvalue())
+          self.assertEqual(err.getvalue(), "")
+          self.assertEqual(out.getvalue(), "")
+
+  def test_reference_14_basescript_python_snippet_passes_ast_scrub(self):
+    """Reference 14 Python BaseScript example passes scrub_source with zero violations."""
+    ref14_path = os.path.join(
+        _REPO_ROOT, "skills", "makeflow", "references", "14_design_patterns_and_architecture.md"
+    )
+    with open(ref14_path, "r", encoding="utf-8") as f:
+      ref14_text = f.read()
+    match = re.search(
+        r"#### 1\. Python \(`BaseScript`\)\s*```python\n(.*?)\n```",
+        ref14_text,
+        re.DOTALL,
+    )
+    self.assertIsNotNone(match, "Missing Python BaseScript snippet in Reference 14")
+    snippet = match.group(1)
+    self.assertIn("self.stderr.write", snippet)
+    violations = scrub_source(snippet, filename="lib/base_script_example.py")
+    self.assertEqual(violations, [])
 
 
 class TestAstScrubSubprocessCli(unittest.TestCase):

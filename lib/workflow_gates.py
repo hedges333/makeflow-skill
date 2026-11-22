@@ -436,7 +436,14 @@ def _workflow_target_recipes(gates_script: str, quoted_root: str) -> str:
 
 
 def generate_state_makefile(repo_root: str) -> str:
-  """Returns the canonical content of .workflow/state/Makefile for repo_root."""
+  """Returns the canonical content of .workflow/state/Makefile for repo_root.
+
+  Args:
+    repo_root: Workspace repository root directory.
+
+  Returns:
+    Synthesized GNU Makefile contents for workflow gates and ``ast-lint``.
+  """
   abs_root = os.path.abspath(repo_root)
   gates_script = shlex.quote(
       os.path.abspath(os.path.join(_SCRIPTS_DIR, "workflow_gates.py"))
@@ -481,6 +488,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "TREE_LIMIT ?=\n"
       "NO_LIMIT ?=\n"
       "COUNT_ONLY ?=\n"
+      "SRC_DIR ?=\n"
       "export TICKET ALLOW_BLOCKED FROM TO APPROVED BLOCKERS ALLOW_MAIN_CONFLICT NO_FETCH TRANSCRIPT FILE\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n"
       "export REGRESSION_CMD SUBPROJECT\n"
@@ -510,10 +518,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "verify-citation:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} verify-citation --make-env\n\n"
       "ast-lint:\n"
-      f"\t@$(PYTHON) {scrub_script} --src-dir lib --strict\n"
-      f"\t@$(PYTHON) {scrub_script} --src-dir scripts --strict\n"
-      f"\t@$(PYTHON) {scrub_script} --src-dir mcp --strict\n"
-      f"\t@$(PYTHON) {scrub_script} --src-dir tests --strict\n"
+      f'\t@$(PYTHON) {scrub_script} --repo-root {quoted_root}$(if $(SRC_DIR), --src-dir "$(SRC_DIR)",) --strict\n'
   )
 
 
