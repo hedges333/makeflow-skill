@@ -2886,5 +2886,26 @@
     "closes_issue": true,
     "tests_added": 25,
     "scars_earned": []
+  },
+  {
+    "id": "GH-204",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/204",
+    "title": "[REFACTOR] Refactor scripts/pre_tool_guard.py into BaseScript subclass in lib/pre_tool_guard.py (SCAR-ARCH-05)",
+    "request": "Add optional stdin stream injection to BaseScript in lib/base_script.py, extract PreToolUse guard logic into PreToolGuardScript in lib/pre_tool_guard.py without a shebang, reduce scripts/pre_tool_guard.py to a thin SCAR-ARCH-05 wrapper preserving backward-compatible re-exports, add lib/pre_tool_guard.py to GOVERNANCE_FILE_RELPATHS, update rules/AGENTS.md Section 1.12 and tests/test_cross_agent_compatibility.py, and add 8 hermetic in-memory unit tests across tests/test_base_script.py and tests/test_pre_tool_guard.py.",
+    "branch": "feat/204-refactor-pre-tool-guard",
+    "subprojects": [
+      "lib",
+      "rules",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-22T07:18:00Z",
+    "completed_at": "2026-11-22T18:38:10Z",
+    "commit_sha": "e07f649a195ee215b287fd4dda1fd72bb169023c",
+    "pr_number": 289,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/289",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": []
   }
 ]
