@@ -2826,5 +2826,25 @@
     "closes_issue": true,
     "tests_added": 27,
     "scars_earned": []
+  },
+  {
+    "id": "GH-242",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/242",
+    "title": "[BUG] tdd_guard.py compute_toolchain_hash collides with consumer-project lib/base_script.py (SCAR-TEST-12 false positive)",
+    "request": "Update lib/tdd_guard.py so external consumer repositories hash CORE_GOVERNANCE_FILES from _DEFAULT_REPO_ROOT and skip consumer git diff governance checks while anchoring Makeflow plugin repos to live markers and immutable sealed_head commit trees; scope scripts/pre_tool_guard.py shell self-modification guards to Makeflow plugin roots, plugin caches, and universal .workflow/state files and directories; add 16 hermetic tests across tests/test_tdd_guard.py and tests/test_pre_tool_guard.py.",
+    "branch": "fix/242-tdd-guard-toolchain-hash",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-22T04:12:02Z",
+    "completed_at": "2026-11-22T06:55:27Z",
+    "commit_sha": "7dba669e40f2854a7c122bec5ed2955a3dc1fb40",
+    "pr_number": 285,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/285",
+    "closes_issue": true,
+    "tests_added": 16,
+    "scars_earned": []
   }
 ]
