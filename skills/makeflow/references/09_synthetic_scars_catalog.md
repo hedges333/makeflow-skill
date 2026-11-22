@@ -26,7 +26,7 @@ references/
 └── polyglot/                        <-- Language Spokes (Domain-Specific)
     ├── dart_flutter.md              <-- Dart and Flutter Stack Guide
     ├── python.md                    <-- Python Stack Guide
-    ├── typescript_node.md           <-- TypeScript and Node Stack Guide
+    ├── typescript_javascript.md     <-- TypeScript and JavaScript Stack Guide
     └── ... (27 languages)
 ```
 
@@ -166,6 +166,7 @@ Use `workflow_query_scars` or `scripts/sync_synthetic_scars.py` to filter scars 
 5. `diagnosticCode` (`--diagnostic-code`): Filter by compiler, signal, or runtime code (for example `StateError`, `UNDEFINED_GETTER`, or `SIGTERM`).
 6. `workflowPhase` (`--workflow-phase`): Filter by canonical target phase label (for example `Target 20: plan` or `Target 30: tdd`).
 7. `mfTarget` (`--mf-target`): Filter by integer Makeflow target binding stored in `mf_targets` (for example `15`, `20`, `30`, or `40`).
+8. `excludeCategories`: Exclude a list of category codes, prose aliases, or `"WORKFLOW"` to omit workflow governance tags during universal queries.
 
 ### 4.2 Reference Ontology
 
@@ -201,3 +202,13 @@ python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_reg
 ```
 
 Pass `--no-fetch` to transform existing incomplete rows offline. Run `--migrate-ontology` or `make migrate-scars-ontology` to upgrade legacy SQLite schemas losslessly. Run `make enrich-scars` or `python3 scripts/sync_synthetic_scars.py --enrich` to refresh metadata and `scars_fts`.
+
+### 4.5 Two-Query MCP Playbook
+
+Language filters match exact language tags and omit universal scars.
+Run two bounded `workflow_query_scars` calls at Target 15, Target 20, and Target 30 to cover both stacks:
+
+1. Query language and framework scars with `workflowPhase`, `language: "<lang>"`, optional `framework`, and `limit: 5`.
+2. Query universal software-development scars with `workflowPhase`, `language: "universal"`, `excludeCategories: ["WORKFLOW"]`, optional domain `category`, and `limit: 5`.
+3. Pass `refreshLoaded: true` inside fresh isolated subagents (`tdd-worker` and `adversarial-critic`) so prior session lookups do not strip scar fields.
+4. Always inspect `09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`, and `.workflow/scars/` alongside SQLite queries so Tier 1 and Tier 2 markdown scars stay active.

@@ -26,6 +26,7 @@ from lib.scar_ontology import (
     normalize_domain_category,
     parse_upstream_targets,
     resolve_category_filter_tokens,
+    resolve_excluded_category_tokens,
 )
 from lib.ticket_state import TicketStateStore
 
@@ -1070,10 +1071,13 @@ def _query_single_scars_db(
     diagnostic_code: Optional[str] = None,
     workflow_phase: Optional[str] = None,
     mf_target: Optional[int] = None,
+    exclude_categories: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
   """Queries a single SQLite scars database for processed scars only."""
   if not db_path or not os.path.isfile(db_path):
     return []
+
+  excluded_tokens = resolve_excluded_category_tokens(exclude_categories)
 
   conn = None
   try:
@@ -1161,6 +1165,16 @@ def _query_single_scars_db(
         else:
           sql_out += "AND (LOWER(s.category) = LOWER(?) OR LOWER(s.category_slug) = LOWER(?)) "
           params_list.extend([category.strip(), category.strip()])
+
+      if excluded_tokens:
+        ex_placeholders = ", ".join(["?"] * len(excluded_tokens))
+        lowered_excluded = [tok.lower() for tok in excluded_tokens]
+        sql_out += (
+            f"AND LOWER(COALESCE(s.category, '')) NOT IN ({ex_placeholders}) "
+            f"AND LOWER(COALESCE(s.category_slug, '')) NOT IN ({ex_placeholders}) "
+        )
+        params_list.extend(lowered_excluded)
+        params_list.extend(lowered_excluded)
 
       if language and language.strip():
         lang_clean = language.strip().lower()
@@ -1312,15 +1326,19 @@ def _query_single_scars_db(
     query_tokens = [
         tok.strip().lower() for tok in query_str.split() if tok.strip()
     ]
-    has_any_filter = mf_target is not None or any(
-        bool(f and str(f).strip())
-        for f in (
-            category,
-            language,
-            source,
-            framework,
-            diagnostic_code,
-            workflow_phase,
+    has_any_filter = (
+        mf_target is not None
+        or bool(excluded_tokens)
+        or any(
+            bool(f and str(f).strip())
+            for f in (
+                category,
+                language,
+                source,
+                framework,
+                diagnostic_code,
+                workflow_phase,
+            )
         )
     )
     if not query_tokens and not has_any_filter:
@@ -1401,11 +1419,29 @@ def query_scars(
     diagnostic_code: Optional[str] = None,
     workflow_phase: Optional[str] = None,
     mf_target: Optional[int] = None,
+    exclude_categories: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
   """Queries one or more stacked SQLite scars databases in precedence order.
 
   Returns only processed scars (non-empty wound, trap, reflex, socratic_probe)
   and deduplicates across databases by id, ss_id, and original_id.
+
+  Args:
+    db_path: Single database file path or sequence of stacked paths.
+    query: Optional keyword or scar ID search string.
+    category: Optional category code or prose alias filter.
+    language: Optional normalized language tag filter.
+    limit: Maximum number of matching scars to return.
+    source: Optional source filter (``makeflow`` or ``upstream``).
+    framework: Optional framework or library filter.
+    diagnostic_code: Optional compiler or runtime diagnostic code filter.
+    workflow_phase: Optional workflow phase label filter.
+    mf_target: Optional Makeflow integer target filter.
+    exclude_categories: Optional iterable of category codes, prose aliases, or
+      ``WORKFLOW`` to exclude from results.
+
+  Returns:
+    List of structured scar dictionaries up to ``limit``.
   """
   if not db_path:
     return []
@@ -1414,6 +1450,7 @@ def query_scars(
   else:
     paths = [str(p) for p in db_path if p]
 
+  resolved_excluded = resolve_excluded_category_tokens(exclude_categories)
   eff_limit = max(1, limit)
   combined: List[Dict[str, Any]] = []
   seen_makeflow_keys: Set[str] = set()
@@ -1435,6 +1472,7 @@ def query_scars(
         diagnostic_code=diagnostic_code,
         workflow_phase=workflow_phase,
         mf_target=mf_target,
+        exclude_categories=resolved_excluded,
     )
     current_makeflow_ids: Set[str] = set()
     current_upstream_ids: Set[str] = set()

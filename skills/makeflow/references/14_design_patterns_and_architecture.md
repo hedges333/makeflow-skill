@@ -1,6 +1,6 @@
 # 14. Design Patterns, Data Access, and Game Architecture
 
-This manual defines object-oriented patterns, data access trade-offs, and game engineering patterns for Target 30 implementation and Target 40 review.
+This manual defines object-oriented patterns, module cohesion boundaries, data access trade-offs, and game engineering patterns. Apply it during Target 15 archaeology, Target 20 planning, Target 30 implementation, and Target 40 review.
 
 ## 1. Balancing Encapsulation and Speed
 
@@ -240,3 +240,16 @@ abstract class BaseScript {
   }
 }
 ```
+
+---
+
+## 5. Module Size and Cohesion Boundaries
+
+Cohesion means grouping closely related responsibilities inside one focused module.
+Plan module decomposition during Target 15 archaeology and Target 20 planning instead of refactoring bloated files late.
+
+1. Keep each new module focused on one domain responsibility with a clear public interface.
+2. Place reusable logic in library layers, thin wrappers in entrypoints, and suites in tests (`SCAR-ARCH-08`).
+3. If a new module mixes unrelated concerns or grows hard to scan, split it into cohesive collaborators.
+4. Avoid speculative base classes and pass-through wrappers that add zero validation or transformation.
+5. If an existing module is oversized, keep edits scoped and flag structural debt at Target 20 (`SCAR-ARCH-08`).

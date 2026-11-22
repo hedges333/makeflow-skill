@@ -11180,5 +11180,637 @@ class TestTempDirTestIsolationInvariants(unittest.TestCase):
     )
 
 
+EARLY_DESIGN_AND_SCAR_FILES = (
+    "skills/makeflow/SKILL.md",
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/14_design_patterns_and_architecture.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "skills/makeflow/references/08_subagent_orchestration.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "agents/archaeology-worker.md",
+    "agents/tdd-worker.md",
+    "rules/AGENTS.md",
+)
+
+
+def _extract_markdown_h3_section(text: str, heading_prefix: str) -> str:
+  """Extracts an H3 section up to the next H2/H3 heading or horizontal rule."""
+  captured: list[str] = []
+  in_section = False
+  in_fence = False
+  target_lower = heading_prefix.lower()
+  for raw_line in text.splitlines():
+    stripped = raw_line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+    if not in_fence:
+      if in_section and (
+          stripped.startswith("## ")
+          or stripped.startswith("### ")
+          or stripped == "---"
+      ):
+        break
+      if (
+          not in_section
+          and stripped.startswith("### ")
+          and stripped.lower().startswith(target_lower)
+      ):
+        in_section = True
+        captured.append(raw_line)
+        continue
+    if in_section:
+      captured.append(raw_line)
+  return "\n".join(captured)
+
+
+def _extract_agent_frontmatter_tools(text: str) -> tuple[str, str]:
+  """Splits YAML frontmatter from agent markdown body."""
+  match = re.match(r"^---\n([\s\S]*?)\n---\n([\s\S]*)$", text)
+  if not match:
+    return "", text
+  return match.group(1), match.group(2)
+
+
+def _check_section_simple_english(label: str, text: str) -> list[str]:
+  """Checks zero contractions, semicolons, and em-dashes in prose outside code spans."""
+  from lib.scar_candidate import _CONTRACTION_RE
+
+  errs = _check_prose_punctuation(label, text)
+  in_fence = False
+  for idx, raw_line in enumerate(text.splitlines(), start=1):
+    stripped = raw_line.strip()
+    if stripped.startswith("```"):
+      in_fence = not in_fence
+      continue
+    if in_fence or not stripped or stripped.startswith("#"):
+      continue
+    scrubbed = re.sub(r"`[^`]*`", "", stripped)
+    contraction = _CONTRACTION_RE.search(scrubbed)
+    if contraction:
+      errs.append(
+          f"{label}:{idx} contains forbidden contraction '{contraction.group(0)}' in prose"
+      )
+    if stripped.startswith("|"):
+      if ";" in scrubbed:
+        errs.append(f"{label}:{idx} contains forbidden semicolon (';') in table prose")
+      if "\u2014" in scrubbed:
+        errs.append(f"{label}:{idx} contains forbidden em-dash ('—') in table prose")
+  return errs
+
+
+def check_early_design_and_scar_contract(
+    files_by_relpath: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-252 Target 15/20/30 OO patterns, cohesion, TDD, and two-query scar contracts."""
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if files_by_relpath is not None:
+    files_map = dict(files_by_relpath)
+  else:
+    for rel in EARLY_DESIGN_AND_SCAR_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in EARLY_DESIGN_AND_SCAR_FILES:
+    if rel not in files_map and f"Missing {rel}" not in errs:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. skills/makeflow/SKILL.md: byte cap + anchored Target 15, Target 20, Target 30 sections
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  if len(skill_text.encode("utf-8")) > 24576:
+    errs.append(
+        f"{skill_rel} exceeds 24,576-byte budget ({len(skill_text.encode('utf-8'))} bytes)"
+    )
+
+  t15_sec = _extract_markdown_h3_section(skill_text, "### Target 15:")
+  if not t15_sec:
+    errs.append(f"{skill_rel} missing '### Target 15:' section")
+  else:
+    for tok in (
+        "references/14",
+        "references/09",
+        "references/08",
+        "cohesion",
+        "workflow_query_scars",
+        "universal",
+        "excludeCategories",
+        "WORKFLOW",
+    ):
+      if tok.lower() not in t15_sec.lower():
+        errs.append(f"{skill_rel} Target 15 must document '{tok}'")
+    if "oo " not in t15_sec.lower() and "design pattern" not in t15_sec.lower():
+      errs.append(f"{skill_rel} Target 15 must require OO or design pattern discovery")
+    errs.extend(_check_section_simple_english(f"{skill_rel} [Target 15]", t15_sec))
+
+  t20_sec = _extract_markdown_h3_section(skill_text, "### Target 20:")
+  if not t20_sec:
+    errs.append(f"{skill_rel} missing '### Target 20:' section")
+  else:
+    for tok in (
+        "references/14",
+        "references/03",
+        "references/04_testing_isolation.md",
+        "references/09",
+        "cohesion",
+        "red-green",
+        "workflow_query_scars",
+        'workflowPhase: "Target 20: plan"',
+        "universal",
+        "excludeCategories",
+        "WORKFLOW",
+        "socratic probe",
+    ):
+      if tok.lower() not in t20_sec.lower():
+        errs.append(f"{skill_rel} Target 20 must document '{tok}'")
+    if "oo " not in t20_sec.lower() and "design pattern" not in t20_sec.lower():
+      errs.append(f"{skill_rel} Target 20 must require OO or design pattern evaluation")
+    errs.extend(_check_section_simple_english(f"{skill_rel} [Target 20]", t20_sec))
+
+  t30_sec = _extract_markdown_h3_section(skill_text, "### Target 30:")
+  if not t30_sec:
+    errs.append(f"{skill_rel} missing '### Target 30:' section")
+  else:
+    for tok in (
+        "references/03",
+        "references/04_testing_isolation.md",
+        "references/08",
+        "references/09",
+        "references/10",
+        "references/14",
+        "20_plan.md",
+        "workflow_query_scars",
+        'workflowPhase: "Target 30: tdd"',
+        "excludeCategories",
+        "WORKFLOW",
+        "refreshLoaded: true",
+    ):
+      if tok.lower() not in t30_sec.lower():
+        errs.append(f"{skill_rel} Target 30 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{skill_rel} [Target 30]", t30_sec))
+
+  # 2. skills/makeflow/references/02_archaeology_and_planning.md
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  r02_sec1 = _extract_markdown_h2_section(r02_text, "## 1. Target 15")
+  if not r02_sec1:
+    errs.append(f"{r02_rel} missing '## 1. Target 15' section")
+  else:
+    for tok in (
+        "14_design_patterns_and_architecture.md",
+        "09_synthetic_scars_catalog.md",
+        "04_testing_isolation.md",
+        "10_security_and_data_isolation.md",
+        "11_polyglot_monorepos.md",
+        "cohesion",
+        "skills/makeflow/references/",
+        "workflow_query_scars",
+        'workflowPhase: "Target 15: archaeology"',
+        'language: "universal"',
+        'excludeCategories: ["WORKFLOW"]',
+        "limit: 5",
+    ):
+      if tok not in r02_sec1:
+        errs.append(f"{r02_rel} Section 1 must document '{tok}'")
+    if "oo " not in r02_sec1.lower() and "object-oriented" not in r02_sec1.lower():
+      errs.append(f"{r02_rel} Section 1 must require auditing sibling OO patterns")
+    errs.extend(_check_section_simple_english(f"{r02_rel} [Section 1]", r02_sec1))
+
+  r02_s21 = _extract_markdown_h3_section(
+      r02_text, "### 2.1 Socratic Pre-Planning Deliberation"
+  )
+  if not r02_s21:
+    errs.append(f"{r02_rel} missing '### 2.1 Socratic Pre-Planning Deliberation'")
+  else:
+    for tok in (
+        "14_design_patterns_and_architecture.md",
+        "03_tdd_and_code_quality.md",
+        "04_testing_isolation.md",
+        "Red-Green-Refactor",
+        "cohesion",
+        "skills/makeflow/references/",
+        'workflowPhase: "Target 20: plan"',
+        'language: "universal"',
+        'excludeCategories: ["WORKFLOW"]',
+    ):
+      if tok not in r02_s21:
+        errs.append(f"{r02_rel} Section 2.1 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{r02_rel} [Section 2.1]", r02_s21))
+
+  r02_s22 = _extract_markdown_h3_section(
+      r02_text, "### 2.2 Socratic Invariant Audit Table"
+  )
+  if not r02_s22:
+    errs.append(f"{r02_rel} missing '### 2.2 Socratic Invariant Audit Table'")
+  else:
+    for row_tok in (
+        "| **Red-Green-Refactor TDD Methodology** |",
+        "| **OO Design Patterns and Module Cohesion** |",
+        "| **Available Reference Manuals and Scar Carry-Forward** |",
+    ):
+      if row_tok not in r02_s22:
+        errs.append(
+            f"{r02_rel} Section 2.2 Socratic Invariant Audit Table missing row '{row_tok}'"
+        )
+    errs.extend(_check_section_simple_english(f"{r02_rel} [Section 2.2]", r02_s22))
+
+  r02_s23 = _extract_markdown_h3_section(r02_text, "### 2.3 Required Plan Disclosures")
+  if not r02_s23:
+    errs.append(f"{r02_rel} missing '### 2.3 Required Plan Disclosures'")
+  else:
+    if "seven items" in r02_s23.lower():
+      errs.append(f"{r02_rel} Section 2.3 must fix stale 'seven items' count")
+    for tok in (
+        "14_design_patterns_and_architecture.md",
+        "03_tdd_and_code_quality.md",
+        "04_testing_isolation.md",
+        "Red-Green-Refactor",
+        "cohesion",
+        "Socratic probes",
+        "tdd-worker",
+        "20_plan.md",
+    ):
+      if tok not in r02_s23:
+        errs.append(f"{r02_rel} Section 2.3 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{r02_rel} [Section 2.3]", r02_s23))
+
+  # 3. skills/makeflow/references/14_design_patterns_and_architecture.md
+  r14_rel = "skills/makeflow/references/14_design_patterns_and_architecture.md"
+  r14_text = files_map[r14_rel]
+  r14_header = r14_text.split("\n## ", 1)[0]
+  for phase_tok in ("Target 15", "Target 20", "Target 30", "Target 40"):
+    if phase_tok not in r14_header:
+      errs.append(f"{r14_rel} scope header must cover '{phase_tok}'")
+  if "for Target 30 implementation and Target 40 review" in r14_header:
+    errs.append(
+        f"{r14_rel} scope header must not restrict scope to Target 30 and Target 40"
+    )
+  errs.extend(_check_section_simple_english(f"{r14_rel} [Header]", r14_header))
+
+  r14_cohesion = _extract_markdown_h2_section(
+      r14_text, "Module Size and Cohesion Boundaries"
+  )
+  if not r14_cohesion:
+    errs.append(
+        f"{r14_rel} missing '## ... Module Size and Cohesion Boundaries' section"
+    )
+  else:
+    for tok in ("cohesion", "SCAR-ARCH-08", "decomposition"):
+      if tok.lower() not in r14_cohesion.lower():
+        errs.append(f"{r14_rel} Module Size and Cohesion section must document '{tok}'")
+    errs.extend(
+        _check_section_simple_english(f"{r14_rel} [Cohesion]", r14_cohesion)
+    )
+
+  # 4. skills/makeflow/references/03_tdd_and_code_quality.md
+  r03_rel = "skills/makeflow/references/03_tdd_and_code_quality.md"
+  r03_sec1 = _extract_markdown_h2_section(
+      files_map[r03_rel], "## 1. Review Before Edit"
+  )
+  if not r03_sec1:
+    errs.append(f"{r03_rel} missing '## 1. Review Before Edit' section")
+  else:
+    for tok in (
+        "20_plan.md",
+        "04_testing_isolation.md",
+        "09_synthetic_scars_catalog.md",
+        "10_security_and_data_isolation.md",
+        "14_design_patterns_and_architecture.md",
+        "cohesion",
+        'workflowPhase: "Target 30: tdd"',
+        'language: "universal"',
+        'excludeCategories: ["WORKFLOW"]',
+        "refreshLoaded: true",
+    ):
+      if tok not in r03_sec1:
+        errs.append(f"{r03_rel} Section 1 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{r03_rel} [Section 1]", r03_sec1))
+
+  # 5. skills/makeflow/references/08_subagent_orchestration.md
+  r08_rel = "skills/makeflow/references/08_subagent_orchestration.md"
+  r08_sec5 = _extract_markdown_h2_section(
+      files_map[r08_rel], "## 5. Socratic Subagent Delegation Protocol"
+  )
+  if not r08_sec5:
+    errs.append(f"{r08_rel} missing '## 5. Socratic Subagent Delegation Protocol'")
+  else:
+    m_aw = re.search(
+        r"(?ms)^1\.\s+\*\*`archaeology-worker`.*?(?=^2\.\s+\*\*`tdd-worker`|\Z)",
+        r08_sec5,
+    )
+    if not m_aw:
+      errs.append(f"{r08_rel} Section 5 missing item 1 for archaeology-worker")
+    else:
+      aw_dispatch = m_aw.group(0)
+      for tok in (
+          "SCAR-PROC-105",
+          "skills/makeflow/references/02_archaeology_and_planning.md",
+          "skills/makeflow/references/14_design_patterns_and_architecture.md",
+          "skills/makeflow/references/09_synthetic_scars_catalog.md",
+          "skills/makeflow/references/11_polyglot_monorepos.md",
+          'excludeCategories: ["WORKFLOW"]',
+      ):
+        if tok not in aw_dispatch:
+          errs.append(
+              f"{r08_rel} Section 5 archaeology-worker dispatch must anchor '{tok}'"
+          )
+
+    m_tdd = re.search(
+        r"(?ms)^2\.\s+\*\*`tdd-worker`.*?(?=^3\.\s+\*\*`adversarial-critic`|\Z)",
+        r08_sec5,
+    )
+    if not m_tdd:
+      errs.append(f"{r08_rel} Section 5 missing item 2 for tdd-worker")
+    else:
+      tdd_dispatch = m_tdd.group(0)
+      for tok in (
+          "SCAR-PROC-105",
+          "20_plan.md",
+          "skills/makeflow/references/03_tdd_and_code_quality.md",
+          "skills/makeflow/references/04_testing_isolation.md",
+          "skills/makeflow/references/14_design_patterns_and_architecture.md",
+          "skills/makeflow/references/09_synthetic_scars_catalog.md",
+          "skills/makeflow/references/polyglot/<lang>.md",
+          "Socratic probes",
+          'excludeCategories: ["WORKFLOW"]',
+          "refreshLoaded: true",
+      ):
+        if tok not in tdd_dispatch:
+          errs.append(
+              f"{r08_rel} Section 5 tdd-worker dispatch must anchor '{tok}'"
+          )
+    errs.extend(_check_section_simple_english(f"{r08_rel} [Section 5]", r08_sec5))
+
+  # 6. skills/makeflow/references/09_synthetic_scars_catalog.md
+  r09_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  r09_text = files_map[r09_rel]
+  r09_sec1 = _extract_markdown_h2_section(r09_text, "## 1. Hub-and-Spoke")
+  if "typescript_node.md" in r09_text:
+    errs.append(
+        f"{r09_rel} must not contain broken 'typescript_node.md' reference"
+    )
+  if "typescript_javascript.md" not in r09_sec1:
+    errs.append(f"{r09_rel} Section 1 tree must reference 'typescript_javascript.md'")
+
+  r09_playbook = _extract_markdown_h3_section(
+      r09_text, "### 4.5 Two-Query MCP Playbook"
+  )
+  if not r09_playbook:
+    errs.append(f"{r09_rel} missing '### 4.5 Two-Query MCP Playbook' section")
+  else:
+    for tok in (
+        'language: "universal"',
+        'excludeCategories: ["WORKFLOW"]',
+        "limit: 5",
+        "refreshLoaded: true",
+        "09_synthetic_scars_catalog.md",
+    ):
+      if tok not in r09_playbook:
+        errs.append(f"{r09_rel} Section 4.5 playbook must document '{tok}'")
+    errs.extend(
+        _check_section_simple_english(f"{r09_rel} [Section 4.5]", r09_playbook)
+    )
+
+  # 7. agents/archaeology-worker.md
+  aw_rel = "agents/archaeology-worker.md"
+  aw_fm, aw_body = _extract_agent_frontmatter_tools(files_map[aw_rel])
+  for forbidden_tool in (
+      "write_file",
+      "edit_file",
+      "run_command",
+      "call_mcp_tool",
+      "list_resources",
+      "read_resource",
+  ):
+    if forbidden_tool in aw_fm:
+      errs.append(
+          f"{aw_rel} frontmatter tools must not list '{forbidden_tool}' (SCAR-PROC-106)"
+      )
+  if "six facts" in aw_body.lower():
+    errs.append(f"{aw_rel} must fix stale 'six facts' count")
+  for tok in (
+      "02_archaeology_and_planning.md",
+      "14_design_patterns_and_architecture.md",
+      "09_synthetic_scars_catalog.md",
+      "11_polyglot_monorepos.md",
+      "cohesion",
+      'workflowPhase: "Target 15: archaeology"',
+      'language: "universal"',
+      'excludeCategories: ["WORKFLOW"]',
+      "limit: 5",
+      "Consulted References and Applicable Scars",
+  ):
+    if tok not in aw_body:
+      errs.append(f"{aw_rel} body must document '{tok}'")
+  if "oo " not in aw_body.lower() and "object-oriented" not in aw_body.lower():
+    errs.append(f"{aw_rel} body must require auditing sibling OO patterns")
+  errs.extend(_check_section_simple_english(aw_rel, aw_body))
+
+  # 8. agents/tdd-worker.md
+  tdd_rel = "agents/tdd-worker.md"
+  tdd_fm, tdd_body = _extract_agent_frontmatter_tools(files_map[tdd_rel])
+  for req_tool in ("write_file", "edit_file", "run_command"):
+    if req_tool not in tdd_fm:
+      errs.append(f"{tdd_rel} frontmatter tools must keep '{req_tool}'")
+  for forbidden_tool in ("call_mcp_tool", "list_resources", "read_resource"):
+    if forbidden_tool in tdd_fm:
+      errs.append(
+          f"{tdd_rel} frontmatter tools must not list '{forbidden_tool}' (SCAR-PROC-106)"
+      )
+  for tok in (
+      "20_plan.md",
+      "03_tdd_and_code_quality.md",
+      "04_testing_isolation.md",
+      "14_design_patterns_and_architecture.md",
+      "09_synthetic_scars_catalog.md",
+      "polyglot/<lang>.md",
+      "cohesion",
+      'workflowPhase: "Target 30: tdd"',
+      'language: "universal"',
+      'excludeCategories: ["WORKFLOW"]',
+      "refreshLoaded: true",
+      "limit: 5",
+  ):
+    if tok not in tdd_body:
+      errs.append(f"{tdd_rel} body must document '{tok}'")
+  if "scar guardrails" not in tdd_body.lower():
+    errs.append(f"{tdd_rel} body must require reporting applied scar guardrails")
+  errs.extend(_check_section_simple_english(tdd_rel, tdd_body))
+
+  # 9. rules/AGENTS.md
+  agents_rel = "rules/AGENTS.md"
+  agents_text = files_map[agents_rel]
+  sec_1_1 = _extract_markdown_h3_section(
+      agents_text, "### 1.1 Target 20 Plan Artifact Lifecycle"
+  )
+  if not sec_1_1:
+    errs.append(f"{agents_rel} missing '### 1.1 Target 20 Plan Artifact Lifecycle'")
+  else:
+    for tok in (
+        "Red-Green",
+        "14_design_patterns_and_architecture.md",
+        "cohesion",
+        "skills/makeflow/references/",
+        'excludeCategories: ["WORKFLOW"]',
+    ):
+      if tok not in sec_1_1:
+        errs.append(f"{agents_rel} Section 1.1 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.1]", sec_1_1))
+
+  sec_1_4 = _extract_markdown_h3_section(
+      agents_text, "### 1.4 Explicit Six Pillars Manual Path"
+  )
+  if not sec_1_4:
+    errs.append(f"{agents_rel} missing '### 1.4 Explicit Six Pillars Manual Path'")
+  else:
+    for tok in (
+        "Target 15",
+        "Target 30",
+        "archaeology-worker",
+        "tdd-worker",
+        "14_design_patterns_and_architecture.md",
+    ):
+      if tok not in sec_1_4:
+        errs.append(f"{agents_rel} Section 1.4 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.4]", sec_1_4))
+
+  return errs
+
+
+class TestEarlyDesignPatternsAndScarsContract(unittest.TestCase):
+  """Section-anchored contract and negative falsification tests for GH-252."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in EARLY_DESIGN_AND_SCAR_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_early_design_and_scar_contract_passes(self) -> None:
+    self.assertEqual(check_early_design_and_scar_contract(), [])
+
+  def test_negative_falsification_early_design_and_scar_contract(self) -> None:
+    base = self._load_base_files()
+    self.assertEqual(check_early_design_and_scar_contract(base), [])
+
+    mutations = (
+        ("skills/makeflow/SKILL.md", "references/14", "REMOVED"),
+        ("skills/makeflow/SKILL.md", "excludeCategories", "REMOVED"),
+        ("skills/makeflow/SKILL.md", "refreshLoaded: true", "REMOVED"),
+        (
+            "skills/makeflow/references/02_archaeology_and_planning.md",
+            "| **Red-Green-Refactor TDD Methodology** |",
+            "| **Removed Row** |",
+        ),
+        (
+            "skills/makeflow/references/02_archaeology_and_planning.md",
+            "| **OO Design Patterns and Module Cohesion** |",
+            "| **Removed Row** |",
+        ),
+        (
+            "skills/makeflow/references/02_archaeology_and_planning.md",
+            'excludeCategories: ["WORKFLOW"]',
+            "REMOVED",
+        ),
+        (
+            "skills/makeflow/references/14_design_patterns_and_architecture.md",
+            "Target 15",
+            "Target 99",
+        ),
+        (
+            "skills/makeflow/references/14_design_patterns_and_architecture.md",
+            "Module Size and Cohesion Boundaries",
+            "Removed Section",
+        ),
+        (
+            "skills/makeflow/references/03_tdd_and_code_quality.md",
+            "refreshLoaded: true",
+            "REMOVED",
+        ),
+        (
+            "skills/makeflow/references/08_subagent_orchestration.md",
+            "skills/makeflow/references/14_design_patterns_and_architecture.md",
+            "REMOVED",
+        ),
+        (
+            "skills/makeflow/references/09_synthetic_scars_catalog.md",
+            "typescript_javascript.md",
+            "typescript_node.md",
+        ),
+        (
+            "skills/makeflow/references/09_synthetic_scars_catalog.md",
+            "### 4.5 Two-Query MCP Playbook",
+            "### 4.5 Removed Playbook",
+        ),
+        (
+            "agents/archaeology-worker.md",
+            "Consulted References and Applicable Scars",
+            "Removed Section",
+        ),
+        (
+            "agents/tdd-worker.md",
+            "04_testing_isolation.md",
+            "REMOVED",
+        ),
+        (
+            "rules/AGENTS.md",
+            'excludeCategories: ["WORKFLOW"]',
+            "REMOVED",
+        ),
+    )
+    for rel, token, repl in mutations:
+      with self.subTest(rel=rel, token=token):
+        mut = dict(base)
+        mut[rel] = mut[rel].replace(token, repl)
+        errs = check_early_design_and_scar_contract(mut)
+        self.assertTrue(
+            any(rel in e for e in errs),
+            f"Expected rejection when '{token}' mutated in {rel}, got: {errs}",
+        )
+
+    # Budget overflow falsification on SKILL.md
+    mut_budget = dict(base)
+    mut_budget["skills/makeflow/SKILL.md"] = (
+        mut_budget["skills/makeflow/SKILL.md"] + ("\n" + "a" * 25000)
+    )
+    budget_errs = check_early_design_and_scar_contract(mut_budget)
+    self.assertTrue(
+        any("24,576-byte budget" in e for e in budget_errs),
+        f"Expected SKILL.md budget error, got: {budget_errs}",
+    )
+
+    # Read-only frontmatter / SCAR-PROC-106 falsification on archaeology-worker.md
+    mut_aw_tool = dict(base)
+    mut_aw_tool["agents/archaeology-worker.md"] = mut_aw_tool[
+        "agents/archaeology-worker.md"
+    ].replace("  - manage_task", "  - manage_task\n  - call_mcp_tool")
+    aw_errs = check_early_design_and_scar_contract(mut_aw_tool)
+    self.assertTrue(
+        any("call_mcp_tool" in e for e in aw_errs),
+        f"Expected call_mcp_tool rejection, got: {aw_errs}",
+    )
+
+    # Simple English contraction falsification
+    mut_contraction = dict(base)
+    mut_contraction["agents/tdd-worker.md"] = (
+        mut_contraction["agents/tdd-worker.md"]
+        + "\n16. Don't skip the failing test.\n"
+    )
+    se_errs = check_early_design_and_scar_contract(mut_contraction)
+    self.assertTrue(
+        any("contraction" in e for e in se_errs),
+        f"Expected contraction rejection, got: {se_errs}",
+    )
+
+
 if __name__ == "__main__":
   unittest.main()

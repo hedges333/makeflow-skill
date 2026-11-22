@@ -927,6 +927,14 @@ def handle_tools_list(request_id):
                       "type": "string",
                       "description": "Optional category or slug filter (e.g. 'Testing', 'Architecture')",
                   },
+                  "excludeCategories": {
+                      "type": "array",
+                      "items": {"type": "string"},
+                      "description": (
+                          "Optional list of category codes, prose aliases, or"
+                          " 'WORKFLOW' to exclude from results"
+                      ),
+                  },
                   "language": {
                       "type": "string",
                       "description": "Optional programming language filter (e.g. 'python', 'dart', 'go')",
@@ -1491,6 +1499,25 @@ def handle_tools_call(request_id, tool_name, arguments):
             request_id,
             f"Invalid 'mfTarget' argument '{mf_target_raw}'. Provide an integer workflow target (e.g. 15, 20, 30).",
         )
+    if "excludeCategories" in arguments:
+      exclude_categories_raw = arguments.get("excludeCategories")
+    elif "exclude_categories" in arguments:
+      exclude_categories_raw = arguments.get("exclude_categories")
+    else:
+      exclude_categories_raw = None
+    exclude_categories = None
+    if exclude_categories_raw is not None:
+      if not isinstance(exclude_categories_raw, list) or any(
+          not isinstance(item, str) for item in exclude_categories_raw
+      ):
+        return _error_result(
+            request_id,
+            "Invalid 'excludeCategories' argument. Provide a list of category"
+            " strings (for example ['WORKFLOW'] or ['PROC', 'GIT']).",
+        )
+      exclude_categories = [
+          item.strip() for item in exclude_categories_raw if item.strip()
+      ]
     if (
         not query
         and not any(
@@ -1505,6 +1532,7 @@ def handle_tools_call(request_id, tool_name, arguments):
             )
         )
         and mf_target is None
+        and not exclude_categories
     ):
       return _error_result(
           request_id,
@@ -1616,6 +1644,7 @@ def handle_tools_call(request_id, tool_name, arguments):
         diagnostic_code=diagnostic_code,
         workflow_phase=workflow_phase,
         mf_target=mf_target,
+        exclude_categories=exclude_categories,
     )
 
     if not raw_results:

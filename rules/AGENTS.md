@@ -24,6 +24,7 @@ Antigravity renders an interactive review panel for artifacts. Follow these rule
 12. If `.workflow/state/20_plan_approved.md` exists, never re-execute Target 30 from old artifact notifications. Always verify progress from `.workflow/state/`.
 13. Include Testing Strategy and Burden-Balance Analysis (`SCAR-TEST-11`): In Target 20 plans, disclose testing depth against speed and dependency constraints. Prohibit surface-only testing when hermetic boundary testing is feasible.
 14. Socratic Pre-Planning Inquiry and Invariant Audit: Before writing `.workflow/state/20_plan.md`, interrogate the solution with Socratic pre-planning inquiries. Include the mandatory Socratic Invariant Audit table (including `Code Structure and Layer Separation` under `SCAR-ARCH-08`) in every plan artifact. Disclose each file layer role, and offer a user choice at Target 20 when an existing layout is messy.
+15. Surface OO Patterns, Cohesion, Red-Green TDD, and Scars: Include OO patterns and module cohesion choices (`14_design_patterns_and_architecture.md`) in `.workflow/state/20_plan.md`. Add Red-Green-Refactor TDD steps (`03_tdd_and_code_quality.md`, `04_testing_isolation.md`) and consulted manuals from `skills/makeflow/references/`. Carry forward scar IDs and Socratic probes from two-query `workflow_query_scars` calls (active stack plus `language: "universal"` with `excludeCategories: ["WORKFLOW"]`).
 
 ### 1.2 Pause Gates, Question Prompts, and Declaration Authority (SCAR-PROC-102)
 
@@ -49,11 +50,12 @@ To prevent accidental GitHub issue closures, distinguish local session tasks fro
 
 ### 1.4 Explicit Six Pillars Manual Path in Critic Dispatch (SCAR-PROC-105)
 
-When launching the `adversarial-critic` subagent at Target 40:
+When you dispatch subagents at Target 15, Target 30, or Target 40 (`adversarial-critic`), anchor explicit manual paths:
 
 1. Always include the explicit workspace path `skills/makeflow/references/04_six_pillars_adversarial_review.md` in the dispatch prompt.
 2. Instruct the subagent to audit the diff against that manual and format findings under the canonical six headings.
 3. Never substitute an informal prompt summary for the explicit manual reference.
+4. Anchor explicit workspace paths in Target 15 (`archaeology-worker`: `02_archaeology_and_planning.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `11_polyglot_monorepos.md`). Also anchor Target 30 paths (`tdd-worker`: `.workflow/state/20_plan.md`, `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `polyglot/<lang>.md`) plus planned scar IDs and Socratic probes.
 
 ### 1.5 Predetermined Subagent Tool Mounting (GH-83, GH-108)
 
