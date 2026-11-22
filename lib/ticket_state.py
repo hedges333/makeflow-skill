@@ -51,6 +51,57 @@ def _normalize_labels(raw_labels: Any) -> Tuple[str, ...]:
   return tuple(normalized)
 
 
+def _parse_positive_ascii_int(text: str) -> Optional[int]:
+  """Parses a strictly positive ASCII decimal integer string.
+
+  Args:
+    text: Candidate digit string.
+
+  Returns:
+    Parsed positive integer, or None when text is not positive ASCII digits.
+  """
+  if not text or not text.isascii() or not text.isdigit():
+    return None
+  num = int(text)
+  return num if num > 0 else None
+
+
+def canonicalize_ticket_id(value: Any) -> str:
+  """Normalizes a ticket identifier into canonical namespaced form.
+
+  Converts positive ASCII integer forms ('100', '0100', 100, '#100',
+  'gh-100', 'GH-0100') into 'GH-<N>' and case-insensitive 'local-<N>' into
+  'LOCAL-<N>'. Preserves other non-empty identifiers (such as Jira keys like
+  'PROJ-123') trimmed verbatim.
+
+  Args:
+    value: Raw ticket identifier scalar (str, int, bool, or None).
+
+  Returns:
+    Canonical ticket identifier string, or empty string for None, bool, or
+    whitespace-only inputs.
+  """
+  if value is None or isinstance(value, bool):
+    return ""
+  raw = str(value).strip()
+  if not raw:
+    return ""
+  bare_num = _parse_positive_ascii_int(raw)
+  if bare_num is not None:
+    return f"GH-{bare_num}"
+  if raw.startswith("#"):
+    hash_num = _parse_positive_ascii_int(raw[1:])
+    return f"GH-{hash_num}" if hash_num is not None else raw
+  upper = raw.upper()
+  if upper.startswith("GH-"):
+    gh_num = _parse_positive_ascii_int(raw[3:])
+    return f"GH-{gh_num}" if gh_num is not None else raw
+  if upper.startswith("LOCAL-"):
+    local_num = _parse_positive_ascii_int(raw[6:])
+    return f"LOCAL-{local_num}" if local_num is not None else raw
+  return raw
+
+
 def _extract_ticket_id(data: Dict[str, Any]) -> str:
   """Resolves canonical ticket_id from ticket_id, local id, or GitHub number.
 
@@ -60,19 +111,19 @@ def _extract_ticket_id(data: Dict[str, Any]) -> str:
   Returns:
     Normalized ticket identifier string, or empty string when absent.
   """
-  explicit = _clean_str(data.get("ticket_id"))
+  explicit = canonicalize_ticket_id(data.get("ticket_id"))
   if explicit:
     return explicit
-  local_id = _clean_str(data.get("id"))
+  local_id = canonicalize_ticket_id(data.get("id"))
   if local_id:
     return local_id
   raw_number = data.get("number")
   if isinstance(raw_number, int) and not isinstance(raw_number, bool):
     return f"GH-{raw_number}" if raw_number > 0 else ""
   if isinstance(raw_number, str):
-    stripped = raw_number.strip()
-    if stripped.isdigit() and int(stripped) > 0:
-      return f"GH-{int(stripped)}"
+    parsed_num = _parse_positive_ascii_int(raw_number.strip())
+    if parsed_num is not None:
+      return f"GH-{parsed_num}"
   return ""
 
 

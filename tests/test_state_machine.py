@@ -998,6 +998,476 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
         self.assertEqual(len(title_saw_json), 4)
         self.assertEqual(title_saw_json[3], saved_off)
 
+  def test_intake_canonicalizes_bare_github_and_prefix_variants(self) -> None:
+    """GH-271: Online GitHub intake canonicalizes 100, #100, and gh-100 to GH-100."""
+    from lib.ticket_state import TicketStateStore
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutex
+
+    real_run = subprocess.run
+    gh_issue = {
+        "number": 100,
+        "title": "Fix bare numeric intake",
+        "url": "https://github.com/hedges333/makeflow-skill/issues/100",
+        "assignees": [],
+        "labels": [{"name": "bug"}],
+    }
+
+    def _fake_run(cmd, *args, **kwargs):
+      if cmd[:3] == ["gh", "issue", "view"]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps(gh_issue), stderr=""
+        )
+      if cmd[:3] == ["gh", "api", "graphql"]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps({}), stderr=""
+        )
+      if cmd[:3] == ["gh", "issue", "edit"]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+      return real_run(cmd, *args, **kwargs)
+
+    for raw_ticket in ("100", "#100", "gh-100"):
+      with self.subTest(raw_ticket=raw_ticket):
+        with tempfile.TemporaryDirectory(prefix="makeflow_gh271_online_") as tmp:
+          repo = os.path.join(tmp, "repo")
+          os.makedirs(repo)
+          _init_git_repo(repo, branch="main")
+          _git(
+              repo,
+              "remote",
+              "add",
+              "origin",
+              "https://github.com/hedges333/makeflow-skill.git",
+          )
+          WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
+          lock_dir = os.path.join(tmp, "locks")
+
+          with (
+              mock.patch(
+                  "lib.terminal_title.set_terminal_title",
+                  return_value=(True, "ok"),
+              ),
+              mock.patch("subprocess.run", side_effect=_fake_run),
+          ):
+            rc = WorkflowGatesScript().execute(
+                [
+                    "--repo-root",
+                    repo,
+                    "--lock-dir",
+                    lock_dir,
+                    "intake",
+                    "--ticket",
+                    raw_ticket,
+                ],
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            )
+          self.assertEqual(rc, 0)
+          store = TicketStateStore.from_repo_root(repo)
+          with open(store.path, "r", encoding="utf-8") as f:
+            raw_json = json.load(f)
+          self.assertEqual(raw_json["ticket_id"], "GH-100")
+          self.assertEqual(raw_json["title"], "Fix bare numeric intake")
+          self.assertEqual(
+              raw_json["url"],
+              "https://github.com/hedges333/makeflow-skill/issues/100",
+          )
+          self.assertEqual(raw_json["labels"], ["bug"])
+          self.assertEqual(raw_json["source"], "github")
+
+          mutex = WorkspaceMutex(repo_root=repo, lock_dir=lock_dir)
+          canonical_lock = mutex.lock_path("GH-100")
+          self.assertTrue(os.path.isdir(canonical_lock))
+          self.assertEqual(os.listdir(lock_dir), [os.path.basename(canonical_lock)])
+          with open(
+              os.path.join(canonical_lock, "session.json"), "r", encoding="utf-8"
+          ) as f:
+            session_data = json.load(f)
+          self.assertEqual(session_data["ticket_id"], "GH-100")
+
+  def test_intake_offline_fallback_canonicalizes_bare_ticket_id(self) -> None:
+    """GH-271: Offline fallback intake with bare 100 persists GH-100 and canonical lock."""
+    from lib.ticket_state import TicketStateStore
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutex
+
+    with tempfile.TemporaryDirectory(prefix="makeflow_gh271_offline_") as tmp:
+      repo = os.path.join(tmp, "repo")
+      os.makedirs(repo)
+      _init_git_repo(repo, branch="main")
+      WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
+      lock_dir = os.path.join(tmp, "locks")
+
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "ok"),
+      ):
+        rc = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "100",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+      self.assertEqual(rc, 0)
+      store = TicketStateStore.from_repo_root(repo)
+      with open(store.path, "r", encoding="utf-8") as f:
+        raw_json = json.load(f)
+      self.assertEqual(raw_json["ticket_id"], "GH-100")
+      self.assertEqual(raw_json["source"], "fallback")
+      mutex = WorkspaceMutex(repo_root=repo, lock_dir=lock_dir)
+      self.assertTrue(os.path.isdir(mutex.lock_path("GH-100")))
+      self.assertFalse(os.path.isdir(mutex.lock_path("100")))
+
+  def test_intake_reentrant_bare_and_canonical_preserves_github_metadata(self) -> None:
+    """GH-271: Reentrant intake with 100 or GH-100 succeeds and preserves GitHub metadata."""
+    from lib.ticket_state import TicketStateStore
+    from lib.workflow_gates import WorkflowGatesScript
+
+    real_run = subprocess.run
+    gh_issue = {
+        "number": 100,
+        "title": "Preserve rich metadata on retry",
+        "url": "https://github.com/hedges333/makeflow-skill/issues/100",
+        "assignees": [],
+        "labels": [{"name": "bug"}],
+    }
+
+    def _fake_run(cmd, *args, **kwargs):
+      if cmd[:3] == ["gh", "issue", "view"]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps(gh_issue), stderr=""
+        )
+      if cmd[:3] == ["gh", "api", "graphql"]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps({}), stderr=""
+        )
+      if cmd[:3] == ["gh", "issue", "edit"]:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="", stderr=""
+        )
+      return real_run(cmd, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory(prefix="makeflow_gh271_reentrant_") as tmp:
+      repo = os.path.join(tmp, "repo")
+      os.makedirs(repo)
+      _init_git_repo(repo, branch="main")
+      _git(
+          repo,
+          "remote",
+          "add",
+          "origin",
+          "https://github.com/hedges333/makeflow-skill.git",
+      )
+      WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
+      lock_dir = os.path.join(tmp, "locks")
+
+      with (
+          mock.patch(
+              "lib.terminal_title.set_terminal_title",
+              return_value=(True, "ok"),
+          ),
+          mock.patch("subprocess.run", side_effect=_fake_run),
+      ):
+        rc_first = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "100",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(rc_first, 0)
+        initial = TicketStateStore.from_repo_root(repo).load()
+        self.assertIsNotNone(initial)
+        assert initial is not None
+        self.assertEqual(initial.ticket_id, "GH-100")
+        self.assertEqual(initial.source, "github")
+
+        for retry_ticket in ("100", "GH-100", "#100"):
+          err_buf = io.StringIO()
+          rc_retry = WorkflowGatesScript().execute(
+              [
+                  "--repo-root",
+                  repo,
+                  "--lock-dir",
+                  lock_dir,
+                  "intake",
+                  "--ticket",
+                  retry_ticket,
+              ],
+              stdout=io.StringIO(),
+              stderr=err_buf,
+          )
+          self.assertEqual(rc_retry, 0, f"retry {retry_ticket!r} failed: {err_buf.getvalue()}")
+          after = TicketStateStore.from_repo_root(repo).load()
+          self.assertEqual(after, initial)
+
+        err_other = io.StringIO()
+        rc_other = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "101",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_other,
+        )
+        self.assertEqual(rc_other, 2)
+        self.assertIn("UNCLEAN_INTAKE_STATE", err_other.getvalue())
+
+  def test_intake_cross_workspace_collision_and_local_store_non_collision(self) -> None:
+    """GH-271: Workspace A --ticket 100 collides with Workspace B --ticket GH-100 and avoids LOCAL-100."""
+    from lib.local_tickets import LocalTicketStore
+    from lib.workflow_gates import WorkflowGatesScript
+
+    with tempfile.TemporaryDirectory(prefix="makeflow_gh271_collision_") as tmp:
+      ws_a = os.path.join(tmp, "ws-a")
+      ws_b = os.path.join(tmp, "ws-b")
+      os.makedirs(ws_a)
+      _init_git_repo(ws_a, branch="main")
+      _git(tmp, "clone", "-q", ws_a, ws_b)
+      WorkflowGatesScript().execute(["--repo-root", ws_a, "init-makefile"])
+      WorkflowGatesScript().execute(["--repo-root", ws_b, "init-makefile"])
+      lock_dir = os.path.join(tmp, "locks")
+
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "ok"),
+      ):
+        rc_a = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                ws_a,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "100",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(rc_a, 0)
+
+        err_b = io.StringIO()
+        rc_b = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                ws_b,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "GH-100",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_b,
+        )
+        self.assertEqual(rc_b, 2)
+        self.assertIn("TICKET_COLLISION_DETECTED", err_b.getvalue())
+
+      local_store = LocalTicketStore(repo_root=ws_a, lock_dir=lock_dir)
+      self.assertEqual(local_store.next_ticket_id(), "LOCAL-1")
+
+  def test_intake_lowercase_local_stays_pure_git_and_preserves_jira_keys(self) -> None:
+    """GH-271: Lowercase local-5 stays in PURE_GIT mode without gh calls; PROJ-123 stays verbatim."""
+    from lib.local_tickets import LocalTicketStore
+    from lib.ticket_state import TicketStateStore
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutex
+
+    real_run = subprocess.run
+    gh_calls = []
+
+    def _guard_gh_run(cmd, *args, **kwargs):
+      if cmd and cmd[0] == "gh":
+        gh_calls.append(list(cmd))
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="unexpected gh call"
+        )
+      return real_run(cmd, *args, **kwargs)
+
+    with tempfile.TemporaryDirectory(prefix="makeflow_gh271_local_jira_") as tmp:
+      repo_local = os.path.join(tmp, "repo-local")
+      os.makedirs(repo_local)
+      _init_git_repo(repo_local, branch="main")
+      _git(
+          repo_local,
+          "remote",
+          "add",
+          "origin",
+          "https://github.com/hedges333/makeflow-skill.git",
+      )
+      WorkflowGatesScript().execute(["--repo-root", repo_local, "init-makefile"])
+      lock_dir = os.path.join(tmp, "locks")
+      LocalTicketStore(repo_root=repo_local, lock_dir=lock_dir).create_ticket(
+          title="Lowercase local intake test",
+          priority="P1",
+          labels=["offline"],
+          ticket_id="LOCAL-5",
+      )
+      _git(repo_local, "add", ".workflow/tickets/LOCAL-5.json")
+      _git(repo_local, "commit", "-q", "-m", "chore: seed local ticket 5")
+
+      with (
+          mock.patch(
+              "lib.terminal_title.set_terminal_title",
+              return_value=(True, "ok"),
+          ),
+          mock.patch("subprocess.run", side_effect=_guard_gh_run),
+      ):
+        rc_local = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo_local,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "local-5",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+      self.assertEqual(rc_local, 0)
+      self.assertEqual(gh_calls, [])
+      saved_local = TicketStateStore.from_repo_root(repo_local).load()
+      self.assertIsNotNone(saved_local)
+      assert saved_local is not None
+      self.assertEqual(saved_local.ticket_id, "LOCAL-5")
+      self.assertEqual(saved_local.title, "Lowercase local intake test")
+      self.assertEqual(saved_local.source, "local")
+      mutex_local = WorkspaceMutex(repo_root=repo_local, lock_dir=lock_dir)
+      self.assertTrue(os.path.isdir(mutex_local.lock_path("LOCAL-5")))
+
+      # Jira-style ticket key PROJ-123 persists verbatim
+      repo_jira = os.path.join(tmp, "repo-jira")
+      os.makedirs(repo_jira)
+      _init_git_repo(repo_jira, branch="main")
+      WorkflowGatesScript().execute(["--repo-root", repo_jira, "init-makefile"])
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "ok"),
+      ):
+        rc_jira = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo_jira,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "PROJ-123",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+      self.assertEqual(rc_jira, 0)
+      saved_jira = TicketStateStore.from_repo_root(repo_jira).load()
+      self.assertIsNotNone(saved_jira)
+      assert saved_jira is not None
+      self.assertEqual(saved_jira.ticket_id, "PROJ-123")
+      mutex_jira = WorkspaceMutex(repo_root=repo_jira, lock_dir=lock_dir)
+      self.assertTrue(os.path.isdir(mutex_jira.lock_path("PROJ-123")))
+
+  def test_release_intake_bare_ticket_removes_canonical_lock_and_archives_under_gh_dir(
+      self,
+  ) -> None:
+    """GH-271: release-intake --ticket 100 removes GH-100 lock and archives receipts under GH-100."""
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutex
+
+    with tempfile.TemporaryDirectory(prefix="makeflow_gh271_release_") as tmp:
+      repo = os.path.join(tmp, "repo")
+      os.makedirs(repo)
+      _init_git_repo(repo, branch="main")
+      WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
+      lock_dir = os.path.join(tmp, "locks")
+
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "ok"),
+      ):
+        rc_intake = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "intake",
+                "--ticket",
+                "100",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(rc_intake, 0)
+
+        mutex = WorkspaceMutex(repo_root=repo, lock_dir=lock_dir)
+        canonical_lock = mutex.lock_path("GH-100")
+        self.assertTrue(os.path.isdir(canonical_lock))
+
+        _write_file(
+            os.path.join(repo, ".workflow", "config.json"),
+            json.dumps({"state": {"completedCardAction": "archive"}}) + "\n",
+        )
+        state_dir = os.path.join(repo, ".workflow", "state")
+        _write_file(
+            os.path.join(state_dir, "30_tdd_receipt.json"),
+            json.dumps({"verified_green": True}) + "\n",
+        )
+        _write_file(
+            os.path.join(state_dir, "30_regression_receipt.json"),
+            json.dumps({"verified": True}) + "\n",
+        )
+
+        rc_release = WorkflowGatesScript().execute(
+            [
+                "--repo-root",
+                repo,
+                "--lock-dir",
+                lock_dir,
+                "release-intake",
+                "--ticket",
+                "100",
+            ],
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        )
+        self.assertEqual(rc_release, 0)
+
+      self.assertFalse(os.path.isdir(canonical_lock))
+      archive_dir = os.path.join(repo, ".workflow", "archive", "GH-100")
+      self.assertTrue(
+          os.path.isfile(os.path.join(archive_dir, "30_tdd_receipt.json"))
+      )
+      self.assertTrue(
+          os.path.isfile(
+              os.path.join(archive_dir, "30_regression_receipt.json")
+          )
+      )
+      self.assertFalse(
+          os.path.exists(os.path.join(repo, ".workflow", "archive", "100"))
+      )
+
 
 class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
   """Falsification tests for Make prerequisites, MCP delegation, and PreToolUse."""
