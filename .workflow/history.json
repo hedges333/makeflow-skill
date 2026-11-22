@@ -2846,5 +2846,24 @@
     "closes_issue": true,
     "tests_added": 16,
     "scars_earned": []
+  },
+  {
+    "id": "GH-275",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/275",
+    "title": "[REFACTOR] Generalize lib/static_check.py directory discovery and deduplicate collect_python_files()",
+    "request": "Extract shared Python file discovery and the canonical 12-directory exclusion set into lib/python_files.py, deduplicate collect_python_files() across lib/static_check.py and lib/ast_scrub.py, generalize StaticCheckScript with --repo-root (defaulting to os.getcwd()) and adaptive root scanning with external linter --extend-exclude parity, and add 14 hermetic unit and boundary tests in tests/test_static_analysis.py.",
+    "branch": "feat/275-generalize-static-check-discovery",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-22T04:13:06Z",
+    "completed_at": "2026-11-22T07:07:04Z",
+    "commit_sha": "bd9f6fafc7ecc75ee3cd401a099aeab7742769b4",
+    "pr_number": 286,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/286",
+    "closes_issue": true,
+    "tests_added": 14,
+    "scars_earned": []
   }
 ]
