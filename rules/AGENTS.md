@@ -30,8 +30,8 @@ Antigravity renders an interactive review panel for artifacts. Follow these rule
 
 1. Enforce human declaration authority (`SCAR-PROC-102`): Stop and wait for explicit human approval at all six pause gates: Target 20 (plan), Target 42 (blocker triage), Target 45 (review), Target 50 (commit), Target 60 (push), and Target 75 (landing).
 2. Explicitly prohibit agent self-approval: Agents must never self-approve, self-declare, or bypass any pause gate.
-3. If the user must choose between two or more alternatives ($N \ge 2$), call `ask_question`.
-4. If a gate has one approval action ($N = 1$), do not call `ask_question`. Print the full proposal in chat with `file://` links and stop tool calls. This rule covers Blocker Triage (Target 42), Review Approval (Target 45), Commit Approval (Target 50), Push Approval (Target 60), and Landing Approval (Target 75).
+3. If the user must choose between two or more alternatives ($N \ge 2$) outside the six pause gates, call `ask_question`.
+4. If a gate has one approval action ($N = 1$), do not call `ask_question`. Print the proposal in chat with `file://` links and stop tool calls (`tool_calls: []`). This rule covers Blocker Triage (Target 42), Review Approval (Target 45), Commit Approval (Target 50), Push Approval (Target 60), and Landing Approval (Target 75). It applies even when presenting Non-Blocking Observation (NBO) recommendations. At Target 45, write 1 to 2 concise sentences per canonical pillar heading. Link `.workflow/state/40_critic_review.md` instead of pasting full review prose.
 5. Before you ask for a decision, print the full facts in the chat message.
 6. Add a `file://` markdown link for every file, diff, plan, or review card that you name.
 7. When you call `ask_question`, include the full markdown explanation and `file://` links in `content` on that same `PLANNER_RESPONSE` step.
@@ -97,7 +97,7 @@ To prevent ticket backlog inflation from review observations:
 1. Before proposing a new ticket, search open issues with `gh issue list`.
 2. Link the observation to any existing issue to prevent duplicate tickets.
 3. If an observation is very related to active ticket scope, treat it as a blocker for `tdd-worker`.
-4. If an observation is somewhat related, offer the user a choice to roll up or file a ticket.
+4. If an observation is somewhat related, offer a plain chat choice to roll up or file a ticket. Never call `ask_question`.
 5. If an observation is totally unrelated, propose a new ticket after deduplication.
 6. If an observation has negligible risk or outsized complexity, perform conscious dismissal and document technical rationale without filing an issue.
 7. Wait for explicit human confirmation at the human escalation gate before creating any issue.

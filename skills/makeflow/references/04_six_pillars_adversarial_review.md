@@ -44,9 +44,9 @@ When running in an orchestrator that supports subagents, launch `adversarial-cri
    - `### 4. Blast Radius`
    - `### 5. Reviewer Defense`
    - `### 6. Immune Defenses & Crash Antibodies`
-   `Blast Radius` serves as a mandatory domain canary. The critic must write multi-sentence prose under every heading. Never compress findings into a six-row summary table.
+   `Blast Radius` serves as a mandatory domain canary. The critic must write multi-sentence prose under every heading inside `.workflow/state/40_critic_review_round<N>.md`. In chat, the supervisor writes 1 to 2 concise sentences per heading and links `.workflow/state/40_critic_review.md`. Never compress findings into a six-row summary table.
 3. **Self-Contained Review Artifacts Across Rounds**:
-   Save each review round permanently as `.workflow/state/40_critic_review_round<N>.md`. Keep `.workflow/state/40_critic_review.md` updated with the complete, self-contained winning review prose. Never reduce the report to a link stub.
+   Save each review round once as `.workflow/state/40_critic_review_round<N>.md`. Run `make -f .workflow/state/Makefile promote-review ROUND=<N>` to validate and copy it to `.workflow/state/40_critic_review.md`. Never write `.workflow/state/40_critic_review.md` manually or reduce it to a link stub.
 4. **Exhaustive Round 1 Falsification & Anti-Single-Blocker Satisficing (`SCAR-PROC-115`)**:
    Finding an initial blocker does not excuse relaxing scrutiny on remaining paths. The critic must evaluate all added or modified state flags across all enclosing control structures. Never excuse a new defect because older code has similar defects.
 5. **Post-Compaction Rubric Anchoring in `00_governance.md` (`SCAR-PROC-121`)**:
@@ -218,7 +218,7 @@ If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`, enter Target 42 (`T40` t
 
 ### 5.1 The Bounded Target 42 Blocker Airlock (`SCAR-PROC-89`)
 During a critic blocker wakeup turn, the agent may execute only bounded Target 42 entry actions:
-1. Write `.workflow/state/40_critic_review_round<N>.md` and `.workflow/state/40_critic_review.md` with the complete critic review prose.
+1. Write `.workflow/state/40_critic_review_round<N>.md` once. Run `make -f .workflow/state/Makefile promote-review ROUND=<N>` to promote `.workflow/state/40_critic_review.md`.
 2. Run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>` to enter Target 42 (`T40` to `T42`) and record `.workflow/state/gate_entry.json`.
 3. Present the Blocker Digest in chat and stop tool calls (`tool_calls: []`) until human triage arrives (`SCAR-PROC-102`).
 
@@ -251,7 +251,7 @@ After human authorization, run `make -f .workflow/state/Makefile implementation-
 
 ## 6. Target 45: Review Sign-Off Gate (`0 BLOCKERS`)
 
-If Target 40 yields `VERDICT: APPROVED (0 BLOCKERS)`, run `make -f .workflow/state/Makefile approved-review BLOCKERS=0` (or `blockersCount: 0`) to enforce `check-approved-tree` and route from `T40` to `T45`:
+If Target 40 yields `VERDICT: APPROVED (0 BLOCKERS)`, write `.workflow/state/40_critic_review_round<N>.md` once. Run `make -f .workflow/state/Makefile promote-review ROUND=<N>` to promote `.workflow/state/40_critic_review.md`. Then run `make -f .workflow/state/Makefile approved-review BLOCKERS=0` (or `blockersCount: 0`) to route from `T40` to `T45`:
 
 ### 6.1 Merkle Tree Verification
 Verify that the working tree still matches the recorded Merkle tree:
@@ -260,7 +260,7 @@ test "$(git write-tree)" = "$(cat .workflow/state/approved_tree.txt)"
 ```
 
 ### 6.2 Canonical Prose Presentation
-Present the review in chat using the exact six canonical headings. Never compress findings into a summary table.
+Present the review summary in chat using the exact six canonical headings. Write 1 to 2 concise sentences under each heading summarizing key findings. Add a `file://` link to `.workflow/state/40_critic_review.md` for the full unabridged review prose. Never paste the full critic review verbatim into chat. Never compress findings into a summary table.
 
 ### 6.3 Non-Blocking Observations (NBO) Matrix and 4-Step Triage Protocol (`SCAR-REVIEW-12`, `SCAR-REVIEW-28`, `SCAR-PROC-108`)
 If the critic identifies non-blocking observations, present a structured matrix:
@@ -270,13 +270,15 @@ If the critic identifies non-blocking observations, present a structured matrix:
 
 Do not label observations as `"Acknowledged"`. Evaluate and triage every observation using the **4-Step Observation Triage Protocol**:
 
-1. **Existing Issue Deduplication**: Before proposing a new ticket, search open issues with `gh issue list` (or tracker API) to avoid duplicate backlog entries. If an existing issue covers the finding, link to it instead of proposing a duplicate.
-2. **Scope Relationship and Rollup**: Interrogate the observation's relationship to current ticket scope:
+1. **Existing Issue Deduplication**: Before proposing a new ticket, search open issues with `gh issue list` (or tracker API) to avoid duplicate backlog items. If an existing issue covers the finding, link to it instead of proposing a duplicate.
+2. **Scope Relationship and Rollup**: Evaluate how each observation relates to current ticket scope:
    - **Very related**: Triage as a blocker for `tdd-worker`. Return to Target 30 for immediate resolution.
-   - **Somewhat related**: Offer the human operator a choice to roll up the fix into the current change or file a new ticket.
-   - **Totally unrelated**: Propose filing a new ticket (subject to human escalation).
+   - **Somewhat related**: Offer a plain-chat choice to roll up the fix or file a new ticket.
+   - **Totally unrelated**: Propose filing a new ticket subject to human approval.
 3. **Conscious Dismissal**: If an observation presents negligible risk or outsized complexity, perform a conscious dismissal. Document the technical rationale to skip the observation without filing an issue.
 4. **Human Escalation Gate**: Prohibit autonomous ticket creation. Require explicit human declaration before opening any new tickets.
+
+At Target 42 and Target 45, always present NBO recommendations in plain chat and stop tool calls (`tool_calls: []`). Never call `ask_question` at Target 42 or Target 45, even when offering `Apply`, `Skip`, or `Defer to issue` options.
 
 ### 6.4 Single-Target Turn Airlock (`SCAR-PROC-84`, `SCAR-PROC-123`)
 Target 45 is an absolute turn-ending airlock:
