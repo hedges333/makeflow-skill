@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic unit and boundary tests for Target 30 full regression gate (GH-233)."""
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -1123,6 +1124,276 @@ class TestMakeSubprocessEnvSanitization(unittest.TestCase):
       self.assertTrue(outer_receipt["verified"])
       self.assertEqual(outer_receipt["regression_cmd"], "make test")
       self.assertEqual(read_active_target(inner_state_dir)["target"], "T40")
+
+
+class TestNativeGitIndexPlumbing(unittest.TestCase):
+  """Hermetic boundary tests for native Git index plumbing (GH-249, SCAR-GIT-23)."""
+
+  def _file_sha256(self, path: str) -> str:
+    """Returns the SHA-256 hex digest of a file's raw bytes."""
+    with open(path, "rb") as f:
+      return hashlib.sha256(f.read()).hexdigest()
+
+  def _sharedindex_snapshot(self, repo: str) -> dict:
+    """Returns a mapping of .git/sharedindex.* filenames to SHA-256 digests."""
+    git_dir = os.path.join(repo, ".git")
+    snapshot = {}
+    for entry in sorted(os.listdir(git_dir)):
+      if entry.startswith("sharedindex."):
+        snapshot[entry] = self._file_sha256(os.path.join(git_dir, entry))
+    return snapshot
+
+  def test_working_tree_hash_detects_racy_git_same_size_rewrite_across_second_rollover(
+      self,
+  ) -> None:
+    """GH-249: Same-size rewrite with matching mtime across second rollover updates tree hash."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo)
+      _git(repo, "config", "core.trustctime", "false")
+      _git(repo, "config", "core.checkstat", "minimal")
+
+      t0 = int(time.time()) - 5
+      feature_path = os.path.join(repo, "feature.py")
+      _write_file(feature_path, "VALUE = 1\n")
+      os.utime(feature_path, (t0, t0))
+      _git(repo, "add", "feature.py")
+      _git(repo, "commit", "-q", "-m", "feat: add feature")
+
+      # Stamp .git/index to t0 so entry.mtime == index.mtime == t0 (authentic racy-git state).
+      index_path = os.path.join(repo, ".git", "index")
+      os.utime(index_path, (t0, t0))
+      hash_before = compute_working_tree_hash(repo)
+
+      # Overwrite in-place with an identical 10-byte payload at the same timestamp t0.
+      _write_file(feature_path, "VALUE = 2\n")
+      os.utime(feature_path, (t0, t0))
+      index_sha_before = self._file_sha256(index_path)
+
+      hash_after = compute_working_tree_hash(repo)
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+
+      # Ground truth via real staging must match hash_after and differ from hash_before.
+      _git(repo, "add", "-A")
+      expected_tree = _git(repo, "write-tree").stdout.strip()
+      self.assertNotEqual(hash_after, hash_before)
+      self.assertEqual(hash_after, expected_tree)
+
+  def test_working_tree_hash_preserves_force_added_tracked_but_ignored_files(
+      self,
+  ) -> None:
+    """GH-249: Force-added tracked-but-ignored files stay hashed and reflect edits."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo)
+      _write_file(os.path.join(repo, ".gitignore"), "*.ignored\n")
+      _git(repo, "add", ".gitignore")
+      _git(repo, "commit", "-q", "-m", "chore: ignore pattern")
+
+      ignored_path = os.path.join(repo, "secret.ignored")
+      _write_file(ignored_path, "v1\n")
+      _git(repo, "add", "-f", "secret.ignored")
+      _git(repo, "commit", "-q", "-m", "chore: force-add ignored file")
+
+      _write_file(ignored_path, "v2\n")
+      index_path = os.path.join(repo, ".git", "index")
+      status_before = _git(repo, "status", "--porcelain").stdout
+      index_sha_before = self._file_sha256(index_path)
+
+      tree_hash = compute_working_tree_hash(repo)
+
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+      self.assertEqual(status_before, _git(repo, "status", "--porcelain").stdout)
+      blob = _git(repo, "cat-file", "-p", f"{tree_hash}:secret.ignored")
+      self.assertEqual(blob.returncode, 0, blob.stderr)
+      self.assertEqual(blob.stdout, "v2\n")
+
+  def test_working_tree_hash_matches_symlinks_and_executable_bits(self) -> None:
+    """GH-249: Symlinks (120000) and executable mode bits (100755) match native git write-tree."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo)
+      script_path = os.path.join(repo, "bin", "run.sh")
+      _write_file(script_path, "#!/bin/sh\necho v1\n")
+      os.chmod(script_path, 0o755)
+      link_path = os.path.join(repo, "readme_link")
+      os.symlink("README.md", link_path)
+      _git(repo, "add", "-A")
+      _git(repo, "commit", "-q", "-m", "feat: add executable and symlink")
+
+      # Edit executable and add a second untracked symlink without staging.
+      _write_file(script_path, "#!/bin/sh\necho v2\n")
+      os.chmod(script_path, 0o755)
+      os.symlink("bin/run.sh", os.path.join(repo, "run_link"))
+
+      index_path = os.path.join(repo, ".git", "index")
+      index_sha_before = self._file_sha256(index_path)
+      tree_hash = compute_working_tree_hash(repo)
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+
+      _git(repo, "add", "-A")
+      expected_tree = _git(repo, "write-tree").stdout.strip()
+      self.assertEqual(tree_hash, expected_tree)
+
+      ls_tree = _git(repo, "ls-tree", "-r", tree_hash).stdout
+      self.assertIn("100755 blob", ls_tree)
+      self.assertIn("120000 blob", ls_tree)
+
+  def test_working_tree_hash_handles_unmerged_conflict_stages_and_intent_to_add(
+      self,
+  ) -> None:
+    """GH-249: Unmerged conflict stages (1/2/3) and git add -N seed cleanly without mutating .git/index."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo, branch="main")
+      conflict_path = os.path.join(repo, "conflict.txt")
+      _write_file(conflict_path, "base line\n")
+      _git(repo, "add", "conflict.txt")
+      _git(repo, "commit", "-q", "-m", "chore: seed conflict.txt")
+
+      _git(repo, "checkout", "-q", "-b", "branch-a")
+      _write_file(conflict_path, "branch a line\n")
+      _git(repo, "add", "conflict.txt")
+      _git(repo, "commit", "-q", "-m", "feat: branch-a edit")
+
+      _git(repo, "checkout", "-q", "main")
+      _git(repo, "checkout", "-q", "-b", "branch-b")
+      _write_file(conflict_path, "branch b line\n")
+      _git(repo, "add", "conflict.txt")
+      _git(repo, "commit", "-q", "-m", "feat: branch-b edit")
+
+      merge_proc = _git(repo, "merge", "branch-a")
+      self.assertNotEqual(merge_proc.returncode, 0)
+      unmerged_before = _git(repo, "ls-files", "--unmerged").stdout.strip()
+      self.assertTrue(unmerged_before)
+
+      # Also add an intent-to-add entry (git add -N).
+      intent_path = os.path.join(repo, "intent.txt")
+      _write_file(intent_path, "intent payload\n")
+      self.assertEqual(_git(repo, "add", "-N", "intent.txt").returncode, 0)
+
+      index_path = os.path.join(repo, ".git", "index")
+      index_sha_before = self._file_sha256(index_path)
+      status_before = _git(repo, "status", "--porcelain").stdout
+
+      tree_hash = compute_working_tree_hash(repo)
+      self.assertEqual(len(tree_hash), 40)
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+      self.assertEqual(status_before, _git(repo, "status", "--porcelain").stdout)
+      self.assertEqual(
+          unmerged_before, _git(repo, "ls-files", "--unmerged").stdout.strip()
+      )
+
+      intent_blob = _git(repo, "cat-file", "-p", f"{tree_hash}:intent.txt")
+      self.assertEqual(intent_blob.returncode, 0, intent_blob.stderr)
+      self.assertEqual(intent_blob.stdout, "intent payload\n")
+
+      with open(conflict_path, "r", encoding="utf-8") as f:
+        working_conflict = f.read()
+      conflict_blob = _git(repo, "cat-file", "-p", f"{tree_hash}:conflict.txt")
+      self.assertEqual(conflict_blob.returncode, 0, conflict_blob.stderr)
+      self.assertEqual(conflict_blob.stdout, working_conflict)
+
+  def test_working_tree_hash_handles_empty_repository_and_untracked_only_files(
+      self,
+  ) -> None:
+    """GH-249: Empty repo returns empty tree SHA and hashes untracked-only files without creating .git/index."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    empty_tree_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    with tempfile.TemporaryDirectory() as repo:
+      _git(repo, "init", "-q", "-b", "main")
+      _git(repo, "config", "user.name", "Test User")
+      _git(repo, "config", "user.email", "test@example.com")
+      index_path = os.path.join(repo, ".git", "index")
+      self.assertFalse(os.path.exists(index_path))
+
+      self.assertEqual(compute_working_tree_hash(repo), empty_tree_sha)
+      self.assertFalse(os.path.exists(index_path))
+
+      _write_file(os.path.join(repo, "untracked.txt"), "hello world\n")
+      untracked_hash = compute_working_tree_hash(repo)
+      self.assertFalse(os.path.exists(index_path))
+
+      _git(repo, "add", "-A")
+      expected_tree = _git(repo, "write-tree").stdout.strip()
+      self.assertEqual(untracked_hash, expected_tree)
+
+  def test_working_tree_hash_split_index_creates_no_sharedindex_side_effects(
+      self,
+  ) -> None:
+    """GH-249: core.splitIndex=true hashes accurately with zero .git/index or .git/sharedindex.* side effects."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo)
+      _git(repo, "config", "core.splitIndex", "true")
+      _git(repo, "config", "splitIndex.maxPercentChange", "0")
+      _write_file(os.path.join(repo, "tracked.txt"), "initial\n")
+      _git(repo, "add", "tracked.txt")
+      _git(repo, "commit", "-q", "-m", "chore: seed split-index repo")
+      self.assertEqual(_git(repo, "update-index", "--split-index").returncode, 0)
+
+      # Verify split index is active before testing.
+      shared_before = self._sharedindex_snapshot(repo)
+      self.assertTrue(shared_before)
+
+      _write_file(os.path.join(repo, "tracked.txt"), "updated\n")
+      _write_file(os.path.join(repo, "new_file.txt"), "untracked\n")
+      index_path = os.path.join(repo, ".git", "index")
+      index_sha_before = self._file_sha256(index_path)
+
+      tree_hash = compute_working_tree_hash(repo)
+
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+      self.assertEqual(shared_before, self._sharedindex_snapshot(repo))
+
+      _git(repo, "add", "-A")
+      expected_tree = _git(repo, "write-tree").stdout.strip()
+      self.assertEqual(tree_hash, expected_tree)
+
+  def test_working_tree_hash_raises_runtime_error_on_invalid_or_non_git_directory(
+      self,
+  ) -> None:
+    """GH-249: Nonexistent or non-Git directories raise RuntimeError."""
+    from lib.regression_gate import compute_working_tree_hash
+
+    with tempfile.TemporaryDirectory() as tmp:
+      missing_dir = os.path.join(tmp, "does-not-exist")
+      with self.assertRaises(RuntimeError):
+        compute_working_tree_hash(missing_dir)
+
+      plain_dir = os.path.join(tmp, "plain-non-git")
+      os.makedirs(plain_dir)
+      with self.assertRaises(RuntimeError):
+        compute_working_tree_hash(plain_dir)
+
+  def test_git_index_governance_registration_and_module_hygiene(self) -> None:
+    """GH-249 / SCAR-TEST-12 / SCAR-ARCH-08: lib/git_index.py has no shebang and is registered in governance guards."""
+    from lib.tdd_guard import CORE_GOVERNANCE_FILES
+
+    guard = _load_pre_tool_guard()
+    self.assertIn("lib/git_index.py", CORE_GOVERNANCE_FILES)
+    self.assertIn("lib/git_index.py", guard.GOVERNANCE_FILE_RELPATHS)
+
+    mod_path = os.path.join(REPO_ROOT, "lib", "git_index.py")
+    self.assertTrue(os.path.isfile(mod_path))
+    with open(mod_path, "r", encoding="utf-8") as f:
+      self.assertFalse(f.readline().startswith("#!"))
+
+    with tempfile.TemporaryDirectory() as ws:
+      res_sh = guard.evaluate_tool_call({
+          "workspacePaths": [ws],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "echo '# hack' > lib/git_index.py"},
+          },
+      })
+      self.assertEqual(res_sh["decision"], "deny")
 
 
 if __name__ == "__main__":

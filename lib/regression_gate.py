@@ -1,9 +1,9 @@
 """Deterministic Target 30 full subproject regression gate (GH-233, SCAR-TEST-12).
 
-Computes working-tree Git Merkle hashes using an ephemeral GIT_INDEX_FILE copy,
-resolves and runs the active subproject's full regression suite, rejects
-workspace mutation during test execution, and seals or validates
-.workflow/state/30_regression_receipt.json against live ground truth.
+Computes working-tree Git Merkle hashes using an ephemeral GIT_INDEX_FILE seeded
+via native Git plumbing, resolves and runs the active subproject's full
+regression suite, rejects workspace mutation during test execution, and seals or
+validates .workflow/state/30_regression_receipt.json against live ground truth.
 """
 
 from datetime import datetime, timezone
@@ -13,13 +13,13 @@ import json
 import math
 import os
 import re
-import shutil
 import signal
 import subprocess
 import tempfile
 from typing import Any, Dict, Optional, Tuple
 
 from lib.config import resolve_workflow_config, sanitize_make_subprocess_env
+from lib.git_index import ephemeral_git_index
 
 DEFAULT_REGRESSION_RECEIPT_REL = os.path.join(
     ".workflow", "state", "30_regression_receipt.json"
@@ -131,9 +131,10 @@ def _git_head_sha(repo_root: str) -> Tuple[Optional[str], str]:
 def compute_working_tree_hash(repo_root: str) -> str:
   """Computes the exact Git Merkle hash of the full working tree without mutating .git/index.
 
-  Copies the repository's real Git index into a temporary directory using
-  shutil.copyfile (SCAR-SYS-05), runs ``git add -A`` and ``git write-tree``
-  against that temporary ``GIT_INDEX_FILE``, and returns the tree SHA.
+  Seeds an isolated ephemeral ``GIT_INDEX_FILE`` via native Git plumbing
+  (``ephemeral_git_index``), runs ``git -c core.splitIndex=false add -A`` and
+  ``git -c core.splitIndex=false write-tree`` against that ephemeral index, and
+  returns the resulting tree SHA.
 
   Args:
     repo_root: Git repository root directory.
@@ -145,32 +146,17 @@ def compute_working_tree_hash(repo_root: str) -> str:
     RuntimeError: If repo_root is not a valid Git repository or git commands fail.
   """
   abs_repo = os.path.abspath(repo_root)
-  if not os.path.isdir(abs_repo):
-    raise RuntimeError(f"Repository root does not exist: {abs_repo}")
-
-  idx_proc = _run_git(abs_repo, "rev-parse", "--git-path", "index")
-  if idx_proc.returncode != 0:
-    err = (idx_proc.stderr or idx_proc.stdout or "git rev-parse --git-path index failed").strip()
-    raise RuntimeError(err)
-
-  raw_idx = (idx_proc.stdout or "").strip()
-  if not raw_idx:
-    raise RuntimeError("git rev-parse --git-path index returned empty path")
-  real_index = raw_idx if os.path.isabs(raw_idx) else os.path.join(abs_repo, raw_idx)
-
-  with tempfile.TemporaryDirectory() as tmp_dir:
-    tmp_index = os.path.join(tmp_dir, "index")
-    if os.path.isfile(real_index):
-      shutil.copyfile(real_index, tmp_index)
-    env = dict(os.environ)
-    env["GIT_INDEX_FILE"] = tmp_index
-
-    add_proc = _run_git(abs_repo, "add", "-A", env=env)
+  with ephemeral_git_index(abs_repo) as env:
+    add_proc = _run_git(
+        abs_repo, "-c", "core.splitIndex=false", "add", "-A", env=env
+    )
     if add_proc.returncode != 0:
       err = (add_proc.stderr or add_proc.stdout or "git add -A failed").strip()
       raise RuntimeError(err)
 
-    wt_proc = _run_git(abs_repo, "write-tree", env=env)
+    wt_proc = _run_git(
+        abs_repo, "-c", "core.splitIndex=false", "write-tree", env=env
+    )
     tree_hash = (wt_proc.stdout or "").strip()
     if wt_proc.returncode != 0 or not tree_hash:
       err = (wt_proc.stderr or wt_proc.stdout or "git write-tree failed").strip()

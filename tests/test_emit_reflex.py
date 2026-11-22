@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Hermetic unit and boundary tests for Vector 4 Reflex gates (GH-57, SCAR-ARCH-06)."""
 
+import hashlib
 import io
 import json
 import os
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1785,6 +1787,271 @@ class TestWorkflowGatesScript(unittest.TestCase):
       self.assertEqual(
           del_mod_sync["conflicting_files"], ["local_del_conflict.txt"]
       )
+
+  def _file_sha256(self, path: str) -> str:
+    """Returns the SHA-256 hex digest of a file's raw bytes."""
+    with open(path, "rb") as f:
+      return hashlib.sha256(f.read()).hexdigest()
+
+  def _sharedindex_snapshot(self, git_dir: str) -> dict:
+    """Returns a mapping of .git/sharedindex.* filenames to SHA-256 digests."""
+    return {
+        name: self._file_sha256(os.path.join(git_dir, name))
+        for name in sorted(os.listdir(git_dir))
+        if name.startswith("sharedindex.")
+    }
+
+  def _setup_upstream_conflict_fixture(self, base_dir: str, *, stamp_t0: int = 0):
+    """Creates bare origin, clone1 (feature branch), and clone2 pushing conflicting shared.txt."""
+    bare_dir = os.path.join(base_dir, "origin.git")
+    os.makedirs(bare_dir, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--bare", "-q"],
+        cwd=bare_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    clone1 = os.path.join(base_dir, "clone1")
+    os.makedirs(clone1, exist_ok=True)
+    _init_git_repo(clone1)
+    _exclude_workflow_dirs(clone1)
+    subprocess.run(
+        ["git", "branch", "-M", "main"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if stamp_t0:
+      readme1 = os.path.join(clone1, "README.md")
+      os.utime(readme1, (stamp_t0, stamp_t0))
+      subprocess.run(
+          ["git", "add", "README.md"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+    shared1 = os.path.join(clone1, "shared.txt")
+    with open(shared1, "w", encoding="utf-8") as f:
+      f.write("line 1\n")
+    if stamp_t0:
+      os.utime(shared1, (stamp_t0, stamp_t0))
+    subprocess.run(
+        ["git", "add", "shared.txt"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "chore: add shared.txt"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "remote", "add", "origin", bare_dir],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "push", "-q", "-u", "origin", "main"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "feat/sync-plumbing"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    clone2 = os.path.join(base_dir, "clone2")
+    subprocess.run(
+        ["git", "clone", "-q", "-b", "main", bare_dir, clone2],
+        cwd=base_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "clone2@example.com"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Clone Two"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with open(os.path.join(clone2, "shared.txt"), "w", encoding="utf-8") as f:
+      f.write("line 9\n")
+    subprocess.run(
+        ["git", "add", "shared.txt"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "feat: upstream conflict on shared.txt"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "push", "-q", "origin", "main"],
+        cwd=clone2,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "fetch", "-q", "origin", "main"],
+        cwd=clone1,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return clone1
+
+  def test_inspect_main_sync_detects_racy_git_same_size_rewrite_conflict(self):
+    """GH-249 / SCAR-GIT-20: inspect_main_sync detects CONFLICT on racy-git same-size rewrite without mutating .git/index."""
+    from lib.workflow_gates import inspect_main_sync
+
+    with tempfile.TemporaryDirectory() as base_dir:
+      t0 = int(time.time()) - 5
+      clone1 = self._setup_upstream_conflict_fixture(base_dir, stamp_t0=t0)
+      subprocess.run(
+          ["git", "config", "core.trustctime", "false"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "config", "core.checkstat", "minimal"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      shared_path = os.path.join(clone1, "shared.txt")
+      readme_path = os.path.join(clone1, "README.md")
+      index_path = os.path.join(clone1, ".git", "index")
+      os.utime(readme_path, (t0, t0))
+      os.utime(shared_path, (t0, t0))
+      subprocess.run(
+          ["git", "update-index", "--refresh"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      os.utime(index_path, (t0, t0))
+
+      # Overwrite in-place with an identical 7-byte payload at the same timestamp t0.
+      with open(shared_path, "w", encoding="utf-8") as f:
+        f.write("line 2\n")
+      os.utime(shared_path, (t0, t0))
+
+      index_sha_before = self._file_sha256(index_path)
+
+      result = inspect_main_sync(clone1)
+
+      self.assertEqual(result["status"], "CONFLICT")
+      self.assertTrue(result["has_conflicts"])
+      self.assertEqual(result["conflicting_files"], ["shared.txt"])
+      self.assertTrue(result["working_tree_dirty"])
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+
+  def test_inspect_main_sync_split_index_detects_conflict_without_sharedindex_side_effects(
+      self,
+  ):
+    """GH-249 / SCAR-GIT-20: inspect_main_sync handles core.splitIndex=true without creating .git/sharedindex.* files."""
+    from lib.workflow_gates import inspect_main_sync
+
+    with tempfile.TemporaryDirectory() as base_dir:
+      clone1 = self._setup_upstream_conflict_fixture(base_dir)
+      subprocess.run(
+          ["git", "config", "core.splitIndex", "true"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "config", "splitIndex.maxPercentChange", "0"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "update-index", "--split-index"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      git_dir = os.path.join(clone1, ".git")
+      shared_before = self._sharedindex_snapshot(git_dir)
+      self.assertTrue(shared_before)
+
+      shared_path = os.path.join(clone1, "shared.txt")
+      with open(shared_path, "w", encoding="utf-8") as f:
+        f.write("local split-index conflicting change\n")
+
+      index_path = os.path.join(git_dir, "index")
+      index_sha_before = self._file_sha256(index_path)
+
+      result = inspect_main_sync(clone1)
+
+      self.assertEqual(result["status"], "CONFLICT")
+      self.assertTrue(result["has_conflicts"])
+      self.assertEqual(result["conflicting_files"], ["shared.txt"])
+      self.assertEqual(index_sha_before, self._file_sha256(index_path))
+      self.assertEqual(shared_before, self._sharedindex_snapshot(git_dir))
+
+  def test_inspect_main_sync_falls_back_to_head_when_ephemeral_index_fails(self):
+    """GH-249 / SCAR-TEST-24: inspect_main_sync preserves local_tree='HEAD' fallback on RuntimeError/OSError."""
+    from lib.workflow_gates import inspect_main_sync
+
+    with tempfile.TemporaryDirectory() as base_dir:
+      clone1 = self._setup_upstream_conflict_fixture(base_dir)
+      with open(os.path.join(clone1, "shared.txt"), "w", encoding="utf-8") as f:
+        f.write("local uncommitted conflicting line\n")
+
+      for injected_exc in (
+          RuntimeError("simulated plumbing failure"),
+          OSError("simulated temporary dir failure"),
+      ):
+        with mock.patch(
+            "lib.workflow_gates.ephemeral_git_index",
+            side_effect=injected_exc,
+        ):
+          result = inspect_main_sync(clone1)
+
+        self.assertEqual(result["status"], "BEHIND_CLEAN")
+        self.assertFalse(result["has_conflicts"])
+        self.assertEqual(result["conflicting_files"], [])
+        self.assertTrue(result["working_tree_dirty"])
 
 
 class TestCliAndMakefileIntegration(unittest.TestCase):
