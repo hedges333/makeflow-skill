@@ -1325,6 +1325,177 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       })
       self.assertEqual(branch_del_res["decision"], "force_ask", branch_del_res)
 
+  def test_target_42_bounded_wakeup_single_human_pause_lifecycle(self):
+    """GH-247: Verifies critic blocker wakeup enters T42 once and exits after one USER_INPUT."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "active_target.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump(
+            {
+                "previousTarget": "T30",
+                "target": "T40",
+                "targetName": "adversarial-review",
+            },
+            f,
+        )
+
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {
+              "step_index": 5,
+              "type": "USER_INPUT",
+              "content": "Approved Target 20 plan.",
+          },
+          {
+              "step_index": 10,
+              "type": "PLANNER_RESPONSE",
+              "content": "Dispatching adversarial-critic for Round 1.",
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+      record_active_subagent(
+          state_dir,
+          "sup-1",
+          "adversarial-critic",
+          transcript_path=transcript_path,
+      )
+      self.assertIsNotNone(read_active_subagent(state_dir))
+
+      # Critic blocker wakeup arrives via <SYSTEM_MESSAGE>
+      steps.append({
+          "step_index": 11,
+          "type": "SYSTEM_MESSAGE",
+          "content": (
+              "[Message] sender=critic-1 VERDICT: REJECTED (2 BLOCKERS)"
+          ),
+      })
+      _write_transcript(transcript_path, steps)
+
+      # 1. Bounded wakeup action: write round-specific and canonical critic review cards
+      round_card = os.path.join(state_dir, "40_critic_review_round1.md")
+      write_round_res = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "write_file",
+              "args": {
+                  "Path": round_card,
+                  "Content": "# Round 1\nVERDICT: REJECTED (2 BLOCKERS)\n",
+              },
+          },
+      })
+      self.assertEqual(write_round_res["decision"], "allow", write_round_res)
+      self.assertIsNone(read_active_subagent(state_dir))
+      with open(round_card, "w", encoding="utf-8") as f:
+        f.write("# Round 1\nVERDICT: REJECTED (2 BLOCKERS)\n")
+
+      canon_card = os.path.join(state_dir, "40_critic_review.md")
+      write_canon_res = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "write_file",
+              "args": {
+                  "Path": canon_card,
+                  "Content": "# Round 1\nVERDICT: REJECTED (2 BLOCKERS)\n",
+              },
+          },
+      })
+      self.assertEqual(write_canon_res["decision"], "allow", write_canon_res)
+      with open(canon_card, "w", encoding="utf-8") as f:
+        f.write("# Round 1\nVERDICT: REJECTED (2 BLOCKERS)\n")
+
+      # 2. Bounded wakeup action: enter Target 42 (T40 -> T42) and seal gate_entry.json
+      enter_t42_cmd = (
+          "make -f .workflow/state/Makefile triaged-blockers BLOCKERS=2"
+      )
+      enter_t42_res = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": enter_t42_cmd},
+          },
+      })
+      self.assertEqual(enter_t42_res["decision"], "allow", enter_t42_res)
+
+      gate_entry_file = os.path.join(state_dir, "gate_entry.json")
+      self.assertTrue(os.path.isfile(gate_entry_file))
+      with open(gate_entry_file, "r", encoding="utf-8") as f:
+        entry = json.load(f)
+      self.assertEqual(entry["gate"], "T42")
+      self.assertEqual(entry["fromTarget"], "T40")
+      self.assertFalse(entry["humanTurnVerified"])
+      self.assertEqual(entry["userInputCountAtEntry"], 1)
+
+      with open(
+          os.path.join(state_dir, "active_target.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump(
+            {
+                "previousTarget": "T40",
+                "target": "T42",
+                "targetName": "triaged-blockers",
+            },
+            f,
+        )
+
+      steps.append({
+          "step_index": 12,
+          "type": "PLANNER_RESPONSE",
+          "content": "Target 42 Blocker Digest presented. Stopping tool calls.",
+          "tool_calls": [{
+              "name": "run_command",
+              "args": {"CommandLine": enter_t42_cmd},
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+
+      # 3. Same wakeup turn attempting T42 -> T30 before human reply -> DENIED (SCAR-PROC-102)
+      exit_t42_cmd = (
+          "make -f .workflow/state/Makefile implementation-diff APPROVED=1"
+      )
+      same_turn_exit = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": exit_t42_cmd},
+          },
+      })
+      self.assertEqual(same_turn_exit["decision"], "deny", same_turn_exit)
+      self.assertIn("SCAR-PROC-102", same_turn_exit["reason"])
+      self.assertIn("same autonomous turn", same_turn_exit["reason"])
+      self.assertNotIn(
+          "no human USER_INPUT turn exists", same_turn_exit["reason"]
+      )
+
+      # 4. Single human USER_INPUT reply authorizes T42 -> T30 on the first attempt
+      steps.append({
+          "step_index": 13,
+          "type": "USER_INPUT",
+          "content": "Proceed with remediation.",
+      })
+      _write_transcript(transcript_path, steps)
+
+      post_human_exit = evaluate_tool_call({
+          "conversationId": "sup-1",
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": exit_t42_cmd},
+          },
+      })
+      self.assertEqual(post_human_exit["decision"], "allow", post_human_exit)
+
 
 class TestSubagentHaltAirlock(unittest.TestCase):
   """Hermetic unit and boundary tests for SCAR-PROC-95 subagent halt airlock (GH-220)."""

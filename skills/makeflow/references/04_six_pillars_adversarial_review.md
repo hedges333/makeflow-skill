@@ -214,10 +214,22 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 
 ## 5. Target 42: Blocker Triage Gate (`BLOCKERS > 0`)
 
-If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`, run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>` to route from `T40` to `T42`:
+If Target 40 yields `VERDICT: REJECTED (<N> BLOCKERS)`, enter Target 42 (`T40` to `T42`) during the critic wakeup turn before halting.
 
-### 5.1 The Zero-Tool Blocker Airlock (`SCAR-PROC-89`)
-The agent is strictly prohibited from immediately modifying code, running tests, or arguing with the critic. The turn following a critic blocker wakeup must contain **zero tool calls (`tool_calls: []`)**.
+### 5.1 The Bounded Target 42 Blocker Airlock (`SCAR-PROC-89`)
+During a critic blocker wakeup turn, the agent may execute only bounded Target 42 entry actions:
+1. Write `.workflow/state/40_critic_review_round<N>.md` and `.workflow/state/40_critic_review.md` with the complete critic review prose.
+2. Run `make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>` to enter Target 42 (`T40` to `T42`) and record `.workflow/state/gate_entry.json`.
+3. Present the Blocker Digest in chat and stop tool calls (`tool_calls: []`) until human triage arrives (`SCAR-PROC-102`).
+
+Before explicit human triage arrives, the agent must never take any other action:
+- Never edit source files or test files.
+- Never run test commands or linters.
+- Never send messages to, argue with, or negotiate with the critic.
+- Never dispatch subagents or draft commit messages.
+- Never advance past Target 42 (for example `make -f .workflow/state/Makefile implementation-diff APPROVED=1`) in the wakeup turn.
+
+Entering Target 42 during wakeup lets a single human reply authorize `make -f .workflow/state/Makefile implementation-diff APPROVED=1` (`T42` to `T30`) under `scripts/pre_tool_guard.py`.
 
 ### 5.2 The Blocker Digest
 Present a structured Blocker Digest directly in chat:
