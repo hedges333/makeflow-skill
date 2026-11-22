@@ -10,13 +10,12 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
-import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
 from lib.commit_msg import receipt_declares_pure_git, validate_commit_message
+from lib.git_index import ephemeral_git_index
 from lib.reflex import emit_reflex
 from lib.repo_tree import (
     DEFAULT_REPO_TREE_THRESHOLD,
@@ -175,8 +174,9 @@ def _parse_merge_tree_conflicts(merge_tree_stdout: str) -> List[str]:
 def inspect_main_sync(repo_root: str) -> Dict[str, Any]:
   """Inspects local upstream origin/main divergence and 3-way merge-tree conflicts without fetching.
 
-  Uses an ephemeral GIT_INDEX_FILE copy when unstaged or staged tracked changes
-  exist so .git/index, HEAD, and .workflow/state/approved_tree.txt are never mutated.
+  Uses an ephemeral GIT_INDEX_FILE seeded via native Git plumbing when unstaged
+  or staged tracked changes exist so .git/index, .git/sharedindex.*, HEAD, and
+  .workflow/state/approved_tree.txt are never mutated.
   """
   if not repo_root or not os.path.isdir(repo_root):
     return _no_remote_sync_result()
@@ -200,7 +200,9 @@ def inspect_main_sync(repo_root: str) -> Dict[str, Any]:
   if ver_head.returncode != 0:
     return _no_remote_sync_result()
 
-  status_proc = _run_repo_git(repo_root, "status", "--porcelain")
+  status_proc = _run_repo_git(
+      repo_root, "--no-optional-locks", "status", "--porcelain"
+  )
   status_lines = [
       ln for ln in (status_proc.stdout or "").splitlines() if ln.strip()
   ]
@@ -248,31 +250,19 @@ def inspect_main_sync(repo_root: str) -> Dict[str, Any]:
 
   local_tree = "HEAD"
   if has_tracked_changes:
-    git_dir_proc = _run_repo_git(repo_root, "rev-parse", "--git-dir")
-    git_dir_raw = (
-        (git_dir_proc.stdout or "").strip()
-        if git_dir_proc.returncode == 0
-        else ".git"
-    )
-    git_dir = (
-        git_dir_raw
-        if os.path.isabs(git_dir_raw)
-        else os.path.join(repo_root, git_dir_raw)
-    )
-    real_index = os.path.join(git_dir, "index")
     try:
-      with tempfile.TemporaryDirectory() as tmp_idx_dir:
-        tmp_index = os.path.join(tmp_idx_dir, "index")
-        if os.path.isfile(real_index):
-          shutil.copyfile(real_index, tmp_index)
-        env = dict(os.environ)
-        env["GIT_INDEX_FILE"] = tmp_index
-        _run_repo_git(repo_root, "add", "-u", env=env)
-        wt_proc = _run_repo_git(repo_root, "write-tree", env=env)
-        wt_sha = (wt_proc.stdout or "").strip()
-        if wt_proc.returncode == 0 and wt_sha:
-          local_tree = wt_sha
-    except OSError:
+      with ephemeral_git_index(repo_root, timeout=10) as env:
+        add_proc = _run_repo_git(
+            repo_root, "-c", "core.splitIndex=false", "add", "-u", env=env
+        )
+        if add_proc.returncode == 0:
+          wt_proc = _run_repo_git(
+              repo_root, "-c", "core.splitIndex=false", "write-tree", env=env
+          )
+          wt_sha = (wt_proc.stdout or "").strip()
+          if wt_proc.returncode == 0 and wt_sha:
+            local_tree = wt_sha
+    except (RuntimeError, OSError):
       local_tree = "HEAD"
 
   mt_proc = _run_repo_git(

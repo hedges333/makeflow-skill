@@ -68,6 +68,21 @@ def _run_make(
   )
 
 
+def _assert_make_rc(
+    test_case: unittest.TestCase,
+    proc: subprocess.CompletedProcess,
+    expected_rc: int = 0,
+) -> subprocess.CompletedProcess:
+  """Asserts a _run_make exit code with stderr and stdout diagnostics (GH-249)."""
+  test_case.assertEqual(
+      proc.returncode,
+      expected_rc,
+      f"make {proc.args!r} exited {proc.returncode} (expected {expected_rc})\n"
+      f"stderr:\n{proc.stderr}\nstdout:\n{proc.stdout}",
+  )
+  return proc
+
+
 def _write_file(path: str, content: str) -> None:
   """Writes UTF-8 text to path, creating parent directories if needed."""
   os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -346,19 +361,20 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
         step_no += 1
 
       human_turn("Start workflow")
-      self.assertEqual(_run_make(repo, "read-init-d").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "read-init-d"), 0)
       self._prepare_ticket_cards(state_dir)
-      self.assertEqual(_run_make(repo, "ticket-assigned").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "ticket-assigned"), 0)
       self._assert_active_readers(repo, state_dir)
 
       _write_file(
           os.path.join(state_dir, "15_archaeology_receipt.md"),
           "# Receipt\nHOSTING_MODE: GITHUB\n",
       )
-      self.assertEqual(_run_make(repo, "archaeology-verified").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "archaeology-verified"), 0)
       _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
-      self.assertEqual(
-          _run_make(repo, "approved-plan", f"TRANSCRIPT={transcript}").returncode,
+      _assert_make_rc(
+          self,
+          _run_make(repo, "approved-plan", f"TRANSCRIPT={transcript}"),
           0,
       )
       na_t20 = self._assert_active_readers(repo, state_dir)
@@ -366,60 +382,66 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
 
       human_turn("Plan approved")
       _write_file(os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo,
               "implementation-diff",
               "APPROVED=1",
               f"TRANSCRIPT={transcript}",
-          ).returncode,
+          ),
           0,
       )
 
       _write_file(os.path.join(repo, "feature.py"), "VALUE = 1\n")
-      self.assertEqual(
-          _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+      _assert_make_rc(
+          self,
+          _run_make(repo, "verify-regression", "REGRESSION_CMD=true"),
           0,
       )
       _lock_approved_tree(repo)
-      self.assertEqual(_run_make(repo, "adversarial-review").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "adversarial-review"), 0)
 
       _write_file(os.path.join(state_dir, "40_critic_review.md"), "BLOCKER 1\n")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo,
               "triaged-blockers",
               "BLOCKERS=1",
               f"TRANSCRIPT={transcript}",
-          ).returncode,
+          ),
           0,
       )
       human_turn("Fix blocker")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo,
               "implementation-diff",
               "APPROVED=1",
               f"TRANSCRIPT={transcript}",
-          ).returncode,
+          ),
           0,
       )
 
       _write_file(os.path.join(repo, "feature.py"), "VALUE = 2\n")
-      self.assertEqual(
-          _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+      _assert_make_rc(
+          self,
+          _run_make(repo, "verify-regression", "REGRESSION_CMD=true"),
           0,
       )
       _lock_approved_tree(repo)
-      self.assertEqual(_run_make(repo, "adversarial-review").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "adversarial-review"), 0)
       _write_file(os.path.join(state_dir, "40_critic_review.md"), "0 blockers\n")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo,
               "approved-review",
               "BLOCKERS=0",
               f"TRANSCRIPT={transcript}",
-          ).returncode,
+          ),
           0,
       )
 
@@ -436,38 +458,41 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       r_commit = _run_make(
           repo, "commit", "APPROVED=1", f"TRANSCRIPT={transcript}"
       )
-      self.assertEqual(r_commit.returncode, 0, r_commit.stderr)
+      _assert_make_rc(self, r_commit, 0)
 
       human_turn("Commit approved")
       _git(repo, "commit", "-q", "-F", os.path.join(state_dir, "50_commit_msg.txt"))
       r_push = _run_make(
           repo, "push", "APPROVED=1", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
       )
-      self.assertEqual(r_push.returncode, 0, r_push.stderr)
+      _assert_make_rc(self, r_push, 0)
 
       human_turn("Push approved")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo, "bot-quiescence", "APPROVED=1", f"TRANSCRIPT={transcript}"
-          ).returncode,
+          ),
           0,
       )
       _write_file(os.path.join(state_dir, "70_bot_triage.md"), "QUIESCENT\n")
-      self.assertEqual(
-          _run_make(repo, "ready-to-land", f"TRANSCRIPT={transcript}").returncode,
+      _assert_make_rc(
+          self,
+          _run_make(repo, "ready-to-land", f"TRANSCRIPT={transcript}"),
           0,
       )
 
       human_turn("Landing approved")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo, "land", "APPROVED=1", f"TRANSCRIPT={transcript}"
-          ).returncode,
+          ),
           0,
       )
 
-      self.assertEqual(
-          _run_make(repo, "codified-scars-consolidated").returncode, 0
+      _assert_make_rc(
+          self, _run_make(repo, "codified-scars-consolidated"), 0
       )
       self._assert_active_readers(repo, state_dir)
       self.assertTrue(is_target_90_state_dir(state_dir))
@@ -476,7 +501,7 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       _write_file(os.path.join(state_dir, "30_tdd_receipt.json"), "{}\n")
       _write_file(os.path.join(state_dir, "loaded_scars.json"), "[]\n")
       r_finish = _run_make(repo, "finish")
-      self.assertEqual(r_finish.returncode, 0, r_finish.stderr)
+      _assert_make_rc(self, r_finish, 0)
 
       with open(mk_path, "rb") as f:
         self.assertEqual(f.read(), initial_mk_bytes)
@@ -986,53 +1011,61 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       WorkflowGatesScript().execute(["--repo-root", tmp, "init-makefile"])
       state_dir = os.path.join(tmp, ".workflow", "state")
 
-      bad_jump = _run_make(tmp, "advance", "FROM=T10", "TO=T50")
-      self.assertEqual(bad_jump.returncode, 2)
+      bad_jump = _assert_make_rc(
+          self, _run_make(tmp, "advance", "FROM=T10", "TO=T50"), 2
+      )
       self.assertIn("?", bad_jump.stderr)
 
-      no_card = _run_make(tmp, "archaeology-verified", "FROM=T10")
-      self.assertEqual(no_card.returncode, 2)
+      no_card = _assert_make_rc(
+          self, _run_make(tmp, "archaeology-verified", "FROM=T10"), 2
+      )
       self.assertIn("10_ticket.md", no_card.stderr)
 
       _write_file(os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n")
-      no_tree_named = _run_make(tmp, "adversarial-review", "FROM=T30")
-      self.assertEqual(no_tree_named.returncode, 2)
+      no_tree_named = _assert_make_rc(
+          self, _run_make(tmp, "adversarial-review", "FROM=T30"), 2
+      )
       self.assertIn("UNAPPROVED_TREE_DRIFT", no_tree_named.stderr)
 
-      no_tree_generic = _run_make(tmp, "advance", "FROM=T30", "TO=T40")
-      self.assertEqual(no_tree_generic.returncode, 2)
+      no_tree_generic = _assert_make_rc(
+          self, _run_make(tmp, "advance", "FROM=T30", "TO=T40"), 2
+      )
       self.assertIn("UNAPPROVED_TREE_DRIFT", no_tree_generic.stderr)
 
       _lock_approved_tree(tmp)
       _write_file(os.path.join(state_dir, "40_critic_review.md"), "Blockers\n")
-      bad_t45 = _run_make(tmp, "approved-review", "FROM=T40", "BLOCKERS=2")
-      self.assertEqual(bad_t45.returncode, 2)
-      bad_t45_default = _run_make(tmp, "advance", "FROM=T40", "TO=T45")
-      self.assertEqual(bad_t45_default.returncode, 2)
-      bad_t42 = _run_make(tmp, "triaged-blockers", "FROM=T40", "BLOCKERS=0")
-      self.assertEqual(bad_t42.returncode, 2)
+      _assert_make_rc(
+          self, _run_make(tmp, "approved-review", "FROM=T40", "BLOCKERS=2"), 2
+      )
+      _assert_make_rc(
+          self, _run_make(tmp, "advance", "FROM=T40", "TO=T45"), 2
+      )
+      _assert_make_rc(
+          self, _run_make(tmp, "triaged-blockers", "FROM=T40", "BLOCKERS=0"), 2
+      )
 
       _write_file(os.path.join(state_dir, "45_review_approved.md"), "OK\n")
       _lock_approved_tree(tmp)
-      no_msg = _run_make(tmp, "commit", "FROM=T45", "APPROVED=1")
-      self.assertEqual(no_msg.returncode, 2)
+      no_msg = _assert_make_rc(
+          self, _run_make(tmp, "commit", "FROM=T45", "APPROVED=1"), 2
+      )
       self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", no_msg.stderr)
 
-      no_msg_generic = _run_make(
-          tmp, "advance", "FROM=T45", "TO=T50", "APPROVED=1"
+      no_msg_generic = _assert_make_rc(
+          self,
+          _run_make(tmp, "advance", "FROM=T45", "TO=T50", "APPROVED=1"),
+          2,
       )
-      self.assertEqual(no_msg_generic.returncode, 2)
       self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", no_msg_generic.stderr)
 
       _write_file(os.path.join(state_dir, "15_archaeology_receipt.md"), "OK\n")
       _write_file(os.path.join(state_dir, "20_plan.md"), "Plan\n")
-      self.assertEqual(
-          _run_make(tmp, "approved-plan", "FROM=T15").returncode, 0
+      _assert_make_rc(self, _run_make(tmp, "approved-plan", "FROM=T15"), 0)
+      same_turn = _assert_make_rc(
+          self,
+          _run_make(tmp, "implementation-diff", "FROM=T20", "APPROVED=1"),
+          2,
       )
-      same_turn = _run_make(
-          tmp, "implementation-diff", "FROM=T20", "APPROVED=1"
-      )
-      self.assertEqual(same_turn.returncode, 2)
       self.assertIn("SCAR-PROC-102", same_turn.stderr)
 
   def test_push_upstream_conflict_and_allow_main_conflict_override(
@@ -1067,21 +1100,25 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       _git(clone1, "fetch", "-q", "origin", "main")
 
       WorkflowGatesScript().execute(["--repo-root", clone1, "init-makefile"])
-      blocked_push = _run_make(
-          clone1, "push", "FROM=T50", "APPROVED=1", "NO_FETCH=1"
+      blocked_push = _assert_make_rc(
+          self,
+          _run_make(clone1, "push", "FROM=T50", "APPROVED=1", "NO_FETCH=1"),
+          2,
       )
-      self.assertEqual(blocked_push.returncode, 2)
       self.assertIn("UPSTREAM_MAIN_CONFLICT", blocked_push.stderr)
 
-      override_push = _run_make(
-          clone1,
-          "push",
-          "FROM=T50",
-          "APPROVED=1",
-          "NO_FETCH=1",
-          "ALLOW_MAIN_CONFLICT=1",
+      _assert_make_rc(
+          self,
+          _run_make(
+              clone1,
+              "push",
+              "FROM=T50",
+              "APPROVED=1",
+              "NO_FETCH=1",
+              "ALLOW_MAIN_CONFLICT=1",
+          ),
+          0,
       )
-      self.assertEqual(override_push.returncode, 0, override_push.stderr)
 
   def test_mcp_workflow_advance_target_executes_real_make_when_present(
       self,
@@ -1127,8 +1164,9 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           blocked_t40_reg["result"]["content"][0]["text"],
       )
 
-      r_reg = _run_make(tmp, "verify-regression", "REGRESSION_CMD=true")
-      self.assertEqual(r_reg.returncode, 0, r_reg.stderr)
+      _assert_make_rc(
+          self, _run_make(tmp, "verify-regression", "REGRESSION_CMD=true"), 0
+      )
 
       ok_t40 = mcp_server.handle_tools_call(
           2,
@@ -1538,10 +1576,13 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
         self.assertTrue(mcp_bad["result"].get("isError"))
 
       for cli_val in ("-1", "abc"):
-        cli_proc = _run_make(
-            repo, "approved-review", "FROM=T40", f"BLOCKERS={cli_val}"
+        cli_proc = _assert_make_rc(
+            self,
+            _run_make(
+                repo, "approved-review", "FROM=T40", f"BLOCKERS={cli_val}"
+            ),
+            2,
         )
-        self.assertEqual(cli_proc.returncode, 2, cli_proc.stderr)
         self.assertIn("[SCAR-ID:", cli_proc.stderr)
 
   def test_prefix_env_make_pause_gate_bundling_and_turn_boundary(self) -> None:
@@ -1648,8 +1689,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           "- **Title**: First intake without read-init-d\n",
       )
       self.assertEqual(infer_current_target(state_dir), "T10")
-      r_t10 = _run_make(repo, "ticket-assigned", "NO_FETCH=1")
-      self.assertEqual(r_t10.returncode, 0, r_t10.stderr)
+      _assert_make_rc(self, _run_make(repo, "ticket-assigned", "NO_FETCH=1"), 0)
       self.assertEqual(read_active_target(state_dir)["target"], "T10")
 
       def strip_state_tracking() -> None:
@@ -1669,8 +1709,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       )
       _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
       self.assertEqual(infer_current_target(state_dir), "T20")
-      r_t20 = _run_make(repo, "approved-plan", "NO_FETCH=1")
-      self.assertEqual(r_t20.returncode, 0, r_t20.stderr)
+      _assert_make_rc(self, _run_make(repo, "approved-plan", "NO_FETCH=1"), 0)
       self.assertEqual(read_active_target(state_dir)["target"], "T20")
 
       # T20 -> T30 with 20_plan_approved.md already written on disk
@@ -1679,10 +1718,11 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n"
       )
       self.assertEqual(infer_current_target(state_dir), "T30")
-      r_t30 = _run_make(
-          repo, "implementation-diff", "APPROVED=1", "NO_FETCH=1"
+      _assert_make_rc(
+          self,
+          _run_make(repo, "implementation-diff", "APPROVED=1", "NO_FETCH=1"),
+          0,
       )
-      self.assertEqual(r_t30.returncode, 0, r_t30.stderr)
       self.assertEqual(read_active_target(state_dir)["target"], "T30")
 
       # T30 -> T40 even when prior round 40_critic_review.md exists
@@ -1691,13 +1731,15 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           os.path.join(state_dir, "40_critic_review.md"), "Round 1\n"
       )
       _write_file(os.path.join(repo, "mod.py"), "VAL = 1\n")
-      self.assertEqual(
-          _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+      _assert_make_rc(
+          self,
+          _run_make(repo, "verify-regression", "REGRESSION_CMD=true"),
           0,
       )
       _lock_approved_tree(repo)
-      r_t40 = _run_make(repo, "adversarial-review", "NO_FETCH=1")
-      self.assertEqual(r_t40.returncode, 0, r_t40.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "adversarial-review", "NO_FETCH=1"), 0
+      )
       self.assertEqual(read_active_target(state_dir)["target"], "T40")
 
       # T45 -> T50 with 45_review_approved.md and 50_commit_msg.txt on disk
@@ -1712,8 +1754,9 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           "Closes #219\n",
       )
       self.assertEqual(infer_current_target(state_dir), "T50")
-      r_t50 = _run_make(repo, "commit", "APPROVED=1", "NO_FETCH=1")
-      self.assertEqual(r_t50.returncode, 0, r_t50.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "commit", "APPROVED=1", "NO_FETCH=1"), 0
+      )
       self.assertEqual(read_active_target(state_dir)["target"], "T50")
 
   def test_denied_pre_tool_guard_never_mutates_gate_entry_on_disk(
@@ -1882,8 +1925,9 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           "toolCall": {"name": "run_command", "args": {"CommandLine": cmd_t50}},
       })
       self.assertEqual(g_t50["decision"], "allow", g_t50)
-      r_t50 = _run_make(repo, "commit", "APPROVED=1", "NO_FETCH=1")
-      self.assertEqual(r_t50.returncode, 0, r_t50.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "commit", "APPROVED=1", "NO_FETCH=1"), 0
+      )
       self.assertEqual(read_active_target(state_dir)["target"], "T50")
 
       # Human approves T50, commit runs, then T50 -> T60 runs without FROM=
@@ -1909,8 +1953,9 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           "toolCall": {"name": "run_command", "args": {"CommandLine": cmd_t60}},
       })
       self.assertEqual(g_t60["decision"], "allow", g_t60)
-      r_t60 = _run_make(repo, "push", "APPROVED=1", "NO_FETCH=1")
-      self.assertEqual(r_t60.returncode, 0, r_t60.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "push", "APPROVED=1", "NO_FETCH=1"), 0
+      )
       self.assertEqual(read_active_target(state_dir)["target"], "T60")
 
   def test_read_init_d_restores_active_session_and_rejects_explicit_from_reset(
@@ -1928,17 +1973,16 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       state_dir = os.path.join(repo, ".workflow", "state")
       self._prepare_ticket_cards_standalone(state_dir)
 
-      self.assertEqual(_run_make(repo, "ticket-assigned", "NO_FETCH=1").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "ticket-assigned", "NO_FETCH=1"), 0)
       _write_file(
           os.path.join(state_dir, "15_archaeology_receipt.md"), "# Receipt\n"
       )
-      self.assertEqual(
-          _run_make(repo, "archaeology-verified", "NO_FETCH=1").returncode, 0
+      _assert_make_rc(
+          self, _run_make(repo, "archaeology-verified", "NO_FETCH=1"), 0
       )
       os.unlink(os.path.join(state_dir, "active_target.json"))
 
-      r_restore_t15 = _run_make(repo, "read-init-d", "NO_FETCH=1")
-      self.assertEqual(r_restore_t15.returncode, 0, r_restore_t15.stderr)
+      _assert_make_rc(self, _run_make(repo, "read-init-d", "NO_FETCH=1"), 0)
       self.assertEqual(read_active_target(state_dir)["target"], "T15")
       with open(
           os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
@@ -1951,10 +1995,11 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           {"step_index": 1, "type": "USER_INPUT", "content": "Plan"},
       )
       _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo, "approved-plan", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
-          ).returncode,
+          ),
           0,
       )
       gate_path = os.path.join(state_dir, "gate_entry.json")
@@ -1962,8 +2007,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
         gate_bytes = f.read()
       os.unlink(os.path.join(state_dir, "active_target.json"))
 
-      r_restore_t20 = _run_make(repo, "read-init-d", "NO_FETCH=1")
-      self.assertEqual(r_restore_t20.returncode, 0, r_restore_t20.stderr)
+      _assert_make_rc(self, _run_make(repo, "read-init-d", "NO_FETCH=1"), 0)
       self.assertEqual(read_active_target(state_dir)["target"], "T20")
       with open(gate_path, "rb") as f:
         self.assertEqual(f.read(), gate_bytes)
@@ -1971,19 +2015,21 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       _write_file(
           os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n"
       )
-      same_turn = _run_make(
-          repo,
-          "implementation-diff",
-          "APPROVED=1",
-          "NO_FETCH=1",
-          f"TRANSCRIPT={transcript}",
+      _assert_make_rc(
+          self,
+          _run_make(
+              repo,
+              "implementation-diff",
+              "APPROVED=1",
+              "NO_FETCH=1",
+              f"TRANSCRIPT={transcript}",
+          ),
+          2,
       )
-      self.assertEqual(same_turn.returncode, 2)
 
-      explicit_from = _run_make(
-          repo, "read-init-d", "FROM=T20", "NO_FETCH=1"
+      _assert_make_rc(
+          self, _run_make(repo, "read-init-d", "FROM=T20", "NO_FETCH=1"), 2
       )
-      self.assertEqual(explicit_from.returncode, 2)
 
   @staticmethod
   def _prepare_ticket_cards_standalone(state_dir: str) -> None:
@@ -2139,10 +2185,13 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
 
       test_cmd = f"{sys.executable} -m unittest tests/test_add.py"
-      r_red = _run_make(
-          repo, "witness-red", "TEST_DIR=tests", f"TEST_CMD={test_cmd}"
+      _assert_make_rc(
+          self,
+          _run_make(
+              repo, "witness-red", "TEST_DIR=tests", f"TEST_CMD={test_cmd}"
+          ),
+          0,
       )
-      self.assertEqual(r_red.returncode, 0, r_red.stderr)
 
       _write_file(
           os.path.join(repo, "calc.py"), "def add(a, b):\n  return a + b\n"
@@ -2263,8 +2312,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       state_dir = os.path.join(repo, ".workflow", "state")
 
       # State 1: UNINITIALIZED (0-card clean workspace)
-      r_init = _run_make(repo, "read-init-d", "NO_FETCH=1")
-      self.assertEqual(r_init.returncode, 0, r_init.stderr)
+      _assert_make_rc(self, _run_make(repo, "read-init-d", "NO_FETCH=1"), 0)
       self.assertEqual(
           [f for f in os.listdir(state_dir) if f.endswith(".md")], []
       )
@@ -2283,9 +2331,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
               "gov_decision": "deny",
           },
       )
-      self.assertEqual(
-          _run_make(repo, "read-init-d", "FROM=T20").returncode, 2
-      )
+      _assert_make_rc(self, _run_make(repo, "read-init-d", "FROM=T20"), 2)
       for src_t in ("T00", "T20"):
         bad_mcp = handle_tools_call(
             101,
@@ -2310,7 +2356,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       os.unlink(unassigned_na)
 
       # State 2: ACTIVE_T10_T80 (Ticket #1 GH-219)
-      self.assertEqual(_run_make(repo, "check-intake").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "check-intake"), 0)
       _git(repo, "checkout", "-q", "-b", "feat/219-first")
       _write_file(
           os.path.join(state_dir, "10_ticket.json"),
@@ -2324,9 +2370,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           )
           + "\n",
       )
-      self.assertEqual(
-          _run_make(repo, "ticket-assigned", "NO_FETCH=1").returncode, 0
-      )
+      _assert_make_rc(self, _run_make(repo, "ticket-assigned", "NO_FETCH=1"), 0)
       self._assert_seven_consumers(
           repo,
           state_dir,
@@ -2348,39 +2392,38 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           transcript, {"step_index": 1, "type": "USER_INPUT", "content": "Go"}
       )
       _write_file(os.path.join(state_dir, "70_bot_triage.md"), "GREEN\n")
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo,
               "ready-to-land",
               "FROM=T70",
               "NO_FETCH=1",
               f"TRANSCRIPT={transcript}",
-          ).returncode,
+          ),
           0,
       )
       _append_transcript_step(
           transcript,
           {"step_index": 2, "type": "USER_INPUT", "content": "Land"},
       )
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo,
               "land",
               "APPROVED=1",
               "NO_FETCH=1",
               f"TRANSCRIPT={transcript}",
-          ).returncode,
+          ),
           0,
       )
 
       # State 3: ACTIVE_T90 on main (merged, before finish)
       _git(repo, "checkout", "-q", "main")
       _git(repo, "branch", "-D", "-q", "feat/219-first")
-      self.assertEqual(
-          _run_make(
-              repo, "codified-scars-consolidated", "NO_FETCH=1"
-          ).returncode,
-          0,
+      _assert_make_rc(
+          self, _run_make(repo, "codified-scars-consolidated", "NO_FETCH=1"), 0
       )
       self._assert_seven_consumers(
           repo,
@@ -2399,7 +2442,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       )
 
       # State 4: COMPLETED -> read-init-d -> Ticket #2 check-intake -> Ticket #2 ACTIVE
-      self.assertEqual(_run_make(repo, "finish", "NO_FETCH=1").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "finish", "NO_FETCH=1"), 0)
       self._assert_seven_consumers(
           repo,
           state_dir,
@@ -2416,8 +2459,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           },
       )
 
-      r_init_after_fin = _run_make(repo, "read-init-d", "NO_FETCH=1")
-      self.assertEqual(r_init_after_fin.returncode, 0, r_init_after_fin.stderr)
+      _assert_make_rc(self, _run_make(repo, "read-init-d", "NO_FETCH=1"), 0)
       with open(
           os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
       ) as f:
@@ -2425,9 +2467,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       self.assertIn("# Target 90 Finished: COMPLETE", fin_na)
       self.assertNotIn("(In Progress)", fin_na)
       self.assertFalse(is_ticket_active(state_dir))
-      self.assertEqual(
-          _run_make(repo, "read-init-d", "FROM=T20").returncode, 2
-      )
+      _assert_make_rc(self, _run_make(repo, "read-init-d", "FROM=T20"), 2)
 
       # Next ticket check-intake on main with fake gh that would reject GH-219
       gh_env = dict(os.environ)
@@ -2457,9 +2497,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           "- **Ticket ID**: `LOCAL-2`\n"
           "- **Title**: Second ticket after finish\n",
       )
-      self.assertEqual(
-          _run_make(repo, "ticket-assigned", "NO_FETCH=1").returncode, 0
-      )
+      _assert_make_rc(self, _run_make(repo, "ticket-assigned", "NO_FETCH=1"), 0)
       self.assertTrue(is_ticket_active(state_dir))
 
 
@@ -2505,60 +2543,62 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
       step_no += 1
 
     human_turn("Start local ticket")
-    self.assertEqual(_run_make(repo, "read-init-d", "NO_FETCH=1").returncode, 0)
+    _assert_make_rc(self, _run_make(repo, "read-init-d", "NO_FETCH=1"), 0)
     _write_file(
         os.path.join(state_dir, "10_ticket.md"),
         "# 10_ticket: LOCAL-1\n\n"
         "- **Ticket ID**: LOCAL-1\n"
         "- **Title**: Pure Git Mode T60 bypass and T80 cleanup\n",
     )
-    self.assertEqual(
-        _run_make(repo, "ticket-assigned", "NO_FETCH=1").returncode, 0
-    )
+    _assert_make_rc(self, _run_make(repo, "ticket-assigned", "NO_FETCH=1"), 0)
     _write_file(
         os.path.join(state_dir, "15_archaeology_receipt.md"),
         f"# Receipt\nHOSTING_MODE: {receipt_mode}\n",
     )
-    self.assertEqual(
-        _run_make(repo, "archaeology-verified", "NO_FETCH=1").returncode, 0
+    _assert_make_rc(
+        self, _run_make(repo, "archaeology-verified", "NO_FETCH=1"), 0
     )
     _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
-    self.assertEqual(
+    _assert_make_rc(
+        self,
         _run_make(
             repo, "approved-plan", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
-        ).returncode,
+        ),
         0,
     )
     human_turn("Plan approved")
     _write_file(os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n")
-    self.assertEqual(
+    _assert_make_rc(
+        self,
         _run_make(
             repo,
             "implementation-diff",
             "APPROVED=1",
             "NO_FETCH=1",
             f"TRANSCRIPT={transcript}",
-        ).returncode,
+        ),
         0,
     )
     _write_file(os.path.join(repo, "app.py"), "PURE_GIT = True\n")
-    self.assertEqual(
-        _run_make(repo, "verify-regression", "REGRESSION_CMD=true").returncode,
+    _assert_make_rc(
+        self,
+        _run_make(repo, "verify-regression", "REGRESSION_CMD=true"),
         0,
     )
     _lock_approved_tree(repo)
-    self.assertEqual(
-        _run_make(repo, "adversarial-review", "NO_FETCH=1").returncode, 0
+    _assert_make_rc(
+        self, _run_make(repo, "adversarial-review", "NO_FETCH=1"), 0
     )
     _write_file(os.path.join(state_dir, "40_critic_review.md"), "0 blockers\n")
-    self.assertEqual(
+    _assert_make_rc(
+        self,
         _run_make(
             repo,
             "approved-review",
             "BLOCKERS=0",
             "NO_FETCH=1",
             f"TRANSCRIPT={transcript}",
-        ).returncode,
+        ),
         0,
     )
     human_turn("Review approved")
@@ -2574,10 +2614,13 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
         "- app.py: add Pure Git demo constant.\n\n"
         f"Ticket: LOCAL-{local_num}\n",
     )
-    r_commit = _run_make(
-        repo, "commit", "APPROVED=1", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
+    _assert_make_rc(
+        self,
+        _run_make(
+            repo, "commit", "APPROVED=1", "NO_FETCH=1", f"TRANSCRIPT={transcript}"
+        ),
+        0,
     )
-    self.assertEqual(r_commit.returncode, 0, r_commit.stderr)
     return repo, state_dir, transcript, human_turn
 
   def test_pure_git_no_remote_end_to_end_bypasses_t60_and_squash_merges(
@@ -2593,13 +2636,16 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
       self.assertEqual(_git(repo, "remote").stdout.strip(), "")
 
       # Same-turn T50 -> T70 without USER_INPUT after T50 entry is blocked (SCAR-PROC-102)
-      same_turn_t70 = _run_make(
-          repo,
-          "bot-quiescence",
-          "APPROVED=1",
-          f"TRANSCRIPT={transcript}",
+      same_turn_t70 = _assert_make_rc(
+          self,
+          _run_make(
+              repo,
+              "bot-quiescence",
+              "APPROVED=1",
+              f"TRANSCRIPT={transcript}",
+          ),
+          2,
       )
-      self.assertEqual(same_turn_t70.returncode, 2)
       self.assertIn("SCAR-PROC-102", same_turn_t70.stderr)
 
       human_turn("Commit approved")
@@ -2612,13 +2658,16 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
       )
 
       # T50 -> T70 succeeds cleanly bypassing T60 without humanPushApproved
-      r_t70 = _run_make(
-          repo,
-          "bot-quiescence",
-          "APPROVED=1",
-          f"TRANSCRIPT={transcript}",
+      _assert_make_rc(
+          self,
+          _run_make(
+              repo,
+              "bot-quiescence",
+              "APPROVED=1",
+              f"TRANSCRIPT={transcript}",
+          ),
+          0,
       )
-      self.assertEqual(r_t70.returncode, 0, r_t70.stderr)
       active_t70 = read_active_target(state_dir)
       self.assertEqual(active_t70["target"], "T70")
       self.assertEqual(active_t70["previousTarget"], "T50")
@@ -2638,8 +2687,9 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
           os.path.join(state_dir, "70_bot_triage.md"),
           "LOCAL_SWEEP: PASS\n",
       )
-      r_t75 = _run_make(repo, "ready-to-land", f"TRANSCRIPT={transcript}")
-      self.assertEqual(r_t75.returncode, 0, r_t75.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "ready-to-land", f"TRANSCRIPT={transcript}"), 0
+      )
       self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
       with open(
           os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
@@ -2648,10 +2698,11 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
 
       # T75 -> T80 persists skippedTargets
       human_turn("Landing approved")
-      r_t80 = _run_make(
-          repo, "land", "APPROVED=1", f"TRANSCRIPT={transcript}"
+      _assert_make_rc(
+          self,
+          _run_make(repo, "land", "APPROVED=1", f"TRANSCRIPT={transcript}"),
+          0,
       )
-      self.assertEqual(r_t80.returncode, 0, r_t80.stderr)
       self.assertEqual(read_active_target(state_dir)["target"], "T80")
       self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
       with open(
@@ -2699,16 +2750,16 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
       self.assertTrue(os.path.isfile(os.path.join(repo, "app.py")))
 
       # T80 -> T90 -> finish preserves skipped T60 marker in readerboard
-      r_t90 = _run_make(repo, "codified-scars-consolidated")
-      self.assertEqual(r_t90.returncode, 0, r_t90.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "codified-scars-consolidated"), 0
+      )
       self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
       with open(
           os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
       ) as f:
         self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", f.read())
 
-      r_fin = _run_make(repo, "finish")
-      self.assertEqual(r_fin.returncode, 0, r_fin.stderr)
+      _assert_make_rc(self, _run_make(repo, "finish"), 0)
       with open(
           os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
       ) as f:
@@ -2734,16 +2785,17 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
           "-F",
           os.path.join(state_dir, "50_commit_msg.txt"),
       )
-      self.assertEqual(
+      _assert_make_rc(
+          self,
           _run_make(
               repo, "bot-quiescence", "APPROVED=1", f"TRANSCRIPT={transcript}"
-          ).returncode,
+          ),
           0,
       )
       self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
 
       # read-init-d preserves skippedTargets and skipped T60 marker
-      self.assertEqual(_run_make(repo, "read-init-d").returncode, 0)
+      _assert_make_rc(self, _run_make(repo, "read-init-d"), 0)
       self.assertEqual(read_active_target(state_dir).get("skippedTargets"), ["T60"])
       with open(
           os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
@@ -2751,8 +2803,9 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
         self.assertIn("- [-] T60: push (Skipped in Pure Git Mode)", f.read())
 
       # Recovery T70 -> T30 clears skippedTargets
-      r_rec = _run_make(repo, "implementation-diff", "FROM=T70")
-      self.assertEqual(r_rec.returncode, 0, r_rec.stderr)
+      _assert_make_rc(
+          self, _run_make(repo, "implementation-diff", "FROM=T70"), 0
+      )
       self.assertEqual(read_active_target(state_dir)["target"], "T30")
       self.assertFalse(read_active_target(state_dir).get("skippedTargets"))
       with open(
@@ -2785,24 +2838,30 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
           "-F",
           os.path.join(st_origin, "50_commit_msg.txt"),
       )
-      blk_origin = _run_make(
-          repo_origin,
-          "bot-quiescence",
-          "FROM=T50",
-          "APPROVED=1",
-          f"TRANSCRIPT={tr_origin}",
+      blk_origin = _assert_make_rc(
+          self,
+          _run_make(
+              repo_origin,
+              "bot-quiescence",
+              "FROM=T50",
+              "APPROVED=1",
+              f"TRANSCRIPT={tr_origin}",
+          ),
+          2,
       )
-      self.assertEqual(blk_origin.returncode, 2)
       self.assertIn("SCAR-GIT-30", blk_origin.stderr)
       self.assertIn("T60", blk_origin.stderr)
-      ok_push_origin = _run_make(
-          repo_origin,
-          "push",
-          "APPROVED=1",
-          "NO_FETCH=1",
-          f"TRANSCRIPT={tr_origin}",
+      _assert_make_rc(
+          self,
+          _run_make(
+              repo_origin,
+              "push",
+              "APPROVED=1",
+              "NO_FETCH=1",
+              f"TRANSCRIPT={tr_origin}",
+          ),
+          0,
       )
-      self.assertEqual(ok_push_origin.returncode, 0, ok_push_origin.stderr)
       self.assertEqual(read_active_target(st_origin)["target"], "T60")
 
       # 2. Repo with non-origin remote (upstream) + PURE_GIT receipt blocks T50 -> T70
@@ -2821,24 +2880,30 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
           "-F",
           os.path.join(st_up, "50_commit_msg.txt"),
       )
-      blk_up = _run_make(
-          repo_up,
-          "bot-quiescence",
-          "FROM=T50",
-          "APPROVED=1",
-          f"TRANSCRIPT={tr_up}",
+      blk_up = _assert_make_rc(
+          self,
+          _run_make(
+              repo_up,
+              "bot-quiescence",
+              "FROM=T50",
+              "APPROVED=1",
+              f"TRANSCRIPT={tr_up}",
+          ),
+          2,
       )
-      self.assertEqual(blk_up.returncode, 2)
       self.assertIn("SCAR-GIT-30", blk_up.stderr)
       self.assertIn("T60", blk_up.stderr)
-      ok_push_up = _run_make(
-          repo_up,
-          "push",
-          "APPROVED=1",
-          "NO_FETCH=1",
-          f"TRANSCRIPT={tr_up}",
+      _assert_make_rc(
+          self,
+          _run_make(
+              repo_up,
+              "push",
+              "APPROVED=1",
+              "NO_FETCH=1",
+              f"TRANSCRIPT={tr_up}",
+          ),
+          0,
       )
-      self.assertEqual(ok_push_up.returncode, 0, ok_push_up.stderr)
       self.assertEqual(read_active_target(st_up)["target"], "T60")
 
       # 3. Remote-less repo whose 15_archaeology_receipt.md explicitly declares GITHUB blocks T50 -> T70
