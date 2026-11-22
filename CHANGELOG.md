@@ -35,6 +35,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-224: Change terminal titles to start with the bare directory name and trailing slash instead of the project name.
 - GH-212: Clarify optional query description when callers provide filters in workflow_query_scars MCP schema.
 - GH-275: Extract shared Python file discovery into lib/python_files.py and generalize lib/static_check.py with --repo-root, adaptive root scanning, and external linter --extend-exclude parity.
+- GH-213: Extract Git safety, hosting discovery, and CI polling from mcp/server.py into lib/git_safety.py and lib/ci_polling.py.
 
 ### Fixed
 

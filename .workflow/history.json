@@ -2865,5 +2865,26 @@
     "closes_issue": true,
     "tests_added": 14,
     "scars_earned": []
+  },
+  {
+    "id": "GH-213",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/213",
+    "title": "[REFACTOR] Move Git safety, hosting discovery, and CI polling helpers from mcp/server.py to lib/",
+    "request": "Move _evaluate_git_tokens_safety, evaluate_git_safety, detect_hosting_mode, and poll_ci_status from mcp/server.py into lib/git_safety.py and lib/ci_polling.py, deduplicate Git command classification with scripts/pre_tool_guard.py via frozen GitTokenVerdict, preserve backward-compatible mcp/server.py re-exports, protect lib/git_safety.py in GOVERNANCE_FILE_RELPATHS, and add 25 hermetic unit tests across tests/test_git_safety.py and tests/test_ci_polling.py.",
+    "branch": "feat/213-extract-mcp-helpers-to-lib",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-22T07:17:07Z",
+    "completed_at": "2026-11-22T07:52:29Z",
+    "commit_sha": "78d77d2aff1cdfcb93ea953e98a7c1a15b87164e",
+    "pr_number": 287,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/287",
+    "closes_issue": true,
+    "tests_added": 25,
+    "scars_earned": []
   }
 ]
