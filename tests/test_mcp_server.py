@@ -1120,7 +1120,7 @@ class TestMcpServer(unittest.TestCase):
 
   def test_poll_ci_status_in_memory_branches(self):
     """Checks poll_ci_status GitHub PR parsing and quiescence branches in memory."""
-    from mcp.server import poll_ci_status
+    from lib.ci_polling import poll_ci_status
 
     mock_data_bot = {
         "statusCheckRollup": [{
@@ -1318,7 +1318,7 @@ class TestMcpServer(unittest.TestCase):
 
   def test_detect_hosting_mode_and_pure_git_poll_ci(self):
     """Checks detect_hosting_mode branches and poll_ci_status pure_git mode (GH-76)."""
-    from mcp.server import detect_hosting_mode, poll_ci_status
+    from lib.ci_polling import detect_hosting_mode, poll_ci_status
 
     # Case a: No remote (or git remote get-url origin returns non-zero) -> "pure_git"
     with mock.patch("subprocess.run") as mock_run:
@@ -1418,7 +1418,7 @@ class TestMcpServer(unittest.TestCase):
       self.assertEqual(detect_hosting_mode("/fake/repo"), "github")
 
     # Case g: Integration test in poll_ci_status: pure_git returns mode: "pure_git"
-    with mock.patch("mcp.server.detect_hosting_mode", return_value="pure_git"):
+    with mock.patch("lib.ci_polling.detect_hosting_mode", return_value="pure_git"):
       res_pure = poll_ci_status(
           pr_number=99, ws="/fake/repo", quiescence_sec=10, max_wait_sec=1
       )
@@ -3366,7 +3366,8 @@ class TestMcpDynamicVersionAndTarget90Parity(unittest.TestCase):
   def test_workflow_safety_check_target90_changelog_and_release_parity(self):
     if REPO_ROOT not in sys.path:
       sys.path.insert(0, REPO_ROOT)
-    from mcp.server import evaluate_git_safety, handle_tools_call
+    from lib.git_safety import evaluate_git_safety
+    from mcp.server import handle_tools_call
 
     for cmd in (
         "git commit -m 'docs(changelog): update unreleased notes'",
@@ -3655,7 +3656,7 @@ class TestMcpCiQuiescenceZeroAndValidation(unittest.TestCase):
 
   def test_poll_ci_status_quiescence_zero_returns_without_sleeping(self):
     """Tests poll_ci_status returns SUCCESS on poll 1 without sleeping when quiescenceSeconds=0 (GH-217)."""
-    from mcp.server import poll_ci_status
+    from lib.ci_polling import poll_ci_status
 
     completed_iso = "2026-11-15T12:00:00Z"
     base_ts = datetime.datetime(
@@ -3725,7 +3726,7 @@ class TestMcpCiQuiescenceZeroAndValidation(unittest.TestCase):
 
   def test_poll_ci_status_sanitizes_invalid_poll_interval_in_memory(self):
     """Tests direct poll_ci_status sanitizes invalid poll_interval_sec (0, -1, True) to config value (GH-217)."""
-    from mcp.server import poll_ci_status
+    from lib.ci_polling import poll_ci_status
 
     base_ts = datetime.datetime(
         2026, 11, 15, 12, 0, 0, tzinfo=datetime.timezone.utc

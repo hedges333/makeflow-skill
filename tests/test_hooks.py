@@ -1488,6 +1488,7 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "echo 'x' &> scripts/workflow_gates.py",
         "echo 'x' > lib/tdd_guard.py",
         "echo 'x' > lib/target90_guard.py",
+        "echo 'x' > lib/git_safety.py",
     ]
     for cmd, res in self._run_commands_isolated(bad_commands):
       self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
@@ -1518,6 +1519,9 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "rm -f lib/target90_guard.py",
         "truncate -s 0 lib/target90_guard.py",
         "sed -i 's/foo/bar/' lib/target90_guard.py",
+        "rm -f lib/git_safety.py",
+        "truncate -s 0 lib/git_safety.py",
+        "sed -i 's/foo/bar/' lib/git_safety.py",
     ]
     for cmd, res in self._run_commands_isolated(bad_commands):
       self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
@@ -1567,6 +1571,8 @@ class TestPreToolGuardSelfModification(unittest.TestCase):
         "mv evil.py hooks.json",
         "cp evil.py lib/target90_guard.py",
         "mv evil.py lib/target90_guard.py",
+        "cp evil.py lib/git_safety.py",
+        "mv evil.py lib/git_safety.py",
     ]
     for cmd, res in self._run_commands_isolated(denied_commands):
       self.assertEqual(res["decision"], "deny", f"Expected deny for cmd={cmd!r}")
