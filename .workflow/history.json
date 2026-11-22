@@ -2688,5 +2688,25 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-245",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/245",
+    "title": "[BUG] Synthesized Makefile ast-lint hardcodes Makeflow directories and prompts tdd-worker to inspect ast_scrub.py",
+    "request": "Make synthesized ast-lint and AstScrubScript adapt to external Python consumer repositories via --repo-root and optional SRC_DIR, and document BaseScript ast-lint compatibility in Reference 14.",
+    "branch": "fix/245-ast-lint-consumer-dirs",
+    "subprojects": [
+      "lib",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-22T02:02:27Z",
+    "completed_at": "2026-11-22T03:04:25Z",
+    "commit_sha": "2dbc9275eb980ff864b7d6b3fb80a24141532afb",
+    "pr_number": 276,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/276",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
