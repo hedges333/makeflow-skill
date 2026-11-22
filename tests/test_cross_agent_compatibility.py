@@ -11924,5 +11924,409 @@ class TestEarlyDesignPatternsAndScarsContract(unittest.TestCase):
     )
 
 
+TARGET_42_AIRLOCK_CONTRACT_FILES = (
+    "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+    "skills/makeflow/references/scars/process.md",
+    "skills/makeflow/SKILL.md",
+    "rules/AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+TARGET_42_ADAPTER_AND_RULE_FILES = (
+    "skills/makeflow/SKILL.md",
+    "rules/AGENTS.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def _extract_target_42_intro_and_airlock_section(review_text: str) -> str:
+  """Extracts Section 5 through Section 5.1 (before 5.2) from the Six Pillars manual.
+
+  Args:
+    review_text: Full markdown text of 04_six_pillars_adversarial_review.md.
+
+  Returns:
+    The extracted Section 5 and Section 5.1 text, or an empty string if missing.
+  """
+  match = re.search(
+      r"(?ms)^##\s+5\.\s+Target 42:.*?(?=^###\s+5\.2\b|\Z)",
+      review_text,
+  )
+  return match.group(0) if match else ""
+
+
+def _extract_scar_block(spoke_text: str, scar_id: str) -> str:
+  """Extracts a single scar section from a Tier 1 markdown spoke file.
+
+  Args:
+    spoke_text: Full markdown text of a Tier 1 scar spoke file.
+    scar_id: Canonical scar identifier such as 'SCAR-PROC-89'.
+
+  Returns:
+    The extracted scar section text, or an empty string if missing.
+  """
+  match = re.search(
+      rf"(?ms)^###\s+{re.escape(scar_id)}:.*?(?=^###\s+SCAR-|\Z)",
+      spoke_text,
+  )
+  return match.group(0) if match else ""
+
+
+def _parse_scar_markdown_fields(scar_block: str, scar_id: str) -> dict[str, str]:
+  """Parses markdown scar fields into a ScarCandidateValidator dictionary.
+
+  Args:
+    scar_block: Extracted markdown block for one scar.
+    scar_id: Canonical scar identifier.
+
+  Returns:
+    Dictionary formatted for ScarCandidateValidator.validate().
+  """
+  field_map = {
+      "Wound": "wound",
+      "Trap": "trap",
+      "Circuit Breaker": "circuit_breaker",
+      "Permanent Reflex": "reflex",
+      "Socratic Probe": "socratic_probe",
+  }
+  parsed: dict[str, str] = {"id": scar_id}
+  for md_label, key in field_map.items():
+    match = re.search(rf"(?m)^-\s+\*\*{re.escape(md_label)}\*\*:\s*(.+)$", scar_block)
+    parsed[key] = match.group(1).strip() if match else ""
+  if parsed.get("circuit_breaker"):
+    parsed["raw_circuit_breaker"] = parsed["circuit_breaker"]
+  return parsed
+
+
+def _check_target_42_review_manual(review_rel: str, review_text: str) -> list[str]:
+  """Validates Section 5/5.1 bounded Target 42 airlock rules in the review manual.
+
+  Args:
+    review_rel: Repository-relative path to the Six Pillars manual.
+    review_text: Full markdown text of the Six Pillars manual.
+
+  Returns:
+    List of diagnostic error strings (empty when valid).
+  """
+  errs: list[str] = []
+  lower_full = review_text.lower()
+  if "zero-tool blocker airlock" in lower_full:
+    errs.append(
+        f"{review_rel} must not contain contradictory 'Zero-Tool Blocker Airlock' wording"
+    )
+  if "turn following a critic blocker wakeup must contain" in lower_full:
+    errs.append(
+        f"{review_rel} must not ban tool calls during critic blocker wakeup"
+    )
+
+  sec5 = _extract_target_42_intro_and_airlock_section(review_text)
+  if not sec5:
+    errs.append(f"{review_rel} missing Section 5 / Section 5.1 before '### 5.2'")
+    return errs
+
+  sec5_lower = sec5.lower()
+  if "zero tool calls" in sec5_lower:
+    errs.append(
+        f"{review_rel} Section 5/5.1 must not contain contradictory 'zero tool calls' ban"
+    )
+
+  required_tokens = (
+      "SCAR-PROC-89",
+      "SCAR-PROC-102",
+      ".workflow/state/40_critic_review_round<N>.md",
+      ".workflow/state/40_critic_review.md",
+      "make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>",
+      "make -f .workflow/state/Makefile implementation-diff APPROVED=1",
+      ".workflow/state/gate_entry.json",
+      "scripts/pre_tool_guard.py",
+      "tool_calls: []",
+      "Blocker Digest",
+  )
+  for tok in required_tokens:
+    if tok not in sec5:
+      errs.append(f"{review_rel} Section 5/5.1 must document '{tok}'")
+
+  if re.search(r"(?<!\.workflow/state/)gate_entry\.json", sec5):
+    errs.append(
+        f"{review_rel} Section 5/5.1 must qualify '.workflow/state/gate_entry.json'"
+    )
+  if re.search(r"(?<!scripts/)pre_tool_guard\.py", sec5):
+    errs.append(
+        f"{review_rel} Section 5/5.1 must use canonical path 'scripts/pre_tool_guard.py'"
+    )
+
+  prohibition_checks = (
+      ("source/test file edits", r"edit source files or test files"),
+      ("running tests", r"run test commands"),
+      ("messaging or arguing with critic", r"send messages to, argue with, or negotiate with the critic"),
+      ("dispatching subagents", r"dispatch subagents"),
+      ("drafting commit messages", r"draft commit messages"),
+      ("advancing past Target 42", r"advance past target 42"),
+  )
+  for label, pat in prohibition_checks:
+    if not re.search(pat, sec5_lower):
+      errs.append(
+          f"{review_rel} Section 5/5.1 must explicitly prohibit {label} before human triage"
+      )
+
+  errs.extend(_check_section_simple_english(f"{review_rel} [Section 5/5.1]", sec5))
+
+  sec35 = _extract_markdown_h3_section(review_text, "### 3.5 ")
+  if "Immediate Supervisory Halt" not in sec35 or "tool_calls: []" not in sec35:
+    errs.append(
+        f"{review_rel} Section 3.5 must preserve SCAR-PROC-95 Immediate Supervisory Halt"
+    )
+  sec52 = _extract_markdown_h3_section(review_text, "### 5.2 ")
+  if "SCAR-ARCH-09" not in sec52 or "Non-Blocking Observations" not in sec52:
+    errs.append(
+        f"{review_rel} Section 5.2 must preserve SCAR-ARCH-09 and NBO Summary"
+    )
+  return errs
+
+
+def _check_scar_proc_89_alignment(process_rel: str, process_text: str) -> list[str]:
+  """Validates SCAR-PROC-89 alignment with bounded Target 42 wakeup entry.
+
+  Args:
+    process_rel: Repository-relative path to process.md.
+    process_text: Full markdown text of skills/makeflow/references/scars/process.md.
+
+  Returns:
+    List of diagnostic error strings (empty when valid).
+  """
+  errs: list[str] = []
+  block = _extract_scar_block(process_text, "SCAR-PROC-89")
+  if not block:
+    return [f"{process_rel} missing '### SCAR-PROC-89:' section"]
+
+  if "stop tool calls immediately" in block.lower():
+    errs.append(
+        f"{process_rel} SCAR-PROC-89 must not retain contradictory 'stop tool calls immediately' trigger"
+    )
+
+  required_tokens = (
+      ".workflow/state/40_critic_review_round<N>.md",
+      ".workflow/state/40_critic_review.md",
+      "make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>",
+      "Target 42",
+      "tool_calls: []",
+  )
+  for tok in required_tokens:
+    if tok not in block:
+      errs.append(f"{process_rel} SCAR-PROC-89 must document '{tok}'")
+
+  block_lower = block.lower()
+  for label, pat in (
+      ("messaging critic", r"message the critic"),
+      ("editing code or tests", r"edit source or test files"),
+      ("running tests", r"run tests"),
+      ("advancing past Target 42", r"advance past target 42"),
+  ):
+    if not re.search(pat, block_lower):
+      errs.append(f"{process_rel} SCAR-PROC-89 must prohibit {label}")
+
+  candidate = _parse_scar_markdown_fields(block, "SCAR-PROC-89")
+  errs.extend(ScarCandidateValidator().validate(candidate))
+  errs.extend(_check_section_simple_english(f"{process_rel} [SCAR-PROC-89]", block))
+  return errs
+
+
+def check_target_42_bounded_blocker_airlock(
+    files_by_relpath: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-247 bounded Target 42 airlock rules across manuals, scars, and adapters.
+
+  Args:
+    files_by_relpath: Optional in-memory map of repo-relative paths to contents.
+    repo_root: Optional repository root directory override.
+
+  Returns:
+    List of diagnostic error strings (empty when all invariants hold).
+  """
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if files_by_relpath is not None:
+    files_map = dict(files_by_relpath)
+  else:
+    for rel in TARGET_42_AIRLOCK_CONTRACT_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in TARGET_42_AIRLOCK_CONTRACT_FILES:
+    if rel not in files_map and f"Missing {rel}" not in errs:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  errs.extend(
+      _check_target_42_review_manual(
+          "skills/makeflow/references/04_six_pillars_adversarial_review.md",
+          files_map["skills/makeflow/references/04_six_pillars_adversarial_review.md"],
+      )
+  )
+  errs.extend(
+      _check_scar_proc_89_alignment(
+          "skills/makeflow/references/scars/process.md",
+          files_map["skills/makeflow/references/scars/process.md"],
+      )
+  )
+
+  skill_bytes = len(files_map["skills/makeflow/SKILL.md"].encode("utf-8"))
+  if skill_bytes > 24576:
+    errs.append(
+        f"skills/makeflow/SKILL.md exceeds 24,576-byte budget ({skill_bytes} bytes)"
+    )
+
+  for rel in TARGET_42_ADAPTER_AND_RULE_FILES:
+    lower_txt = files_map[rel].lower()
+    if "zero-tool blocker airlock" in lower_txt or (
+        "blocker wakeup" in lower_txt and "zero tool calls" in lower_txt
+    ):
+      errs.append(
+          f"{rel} must not contain contradictory zero-tool-on-wakeup wording"
+      )
+
+  return errs
+
+
+class TestTarget42BoundedBlockerAirlockContract(unittest.TestCase):
+  """Contract and negative falsification tests for Target 42 bounded airlock (GH-247)."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    """Loads all Target 42 airlock contract files from disk.
+
+    Returns:
+      Mapping of repository-relative file paths to file contents.
+    """
+    loaded: dict[str, str] = {}
+    for rel in TARGET_42_AIRLOCK_CONTRACT_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_target_42_bounded_blocker_airlock_contract(self) -> None:
+    """Verifies live manuals, SCAR-PROC-89, and adapters satisfy GH-247 airlock rules."""
+    self.assertEqual(check_target_42_bounded_blocker_airlock(), [])
+
+  def test_negative_falsification_rejects_zero_tool_contradiction_and_dropped_guards(
+      self,
+  ) -> None:
+    """Verifies in-memory mutations re-introducing GH-247 defects are rejected."""
+    base = self._load_base_files()
+    self.assertEqual(check_target_42_bounded_blocker_airlock(base), [])
+
+    review_rel = "skills/makeflow/references/04_six_pillars_adversarial_review.md"
+    process_rel = "skills/makeflow/references/scars/process.md"
+
+    review_mutations = (
+        ("Bounded Target 42 Blocker Airlock", "Zero-Tool Blocker Airlock"),
+        (
+            "stop tool calls (`tool_calls: []`)",
+            "contain **zero tool calls (`tool_calls: []`)**",
+        ),
+        (".workflow/state/40_critic_review_round<N>.md", "REMOVED_ROUND_CARD"),
+        (".workflow/state/40_critic_review.md", "REMOVED_REVIEW_CARD"),
+        (
+            "make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>",
+            "REMOVED_T42_CMD",
+        ),
+        (".workflow/state/gate_entry.json", "gate_entry.json"),
+        ("edit source files or test files", "REMOVED_EDIT_GUARD"),
+        ("run test commands", "REMOVED_TEST_GUARD"),
+        (
+            "send messages to, argue with, or negotiate with the critic",
+            "REMOVED_CRITIC_IPC_GUARD",
+        ),
+        ("dispatch subagents", "REMOVED_SUBAGENT_GUARD"),
+        ("draft commit messages", "REMOVED_COMMIT_GUARD"),
+        ("advance past Target 42", "REMOVED_ADVANCE_GUARD"),
+        ("scripts/pre_tool_guard.py", "pre_tool_guard.py"),
+    )
+    for target_tok, replacement in review_mutations:
+      with self.subTest(file=review_rel, mutated=target_tok):
+        mut = dict(base)
+        mut[review_rel] = mut[review_rel].replace(target_tok, replacement)
+        self.assertNotEqual(mut[review_rel], base[review_rel])
+        errs = check_target_42_bounded_blocker_airlock(mut)
+        self.assertTrue(
+            any(review_rel in e for e in errs),
+            f"Expected rejection when '{target_tok}' mutated in {review_rel}, got: {errs}",
+        )
+
+    # Section-5.1-scoped tool_calls: [] falsification leaving Sections 3.2 and 3.5 intact
+    mut_sec51_halt = dict(base)
+    sec51_halt_phrase = "stop tool calls (`tool_calls: []`) until human triage"
+    self.assertEqual(mut_sec51_halt[review_rel].count(sec51_halt_phrase), 1)
+    mut_sec51_halt[review_rel] = mut_sec51_halt[review_rel].replace(
+        sec51_halt_phrase, "continue calling tools until human triage"
+    )
+    halt_errs = check_target_42_bounded_blocker_airlock(mut_sec51_halt)
+    self.assertTrue(
+        any("Section 5/5.1 must document 'tool_calls: []'" in e for e in halt_errs),
+        f"Expected Section 5/5.1 tool_calls: [] error, got: {halt_errs}",
+    )
+    self.assertFalse(
+        any("Section 3.5" in e for e in halt_errs),
+        f"Section 3.5 must remain intact during Section 5.1 falsification, got: {halt_errs}",
+    )
+
+    process_mutations = (
+        (
+            "never message the critic or edit code",
+            "stop tool calls immediately",
+        ),
+        (
+            "make -f .workflow/state/Makefile triaged-blockers BLOCKERS=<N>",
+            "REMOVED_T42_CMD",
+        ),
+        ("message the critic", "REMOVED_IPC_GUARD"),
+        ("advance past Target 42", "REMOVED_ADVANCE_GUARD"),
+    )
+    for target_tok, replacement in process_mutations:
+      with self.subTest(file=process_rel, mutated=target_tok):
+        mut = dict(base)
+        mut[process_rel] = mut[process_rel].replace(target_tok, replacement)
+        errs = check_target_42_bounded_blocker_airlock(mut)
+        self.assertTrue(
+            any(process_rel in e or "SCAR-PROC-89" in e for e in errs),
+            f"Expected rejection when '{target_tok}' mutated in {process_rel}, got: {errs}",
+        )
+
+    mut_adapter = dict(base)
+    mut_adapter["CLAUDE.md"] = (
+        mut_adapter["CLAUDE.md"] + "\nZero-Tool Blocker Airlock\n"
+    )
+    adapter_errs = check_target_42_bounded_blocker_airlock(mut_adapter)
+    self.assertTrue(
+        any("CLAUDE.md" in e for e in adapter_errs),
+        f"Expected CLAUDE.md contradiction error, got: {adapter_errs}",
+    )
+
+    mut_contraction = dict(base)
+    mut_contraction[review_rel] = mut_contraction[review_rel].replace(
+        "Never edit source files or test files.",
+        "Don't edit source files or test files.",
+    )
+    se_errs = check_target_42_bounded_blocker_airlock(mut_contraction)
+    self.assertTrue(
+        any("contraction" in e for e in se_errs),
+        f"Expected contraction rejection, got: {se_errs}",
+    )
+
+
 if __name__ == "__main__":
   unittest.main()
