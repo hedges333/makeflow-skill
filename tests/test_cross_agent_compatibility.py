@@ -7001,7 +7001,7 @@ def check_canonical_repo_paths_and_qualified_refs(
           errs.append(
               f"{agents_rel} Section 1.12 missing canonical path '{tok}'"
           )
-      for absent_path in ("hooks/", "lib/pre_tool_guard.py"):
+      for absent_path in ("hooks/",):
         matching_lines = [
             line for line in sec_1_12.splitlines() if absent_path in line
         ]
@@ -7015,6 +7015,22 @@ def check_canonical_repo_paths_and_qualified_refs(
           errs.append(
               f"{agents_rel} Section 1.12 must explicitly note that '{absent_path}' does not exist"
           )
+
+      lib_guard_lines = [
+          line
+          for line in sec_1_12.splitlines()
+          if "lib/pre_tool_guard.py" in line
+      ]
+      if any(
+          re.search(
+              r"(?i)\b(?:no|none|not exist|does not exist|do not exist)\b",
+              line,
+          )
+          for line in lib_guard_lines
+      ):
+        errs.append(
+            f"{agents_rel} Section 1.12 must list 'lib/pre_tool_guard.py' as an existing library module, not non-existent"
+        )
 
   for rel_path, content in sorted(repo_files.items()):
     for line_no, line in enumerate(content.splitlines(), start=1):
@@ -7081,9 +7097,9 @@ def validate_canonical_repo_paths_and_qualified_refs() -> list[str]:
           "1. Root manifests: `./hooks.json`, `./plugin.json`, `./mcp_config.json`, and `./default_config.json`.\n"
           "2. MCP server: `./mcp/server.py`.\n"
           "3. CLI wrappers: `scripts/pre_tool_guard.py` and `scripts/workflow_gates.py`.\n"
-          "4. Shared libraries: `lib/workflow_gates.py`, `lib/shell_safety.py`, and `lib/config.py`.\n"
+          "4. Shared libraries: `lib/pre_tool_guard.py`, `lib/workflow_gates.py`, `lib/shell_safety.py`, and `lib/config.py`.\n"
           "5. Rules and docs: `./rules/AGENTS.md` and `./skills/makeflow/SKILL.md`.\n"
-          "6. Non-existent paths: No `hooks/` directory or `lib/pre_tool_guard.py` file exists.\n"
+          "6. Non-existent paths: No `hooks/` directory exists.\n"
       ),
       "skills/makeflow/SKILL.md": (
           "Run `<plugin_root>/scripts/workflow_gates.py intake` and `.claude-plugin/plugin.json`.\n"
@@ -7117,10 +7133,10 @@ def validate_canonical_repo_paths_and_qualified_refs() -> list[str]:
         "Negative falsification failed: missing path map in rules/AGENTS.md was not rejected"
     )
 
-  # 2) Missing non-existent hooks/ or lib/pre_tool_guard.py note in rules/AGENTS.md
+  # 2) Missing non-existent hooks/ note in rules/AGENTS.md
   bad_no_absent_note = dict(sample_files)
   bad_no_absent_note["rules/AGENTS.md"] = sample_files["rules/AGENTS.md"].replace(
-      "No `hooks/` directory or `lib/pre_tool_guard.py` file exists.",
+      "No `hooks/` directory exists.",
       "See `scripts/pre_tool_guard.py`.",
   )
   if not any(
@@ -7131,26 +7147,26 @@ def validate_canonical_repo_paths_and_qualified_refs() -> list[str]:
         "Negative falsification failed: omitted hooks/ non-existence note in rules/AGENTS.md was not rejected"
     )
 
-  # 2b) Missing non-existence phrasing on lib/pre_tool_guard.py independently
-  bad_no_lib_guard_absent = dict(sample_files)
-  bad_no_lib_guard_absent["rules/AGENTS.md"] = sample_files[
+  # 2b) Falsely marking lib/pre_tool_guard.py as non-existent (GH-204)
+  bad_lib_guard_absent = dict(sample_files)
+  bad_lib_guard_absent["rules/AGENTS.md"] = sample_files[
       "rules/AGENTS.md"
   ].replace(
+      "No `hooks/` directory exists.",
       "No `hooks/` directory or `lib/pre_tool_guard.py` file exists.",
-      "No `hooks/` directory exists.\n7. See `lib/pre_tool_guard.py`.",
   )
   if not any(
       "lib/pre_tool_guard.py" in e
       for e in check_canonical_repo_paths_and_qualified_refs(
-          bad_no_lib_guard_absent
+          bad_lib_guard_absent
       )
   ):
     errors.append(
-        "Negative falsification failed: omitted lib/pre_tool_guard.py non-existence note in rules/AGENTS.md was not rejected"
+        "Negative falsification failed: false lib/pre_tool_guard.py non-existence note in rules/AGENTS.md was not rejected"
     )
 
   # 2c) Omitting individual required tokens from Section 1.12 when heading exists
-  for omitted_tok in ("./default_config.json", "lib/config.py"):
+  for omitted_tok in ("./default_config.json", "lib/config.py", "lib/pre_tool_guard.py"):
     bad_omitted_tok = dict(sample_files)
     bad_omitted_tok["rules/AGENTS.md"] = sample_files["rules/AGENTS.md"].replace(
         omitted_tok,

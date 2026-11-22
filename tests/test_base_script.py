@@ -150,6 +150,60 @@ class TestBaseScript(unittest.TestCase):
     self.assertEqual(code, 0)
     self.assertIn("Operation complete", out.getvalue())
 
+  def test_stdin_injection_isolation(self):
+    """Verifies GH-204 BaseScript.execute() injects stdin hermetically without touching sys.stdin."""
+    class StdinEchoScript(BaseScript):
+      def run(self):
+        payload = self.stdin.read()
+        self.stdout.write(payload)
+        return 0
+
+    inp = io.StringIO("injected payload\n")
+    out = io.StringIO()
+    err = io.StringIO()
+    script = StdinEchoScript()
+
+    orig_stdin = sys.stdin
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
+    try:
+      sys.stdin = None
+      sys.stdout = None
+      sys.stderr = None
+      code = script.execute(args=[], stdout=out, stderr=err, stdin=inp)
+    finally:
+      sys.stdin = orig_stdin
+      sys.stdout = orig_stdout
+      sys.stderr = orig_stderr
+
+    self.assertEqual(code, 0)
+    self.assertEqual(out.getvalue(), "injected payload\n")
+    self.assertEqual(err.getvalue(), "")
+
+  def test_stdin_defaults_to_sys_stdin(self):
+    """Verifies GH-204 BaseScript binds self.stdin to sys.stdin when stdin is omitted."""
+    class StdinReadScript(BaseScript):
+      def __init__(self):
+        super().__init__()
+        self.captured = ""
+
+      def run(self):
+        self.captured = self.stdin.read()
+        return 0
+
+    fake_sys_stdin = io.StringIO("default stream\n")
+    orig_stdin = sys.stdin
+    try:
+      sys.stdin = fake_sys_stdin
+      script = StdinReadScript()
+      self.assertIs(script.stdin, fake_sys_stdin)
+      code = script.execute(args=[], stdout=io.StringIO(), stderr=io.StringIO())
+    finally:
+      sys.stdin = orig_stdin
+
+    self.assertEqual(code, 0)
+    self.assertEqual(script.captured, "default stream\n")
+
   def test_custom_exit_code_handling(self):
     """Verifies custom exit codes are returned by execute() and passed to cleanup()."""
     script = ConcreteCustomExitScript(exit_code=42)
@@ -453,11 +507,12 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     self.assertEqual(err.getvalue(), "")
 
   def test_all_cli_scripts_root_help(self):
-    """Verifies all 13 CLI BaseScript classes return 0 and print usage on --help and -h."""
+    """Verifies all 14 CLI BaseScript classes return 0 and print usage on --help and -h."""
     from lib.ast_scrub import AstScrubScript
     from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.env_preflight import EnvPreflightScript
+    from lib.pre_tool_guard import PreToolGuardScript
     from lib.reflex import EmitReflexScript
     from lib.scar_candidate import ScarCandidateTestScript
     from lib.scars_db import SyncSyntheticScarsScript
@@ -482,6 +537,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (SyncSyntheticScarsScript, "sync_synthetic_scars.py"),
         (SignalTrapScript, "signal_trap.py"),
         (ChangelogScript, "changelog.py"),
+        (PreToolGuardScript, "pre_tool_guard.py"),
     ]
 
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
@@ -584,6 +640,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
     from lib.changelog import ChangelogScript
     from lib.commit_msg import CommitMsgScript
     from lib.env_preflight import EnvPreflightScript
+    from lib.pre_tool_guard import PreToolGuardScript
     from lib.reflex import EmitReflexScript
     from lib.scar_candidate import ScarCandidateTestScript
     from lib.scars_db import SyncSyntheticScarsScript
@@ -608,6 +665,7 @@ class TestCliHelpAndSubcommandUsage(unittest.TestCase):
         (SyncSyntheticScarsScript, 2),
         (SignalTrapScript, 1),
         (ChangelogScript, 2),
+        (PreToolGuardScript, 1),
     ]
 
     for cls, expected_code in expected_exit_codes:

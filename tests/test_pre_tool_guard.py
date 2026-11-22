@@ -2,6 +2,7 @@
 """Unit tests for PreToolUse transcript turn-boundary guard (GH-186, SCAR-PROC-102)."""
 
 import contextlib
+import io
 import json
 import os
 import subprocess
@@ -3263,6 +3264,165 @@ class TestPreToolGuardConsumerVsPluginSelfModification(unittest.TestCase):
             "allow",
             f"Expected allow in consumer repo for cmd={cmd!r}, got {res}",
         )
+
+
+class TestPreToolGuardScriptExecution(unittest.TestCase):
+  """Hermetic in-memory tests for PreToolGuardScript(BaseScript) and lib/pre_tool_guard.py (GH-204)."""
+
+  def _run_script_isolated(self, raw_stdin, args=None):
+    """Executes PreToolGuardScript in memory with poisoned OS stdio streams."""
+    from lib.pre_tool_guard import PreToolGuardScript
+
+    inp = io.StringIO(raw_stdin)
+    out = io.StringIO()
+    err = io.StringIO()
+    orig_stdin, orig_stdout, orig_stderr = sys.stdin, sys.stdout, sys.stderr
+    try:
+      sys.stdin = None
+      sys.stdout = None
+      sys.stderr = None
+      code = PreToolGuardScript().execute(
+          args=args if args is not None else [],
+          stdout=out,
+          stderr=err,
+          stdin=inp,
+      )
+    finally:
+      sys.stdin = orig_stdin
+      sys.stdout = orig_stdout
+      sys.stderr = orig_stderr
+    return code, out.getvalue(), err.getvalue()
+
+  def test_empty_and_whitespace_stdin_returns_allow(self):
+    """Verifies GH-204 empty or whitespace stdin emits allow JSON on stdout with exit 0."""
+    for raw in ("", "   \n\t  "):
+      with self.subTest(raw=raw):
+        code, stdout_text, stderr_text = self._run_script_isolated(raw)
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr_text, "")
+        self.assertEqual(json.loads(stdout_text), {"decision": "allow"})
+
+  def test_valid_allow_payload_in_memory(self):
+    """Verifies GH-204 safe payload executes hermetically and returns allow JSON."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      payload = {
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "read_file",
+              "args": {"Path": os.path.join(ws_dir, "README.md")},
+          },
+      }
+      code, stdout_text, stderr_text = self._run_script_isolated(
+          json.dumps(payload)
+      )
+      self.assertEqual(code, 0)
+      self.assertEqual(stderr_text, "")
+      self.assertEqual(json.loads(stdout_text), {"decision": "allow"})
+
+  def test_valid_deny_payload_in_memory(self):
+    """Verifies GH-204 destructive git payload emits deny JSON on stdout with exit 0."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      payload = {
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git reset --hard HEAD"},
+          },
+      }
+      code, stdout_text, stderr_text = self._run_script_isolated(
+          json.dumps(payload)
+      )
+      self.assertEqual(code, 0)
+      self.assertEqual(stderr_text, "")
+      parsed = json.loads(stdout_text)
+      self.assertEqual(parsed["decision"], "deny")
+      self.assertIn("git reset --hard", parsed["reason"])
+
+  def test_malformed_json_fails_open_with_json_on_stdout(self):
+    """Verifies GH-204 malformed JSON fails open with allow JSON and empty stderr."""
+    code, stdout_text, stderr_text = self._run_script_isolated("{invalid json")
+    self.assertEqual(code, 0)
+    self.assertEqual(stderr_text, "")
+    parsed = json.loads(stdout_text)
+    self.assertEqual(parsed["decision"], "allow")
+    self.assertTrue(
+        parsed.get("reason", "").startswith("Hook error:"),
+        f"Expected fail-open Hook error reason, got {parsed}",
+    )
+
+  def test_internal_evaluate_exception_fails_open_with_json_on_stdout(self):
+    """Verifies GH-204 runtime exception inside evaluate_tool_call fails open cleanly."""
+    import lib.pre_tool_guard as guard_lib
+
+    payload = {"toolCall": {"name": "read_file", "args": {"Path": "README.md"}}}
+    with mock.patch.object(
+        guard_lib,
+        "evaluate_tool_call",
+        side_effect=RuntimeError("synthetic evaluation failure"),
+    ):
+      code, stdout_text, stderr_text = self._run_script_isolated(
+          json.dumps(payload)
+      )
+    self.assertEqual(code, 0)
+    self.assertEqual(stderr_text, "")
+    parsed = json.loads(stdout_text)
+    self.assertEqual(parsed["decision"], "allow")
+    self.assertIn("Hook error: synthetic evaluation failure", parsed["reason"])
+
+  def test_lib_pre_tool_guard_is_protected_governance_file(self):
+    """Verifies GH-204 lib/pre_tool_guard.py is protected against shell and direct file writes."""
+    import lib.pre_tool_guard as guard_lib
+
+    self.assertIn("lib/pre_tool_guard.py", GOVERNANCE_FILE_RELPATHS)
+    self.assertIn("lib/pre_tool_guard.py", guard_lib.GOVERNANCE_FILE_RELPATHS)
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as plugin_ws:
+      os.makedirs(os.path.join(plugin_ws, ".git"))
+      os.makedirs(os.path.join(plugin_ws, "lib"))
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+
+      for cmd in (
+          "echo hacked > lib/pre_tool_guard.py",
+          "rm -f lib/pre_tool_guard.py",
+          "truncate -s 0 lib/pre_tool_guard.py",
+      ):
+        safe, reason = evaluate_self_modification_safety(cmd, [plugin_ws])
+        self.assertFalse(safe, f"Expected deny for shell cmd={cmd!r}")
+        self.assertIn("lib/pre_tool_guard.py", reason)
+
+      target_file = os.path.join(plugin_ws, "lib", "pre_tool_guard.py")
+      for tool_name in ("write_file", "edit_file"):
+        res = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {
+                "name": tool_name,
+                "args": {"Path": target_file},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny for {tool_name} on lib/pre_tool_guard.py without active ticket, got {res}",
+        )
+
+      # With an active ticket in the plugin checkout, direct file tools are allowed
+      state_dir = os.path.join(plugin_ws, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# 10_ticket: GH-204\n")
+      active_res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "edit_file",
+              "args": {"Path": target_file},
+          },
+      })
+      self.assertEqual(active_res["decision"], "allow")
 
 
 if __name__ == "__main__":

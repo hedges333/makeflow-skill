@@ -68,6 +68,7 @@ class BaseScript:
   """Abstract base class implementing the Template Method pattern for testable CLI scripts."""
 
   def __init__(self) -> None:
+    self.stdin: TextIO = sys.stdin
     self.stdout: TextIO = sys.stdout
     self.stderr: TextIO = sys.stderr
     self.raw_args: List[str] = []
@@ -108,15 +109,23 @@ class BaseScript:
       args: Optional[List[str]] = None,
       stdout: Optional[TextIO] = None,
       stderr: Optional[TextIO] = None,
+      stdin: Optional[TextIO] = None,
   ) -> int:
     """Template method coordinating the full script execution lifecycle.
 
     Injects I/O streams, parses arguments, executes setup(), run(), and cleanup(),
     and catches unhandled exceptions without calling sys.exit().
 
+    Args:
+        args: Optional command-line argument list. Defaults to sys.argv[1:].
+        stdout: Optional standard output stream. Defaults to sys.stdout.
+        stderr: Optional standard error stream. Defaults to sys.stderr.
+        stdin: Optional standard input stream. Defaults to sys.stdin.
+
     Returns:
         Integer exit code (0 for success, non-zero for error).
     """
+    self.stdin = stdin if stdin is not None else sys.stdin
     self.stdout = stdout if stdout is not None else sys.stdout
     self.stderr = stderr if stderr is not None else sys.stderr
 
