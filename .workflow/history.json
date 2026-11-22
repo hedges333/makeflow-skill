@@ -2646,5 +2646,28 @@
     "scars_earned": [
       "SCAR-ARCH-10: Preserve Structured Data Over Lossy Prose Round-Trips"
     ]
+  },
+  {
+    "id": "GH-252",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/252",
+    "title": "[FEAT] Surface OO design patterns, module cohesion rules, and relevant scars in Target 15 and Target 20 planning",
+    "request": "Shift OO design patterns, module cohesion rules, Red-Green-Refactor TDD planning, reference manual discovery, and two-query MCP scar lookup (language plus universal with excludeCategories=['WORKFLOW']) into Targets 15, 20, and 30 across SKILL.md, reference manuals, agent definitions, rules, ontology/DB/MCP layers, and hermetic tests.",
+    "branch": "feat/252-surface-oo-patterns-scars",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "skills",
+      "agents",
+      "rules",
+      "tests"
+    ],
+    "started_at": "2026-11-21T21:08:36Z",
+    "completed_at": "2026-11-22T01:51:57Z",
+    "commit_sha": "b72833fb3c9b0010fc9b679cad158e00455d7c75",
+    "pr_number": 268,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/268",
+    "closes_issue": true,
+    "tests_added": 18,
+    "scars_earned": []
   }
 ]
