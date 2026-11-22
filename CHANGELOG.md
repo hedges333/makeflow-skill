@@ -50,3 +50,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-240: Persist structured ticket JSON in lib/ticket_state.py, remove Markdown regex scraping, deduplicate terminal titles, and codify SCAR-ARCH-10.
 - GH-263: Restrict numeric fallback in WorkspaceMutex.is_session_active to bare ASCII digits so explicit ticket prefixes never cross-match.
 - GH-245: Adapt synthesized ast-lint and AstScrubScript to external Python consumer layouts, and document BaseScript SCAR-AST-01 compliance in Reference 14.
+- GH-249: Replace raw Git index copying with ephemeral native plumbing in lib/git_index.py, and surface Make stderr diagnostics.

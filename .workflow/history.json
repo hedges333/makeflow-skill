@@ -2708,5 +2708,25 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-249",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/249",
+    "title": "[REFACTOR] Replace raw .git/index copying in lib/regression_gate.py with native Git plumbing",
+    "request": "Replace raw .git/index byte-copying in compute_working_tree_hash() and inspect_main_sync() with native Git plumbing against an ephemeral GIT_INDEX_FILE, register lib/git_index.py in SCAR-TEST-12 governance lists, and surface stderr diagnostics on _run_make assertions.",
+    "branch": "fix/249-native-git-index-plumbing",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-22T02:04:53Z",
+    "completed_at": "2026-11-22T03:28:04Z",
+    "commit_sha": "5c6f2a52df341096f3decfe25b8eb57be1aae462",
+    "pr_number": 277,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/277",
+    "closes_issue": true,
+    "tests_added": 11,
+    "scars_earned": []
   }
 ]
