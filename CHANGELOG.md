@@ -37,6 +37,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-275: Extract shared Python file discovery into lib/python_files.py and generalize lib/static_check.py with --repo-root, adaptive root scanning, and external linter --extend-exclude parity.
 - GH-213: Extract Git safety, hosting discovery, and CI polling from mcp/server.py into lib/git_safety.py and lib/ci_polling.py.
 - GH-204: Extract PreToolUse guard logic into lib/pre_tool_guard.py with PreToolGuardScript and add stdin injection to BaseScript.
+- GH-203: Extract SessionStart hook logic into lib/session_start.py with SessionStartScript and reduce scripts/session_start.py to a thin BaseScript wrapper.
 
 ### Fixed
 

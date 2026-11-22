@@ -2907,5 +2907,25 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-203",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/203",
+    "title": "[REFACTOR] Refactor scripts/session_start.py into BaseScript subclass in lib/session_start.py (SCAR-ARCH-05)",
+    "request": "Extract SessionStart hook logic into SessionStartScript(BaseScript) in lib/session_start.py without a shebang, reduce scripts/session_start.py to a thin SCAR-ARCH-05 CLI wrapper preserving __all__ re-exports, reuse BaseScript stdin injection landed by GH-204, register SessionStartScript in TestCliHelpAndSubcommandUsage, and add 19 hermetic unit tests across tests/test_base_script.py and tests/test_session_start.py.",
+    "branch": "feat/203-refactor-session-start-base-script",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-22T07:21:42Z",
+    "completed_at": "2026-11-22T20:00:20Z",
+    "commit_sha": "513c87ad3ec8c347cb3ac2484bebfb09d348367d",
+    "pr_number": 291,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/291",
+    "closes_issue": true,
+    "tests_added": 19,
+    "scars_earned": []
   }
 ]
