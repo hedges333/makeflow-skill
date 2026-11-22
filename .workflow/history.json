@@ -2784,5 +2784,25 @@
     "closes_issue": true,
     "tests_added": 11,
     "scars_earned": []
+  },
+  {
+    "id": "GH-279",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/279",
+    "title": "[BUG] Strip POSIX backslash-newline line continuations in shell_safety tokenizer",
+    "request": "Strip unquoted and double-quoted POSIX backslash-newline line continuations in lib/shell_safety.py before splitting and tokenizing shell commands, preprocess Step 1 redirection scans in scripts/pre_tool_guard.py, and detect shell CLI entry-card writes such as commit_msg.py format --out in lib/turn_boundary.py.",
+    "branch": "fix/279-strip-posix-line-continuations",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "tests"
+    ],
+    "started_at": "2026-11-22T04:11:36Z",
+    "completed_at": "2026-11-22T06:26:22Z",
+    "commit_sha": "3fde814783a16a48255123a8e0b10e66c38dc478",
+    "pr_number": 283,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/283",
+    "closes_issue": true,
+    "tests_added": 10,
+    "scars_earned": []
   }
 ]
