@@ -122,8 +122,41 @@ class WorkspaceMutex:
     except (FileNotFoundError, OSError):
       pass
 
+  @staticmethod
+  def _ticket_ids_match(ticket_id: str, active_id: str) -> bool:
+    """Compare lock session ticket ID against active workspace ticket ID.
+
+    Args:
+      ticket_id: Ticket identifier recorded in lock session metadata.
+      active_id: Active ticket identifier loaded from 10_ticket.json.
+
+    Returns:
+      True when both identifiers match case-insensitively or when bare ASCII
+      digits match an active GH-<N> or LOCAL-<N> identifier; otherwise False.
+    """
+    clean_ticket = ticket_id.strip()
+    clean_active = active_id.strip()
+    if not clean_ticket or not clean_active:
+      return False
+    if clean_active.lower() == clean_ticket.lower():
+      return True
+    if re.fullmatch(r"[0-9]+", clean_ticket):
+      return clean_active.upper() in (
+          f"GH-{clean_ticket}",
+          f"LOCAL-{clean_ticket}",
+      )
+    return False
+
   def is_session_active(self, session_data: Dict[str, Any]) -> bool:
-    """Determine if a recorded workspace session is actively working or stale."""
+    """Determine if a recorded workspace session is actively working or stale.
+
+    Args:
+      session_data: Parsed session.json dictionary from an atomic lock directory.
+
+    Returns:
+      True if the owning process is alive or the locked workspace still tracks
+      the same non-completed ticket; otherwise False.
+    """
     pid = session_data.get("pid")
     if pid is not None and self.is_pid_alive(int(pid)):
       return True
@@ -137,21 +170,10 @@ class WorkspaceMutex:
     if meta is None or not meta.ticket_id:
       return False
 
-    ticket_id = str(session_data.get("ticket_id", "")).strip()
+    raw_ticket_id = session_data.get("ticket_id")
+    ticket_id = "" if raw_ticket_id is None else str(raw_ticket_id).strip()
     active_id = meta.ticket_id.strip()
-    matched = False
-    if ticket_id and active_id.lower() == ticket_id.lower():
-      matched = True
-    else:
-      m = re.search(r"\d+", ticket_id)
-      clean_num = m.group(0) if m else ""
-      if clean_num and active_id.upper() in (
-          f"GH-{clean_num}",
-          f"LOCAL-{clean_num}",
-      ):
-        matched = True
-
-    if not matched:
+    if not self._ticket_ids_match(ticket_id, active_id):
       return False
 
     try:
