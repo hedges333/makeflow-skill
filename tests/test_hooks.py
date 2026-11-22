@@ -2197,5 +2197,93 @@ class TestCiQuiescenceZeroConfigAndSessionStart(unittest.TestCase):
         self.assertNotIn("MAKEFILE_WORKFLOW_CI_POLL_INTERVAL", msg_bad)
 
 
+class TestHookMcpLineContinuationParity(unittest.TestCase):
+  """Parity tests between PreToolUse Hook and MCP workflow_safety_check across line continuations (GH-279)."""
+
+  def test_hook_and_mcp_parity_across_posix_line_continuations(self):
+    """Verifies Hook and MCP safety checks stay in parity across LF and CRLF continuations (GH-279)."""
+    guard_mod = _load_module("pre_tool_guard_gh279", PRE_TOOL)
+    mcp_mod = _load_module("mcp_server_gh279", MCP_SERVER)
+
+    git_cases = (
+        ("echo ok && \\\ngit reset --hard", "deny"),
+        ("echo ok && \\\r\ngit push --force origin main", "deny"),
+        ("gi\\\nt reset --hard", "deny"),
+        ("# comment \\\ngit reset --hard", "deny"),
+        ("echo ok\\\\\ngit reset --hard", "deny"),
+        ('echo ok && \\\ngit commit -m "feat: multiline"', "force_ask"),
+        ("echo ok && \\\ngit status --short", "allow"),
+    )
+
+    with (
+        _isolated_hook_dirs() as (ws_dir, hook_cwd, _fake_home, env),
+        tempfile.TemporaryDirectory() as tmp_state_dir,
+    ):
+      for cmd, expected_decision in git_cases:
+        hook_res = guard_mod.evaluate_git_command(
+            cmd, has_review=True, state_dir=tmp_state_dir
+        )
+        mcp_safe, mcp_reason = mcp_mod.evaluate_git_safety(
+            cmd, state_dir=tmp_state_dir
+        )
+        mcp_rpc = mcp_mod.handle_tools_call(
+            1,
+            "workflow_safety_check",
+            {"commandLine": cmd, "workspaceDir": ws_dir},
+        )
+        mcp_payload = json.loads(mcp_rpc["result"]["content"][0]["text"])
+        self.assertEqual(
+            hook_res["decision"],
+            expected_decision,
+            f"Unexpected Hook decision for {cmd!r}: {hook_res}",
+        )
+        self.assertEqual(
+            hook_res["decision"] == "deny",
+            not mcp_safe,
+            f"Deny parity mismatch on {cmd!r}: hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})",
+        )
+        self.assertEqual(mcp_payload["safe"], mcp_safe)
+        self.assertEqual(
+            hook_res["decision"] == "force_ask",
+            mcp_safe
+            and mcp_reason.startswith("Requires human operator approval"),
+            f"Gate parity mismatch on {cmd!r}: hook={hook_res}, mcp=({mcp_safe}, {mcp_reason})",
+        )
+
+      for bad_db_cmd in (
+          "ps\\\nql -h prod.db.internal myapp",
+          "echo ok && \\\r\npsql -h prod.db.internal myapp",
+      ):
+        hook_wire = run_hook(
+            PRE_TOOL,
+            {
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": bad_db_cmd},
+                },
+            },
+            cwd=hook_cwd,
+            env=env,
+        )
+        mcp_db_safe, _ = mcp_mod.evaluate_database_safety(bad_db_cmd, {})
+        mcp_rpc = mcp_mod.handle_tools_call(
+            2,
+            "workflow_safety_check",
+            {"commandLine": bad_db_cmd, "workspaceDir": ws_dir},
+        )
+        mcp_payload = json.loads(mcp_rpc["result"]["content"][0]["text"])
+        self.assertEqual(
+            hook_wire["decision"],
+            "deny",
+            f"Expected Hook wire deny for {bad_db_cmd!r}, got {hook_wire}",
+        )
+        self.assertFalse(
+            mcp_db_safe,
+            f"Expected MCP DB deny for {bad_db_cmd!r}",
+        )
+        self.assertFalse(mcp_payload["safe"])
+
+
 if __name__ == "__main__":
   unittest.main()

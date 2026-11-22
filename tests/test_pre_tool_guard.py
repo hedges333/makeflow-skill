@@ -24,7 +24,9 @@ from lib.turn_boundary import (
     is_human_user_input_step,
     is_subagent_wakeup_step,
     read_active_subagent,
+    read_gate_entry,
     record_active_subagent,
+    step_enters_gate,
 )
 from scripts.pre_tool_guard import (
     GOVERNANCE_FILE_RELPATHS,
@@ -2252,6 +2254,302 @@ class TestSubagentHaltAirlock(unittest.TestCase):
       self.assertEqual(out["decision"], "deny")
       self.assertIn("SCAR-PROC-95", out["reason"])
       self.assertIn("CONCURRENT_SUPERVISOR_TOOL_CALL", out["reason"])
+
+
+class TestPosixLineContinuationGuards(unittest.TestCase):
+  """Boundary tests for POSIX line continuations and CLI helper entry-card detection (GH-279)."""
+
+  def test_multiline_line_continuations_blocked_for_git_db_and_self_modification(
+      self,
+  ):
+    """Blocks destructive Git, DB, and governance self-modification across line continuations (GH-279)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      denied_commands = (
+          "echo ok && \\\ngit reset --hard",
+          "echo ok && \\\r\ngit push --force origin main",
+          "gi\\\nt reset --hard",
+          "# comment \\\ngit reset --hard",
+          "echo ok\\\\\ngit reset --hard",
+          "ps\\\nql -h prod.db.internal myapp",
+          "echo ok && \\\nrm -f hooks.json",
+          "echo x > scripts/\\\ntdd_guard.py",
+          "echo x > scripts/\\\r\ntdd_guard.py",
+          "# Don't touch \\\necho x > scripts/\\\ntdd_guard.py",
+      )
+      for cmd in denied_commands:
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            },
+        })
+        self.assertEqual(
+            res["decision"],
+            "deny",
+            f"Expected deny for multiline command {cmd!r}, got {res}",
+        )
+
+  def test_multiline_chained_target50_entry_records_gate_and_enforces_turn_boundary(
+      self,
+  ):
+    """Records Target 50 gate_entry.json on chained multiline make commit and unblocks post-approval (GH-279, SCAR-PROC-102)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "45_review_approved.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Approved\n")
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {
+              "step_index": 10,
+              "type": "USER_INPUT",
+              "content": "Review approved. Prepare commit.",
+          },
+          {
+              "step_index": 11,
+              "type": "PLANNER_RESPONSE",
+              "content": "Formatting commit message and entering Target 50.",
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+
+      chained_cmd = (
+          "python3 scripts/commit_msg.py format \\\n"
+          '  --type fix --scope hooks --desc "strip continuations" \\\n'
+          "  --issue 279 --out .workflow/state/50_commit_msg.txt && \\\n"
+          "make -f .workflow/state/Makefile commit APPROVED=1"
+      )
+      enter_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": chained_cmd},
+          },
+      })
+      self.assertEqual(enter_res["decision"], "allow", enter_res)
+
+      entry = read_gate_entry(state_dir)
+      self.assertIsNotNone(entry)
+      self.assertEqual(entry["gate"], "T50")
+      self.assertEqual(entry["transcriptPath"], transcript_path)
+      self.assertEqual(entry["entryStepIndex"], 11)
+      self.assertFalse(entry["humanTurnVerified"])
+
+      # Same-turn git commit MUST be blocked.
+      steps.append({
+          "step_index": 12,
+          "type": "PLANNER_RESPONSE",
+          "tool_calls": [{
+              "name": "run_command",
+              "args": {"CommandLine": chained_cmd},
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+      same_turn_commit = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          },
+      })
+      self.assertEqual(same_turn_commit["decision"], "deny", same_turn_commit)
+      self.assertIn("SCAR-PROC-102", same_turn_commit["reason"])
+
+      # After explicit human approval, git commit -F prompts and make push APPROVED=1 succeeds.
+      steps.append({
+          "step_index": 13,
+          "type": "USER_INPUT",
+          "content": "Approved. Run the commit.",
+      })
+      _write_transcript(transcript_path, steps)
+      approved_commit = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          },
+      })
+      self.assertEqual(
+          approved_commit["decision"], "force_ask", approved_commit
+      )
+
+      steps.append({
+          "step_index": 14,
+          "type": "PLANNER_RESPONSE",
+          "tool_calls": [{
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+      push_advance = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile push APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(push_advance["decision"], "allow", push_advance)
+
+  def test_step_enters_gate_cli_helper_fallback_and_readonly_negatives(self):
+    """Detects CLI helpers writing entryCards while ignoring read-only commands (GH-279, SCAR-ARCH-07)."""
+    def _shell_step(cmd, tool_name="run_command"):
+      return {
+          "type": "PLANNER_RESPONSE",
+          "tool_calls": [{
+              "name": tool_name,
+              "args": {"CommandLine": cmd},
+          }],
+      }
+
+    positive_cmds = (
+        "python3 scripts/commit_msg.py format --type fix --desc 'x' --out .workflow/state/50_commit_msg.txt",
+        "python3 scripts/commit_msg.py format --type fix --desc 'x' --out=.workflow/state/50_commit_msg.txt",
+        "python3 -m scripts.commit_msg format --type fix --desc 'x' --out .workflow/state/50_commit_msg.txt",
+        "python3 -m lib.commit_msg format --type fix --desc 'x' --out .workflow/state/50_commit_msg.txt",
+        "scripts/commit_msg.py format --type fix --desc 'x' --out .workflow/state/50_commit_msg.txt",
+        "python3 scripts/commit_msg.py --repo-root . format \\\n  --type fix --desc 'x' --out .workflow/state/50_commit_msg.txt",
+        "echo 'feat: x' > .workflow/state/50_commit_msg.txt",
+        "echo 'feat: x' >> .workflow/state/50_commit_msg.txt",
+        "echo 'feat: x' >| .workflow/state/50_commit_msg.txt",
+        "echo 'feat: x' | tee .workflow/state/50_commit_msg.txt",
+    )
+    for cmd in positive_cmds:
+      self.assertTrue(
+          step_enters_gate(_shell_step(cmd), "T50"),
+          f"Expected step_enters_gate True for {cmd!r}",
+      )
+
+    readonly_cmds = (
+        "git commit -F .workflow/state/50_commit_msg.txt",
+        "python3 scripts/commit_msg.py validate --file .workflow/state/50_commit_msg.txt",
+        "cat .workflow/state/50_commit_msg.txt",
+        "cat < .workflow/state/50_commit_msg.txt",
+    )
+    for cmd in readonly_cmds:
+      self.assertFalse(
+          step_enters_gate(_shell_step(cmd), "T50"),
+          f"Expected step_enters_gate False for read-only command {cmd!r}",
+      )
+
+    # End-to-end fallback when gate_entry.json has entryStepIndex == -1.
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "45_review_approved.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Approved\n")
+      with open(
+          os.path.join(state_dir, "gate_entry.json"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        json.dump(
+            {
+                "gate": "T50",
+                "fromTarget": "T45",
+                "enteredAt": 1.0,
+                "entryStepIndex": -1,
+                "userInputCountAtEntry": 0,
+                "transcriptPath": "",
+                "humanTurnVerified": False,
+            },
+            f,
+        )
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {
+              "step_index": 20,
+              "type": "PLANNER_RESPONSE",
+              "tool_calls": [{
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          "python3 scripts/commit_msg.py format --type fix"
+                          " --desc 'x' --out .workflow/state/50_commit_msg.txt"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+
+      pre_approval = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          },
+      })
+      self.assertEqual(pre_approval["decision"], "deny", pre_approval)
+
+      steps.append({
+          "step_index": 21,
+          "type": "USER_INPUT",
+          "content": "Commit approved.",
+      })
+      _write_transcript(transcript_path, steps)
+      post_approval = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          },
+      })
+      self.assertEqual(post_approval["decision"], "force_ask", post_approval)
+
+      steps.append({
+          "step_index": 22,
+          "type": "PLANNER_RESPONSE",
+          "tool_calls": [{
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -F .workflow/state/50_commit_msg.txt"
+              },
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+      advance_push = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile push APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(advance_push["decision"], "allow", advance_push)
 
 
 if __name__ == "__main__":
