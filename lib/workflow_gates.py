@@ -22,6 +22,7 @@ from lib.repo_tree import (
     RepoTreeCollector,
     RepoTreeError,
 )
+from lib.ticket_state import canonicalize_ticket_id
 
 _DEFAULT_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPTS_DIR = os.path.join(_DEFAULT_REPO_ROOT, "scripts")
@@ -1252,6 +1253,11 @@ class WorkflowGatesScript(BaseScript):
     )
 
   def _check_intake(self) -> int:
+    """Validates intake preconditions, acquires canonical mutex lock, and persists 10_ticket.json.
+
+    Returns:
+      Exit code 0 when intake succeeds, or 2 with a Vector 4 Reflex on stderr.
+    """
     status_proc = self._git("status", "--porcelain")
     if status_proc.returncode != 0:
       return self._fail(
@@ -1299,11 +1305,16 @@ class WorkflowGatesScript(BaseScript):
       )
       if leftovers == [TICKET_JSON_FILENAME] and self.ticket:
         existing_meta = TicketStateStore(state_dir).load()
+        requested_ticket_id = canonicalize_ticket_id(self.ticket)
+        existing_ticket_id = (
+            canonicalize_ticket_id(existing_meta.ticket_id)
+            if existing_meta is not None
+            else ""
+        )
         if (
-            existing_meta is not None
-            and existing_meta.ticket_id
-            and existing_meta.ticket_id.strip().lower()
-            == self.ticket.strip().lower()
+            requested_ticket_id
+            and existing_ticket_id
+            and existing_ticket_id.lower() == requested_ticket_id.lower()
         ):
           leftovers = []
       if leftovers:
@@ -1322,6 +1333,7 @@ class WorkflowGatesScript(BaseScript):
         ticket_id = detect_ticket_id(repo_root=self.repo_root)
       except (ImportError, OSError, UnicodeDecodeError):
         ticket_id = ""
+    ticket_id = canonicalize_ticket_id(ticket_id)
 
     if ticket_id:
       from lib.ticket_state import TicketMetadata, TicketStateStore
@@ -1482,6 +1494,11 @@ class WorkflowGatesScript(BaseScript):
     return 0
 
   def _release_intake(self) -> int:
+    """Releases canonical workspace mutex locks, cleans up receipts, and restores terminal title.
+
+    Returns:
+      Exit code 0 after releasing intake resources.
+    """
     ticket_id = self.ticket
     if not ticket_id:
       try:
@@ -1489,6 +1506,7 @@ class WorkflowGatesScript(BaseScript):
         ticket_id = detect_ticket_id(repo_root=self.repo_root)
       except (ImportError, OSError, UnicodeDecodeError):
         ticket_id = ""
+    ticket_id = canonicalize_ticket_id(ticket_id)
 
     try:
       from lib.workspace_mutex import WorkspaceMutex
@@ -1497,7 +1515,7 @@ class WorkflowGatesScript(BaseScript):
         mutex.release(ticket_id)
       released_tickets = mutex.release_workspace(self.repo_root)
       if not ticket_id and released_tickets:
-        ticket_id = released_tickets[0]
+        ticket_id = canonicalize_ticket_id(released_tickets[0])
     except (ImportError, OSError):
       pass
 

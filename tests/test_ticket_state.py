@@ -16,6 +16,7 @@ from lib.ticket_state import (
     TICKET_JSON_FILENAME,
     TicketMetadata,
     TicketStateStore,
+    canonicalize_ticket_id,
 )
 
 
@@ -247,6 +248,105 @@ class TestTicketStateStore(unittest.TestCase):
       source = f.read()
     self.assertFalse(source.startswith("#!"))
     self.assertNotIn("import re", source)
+
+
+class TestTicketIdCanonicalization(unittest.TestCase):
+  """Pure unit tests for canonicalize_ticket_id and store normalization (GH-271)."""
+
+  def test_canonicalizes_positive_github_and_local_forms(self) -> None:
+    """GH-271: Normalizes bare digits, #N, gh-N, and local-N to canonical IDs."""
+    cases = [
+        ("100", "GH-100"),
+        (" 100 ", "GH-100"),
+        ("0100", "GH-100"),
+        (100, "GH-100"),
+        ("#100", "GH-100"),
+        ("gh-100", "GH-100"),
+        ("GH-0100", "GH-100"),
+        ("local-5", "LOCAL-5"),
+        ("LOCAL-05", "LOCAL-5"),
+    ]
+    for raw_value, expected in cases:
+      with self.subTest(raw_value=raw_value):
+        self.assertEqual(canonicalize_ticket_id(raw_value), expected)
+
+  def test_preserves_non_canonical_keys_and_non_ascii_digits_verbatim(self) -> None:
+    """GH-271: Preserves Jira keys, zero/negative values, and non-ASCII digits trimmed."""
+    cases = [
+        ("PROJ-123", "PROJ-123"),
+        ("  PROJ-123  ", "PROJ-123"),
+        ("GH100", "GH100"),
+        ("0", "0"),
+        ("-5", "-5"),
+        ("\u0661\u0660\u0660", "\u0661\u0660\u0660"),
+        ("GH-\u0661\u0660\u0660", "GH-\u0661\u0660\u0660"),
+        ("\u00b2", "\u00b2"),
+        ("#0", "#0"),
+        ("GH-0", "GH-0"),
+        ("LOCAL-0", "LOCAL-0"),
+        ("#", "#"),
+        ("GH-", "GH-"),
+        ("LOCAL-", "LOCAL-"),
+    ]
+    for raw_value, expected in cases:
+      with self.subTest(raw_value=raw_value):
+        self.assertEqual(canonicalize_ticket_id(raw_value), expected)
+
+  def test_returns_empty_string_for_bool_none_and_whitespace(self) -> None:
+    """GH-271: Rejects booleans, None, and blank strings as empty ticket IDs."""
+    for raw_value in (True, False, "", "   ", None):
+      with self.subTest(raw_value=raw_value):
+        self.assertEqual(canonicalize_ticket_id(raw_value), "")
+
+  def test_from_dict_canonicalizes_explicit_ids_and_guards_non_ascii_number(self) -> None:
+    """GH-271: _extract_ticket_id canonicalizes ticket_id/id and enforces ASCII number."""
+    meta_bare_override = TicketMetadata.from_dict(
+        {"ticket_id": "100", "number": 100, "title": "Fix bare intake"}
+    )
+    self.assertEqual(meta_bare_override.ticket_id, "GH-100")
+
+    meta_hash = TicketMetadata.from_dict({"ticket_id": "#100"})
+    self.assertEqual(meta_hash.ticket_id, "GH-100")
+
+    meta_local = TicketMetadata.from_dict({"id": "local-05"})
+    self.assertEqual(meta_local.ticket_id, "LOCAL-5")
+
+    meta_ascii_num_str = TicketMetadata.from_dict({"number": "0100"})
+    self.assertEqual(meta_ascii_num_str.ticket_id, "GH-100")
+
+    for non_ascii_num in ("\u0661\u0660\u0660", "\u00b2"):
+      with self.subTest(non_ascii_num=non_ascii_num):
+        meta_bad = TicketMetadata.from_dict({"number": non_ascii_num})
+        self.assertEqual(meta_bad.ticket_id, "")
+
+  def test_store_save_and_load_canonicalize_bare_ticket_ids(self) -> None:
+    """GH-271: TicketStateStore.save and load persist and read canonical GH-<N> IDs."""
+    with tempfile.TemporaryDirectory(prefix="makeflow_ticket_canon_") as tmp:
+      store = TicketStateStore.from_repo_root(tmp)
+      store.save(
+          {
+              "ticket_id": "100",
+              "number": 100,
+              "title": "Bare numeric intake",
+              "source": "github",
+          }
+      )
+      with open(store.path, "r", encoding="utf-8") as f:
+        disk_payload = json.load(f)
+      self.assertEqual(disk_payload["ticket_id"], "GH-100")
+      loaded = store.load()
+      self.assertIsNotNone(loaded)
+      assert loaded is not None
+      self.assertEqual(loaded.ticket_id, "GH-100")
+      self.assertEqual(loaded.title, "Bare numeric intake")
+
+      # Legacy on-disk bare ticket_id also loads in canonical GH-<N> form
+      with open(store.path, "w", encoding="utf-8") as f:
+        json.dump({"ticket_id": "100", "title": "Legacy bare file"}, f)
+      legacy_loaded = store.load()
+      self.assertIsNotNone(legacy_loaded)
+      assert legacy_loaded is not None
+      self.assertEqual(legacy_loaded.ticket_id, "GH-100")
 
 
 if __name__ == "__main__":
