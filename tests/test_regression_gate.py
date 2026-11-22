@@ -442,7 +442,6 @@ class TestRegressionGateSecurityConfigAndLifecycle(unittest.TestCase):
       for shell_cmd in (
           "echo '{}' > .workflow/state/30_regression_receipt.json",
           "rm -f .workflow/state/30_regression_receipt.json",
-          "echo '# hack' > lib/regression_gate.py",
       ):
         res_sh = guard.evaluate_tool_call({
             "workspacePaths": [ws],
@@ -455,12 +454,24 @@ class TestRegressionGateSecurityConfigAndLifecycle(unittest.TestCase):
             res_sh["decision"], "deny", f"Shell '{shell_cmd}' must be denied"
         )
 
-      # Direct write_file to lib/regression_gate.py in a makeflow repo without active ticket
+      # Direct write_file and shell write to lib/regression_gate.py in a makeflow repo without active ticket
       fake_plugin = os.path.join(ws, "makeflow_checkout")
       os.makedirs(os.path.join(fake_plugin, ".git"), exist_ok=True)
       _write_file(
           os.path.join(fake_plugin, "plugin.json"),
           json.dumps({"name": "makeflow", "version": "1.0.0"}),
+      )
+      res_plugin_sh = guard.evaluate_tool_call({
+          "workspacePaths": [fake_plugin],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "echo '# hack' > lib/regression_gate.py"},
+          },
+      })
+      self.assertEqual(
+          res_plugin_sh["decision"],
+          "deny",
+          "Shell write to lib/regression_gate.py in Makeflow plugin repo must be denied",
       )
       res_lib = guard.evaluate_tool_call({
           "workspacePaths": [fake_plugin],
@@ -1386,6 +1397,10 @@ class TestNativeGitIndexPlumbing(unittest.TestCase):
       self.assertFalse(f.readline().startswith("#!"))
 
     with tempfile.TemporaryDirectory() as ws:
+      _write_file(
+          os.path.join(ws, "plugin.json"),
+          json.dumps({"name": "makeflow", "version": "1.0.0"}),
+      )
       res_sh = guard.evaluate_tool_call({
           "workspacePaths": [ws],
           "toolCall": {

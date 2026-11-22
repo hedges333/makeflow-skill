@@ -21,8 +21,13 @@ for _p in (_REPO_ROOT, _SCRIPTS_DIR):
     sys.path.insert(0, _p)
 
 from lib.base_script import BaseScript
-from lib.tdd_guard import TddGuardScript, compute_test_tree_hash
-from lib.workflow_gates import WorkflowGatesScript
+from lib.tdd_guard import (
+    CORE_GOVERNANCE_FILES,
+    TddGuardScript,
+    compute_test_tree_hash,
+    compute_toolchain_hash,
+)
+from lib.workflow_gates import REQUIRED_PLUGIN_FILES, WorkflowGatesScript
 
 
 def _init_fixture_repo(repo_dir: str) -> str:
@@ -119,6 +124,15 @@ def _fix_calc_bug(repo_dir: str) -> None:
 
 def _receipt_path(repo_dir: str) -> str:
   return os.path.join(repo_dir, ".workflow", "state", "30_tdd_receipt.json")
+
+
+def _seed_required_plugin_files(repo_dir: str) -> None:
+  """Seeds all REQUIRED_PLUGIN_FILES markers in a temp plugin fixture (GH-242)."""
+  for rel_path in REQUIRED_PLUGIN_FILES:
+    dst_path = os.path.join(repo_dir, *rel_path.split("/"))
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    with open(dst_path, "w", encoding="utf-8") as f:
+      f.write(f"# fixture marker for {rel_path}\n")
 
 
 class TestTddGuardScript(unittest.TestCase):
@@ -2347,7 +2361,8 @@ class TestTddGuardScript(unittest.TestCase):
       with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
         f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
 
-      subprocess.run(["git", "add", "scripts", "lib", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
+      _seed_required_plugin_files(tmpdir)
+      subprocess.run(["git", "add", "-A"], cwd=tmpdir, check=True, capture_output=True)
       subprocess.run(["git", "commit", "-q", "-m", "chore: add governance scripts and spec"], cwd=tmpdir, check=True, capture_output=True)
 
       cmd = _unit_test_cmd()
@@ -2428,7 +2443,8 @@ class TestTddGuardScript(unittest.TestCase):
       with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
         f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
 
-      subprocess.run(["git", "add", "scripts", "lib", "spec.txt"], cwd=tmpdir, check=True, capture_output=True)
+      _seed_required_plugin_files(tmpdir)
+      subprocess.run(["git", "add", "-A"], cwd=tmpdir, check=True, capture_output=True)
       subprocess.run(["git", "commit", "-q", "-m", "chore: add governance scripts, non-governance script, and spec"], cwd=tmpdir, check=True, capture_output=True)
 
       cmd = _unit_test_cmd()
@@ -2750,6 +2766,497 @@ class TestTddGuardMakeEnvSanitization(unittest.TestCase):
             var, green_child_env, f"{var} leaked during verify-green"
         )
       self.assertEqual(green_child_env.get("CAPTURE_USER_VAR"), "kept-in-green")
+
+
+class TestTddGuardToolchainHashIsolation(unittest.TestCase):
+  """Tests consumer-repo vs Makeflow plugin-repo governance toolchain isolation (GH-242)."""
+
+  def _copy_core_governance_files(self, target_root: str) -> None:
+    """Copies CORE_GOVERNANCE_FILES from _REPO_ROOT into target_root."""
+    for rel_path in CORE_GOVERNANCE_FILES:
+      src_path = os.path.join(_REPO_ROOT, *rel_path.split("/"))
+      dst_path = os.path.join(target_root, *rel_path.split("/"))
+      os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+      shutil.copyfile(src_path, dst_path)
+
+  def test_consumer_repo_creating_and_staging_lib_base_script_passes_verify_green(
+      self,
+  ):
+    """External consumer repo creating and staging lib/base_script.py passes verify-green (GH-242)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      cmd = _unit_test_cmd()
+      err_red = io.StringIO()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=err_red,
+      )
+      self.assertEqual(rc_red, 0, err_red.getvalue())
+
+      # Create untracked consumer lib/base_script.py and fix production code
+      lib_dir = os.path.join(tmpdir, "lib")
+      os.makedirs(lib_dir, exist_ok=True)
+      consumer_base_script = os.path.join(lib_dir, "base_script.py")
+      with open(consumer_base_script, "w", encoding="utf-8") as f:
+        f.write("class ConsumerBaseScript:\n  pass\n")
+      _fix_calc_bug(tmpdir)
+
+      err_untracked = io.StringIO()
+      rc_untracked = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_untracked,
+      )
+      self.assertEqual(rc_untracked, 0, err_untracked.getvalue())
+      self.assertEqual(err_untracked.getvalue(), "")
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_untracked = json.load(f)
+      self.assertTrue(rec_untracked["verified_green"])
+      self.assertEqual(rec_untracked["forensic_log"], [])
+
+      # Stage consumer lib/base_script.py via git add and re-run verify-green
+      subprocess.run(
+          ["git", "add", "lib/base_script.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      err_staged = io.StringIO()
+      rc_staged = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_staged,
+      )
+      self.assertEqual(rc_staged, 0, err_staged.getvalue())
+      self.assertEqual(err_staged.getvalue(), "")
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_staged = json.load(f)
+      self.assertTrue(rec_staged["verified_green"])
+      self.assertEqual(rec_staged["forensic_log"], [])
+
+  def test_consumer_repo_editing_tracked_governance_named_files_passes_green_and_citation(
+      self,
+  ):
+    """External consumer repo editing tracked lib/base_script.py and creating scripts/workflow_gates.py passes verify-green and verify-citation (GH-242)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      lib_dir = os.path.join(tmpdir, "lib")
+      os.makedirs(lib_dir, exist_ok=True)
+      base_script_path = os.path.join(lib_dir, "base_script.py")
+      with open(base_script_path, "w", encoding="utf-8") as f:
+        f.write("class BaseScript:\n  VERSION = 1\n")
+      with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
+        f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+      subprocess.run(
+          ["git", "add", "lib/base_script.py", "spec.txt"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: track consumer base_script and spec"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      cmd = _unit_test_cmd()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc_red, 0)
+
+      # Edit pre-existing tracked lib/base_script.py and create scripts/workflow_gates.py
+      with open(base_script_path, "w", encoding="utf-8") as f:
+        f.write("class BaseScript:\n  VERSION = 2\n")
+      scripts_dir = os.path.join(tmpdir, "scripts")
+      os.makedirs(scripts_dir, exist_ok=True)
+      with open(
+          os.path.join(scripts_dir, "workflow_gates.py"), "w", encoding="utf-8"
+      ) as f:
+        f.write("def consumer_gate() -> bool:\n  return True\n")
+      _fix_calc_bug(tmpdir)
+
+      err_green = io.StringIO()
+      rc_green = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_green,
+      )
+      self.assertEqual(rc_green, 0, err_green.getvalue())
+      self.assertEqual(err_green.getvalue(), "")
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec = json.load(f)
+      self.assertTrue(rec["verified_green"])
+      self.assertEqual(rec["forensic_log"], [])
+
+      err_cite = io.StringIO()
+      rc_cite = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "verify-citation",
+              "--cite",
+              "spec.txt:1",
+          ],
+          stdout=io.StringIO(),
+          stderr=err_cite,
+      )
+      self.assertEqual(rc_cite, 0, err_cite.getvalue())
+      self.assertEqual(err_cite.getvalue(), "")
+
+  def test_compute_toolchain_hash_consumer_repo_matches_active_plugin_root(
+      self,
+  ):
+    """compute_toolchain_hash(consumer_dir) matches _REPO_ROOT before and after consumer governance-named edits (GH-242)."""
+    with tempfile.TemporaryDirectory() as consumer_dir:
+      expected_plugin_hash = compute_toolchain_hash(_REPO_ROOT)
+      self.assertEqual(
+          compute_toolchain_hash(consumer_dir), expected_plugin_hash
+      )
+
+      # Partial marker (only plugin.json) is still treated as a consumer repo
+      with open(
+          os.path.join(consumer_dir, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        f.write('{"name": "consumer-app"}\n')
+      os.makedirs(os.path.join(consumer_dir, "lib"), exist_ok=True)
+      os.makedirs(os.path.join(consumer_dir, "scripts"), exist_ok=True)
+      base_script = os.path.join(consumer_dir, "lib", "base_script.py")
+      workflow_gates = os.path.join(
+          consumer_dir, "scripts", "workflow_gates.py"
+      )
+      with open(base_script, "w", encoding="utf-8") as f:
+        f.write("CONSUMER_V1 = True\n")
+      with open(workflow_gates, "w", encoding="utf-8") as f:
+        f.write("GATE_V1 = True\n")
+      self.assertEqual(
+          compute_toolchain_hash(consumer_dir), expected_plugin_hash
+      )
+
+      with open(base_script, "w", encoding="utf-8") as f:
+        f.write("CONSUMER_V2 = True\n")
+      with open(workflow_gates, "w", encoding="utf-8") as f:
+        f.write("GATE_V2 = True\n")
+      self.assertEqual(
+          compute_toolchain_hash(consumer_dir), expected_plugin_hash
+      )
+
+  def test_plugin_repo_governance_file_modification_and_deletion_detected(self):
+    """Makeflow plugin repo modifying or deleting a governance file fails verify-green and verify-citation with exit 2 (GH-242)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      _seed_required_plugin_files(tmpdir)
+      self._copy_core_governance_files(tmpdir)
+      with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
+        f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+      subprocess.run(
+          ["git", "add", "-A"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: seed plugin checkout"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      baseline_hash = compute_toolchain_hash(tmpdir)
+      cmd = _unit_test_cmd()
+      self.assertEqual(
+          TddGuardScript().execute(
+              args=[
+                  "--repo-root",
+                  tmpdir,
+                  "witness-red",
+                  "--test-dir",
+                  "tests",
+                  "--cmd",
+                  cmd,
+              ],
+              stdout=io.StringIO(),
+              stderr=io.StringIO(),
+          ),
+          0,
+      )
+      _fix_calc_bug(tmpdir)
+
+      # Case 1: Modifying lib/base_script.py triggers GOVERNANCE_TOOLCHAIN_TAMPERED
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "r", encoding="utf-8") as f:
+        orig_base_script = f.read()
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PLUGIN_TAMPER = True\n")
+
+      for sub_args in (
+          ["--repo-root", tmpdir, "verify-green"],
+          ["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+      ):
+        err_buf = io.StringIO()
+        rc = TddGuardScript().execute(
+            args=sub_args, stdout=io.StringIO(), stderr=err_buf
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+
+      # Case 2: Deleting a governance file must hash "missing" (no fallback to _DEFAULT_REPO_ROOT)
+      os.remove(base_script_path)
+      self.assertNotEqual(compute_toolchain_hash(tmpdir), baseline_hash)
+
+      for sub_args in (
+          ["--repo-root", tmpdir, "verify-green"],
+          ["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+      ):
+        err_buf = io.StringIO()
+        rc = TddGuardScript().execute(
+            args=sub_args, stdout=io.StringIO(), stderr=err_buf
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+
+      # Restore lib/base_script.py and verify deleting scripts/tdd_guard.py also fails
+      with open(base_script_path, "w", encoding="utf-8") as f:
+        f.write(orig_base_script)
+      tdd_script_path = os.path.join(tmpdir, "scripts", "tdd_guard.py")
+      os.remove(tdd_script_path)
+      self.assertNotEqual(compute_toolchain_hash(tmpdir), baseline_hash)
+
+      err_del_script = io.StringIO()
+      rc_del_script = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_del_script,
+      )
+      self.assertEqual(rc_del_script, 2)
+      self.assertIn(
+          "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+          err_del_script.getvalue(),
+      )
+
+  def test_plugin_repo_marker_deletion_with_governance_tampering_still_detected(
+      self,
+  ):
+    """Secondary plugin checkout deleting a REQUIRED_PLUGIN_FILES marker while tampering with governance files still fails verify-green and verify-citation with exit 2 (GH-242)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      _seed_required_plugin_files(tmpdir)
+      self._copy_core_governance_files(tmpdir)
+      with open(os.path.join(tmpdir, "spec.txt"), "w", encoding="utf-8") as f:
+        f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+      subprocess.run(
+          ["git", "add", "-A"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: seed secondary plugin checkout"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      cmd = _unit_test_cmd()
+      err_red = io.StringIO()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=err_red,
+      )
+      self.assertEqual(rc_red, 0, err_red.getvalue())
+      _fix_calc_bug(tmpdir)
+
+      # Case 1: Delete plugin.json marker AND modify lib/base_script.py
+      plugin_json_path = os.path.join(tmpdir, "plugin.json")
+      with open(plugin_json_path, "r", encoding="utf-8") as f:
+        orig_plugin_json = f.read()
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "r", encoding="utf-8") as f:
+        orig_base_script = f.read()
+
+      os.remove(plugin_json_path)
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# MARKER_DELETE_TAMPER = True\n")
+
+      for sub_args in (
+          ["--repo-root", tmpdir, "verify-green"],
+          ["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+      ):
+        err_buf = io.StringIO()
+        rc = TddGuardScript().execute(
+            args=sub_args, stdout=io.StringIO(), stderr=err_buf
+        )
+        self.assertEqual(rc, 2, f"Expected exit 2 for {sub_args}, got {rc}")
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec = json.load(f)
+      self.assertFalse(rec["verified_green"])
+      self.assertTrue(
+          any(
+              e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+              for e in rec.get("forensic_log", [])
+          )
+      )
+
+      # Case 2: Restore plugin.json and lib/base_script.py, then delete default_config.json AND delete scripts/tdd_guard.py
+      with open(plugin_json_path, "w", encoding="utf-8") as f:
+        f.write(orig_plugin_json)
+      with open(base_script_path, "w", encoding="utf-8") as f:
+        f.write(orig_base_script)
+      os.remove(os.path.join(tmpdir, "default_config.json"))
+      os.remove(os.path.join(tmpdir, "scripts", "tdd_guard.py"))
+
+      for sub_args in (
+          ["--repo-root", tmpdir, "verify-green"],
+          ["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+      ):
+        err_buf = io.StringIO()
+        rc = TddGuardScript().execute(
+            args=sub_args, stdout=io.StringIO(), stderr=err_buf
+        )
+        self.assertEqual(rc, 2, f"Expected exit 2 for {sub_args}, got {rc}")
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+
+  def test_active_default_repo_root_tampering_detected_during_consumer_run(
+      self,
+  ):
+    """Mutating active _DEFAULT_REPO_ROOT during an external consumer run fails verify-green with exit 2 (GH-242)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      fake_plugin_root = os.path.join(tmpdir, "active_makeflow_plugin")
+      consumer_dir = os.path.join(tmpdir, "consumer_repo")
+      os.makedirs(fake_plugin_root)
+      os.makedirs(consumer_dir)
+
+      _seed_required_plugin_files(fake_plugin_root)
+      self._copy_core_governance_files(fake_plugin_root)
+      _init_fixture_repo(consumer_dir)
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", fake_plugin_root):
+        cmd = _unit_test_cmd()
+        err_red = io.StringIO()
+        rc_red = TddGuardScript().execute(
+            args=[
+                "--repo-root",
+                consumer_dir,
+                "witness-red",
+                "--test-dir",
+                "tests",
+                "--cmd",
+                cmd,
+            ],
+            stdout=io.StringIO(),
+            stderr=err_red,
+        )
+        self.assertEqual(rc_red, 0, err_red.getvalue())
+
+        # Tamper with active Makeflow installation's lib/tdd_guard.py
+        with open(
+            os.path.join(fake_plugin_root, "lib", "tdd_guard.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# ACTIVE_TOOLCHAIN_TAMPER = True\n")
+        _fix_calc_bug(consumer_dir)
+
+        err_green = io.StringIO()
+        rc_green = TddGuardScript().execute(
+            args=["--repo-root", consumer_dir, "verify-green"],
+            stdout=io.StringIO(),
+            stderr=err_green,
+        )
+        self.assertEqual(rc_green, 2)
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_green.getvalue(),
+        )
+        with open(_receipt_path(consumer_dir), "r", encoding="utf-8") as f:
+          rec = json.load(f)
+        self.assertFalse(rec["verified_green"])
+        self.assertTrue(
+            any(
+                e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+                for e in rec.get("forensic_log", [])
+            )
+        )
+
+  def test_symlinked_plugin_and_default_repo_roots_hash_identically(self):
+    """Symlinks pointing to _DEFAULT_REPO_ROOT or a plugin fixture hash identically to their real paths (GH-242)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      default_link = os.path.join(tmpdir, "default_plugin_link")
+      os.symlink(_REPO_ROOT, default_link)
+      self.assertEqual(
+          compute_toolchain_hash(default_link),
+          compute_toolchain_hash(_REPO_ROOT),
+      )
+
+      plugin_dir = os.path.join(tmpdir, "plugin_fixture")
+      os.makedirs(plugin_dir)
+      _seed_required_plugin_files(plugin_dir)
+      self._copy_core_governance_files(plugin_dir)
+      with open(
+          os.path.join(plugin_dir, "lib", "tdd_guard.py"), "a", encoding="utf-8"
+      ) as f:
+        f.write("\n# DISTINCT_PLUGIN_FIXTURE = True\n")
+
+      plugin_link = os.path.join(tmpdir, "plugin_fixture_link")
+      os.symlink(plugin_dir, plugin_link)
+      self.assertEqual(
+          compute_toolchain_hash(plugin_link),
+          compute_toolchain_hash(plugin_dir),
+      )
+      self.assertNotEqual(
+          compute_toolchain_hash(plugin_link),
+          compute_toolchain_hash(_REPO_ROOT),
+      )
 
 
 if __name__ == "__main__":
