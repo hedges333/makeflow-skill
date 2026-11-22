@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for PreToolUse transcript turn-boundary guard (GH-186, SCAR-PROC-102)."""
 
+import contextlib
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
@@ -37,6 +39,30 @@ def _write_transcript(path, steps):
       f.write(json.dumps(step) + "\n")
 
 
+@contextlib.contextmanager
+def _isolated_guard_env():
+  """Isolates HOME, cwd, and MAKEFILE_WORKFLOW_* variables for guard tests (GH-269).
+
+  Yields:
+    Tuple of ``(hook_cwd, fake_home, clean_env)``.
+  """
+  with (
+      tempfile.TemporaryDirectory() as hook_cwd,
+      tempfile.TemporaryDirectory() as fake_home,
+  ):
+    clean_env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("MAKEFILE_WORKFLOW_")
+    }
+    clean_env["HOME"] = fake_home
+    with (
+        mock.patch.dict(os.environ, clean_env, clear=True),
+        mock.patch("os.getcwd", return_value=hook_cwd),
+    ):
+      yield hook_cwd, fake_home, clean_env
+
+
 class TestPreToolGuardTurnBoundary(unittest.TestCase):
   """Tests for PreToolUse turn-boundary enforcement across all 6 pause gates."""
 
@@ -52,8 +78,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     )
 
   def test_gh145_same_turn_t70_t75_t80_and_merge_denied(self):
-    """Reproduces the exact GH-145 step 151 -> 155 autonomous self-landing trajectory."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Reproduces the exact GH-145 step 151 -> 155 trajectory in isolation (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       with open(
@@ -181,6 +207,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       self.assertIn("SCAR-PROC-102", merge_res["reason"])
 
   def test_all_six_pause_gate_exits_blocked_without_intervening_user_input(self):
+    """Verifies all six pause-gate exits block without intervening USER_INPUT in isolation (GH-269)."""
     gate_cases = [
         ("T15", "T20", "T30", "humanPlanApproved"),
         ("T40", "T42", "T30", "humanBlockerTriageApproved"),
@@ -191,7 +218,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     ]
     for from_t, gate_t, next_t, ev_key in gate_cases:
       with self.subTest(gate=gate_t, transition=f"{gate_t}->{next_t}"):
-        with tempfile.TemporaryDirectory() as ws_dir:
+        with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
           state_dir = os.path.join(ws_dir, ".workflow", "state")
           os.makedirs(state_dir)
           transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -307,7 +334,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
           self.assertEqual(allow_res["decision"], "allow")
 
   def test_target_20_artifact_approval_allows_t20_to_t30(self):
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Verifies Target 20 artifact approval allows T20->T30 in isolated env (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -359,6 +387,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       self.assertEqual(res["decision"], "allow")
 
   def test_pause_gated_commands_denied_in_same_turn_and_force_ask_after_user_input(self):
+    """Verifies pause-gated commands deny same-turn and force_ask after input in isolation (GH-269)."""
     cmd_cases = [
         (
             "T45",
@@ -381,7 +410,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     ]
     for from_t, gate_t, cmd_str, expected_gate_label in cmd_cases:
       with self.subTest(gate=gate_t, cmd=cmd_str):
-        with tempfile.TemporaryDirectory() as ws_dir:
+        with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
           state_dir = os.path.join(ws_dir, ".workflow", "state")
           os.makedirs(state_dir)
           with open(
@@ -468,6 +497,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
           self.assertIn(expected_gate_label, ask_res["reason"])
 
   def test_gate_entry_json_recorded_and_protected_from_self_modification(self):
+    """Verifies gate_entry.json persistence and self-modification protection in isolation (GH-269)."""
     self.assertIn("lib/turn_boundary.py", GOVERNANCE_FILE_RELPATHS)
     self.assertIn(".workflow/state/gate_entry.json", GOVERNANCE_FILE_RELPATHS)
 
@@ -480,7 +510,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       self.assertFalse(safe)
       self.assertIn("governance file", reason)
 
-    with tempfile.TemporaryDirectory() as ws_dir:
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -554,7 +584,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
   def test_blocker1_post_approval_checklist_and_prose_do_not_false_positive_deny(
       self,
   ):
-    """Regression test for BLOCKER-1: post-approval 99_next_action.md and prose must not self-lock."""
+    """Regression test for BLOCKER-1 under isolated guard environment (GH-269)."""
     checklist_body = (
         "# 99_next_action: Live Memento Readerboard\n"
         "- Active Target: Target 50 (commit)\n"
@@ -567,7 +597,7 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
         "- [ ] T60: push\n"
         "- [ ] T75: ready-to-land\n"
     )
-    with tempfile.TemporaryDirectory() as ws_dir:
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       with open(
@@ -762,13 +792,16 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
   def test_blocker2_gate_entry_json_enforced_in_command_boundary_and_relative_state_dir(
       self,
   ):
-    """Regression test for BLOCKER-2: gate_entry.json enforcement on commands and relative stateDir resolution."""
+    """Verifies BLOCKER-2 gate_entry.json enforcement and relative stateDir resolution in isolation (GH-186, GH-269)."""
     for gate_t, cmd_str in (
         ("T50", "git commit -m 'feat: test'"),
         ("T60", "git push -u origin feat/test"),
         ("T75", "gh pr merge 186 --squash"),
     ):
-      with tempfile.TemporaryDirectory() as ws_dir:
+      with (
+          _isolated_guard_env(),
+          tempfile.TemporaryDirectory() as ws_dir,
+      ):
         state_dir = os.path.join(ws_dir, ".workflow", "state")
         os.makedirs(state_dir)
         transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -810,8 +843,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
         self.assertIn("SCAR-PROC-102", cmd_res["reason"])
 
   def test_end_to_end_post_target_75_t80_t90_autonomous_completion(self):
-    """Verifies T75 -> T80 -> T90 autonomous completion after a single USER_INPUT at Target 75."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Verifies T75 -> T80 -> T90 autonomous completion in isolated env (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       with open(
@@ -931,8 +964,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
   def test_ask_question_denied_when_no_assistant_content_since_latest_user_input(
       self,
   ):
-    """Denies ask_question with SCAR-HCI-08 Vector 4 Reflex when current turn has no content."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Denies ask_question with SCAR-HCI-08 Vector 4 Reflex in isolated env (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
       for empty_val in ("", None, "   \n\t  ", json.dumps(""), json.dumps("  ")):
         with self.subTest(content=empty_val):
@@ -989,8 +1022,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
           self.assertIn("ask_question", reason)
 
   def test_ask_question_denied_when_only_prior_turn_had_assistant_content(self):
-    """Denies ask_question when only a prior turn before the latest USER_INPUT emitted content."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Denies ask_question when only a prior turn emitted content in isolated env (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
       _write_transcript(
           transcript_path,
@@ -1039,8 +1072,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
   def test_ask_question_allowed_when_same_planner_response_step_has_content(
       self,
   ):
-    """Allows ask_question when the same PLANNER_RESPONSE step has non-empty markdown content."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Allows ask_question when the same PLANNER_RESPONSE step has content in isolated env (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
       for valid_content in (
           "Full markdown facts with [plan.md](file:///tmp/plan.md).",
@@ -1076,8 +1109,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
   def test_ask_question_allowed_when_earlier_step_in_same_turn_emitted_content(
       self,
   ):
-    """Allows ask_question when an earlier PLANNER_RESPONSE step in the same turn emitted content."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Allows ask_question when an earlier step in the turn emitted content in isolated env (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
       _write_transcript(
           transcript_path,
@@ -1126,8 +1159,8 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
     self.assertIn("in chat first", sec_1_2.lower())
 
   def test_pure_git_t50_to_t70_turn_boundary_and_t80_squash_cleanup(self):
-    """GH-248: Verifies T50->T70 turn boundary and T80 Pure Git squash-merge cleanup guards."""
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """GH-248, GH-269: Verifies T50->T70 turn boundary and T80 Pure Git guards in isolation."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       for card in (
@@ -1540,6 +1573,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
     ]
 
   def test_phase_workers_record_active_subagent_lock(self):
+    """Verifies phase worker dispatches record active_subagent.json in isolated env (GH-269)."""
     expected_workers = {
         "archaeology-worker",
         "tdd-worker",
@@ -1551,7 +1585,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
 
     for worker in sorted(expected_workers):
       with self.subTest(worker=worker):
-        with tempfile.TemporaryDirectory() as ws_dir:
+        with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
           state_dir = os.path.join(ws_dir, ".workflow", "state")
           os.makedirs(state_dir)
           transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -1587,46 +1621,49 @@ class TestSubagentHaltAirlock(unittest.TestCase):
           self.assertEqual(lock_data["transcriptPath"], transcript_path)
 
   def test_non_phase_worker_and_missing_state_dir_do_not_write_lock(self):
-    for non_phase in ("synthetic-scar-importer", "helper-agent", ""):
-      with self.subTest(worker=non_phase):
-        with tempfile.TemporaryDirectory() as ws_dir:
-          state_dir = os.path.join(ws_dir, ".workflow", "state")
-          os.makedirs(state_dir)
-          transcript_path = os.path.join(ws_dir, "transcript.jsonl")
-          _write_transcript(
-              transcript_path,
-              [{"step_index": 3, "type": "USER_INPUT", "content": "Import"}],
-          )
-          res = evaluate_tool_call({
-              "conversationId": "sup-1",
-              "transcriptPath": transcript_path,
-              "workspacePaths": [ws_dir],
-              "toolCall": {
-                  "name": "invoke_subagent",
-                  "args": {"TypeName": non_phase, "Task": "Helper work"},
-              },
-          })
-          self.assertEqual(res["decision"], "allow")
-          self.assertFalse(
-              os.path.exists(os.path.join(state_dir, "active_subagent.json"))
-          )
+    """Verifies non-phase workers and missing state dirs skip lock creation in isolated env (GH-269)."""
+    with _isolated_guard_env():
+      for non_phase in ("synthetic-scar-importer", "helper-agent", ""):
+        with self.subTest(worker=non_phase):
+          with tempfile.TemporaryDirectory() as ws_dir:
+            state_dir = os.path.join(ws_dir, ".workflow", "state")
+            os.makedirs(state_dir)
+            transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+            _write_transcript(
+                transcript_path,
+                [{"step_index": 3, "type": "USER_INPUT", "content": "Import"}],
+            )
+            res = evaluate_tool_call({
+                "conversationId": "sup-1",
+                "transcriptPath": transcript_path,
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "invoke_subagent",
+                    "args": {"TypeName": non_phase, "Task": "Helper work"},
+                },
+            })
+            self.assertEqual(res["decision"], "allow")
+            self.assertFalse(
+                os.path.exists(os.path.join(state_dir, "active_subagent.json"))
+            )
 
-    with tempfile.TemporaryDirectory() as non_makeflow_ws:
-      res_no_state = evaluate_tool_call({
-          "conversationId": "sup-1",
-          "workspacePaths": [non_makeflow_ws],
-          "toolCall": {
-              "name": "invoke_subagent",
-              "args": {"TypeName": "archaeology-worker", "Task": "Scan"},
-          },
-      })
-      self.assertEqual(res_no_state["decision"], "allow")
-      self.assertFalse(
-          os.path.exists(os.path.join(non_makeflow_ws, ".workflow", "state"))
-      )
+      with tempfile.TemporaryDirectory() as non_makeflow_ws:
+        res_no_state = evaluate_tool_call({
+            "conversationId": "sup-1",
+            "workspacePaths": [non_makeflow_ws],
+            "toolCall": {
+                "name": "invoke_subagent",
+                "args": {"TypeName": "archaeology-worker", "Task": "Scan"},
+            },
+        })
+        self.assertEqual(res_no_state["decision"], "allow")
+        self.assertFalse(
+            os.path.exists(os.path.join(non_makeflow_ws, ".workflow", "state"))
+        )
 
   def test_same_turn_bundling_denied_across_all_guarded_tools(self):
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Verifies same-turn bundling with phase workers is denied across guarded tools in isolation (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -1669,7 +1706,8 @@ class TestSubagentHaltAirlock(unittest.TestCase):
             self.assertIn("SOCRATIC PROBE:", reason)
 
   def test_subsequent_concurrent_step_and_reminder_nudge_denied(self):
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Verifies concurrent supervisor steps and system nudges remain blocked in isolation (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -1722,7 +1760,8 @@ class TestSubagentHaltAirlock(unittest.TestCase):
           self.assertIsNotNone(read_active_subagent(state_dir))
 
   def test_child_subagent_passthrough_preserves_downstream_safety_guards(self):
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Verifies child subagent passthrough preserves safety guards in isolation (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       record_active_subagent(
@@ -1780,6 +1819,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
   def test_human_user_input_override_allows_inspection_blocks_mutations_and_clears_on_kill(
       self,
   ):
+    """Verifies human override allows inspection and clears lock on kill in isolation (GH-269)."""
     self.assertEqual(
         SUPERVISOR_INSPECTION_TOOLS,
         {
@@ -1800,7 +1840,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
     ]
     for user_step in user_steps:
       with self.subTest(user_step=user_step):
-        with tempfile.TemporaryDirectory() as ws_dir:
+        with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
           state_dir = os.path.join(ws_dir, ".workflow", "state")
           os.makedirs(state_dir)
           transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -1934,6 +1974,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
             self.assertIsNone(read_active_subagent(state_dir))
 
   def test_system_message_wakeup_clears_lock_and_boolean_step_index_guard(self):
+    """Verifies wakeup clears subagent lock and ignores boolean step_index in isolation (GH-269)."""
     self.assertTrue(
         is_subagent_wakeup_step(
             {"type": "SYSTEM_MESSAGE", "content": "[Message] worker done"}
@@ -1960,7 +2001,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
     )
 
     # Boolean step_index: True at idx=0 must NOT be treated as int 1 > dispatchedStepIdx 0
-    with tempfile.TemporaryDirectory() as ws_dir:
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -2007,7 +2048,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
     ]
     for wakeup in wakeup_steps:
       with self.subTest(wakeup=wakeup):
-        with tempfile.TemporaryDirectory() as ws_dir:
+        with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
           state_dir = os.path.join(ws_dir, ".workflow", "state")
           os.makedirs(state_dir)
           transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -2094,7 +2135,8 @@ class TestSubagentHaltAirlock(unittest.TestCase):
           self.assertIsNone(read_active_subagent(state_dir))
 
   def test_fast_early_exit_without_active_lock_skips_transcript_under_2ms(self):
-    with tempfile.TemporaryDirectory() as ws_dir:
+    """Verifies unlocked fast early-exit skips transcript reads under 2ms in isolation (GH-269)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       payload = {
@@ -2124,6 +2166,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
       )
 
   def test_active_subagent_json_protected_by_governance_guards(self):
+    """Verifies active_subagent.json cannot be overwritten or deleted in isolated env (GH-269)."""
     self.assertIn(
         ".workflow/state/active_subagent.json", GOVERNANCE_FILE_RELPATHS
     )
@@ -2139,7 +2182,7 @@ class TestSubagentHaltAirlock(unittest.TestCase):
     self.assertFalse(ok_redir)
     self.assertIn("active_subagent.json", reason_redir)
 
-    with tempfile.TemporaryDirectory() as ws_dir:
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       for cid in ("sup-1", "worker-2"):
@@ -2161,8 +2204,12 @@ class TestSubagentHaltAirlock(unittest.TestCase):
           self.assertIn("active_subagent.json", res.get("reason", ""))
 
   def test_cli_wire_smoke_denies_concurrent_supervisor_call(self):
+    """Verifies pre_tool_guard CLI denies concurrent supervisor calls under isolated env and cwd (GH-269)."""
     guard_script = os.path.join(REPO_ROOT, "scripts", "pre_tool_guard.py")
-    with tempfile.TemporaryDirectory() as ws_dir:
+    with (
+        _isolated_guard_env() as (hook_cwd, _fake_home, clean_env),
+        tempfile.TemporaryDirectory() as ws_dir,
+    ):
       state_dir = os.path.join(ws_dir, ".workflow", "state")
       os.makedirs(state_dir)
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
@@ -2196,7 +2243,8 @@ class TestSubagentHaltAirlock(unittest.TestCase):
           input=json.dumps(wire_payload),
           text=True,
           capture_output=True,
-          cwd=REPO_ROOT,
+          cwd=hook_cwd,
+          env=clean_env,
           check=False,
       )
       self.assertEqual(proc.returncode, 0, proc.stderr)
