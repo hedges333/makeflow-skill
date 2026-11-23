@@ -2950,5 +2950,27 @@
     "closes_issue": true,
     "tests_added": 25,
     "scars_earned": []
+  },
+  {
+    "id": "GH-222",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/222",
+    "title": "[FEAT] Enforce black-box harness boundary against out-of-scope self-inspection when dogfooding",
+    "request": "Codify the Black-Box Harness Boundary rule in rules/AGENTS.md, skills/makeflow/SKILL.md, and all five cross-agent adapters, add lib/harness_boundary.py composed into lib/pre_tool_guard.py to deny out-of-scope Depth-0 supervisor read_file calls on Makeflow internals and runtime lock files during T30-T90 with a SCAR-PROC-124 Vector 4 Reflex while allowing T00-T20, child subagents, in-scope plan/Git files, third-party plugins, and consumer repositories, and add 17 hermetic boundary, wire, and negative-falsification tests.",
+    "branch": "feat/222-black-box-harness-boundary",
+    "subprojects": [
+      "adapters",
+      "lib",
+      "rules",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-22T12:04:48-08:00",
+    "completed_at": "2026-11-23T18:19:28Z",
+    "commit_sha": "37676db5932117e9ce17dbe9ca056b7e81afece3",
+    "pr_number": 294,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/294",
+    "closes_issue": true,
+    "tests_added": 17,
+    "scars_earned": []
   }
 ]
