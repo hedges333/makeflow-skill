@@ -454,7 +454,8 @@ def generate_state_makefile(repo_root: str) -> str:
       "codified-scars-consolidated finish advance "
       "check-intake release-intake check-approved-tree check-commit-msg "
       "check-post-commit check-main-sync verify-regression check-regression "
-      "repo-tree promote-review witness-red verify-green verify-citation ast-lint"
+      "repo-tree promote-review park-session resume-parked "
+      "witness-red verify-green verify-citation ast-lint"
   )
   recipes = _workflow_target_recipes(gates_script, quoted_root)
   return (
@@ -482,6 +483,11 @@ def generate_state_makefile(repo_root: str) -> str:
       "COUNT_ONLY ?=\n"
       "SRC_DIR ?=\n"
       "ROUND ?=\n"
+      "PR ?=\n"
+      "BRANCH ?=\n"
+      "REASON ?=\n"
+      "CRON ?=\n"
+      "_SQ := '\n"
       "export TICKET ALLOW_BLOCKED FROM TO APPROVED BLOCKERS ALLOW_MAIN_CONFLICT NO_FETCH TRANSCRIPT FILE\n"
       "export TEST_DIR TEST_CMD ALLOW_HEAD_MOVE CITE\n"
       "export REGRESSION_CMD SUBPROJECT\n"
@@ -508,6 +514,16 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} repo-tree --make-env\n\n"
       "promote-review:\n"
       f'\t@$(PYTHON) {gates_script} --repo-root {quoted_root} promote-review --round "$(ROUND)"\n\n'
+      "park-session:\n"
+      "\t@MF_PARK_PR='$(subst $(_SQ),$(_SQ)\\$(_SQ)$(_SQ),$(value PR))' "
+      "MF_PARK_BRANCH='$(subst $(_SQ),$(_SQ)\\$(_SQ)$(_SQ),$(value BRANCH))' "
+      "MF_PARK_REASON='$(subst $(_SQ),$(_SQ)\\$(_SQ)$(_SQ),$(value REASON))' "
+      "MF_PARK_CRON='$(subst $(_SQ),$(_SQ)\\$(_SQ)$(_SQ),$(value CRON))' "
+      f"$(PYTHON) {gates_script} --repo-root {quoted_root} park-session --from-env\n\n"
+      "resume-parked:\n"
+      "\t@MF_PARK_PR='$(subst $(_SQ),$(_SQ)\\$(_SQ)$(_SQ),$(value PR))' "
+      "MF_PARK_BRANCH='$(subst $(_SQ),$(_SQ)\\$(_SQ)$(_SQ),$(value BRANCH))' "
+      f"$(PYTHON) {gates_script} --repo-root {quoted_root} resume-parked --from-env\n\n"
       "witness-red:\n"
       f"\t@$(PYTHON) {guard_script} --repo-root {quoted_root} witness-red --make-env\n\n"
       "verify-green:\n"
@@ -555,6 +571,21 @@ class WorkflowGatesScript(BaseScript):
     self.tree_no_limit: bool = False
     self.tree_threshold: int = DEFAULT_REPO_TREE_THRESHOLD
     self.review_round: str = ""
+    self.park_pr: int = 0
+    self.park_pr_url: str = ""
+    self.park_branch: str = ""
+    self.park_reason: str = ""
+    self.park_ci_status: str = ""
+    self.park_review_decision: str = ""
+    self.park_approvals: int = 0
+    self.park_required_approvals: int = 0
+    self.park_require_codeowners: bool = False
+    self.park_pending_reviewers: str = ""
+    self.park_changes_requested_by: str = ""
+    self.park_unresolved_threads: int = 0
+    self.park_cron: str = ""
+    self.park_from_env: bool = False
+    self.park_has_explicit_status: bool = False
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -889,6 +920,7 @@ class WorkflowGatesScript(BaseScript):
     self._register_regression_subparsers(subparsers)
     self._register_repo_tree_subparser(subparsers)
     self._register_promote_review_subparser(subparsers)
+    self._register_parking_subparsers(subparsers)
 
     ns = parser.parse_args(self.raw_args)
     if not ns.gate:
@@ -896,7 +928,8 @@ class WorkflowGatesScript(BaseScript):
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
           "intake, approved-tree, commit-msg, post-commit, main-sync, "
           "verify-regression, check-regression, repo-tree, promote-review, "
-          "terminal-title, release-intake, release-lock, read-init-d, or advance."
+          "park-session, resume-parked, terminal-title, release-intake, "
+          "release-lock, read-init-d, or advance."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
@@ -933,6 +966,49 @@ class WorkflowGatesScript(BaseScript):
       self.tree_threshold = ns.tree_threshold
     elif ns.gate == "promote-review":
       self.review_round = str(getattr(ns, "review_round", "") or "").strip()
+    elif ns.gate in ("park-session", "resume-parked"):
+      self.park_from_env = bool(getattr(ns, "park_from_env", False))
+      self.park_pr = int(getattr(ns, "park_pr", 0) or 0)
+      self.park_pr_url = str(getattr(ns, "park_pr_url", "") or "").strip()
+      self.park_branch = str(getattr(ns, "park_branch", "") or "").strip()
+      self.park_reason = str(getattr(ns, "park_reason", "") or "").strip()
+      self.park_ci_status = str(getattr(ns, "park_ci_status", "") or "").strip()
+      self.park_review_decision = str(
+          getattr(ns, "park_review_decision", "") or ""
+      ).strip()
+      raw_approvals = getattr(ns, "park_approvals", None)
+      raw_req_approvals = getattr(ns, "park_required_approvals", None)
+      raw_threads = getattr(ns, "park_unresolved_threads", None)
+      self.park_approvals = int(raw_approvals) if raw_approvals is not None else 0
+      self.park_required_approvals = (
+          int(raw_req_approvals) if raw_req_approvals is not None else 0
+      )
+      self.park_require_codeowners = bool(
+          getattr(ns, "park_require_codeowners", False)
+      )
+      self.park_pending_reviewers = str(
+          getattr(ns, "park_pending_reviewers", "") or ""
+      ).strip()
+      self.park_changes_requested_by = str(
+          getattr(ns, "park_changes_requested_by", "") or ""
+      ).strip()
+      self.park_unresolved_threads = (
+          int(raw_threads) if raw_threads is not None else 0
+      )
+      self.park_cron = str(getattr(ns, "park_cron", "") or "").strip()
+      self.park_has_explicit_status = any((
+          bool(self.park_pr_url),
+          bool(self.park_ci_status),
+          bool(self.park_review_decision),
+          raw_approvals is not None,
+          raw_req_approvals is not None,
+          self.park_require_codeowners,
+          bool(self.park_pending_reviewers),
+          bool(self.park_changes_requested_by),
+          raw_threads is not None,
+      ))
+      if self.park_from_env:
+        self._hydrate_parking_from_env()
     elif ns.gate == "read-init-d":
       self.adv_from = str(getattr(ns, "adv_from", "") or "").strip()
     elif ns.gate == "advance":
@@ -1007,6 +1083,21 @@ class WorkflowGatesScript(BaseScript):
     if not self.tree_count_only and _env_truthy("COUNT_ONLY"):
       self.tree_count_only = True
 
+  def _hydrate_parking_from_env(self) -> None:
+    """Hydrates park-session and resume-parked options from recipe-scoped env vars."""
+    if not self.park_pr:
+      raw_pr = os.environ.get("MF_PARK_PR", "").strip()
+      if raw_pr:
+        if not raw_pr.isascii() or not raw_pr.isdigit():
+          raise ReflexArgumentError("PR must be a non-negative integer.")
+        self.park_pr = int(raw_pr)
+    if not self.park_branch and os.environ.get("MF_PARK_BRANCH", "").strip():
+      self.park_branch = os.environ["MF_PARK_BRANCH"].strip()
+    if not self.park_reason and os.environ.get("MF_PARK_REASON", "").strip():
+      self.park_reason = os.environ["MF_PARK_REASON"].strip()
+    if not self.park_cron and os.environ.get("MF_PARK_CRON", "").strip():
+      self.park_cron = os.environ["MF_PARK_CRON"].strip()
+
   @staticmethod
   def _register_promote_review_subparser(subparsers: Any) -> None:
     """Registers the promote-review subparser for Target 40 review promotion."""
@@ -1029,6 +1120,49 @@ class WorkflowGatesScript(BaseScript):
         dest="sub_json",
         help="Emit output or Vector 4 Reflex errors as JSON.",
     )
+
+  @staticmethod
+  def _register_parking_subparsers(subparsers: Any) -> None:
+    """Registers park-session and resume-parked subparsers for Target 70."""
+    p_park = subparsers.add_parser(
+        "park-session",
+        help="Persist structured PARKED state at Target 70 and emit a Parking Receipt.",
+        description="Save 70_parking_state.json, render 70_bot_triage.md and 99_next_action.md, and print a Parking Receipt.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . park-session --pr 47 --reason 'Awaiting peer review'",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_park.add_argument("--pr", dest="park_pr", type=int, default=0, help="Pull request number.")
+    p_park.add_argument("--pr-url", dest="park_pr_url", default="", help="Pull request URL.")
+    p_park.add_argument("--branch", dest="park_branch", default="", help="PR head branch name.")
+    p_park.add_argument("--reason", dest="park_reason", default="", help="Concise reason for parking.")
+    p_park.add_argument("--ci-status", dest="park_ci_status", default="", help="Latest CI status.")
+    p_park.add_argument("--review-decision", dest="park_review_decision", default="", help="Latest GitHub reviewDecision.")
+    p_park.add_argument("--approvals", dest="park_approvals", type=int, default=None, help="Valid approval count.")
+    p_park.add_argument("--required-approvals", dest="park_required_approvals", type=int, default=None, help="Effective required approval count.")
+    p_park.add_argument(
+        "--require-codeowners",
+        action="store_true",
+        dest="park_require_codeowners",
+        help="Indicate CODEOWNERS reviews are required.",
+    )
+    p_park.add_argument("--pending-reviewers", dest="park_pending_reviewers", default="", help="Comma-separated pending reviewers.")
+    p_park.add_argument("--changes-requested-by", dest="park_changes_requested_by", default="", help="Comma-separated reviewers requesting changes.")
+    p_park.add_argument("--unresolved-threads", dest="park_unresolved_threads", type=int, default=None, help="Count of unresolved review threads.")
+    p_park.add_argument("--cron", dest="park_cron", default="", help="Optional background polling cron expression.")
+    p_park.add_argument("--from-env", action="store_true", dest="park_from_env", help="Hydrate PR, branch, reason, and cron from MF_PARK_* environment variables.")
+    p_park.add_argument("--json", action="store_true", dest="sub_json", help="Emit output or errors as JSON.")
+
+    p_resume = subparsers.add_parser(
+        "resume-parked",
+        help="Re-check a parked PR once and advance to T75, return to T30, or stay parked.",
+        description="Query PR status once without sleeping and reconcile 70_parking_state.json and Target 70/75 state.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . resume-parked",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_resume.add_argument("--pr", dest="park_pr", type=int, default=0, help="Optional PR number override.")
+    p_resume.add_argument("--branch", dest="park_branch", default="", help="Optional expected PR head branch override.")
+    p_resume.add_argument("--from-env", action="store_true", dest="park_from_env", help="Hydrate PR and branch from MF_PARK_* environment variables.")
+    p_resume.add_argument("--json", action="store_true", dest="sub_json", help="Emit output or errors as JSON.")
 
   @staticmethod
   def _register_repo_tree_subparser(subparsers: Any) -> None:
@@ -2336,6 +2470,336 @@ class WorkflowGatesScript(BaseScript):
       )
     return 0
 
+  @staticmethod
+  def _split_csv_tuple(raw: str) -> Tuple[str, ...]:
+    """Splits a comma-separated string into a deduplicated tuple of tokens."""
+    items: List[str] = []
+    for part in (raw or "").split(","):
+      cleaned = part.strip()
+      if cleaned and cleaned not in items:
+        items.append(cleaned)
+    return tuple(items)
+
+  def _park_session(self) -> int:
+    """Persists Target 70 PARKED state and prints a Parking Receipt."""
+    from dataclasses import replace as dataclass_replace
+    from lib.ci_polling import poll_ci_status
+    from lib.config import resolve_workflow_config
+    from lib.parking_state import (
+        ParkingState,
+        ParkingStateStore,
+        _utc_now_iso,
+        render_parked_triage_card,
+        render_parking_receipt,
+    )
+    from lib.state_machine import (
+        _detect_git_branch,
+        _restore_active_session_state,
+        infer_current_target,
+    )
+
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    current = infer_current_target(state_dir)
+    if current != "T70":
+      return self._fail(
+          scar_id="PROC-102",
+          code="PARK_REQUIRES_T70",
+          trigger=f"Cannot park session from active target {current}.",
+          rejected="Entering PARKED sub-state outside Target 70 (bot-quiescence).",
+          reflex="Advance to Target 70 (bot-quiescence) before running park-session.",
+      )
+
+    cfg = resolve_workflow_config(self.repo_root)
+    ci_cfg = cfg.get("ci") if isinstance(cfg.get("ci"), dict) else {}
+    cron_expr = self.park_cron or str(ci_cfg.get("parkingCronExpression") or "")
+    head_branch = self.park_branch or _detect_git_branch(self.repo_root)
+    now_iso = _utc_now_iso()
+    existing = ParkingStateStore(state_dir).load()
+    parked_at = (
+        existing.parked_at if existing is not None and existing.parked_at else now_iso
+    )
+    eff_pr = self.park_pr or (existing.pr_number if existing is not None else 0)
+
+    if eff_pr > 0 and not self.park_has_explicit_status:
+      poll_res = poll_ci_status(
+          pr_number=eff_pr,
+          ws=self.repo_root,
+          max_wait_sec=1,
+          expected_branch=self.park_branch or None,
+      )
+      if poll_res.get("mode") == "github_error" or (
+          str(poll_res.get("ciStatus") or "").upper() == "ERROR"
+      ):
+        return self._fail(
+            scar_id="TEST-24",
+            code="PARK_POLL_ERROR",
+            trigger=str(
+                poll_res.get("message") or "Failed to query PR status for parking."
+            ),
+            rejected="Writing incomplete parking state when PR status polling fails.",
+            reflex=(
+                "Verify gh authentication, PR number, and branch match, or supply "
+                "explicit status flags before retrying park-session."
+            ),
+        )
+      hydrated = ParkingState.from_poll_result(
+          poll_res,
+          pr_number=eff_pr,
+          head_branch=head_branch,
+          cron_expression=cron_expr,
+          parked_at=parked_at,
+          last_checked_at=now_iso,
+      )
+      overrides: Dict[str, Any] = {}
+      if self.park_branch:
+        overrides["head_branch"] = self.park_branch
+      if self.park_reason:
+        overrides["reason"] = self.park_reason
+      state = dataclass_replace(hydrated, **overrides) if overrides else hydrated
+    else:
+      state = ParkingState(
+          parked=True,
+          pr_number=max(0, eff_pr),
+          pr_url=self.park_pr_url,
+          head_branch=head_branch,
+          reason=self.park_reason or "Awaiting external peer review or CI completion",
+          ci_status=self.park_ci_status or "PENDING",
+          review_decision=self.park_review_decision,
+          approvals_count=max(0, self.park_approvals),
+          required_approvals=max(0, self.park_required_approvals),
+          require_code_owner_reviews=self.park_require_codeowners,
+          pending_reviewers=self._split_csv_tuple(self.park_pending_reviewers),
+          changes_requested_by=self._split_csv_tuple(self.park_changes_requested_by),
+          unresolved_threads_count=max(0, self.park_unresolved_threads),
+          parked_at=parked_at,
+          last_checked_at=now_iso,
+          cron_expression=cron_expr,
+      )
+
+    store = ParkingStateStore(state_dir)
+    store.save(state)
+    with open(
+        os.path.join(state_dir, "70_bot_triage.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write(render_parked_triage_card(state))
+    _restore_active_session_state(state_dir, "T70", self.repo_root)
+
+    if self.as_json:
+      self.stdout.write(json.dumps(state.to_dict()) + "\n")
+    else:
+      self.stdout.write(render_parking_receipt(state))
+    return 0
+
+  def _resume_parked(self) -> int:
+    """Re-checks a parked PR once and advances to T75, guides T30, or stays parked."""
+    from lib.ci_polling import poll_ci_status
+    from lib.parking_state import (
+        ParkingState,
+        ParkingStateStore,
+        _utc_now_iso,
+        render_parked_triage_card,
+        render_parking_receipt,
+    )
+    from lib.state_machine import (
+        _restore_active_session_state,
+        advance_workflow_target,
+        infer_current_target,
+    )
+
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    current = infer_current_target(state_dir)
+    if current != "T70":
+      return self._fail(
+          scar_id="PROC-102",
+          code="RESUME_REQUIRES_T70",
+          trigger=f"Cannot resume parked session from active target {current}.",
+          rejected="Running resume-parked outside Target 70 (bot-quiescence).",
+          reflex=(
+              "Inspect active target via 'make -f .workflow/state/Makefile read-init-d' "
+              "before running resume-parked."
+          ),
+      )
+
+    store = ParkingStateStore(state_dir)
+    existing = store.load()
+    if existing is None or not existing.parked:
+      return self._fail(
+          scar_id="PROC-102",
+          code="NOT_PARKED",
+          trigger="No active PARKED state found in .workflow/state/70_parking_state.json.",
+          rejected="Running resume-parked when the workflow session is not parked.",
+          reflex="Run 'make -f .workflow/state/Makefile read-init-d' to inspect active workflow state.",
+      )
+
+    pr_num = self.park_pr or existing.pr_number
+    expected_branch = self.park_branch or existing.head_branch or None
+    poll_res = poll_ci_status(
+        pr_number=pr_num,
+        ws=self.repo_root,
+        max_wait_sec=1,
+        expected_branch=expected_branch,
+    )
+    ci_status = str(poll_res.get("ciStatus") or "").upper()
+    is_transient_error = poll_res.get("mode") == "github_error" or (
+        ci_status == "ERROR" and not bool(poll_res.get("branchMismatch"))
+    )
+    if is_transient_error:
+      return self._fail(
+          scar_id="TEST-24",
+          code="PARKED_POLL_ERROR",
+          trigger=str(
+              poll_res.get("message") or "Transient error polling parked PR status."
+          ),
+          rejected="Overwriting persisted 70_parking_state.json during a transient polling failure.",
+          reflex=(
+              "Check GitHub CLI authentication or network connectivity, then "
+              "retry 'make -f .workflow/state/Makefile resume-parked'."
+          ),
+      )
+
+    triage_path = os.path.join(state_dir, "70_bot_triage.md")
+
+    pr_state = str(poll_res.get("prState") or "").upper()
+    if pr_state in ("MERGED", "CLOSED"):
+      store.clear()
+      triage_md = (
+          "# Target 70: Bot Quiescence and Peer Review Triage\n\n"
+          f"- Status: PR_{pr_state}\n"
+          f"- Pull Request: #{pr_num}\n"
+          f"- PR State: `{pr_state}`\n"
+          f"- Summary: {poll_res.get('message', f'Pull request #{pr_num} is {pr_state}.')}\n"
+      )
+      with open(triage_path, "w", encoding="utf-8") as f:
+        f.write(triage_md)
+      _restore_active_session_state(state_dir, "T70", self.repo_root)
+      guidance = (
+          f"PR_{pr_state}: Parking cleared because PR #{pr_num} is already {pr_state}. "
+          + (
+              "Sync main and complete Target 80/90 cleanup without re-merging."
+              if pr_state == "MERGED"
+              else "Inspect the closed PR or return to Target 30 before continuing."
+          )
+      )
+      if self.as_json:
+        self.stdout.write(
+            json.dumps({
+                "action": f"PR_{pr_state}",
+                "message": guidance,
+                "poll": poll_res,
+            })
+            + "\n"
+        )
+      else:
+        self.stdout.write(guidance + "\n")
+      return 0
+
+    if poll_res.get("readyToLand"):
+      store.clear()
+      approvals = poll_res.get("approvalsCount", 0)
+      req_approvals = poll_res.get("requiredApprovals", 0)
+      triage_md = (
+          "# Target 70: Bot Quiescence and Peer Review Triage\n\n"
+          "- Status: READY_FOR_LANDING_GATE\n"
+          f"- Pull Request: #{pr_num}\n"
+          f"- CI Status: `{poll_res.get('ciStatus', 'SUCCESS')}`\n"
+          f"- Approvals: {approvals}/{req_approvals}\n"
+          f"- Review Decision: `{poll_res.get('reviewDecision') or 'NONE'}`\n"
+          f"- Summary: {poll_res.get('message', 'Ready for Target 75.')}\n"
+      )
+      with open(triage_path, "w", encoding="utf-8") as f:
+        f.write(triage_md)
+      ok, adv_msg = advance_workflow_target(
+          "T70",
+          "T75",
+          evidence={},
+          workspace_dir=self.repo_root,
+          state_dir=state_dir,
+      )
+      if not ok:
+        return self._emit_advance_reflex(adv_msg)
+      if self.as_json:
+        self.stdout.write(
+            json.dumps({
+                "action": "ADVANCED_T75",
+                "message": adv_msg,
+                "poll": poll_res,
+            })
+            + "\n"
+        )
+      else:
+        self.stdout.write(
+            f"{adv_msg}\n"
+            "Session resumed from PARKED -> Target 75 (ready-to-land). "
+            "Pause for explicit human-landing-approval before Target 80.\n"
+        )
+      return 0
+
+    session_status = str(poll_res.get("sessionStatus") or "").upper()
+    is_remediation = (
+        session_status == "REMEDIATION_REQUIRED"
+        or ci_status == "FAILURE"
+        or bool(poll_res.get("branchMismatch"))
+    )
+    if is_remediation:
+      store.clear()
+      triage_md = (
+          "# Target 70: Bot Quiescence and Peer Review Triage\n\n"
+          "- Status: REMEDIATION_REQUIRED\n"
+          f"- Pull Request: #{pr_num}\n"
+          f"- CI Status: `{ci_status}`\n"
+          f"- Review Decision: `{poll_res.get('reviewDecision') or 'NONE'}`\n"
+          f"- Changes Requested By: {poll_res.get('changesRequestedBy') or []}\n"
+          f"- Failed Checks: {poll_res.get('failedChecks') or []}\n"
+          f"- Summary: {poll_res.get('message', 'Remediation required.')}\n"
+      )
+      with open(triage_path, "w", encoding="utf-8") as f:
+        f.write(triage_md)
+      _restore_active_session_state(state_dir, "T70", self.repo_root)
+      guidance = (
+          "REMEDIATION_REQUIRED: Parking cleared. "
+          f"Reason: {poll_res.get('message', 'Changes or fixes required.')} "
+          "Run `make -f .workflow/state/Makefile implementation-diff FROM=T70` "
+          "to return to Target 30."
+      )
+      if self.as_json:
+        self.stdout.write(
+            json.dumps({
+                "action": "REMEDIATION_REQUIRED",
+                "message": guidance,
+                "poll": poll_res,
+            })
+            + "\n"
+        )
+      else:
+        self.stdout.write(guidance + "\n")
+      return 0
+
+    refreshed = ParkingState.from_poll_result(
+        poll_res,
+        pr_number=pr_num,
+        head_branch=expected_branch or existing.head_branch,
+        cron_expression=existing.cron_expression,
+        parked_at=existing.parked_at,
+        last_checked_at=_utc_now_iso(),
+    )
+    store.save(refreshed)
+    with open(triage_path, "w", encoding="utf-8") as f:
+      f.write(render_parked_triage_card(refreshed))
+    _restore_active_session_state(state_dir, "T70", self.repo_root)
+    if self.as_json:
+      self.stdout.write(
+          json.dumps({
+              "action": "REMAIN_PARKED",
+              "parkingState": refreshed.to_dict(),
+              "poll": poll_res,
+          })
+          + "\n"
+      )
+    else:
+      self.stdout.write(render_parking_receipt(refreshed))
+    return 0
+
   def run(self) -> int:
     if self.gate == "init-makefile":
       return self._init_makefile()
@@ -2361,6 +2825,10 @@ class WorkflowGatesScript(BaseScript):
       return self._repo_tree()
     if self.gate == "promote-review":
       return self._promote_review()
+    if self.gate == "park-session":
+      return self._park_session()
+    if self.gate == "resume-parked":
+      return self._resume_parked()
     if self.gate == "terminal-title":
       return self._gate_terminal_title()
     if self.gate in ("release-intake", "release-lock"):

@@ -49,6 +49,31 @@ If any accepted finding requires code modifications:
 4. Re-enter Target 70 and dispatch `triage-worker` for a fresh quiescence cycle.
 5. When CI is green and zero open comments remain, run `make -f .workflow/state/Makefile ready-to-land`.
 
+### 1.5 Multi-Contributor PR-Branch Firewalling, Peer Reviews, and Session Parking
+
+Makeflow preserves zero-wait sole-developer behavior by default while supporting growing teams through opt-in `ci.*` configuration keys.
+
+#### Always-On PR-Branch Firewalling
+1. `workflow_poll_ci` queries a single pull request and its HEAD commit (`commits(last: 1)`) using `gh api graphql`.
+2. This PR scope firewalls `CheckRun`, legacy `StatusContext`, comments, reviews, and threads inside the active branch (`SCAR-PROC-107`).
+3. If PR `headRefName` does not match `expectedBranch` (or the local non-default Git branch), polling returns `ciStatus: "ERROR"` and `branchMismatch: true`.
+
+#### Sole Developer Default vs Team Opt-In
+1. When `ci.enablePeerReviews` is `false` (default), Target 70 checks PR-scoped CI, bot quiescence, and bot comments. It never blocks on human `+1` approvals or CODEOWNERS, and it returns review fields as passive metadata.
+2. When `ci.enablePeerReviews` is `true`, Target 70 enforces GitHub branch protection rules (`requiredApprovingReviewCount`, `dismissesStaleReviews`, `requiresCodeOwnerReviews`). It also enforces `ci.minApprovals`, `ci.requireCodeOwnerReviews`, `CHANGES_REQUESTED`, and unresolved review threads.
+3. If a non-admin token receives HTTP `403` or `404` from REST branch protection fallback, Makeflow degrades cleanly to `reviewDecision`, `mergeStateStatus`, `reviewRequests`, and local config floors.
+4. If `CHANGES_REQUESTED`, CI `FAILURE`, or `CONFLICTING` occurs, Target 70 classifies `sessionStatus: "REMEDIATION_REQUIRED"` and routes back to Target 30 (`T70 -> T30`).
+
+#### Session Parking and Resumption
+1. When `ci.enableSessionParking` is `true` and a PR waits on peer approvals, CODEOWNERS, unresolved threads, or slow CI (`PENDING` or `TIMEOUT`), Target 70 recommends `PARKED`.
+2. Run `make -f .workflow/state/Makefile park-session PR=<num> BRANCH=<branch> REASON="<reason>"` to persist `.workflow/state/70_parking_state.json`, update `70_bot_triage.md` and `99_next_action.md`, and print a Parking Receipt.
+3. Stop tool calls after printing the Parking Receipt.
+4. On demand at Target 00, run `make -f .workflow/state/Makefile resume-parked` to probe the PR once (`max_wait_sec=1`):
+   - If ready, Makeflow clears `70_parking_state.json` and advances `T70 -> T75` (preserving mandatory `human-landing-approval` under `SCAR-PROC-102`).
+   - If remediation is required, Makeflow clears parking and prints Target 30 recovery steps (`T70 -> T30`).
+   - If still waiting, Makeflow refreshes `70_parking_state.json`, `70_bot_triage.md`, and `99_next_action.md`, then prints an updated Parking Receipt.
+5. Optional cron polling: if `ci.parkingCronExpression` is set (for example `"*/30 * * * *"`), you may schedule background checks with `schedule(CronExpression=...)`. If repeated timer conflicts occur, yield immediately (`SCAR-PROC-138`) and rely on Target 00 on-demand resumption.
+
 ---
 
 ## 2. Target 75: Ready to Land Gate

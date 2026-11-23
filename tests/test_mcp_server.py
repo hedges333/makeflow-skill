@@ -4677,5 +4677,94 @@ class TestMcpQueryScarsExcludeCategories(unittest.TestCase):
       self.assertEqual(payload_contra["scars"], [])
 
 
+class TestMcpServerMultiContributorParking(unittest.TestCase):
+  """Tests MCP tool count, expectedBranch forwarding, ci.* defaults, and PARKED state summary (GH-47)."""
+
+  def test_tools_list_count_and_expected_branch_and_parked_state(self):
+    """Keeps 8 MCP tools, forwards expectedBranch, returns ci.* defaults, and surfaces PARKED state."""
+    from lib.parking_state import ParkingState, ParkingStateStore
+
+    mcp_server = _load_mcp_server_module()
+
+    tools_resp = mcp_server.handle_tools_list(1)
+    tools = tools_resp["result"]["tools"]
+    self.assertEqual(len(tools), 8)
+    poll_tool = next(t for t in tools if t["name"] == "workflow_poll_ci")
+    self.assertIn("expectedBranch", poll_tool["inputSchema"]["properties"])
+
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      env = {
+          k: v
+          for k, v in os.environ.items()
+          if not k.startswith("MAKEFILE_WORKFLOW_")
+      }
+      env["HOME"] = fake_home
+      with mock.patch.dict(os.environ, env, clear=True):
+        # 1. workflow_get_config includes the 5 opt-in ci.* defaults
+        cfg_resp = mcp_server.handle_tools_call(
+            2, "workflow_get_config", {"workspaceDir": ws_dir}
+        )
+        cfg = json.loads(cfg_resp["result"]["content"][0]["text"])
+        self.assertIs(cfg["ci"]["enablePeerReviews"], False)
+        self.assertEqual(cfg["ci"]["minApprovals"], 0)
+        self.assertIs(cfg["ci"]["requireCodeOwnerReviews"], False)
+        self.assertIs(cfg["ci"]["enableSessionParking"], False)
+        self.assertEqual(cfg["ci"]["parkingCronExpression"], "")
+
+        # 2. workflow_poll_ci rejects non-string expectedBranch and forwards valid expectedBranch
+        bad_resp = mcp_server.handle_tools_call(
+            3,
+            "workflow_poll_ci",
+            {"prNumber": 47, "workspaceDir": ws_dir, "expectedBranch": 123},
+        )
+        self.assertTrue(bad_resp["result"].get("isError"))
+
+        with mock.patch.object(
+            mcp_server,
+            "poll_ci_status",
+            return_value={"ciStatus": "SUCCESS", "readyToLand": True},
+        ) as mock_poll:
+          ok_resp = mcp_server.handle_tools_call(
+              4,
+              "workflow_poll_ci",
+              {
+                  "prNumber": 47,
+                  "workspaceDir": ws_dir,
+                  "expectedBranch": "feat/47-my-pr",
+                  "maxWaitSeconds": 1,
+              },
+          )
+        self.assertFalse(ok_resp["result"].get("isError"))
+        self.assertEqual(
+            mock_poll.call_args.kwargs["expected_branch"], "feat/47-my-pr"
+        )
+
+        # 3. workflow_get_state surfaces PARKED summary
+        state_dir = os.path.join(ws_dir, ".workflow", "state")
+        os.makedirs(state_dir, exist_ok=True)
+        with open(
+            os.path.join(state_dir, "70_bot_triage.md"), "w", encoding="utf-8"
+        ) as f:
+          f.write("# Target 70\n")
+        ParkingStateStore(state_dir).save(
+            ParkingState(
+                parked=True,
+                pr_number=47,
+                head_branch="feat/47-my-pr",
+                reason="Awaiting peer review approvals: 1/2",
+                ci_status="SUCCESS",
+                approvals_count=1,
+                required_approvals=2,
+            )
+        )
+        state_resp = mcp_server.handle_tools_call(
+            5, "workflow_get_state", {"workspaceDir": ws_dir}
+        )
+        text = state_resp["result"]["content"][0]["text"]
+        self.assertIn("SESSION_STATUS: PARKED", text)
+        self.assertIn("PR #47", text)
+        self.assertIn("approvals=1/2", text)
+
+
 if __name__ == "__main__":
   unittest.main()

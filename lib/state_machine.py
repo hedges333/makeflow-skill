@@ -22,6 +22,11 @@ from lib.config import (
     sanitize_make_subprocess_env,
 )
 from lib.safe_copy import safe_copy_file
+from lib.parking_state import (
+    ParkingState,
+    ParkingStateStore,
+    format_parking_status_label,
+)
 from lib.ticket_state import TICKET_JSON_FILENAME, TicketStateStore
 from lib.turn_boundary import (
     ACTIVE_SUBAGENT_FILENAME,
@@ -612,6 +617,12 @@ def _render_active_lines(
   """Builds markdown lines for an active (non-completed) 99_next_action.md."""
   prev_id = spec.previous_target if spec.previous_target in ALL_TARGETS else "T00"
   prev_label = TARGET_ID_TO_NAME.get(prev_id, prev_id)
+  parking_state = (
+      ParkingStateStore(spec.state_dir).load()
+      if spec.active_target == "T70" and spec.state_dir
+      else None
+  )
+  is_parked = parking_state is not None and parking_state.parked
   lines = [
       "# 99_next_action: Live Memento Readerboard",
       "",
@@ -620,6 +631,11 @@ def _render_active_lines(
       f"- Active Target: Target {spec.active_target[1:]} (`{t_label}`)",
       f"- Last Completed Step: Target {prev_id[1:]} (`{prev_label}`)",
   ]
+  if is_parked and parking_state is not None:
+    lines.append(
+        "- Session Status:"
+        f" {_sanitize_active_text(format_parking_status_label(parking_state))}"
+    )
   if spec.active_target in PAUSE_GATE_TARGETS:
     lines.append(
         "- Gate Status: AWAITING_DECLARATION"
@@ -633,11 +649,19 @@ def _render_active_lines(
           and not has_git_remote(spec.workspace_dir)
       )
   )
-  next_summary = (
-      "Run local verification suite (make all) and write 70_bot_triage.md"
-      if is_pure_git_t70
-      else _NEXT_ACTION_SUMMARIES.get(spec.active_target, "Continue workflow")
-  )
+  if is_parked:
+    next_summary = (
+        "Session PARKED: run 'make -f .workflow/state/Makefile resume-parked'"
+        " at Target 00 to re-check PR status"
+    )
+  elif is_pure_git_t70:
+    next_summary = (
+        "Run local verification suite (make all) and write 70_bot_triage.md"
+    )
+  else:
+    next_summary = _NEXT_ACTION_SUMMARIES.get(
+        spec.active_target, "Continue workflow"
+    )
   lines.extend([
       f"- Next Action: {_sanitize_active_text(next_summary)}",
       "",
@@ -1023,6 +1047,7 @@ def _build_active_target_payload(
     previous_target: str,
     active_target: str,
     skipped_targets: Tuple[str, ...] = (),
+    parking_state: Optional[ParkingState] = None,
 ) -> Dict[str, Any]:
   """Builds the serialized payload written to active_target.json.
 
@@ -1030,6 +1055,7 @@ def _build_active_target_payload(
     previous_target: Prior canonical target ID.
     active_target: Current canonical target ID.
     skipped_targets: Optional tuple of skipped canonical target IDs.
+    parking_state: Optional ParkingState when active_target is T70.
 
   Returns:
     Dictionary ready for write_active_target.
@@ -1041,6 +1067,15 @@ def _build_active_target_payload(
   }
   if skipped_targets:
     payload["skippedTargets"] = list(skipped_targets)
+  if (
+      active_target == "T70"
+      and parking_state is not None
+      and parking_state.parked
+  ):
+    payload["parked"] = True
+    payload["parkingReason"] = _sanitize_active_text(
+        format_parking_status_label(parking_state)
+    )
   return payload
 
 
@@ -1050,6 +1085,8 @@ def _persist_active_transition(
     transcript_path: str,
 ) -> None:
   """Persists gate_entry.json, active_target.json, and active readerboard."""
+  if spec.active_target != "T70" and spec.state_dir:
+    ParkingStateStore(spec.state_dir).clear()
   if spec.active_target in PAUSE_GATE_TARGETS:
     record_gate_entry(
         spec.state_dir,
@@ -1059,10 +1096,18 @@ def _persist_active_transition(
     )
   elif spec.previous_target in PAUSE_GATE_TARGETS or gate_key:
     clear_gate_entry(spec.state_dir, spec.previous_target)
+  parking_state = (
+      ParkingStateStore(spec.state_dir).load()
+      if spec.active_target == "T70" and spec.state_dir
+      else None
+  )
   write_active_target(
       spec.state_dir,
       _build_active_target_payload(
-          spec.previous_target, spec.active_target, spec.skipped_targets
+          spec.previous_target,
+          spec.active_target,
+          spec.skipped_targets,
+          parking_state=parking_state,
       ),
   )
   render_next_action_card(spec)
@@ -1115,9 +1160,14 @@ def _restore_active_session_state(
           pass
 
   skipped_targets = _resolve_skipped_targets(state_dir, current, prev_t)
+  parking_state = (
+      ParkingStateStore(state_dir).load() if current == "T70" else None
+  )
   write_active_target(
       state_dir,
-      _build_active_target_payload(prev_t, current, skipped_targets),
+      _build_active_target_payload(
+          prev_t, current, skipped_targets, parking_state=parking_state
+      ),
   )
   render_next_action_card(
       RenderCardSpec(
@@ -1165,6 +1215,21 @@ def restore_session_state(
 
   eff_ws = _resolve_effective_workspace(workspace_dir, state_dir)
   _restore_active_session_state(state_dir, current, eff_ws)
+  if current == "T70":
+    parking_state = ParkingStateStore(state_dir).load()
+    if parking_state is not None and parking_state.parked:
+      label = format_parking_status_label(parking_state)
+      pr_suffix = (
+          f" for PR #{parking_state.pr_number}"
+          if parking_state.pr_number
+          else ""
+      )
+      return (
+          True,
+          f"SUCCESS: Target 00 (read-init-d) restored active target T70"
+          f" ({label}). Run 'make -f .workflow/state/Makefile resume-parked'"
+          f" to re-check status{pr_suffix}.",
+      )
   return True, f"SUCCESS: Target 00 (read-init-d) restored active target {current}."
 
 
