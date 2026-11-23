@@ -3012,5 +3012,27 @@
     "closes_issue": true,
     "tests_added": 7,
     "scars_earned": []
+  },
+  {
+    "id": "GH-47",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/47",
+    "title": "[FEAT] Support multi-contributor peer review approvals, CODEOWNERS rules, and long-polling session parking",
+    "request": "Add opt-in multi-contributor peer review approvals, CODEOWNERS checks, always-on PR-branch firewalling, and Target 70/00 session parking in lib/parking_state.py, lib/ci_polling.py, lib/state_machine.py, lib/workflow_gates.py, lib/session_start.py, lib/config.py, mcp/server.py, README.md, and workflow manuals while preserving sole-developer zero-wait defaults, plus 30 hermetic tests.",
+    "branch": "feat/47-multi-contributor-session-parking",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "skills",
+      "agents",
+      "tests"
+    ],
+    "started_at": "2026-11-23T18:27:42Z",
+    "completed_at": "2026-11-23T21:21:18Z",
+    "commit_sha": "f3606964e910c60eb9675621f09101b11bc01594",
+    "pr_number": 298,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/298",
+    "closes_issue": true,
+    "tests_added": 30,
+    "scars_earned": []
   }
 ]
