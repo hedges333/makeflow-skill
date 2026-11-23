@@ -2771,13 +2771,51 @@ class TestTddGuardMakeEnvSanitization(unittest.TestCase):
 class TestTddGuardToolchainHashIsolation(unittest.TestCase):
   """Tests consumer-repo vs Makeflow plugin-repo governance toolchain isolation (GH-242)."""
 
-  def _copy_core_governance_files(self, target_root: str) -> None:
+  def _copy_core_governance_files(
+      self, target_root: str, omit_files: tuple = ()
+  ) -> None:
     """Copies CORE_GOVERNANCE_FILES from _REPO_ROOT into target_root."""
     for rel_path in CORE_GOVERNANCE_FILES:
+      if rel_path in omit_files:
+        continue
       src_path = os.path.join(_REPO_ROOT, *rel_path.split("/"))
       dst_path = os.path.join(target_root, *rel_path.split("/"))
       os.makedirs(os.path.dirname(dst_path), exist_ok=True)
       shutil.copyfile(src_path, dst_path)
+
+  def _init_plugin_fixture_repo(
+      self, repo_dir: str, omit_governance_files: tuple = ()
+  ) -> str:
+    """Initializes a committed plugin-checkout fixture with spec.txt."""
+    _init_fixture_repo(repo_dir)
+    _seed_required_plugin_files(repo_dir)
+    self._copy_core_governance_files(
+        repo_dir, omit_files=omit_governance_files
+    )
+    with open(os.path.join(repo_dir, "spec.txt"), "w", encoding="utf-8") as f:
+      f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+    subprocess.run(
+        ["git", "add", "-A"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "chore: seed plugin checkout"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head_proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return head_proc.stdout.strip()
 
   def test_consumer_repo_creating_and_staging_lib_base_script_passes_verify_green(
       self,
@@ -3257,6 +3295,481 @@ class TestTddGuardToolchainHashIsolation(unittest.TestCase):
           compute_toolchain_hash(plugin_link),
           compute_toolchain_hash(_REPO_ROOT),
       )
+
+  def test_plugin_repo_pre_witness_unstaged_governance_edit_passes_green_and_citation(
+      self,
+  ):
+    """Pre-witness unstaged edit to a governance file in a plugin repo passes verify-green and verify-citation (GH-290)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(tmpdir)
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_UNSTAGED_EDIT = True\n")
+
+      cmd = _unit_test_cmd()
+      err_red = io.StringIO()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=err_red,
+      )
+      self.assertEqual(rc_red, 0, err_red.getvalue())
+      self.assertEqual(err_red.getvalue(), "")
+
+      _fix_calc_bug(tmpdir)
+
+      err_green = io.StringIO()
+      rc_green = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_green,
+      )
+      self.assertEqual(rc_green, 0, err_green.getvalue())
+      self.assertEqual(err_green.getvalue(), "")
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_green = json.load(f)
+      self.assertTrue(rec_green["verified_green"])
+      self.assertEqual(rec_green["forensic_log"], [])
+
+      err_cite = io.StringIO()
+      rc_cite = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "verify-citation",
+              "--cite",
+              "spec.txt:1",
+          ],
+          stdout=io.StringIO(),
+          stderr=err_cite,
+      )
+      self.assertEqual(rc_cite, 0, err_cite.getvalue())
+      self.assertEqual(err_cite.getvalue(), "")
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_cite = json.load(f)
+      self.assertTrue(rec_cite["verified_green"])
+      self.assertEqual(rec_cite["forensic_log"], [])
+
+  def test_plugin_repo_pre_witness_staged_governance_edit_and_unstaging_pass_green_and_citation(
+      self,
+  ):
+    """Pre-witness staged governance edit and post-witness unstaging without byte changes pass verify-green and verify-citation (GH-290)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(tmpdir)
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_STAGED_EDIT = True\n")
+      subprocess.run(
+          ["git", "add", "lib/base_script.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      cmd = _unit_test_cmd()
+      err_red = io.StringIO()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=err_red,
+      )
+      self.assertEqual(rc_red, 0, err_red.getvalue())
+
+      _fix_calc_bug(tmpdir)
+
+      for phase_label in ("staged", "unstaged_after_witness"):
+        if phase_label == "unstaged_after_witness":
+          subprocess.run(
+              ["git", "restore", "--staged", "lib/base_script.py"],
+              cwd=tmpdir,
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+
+        err_green = io.StringIO()
+        rc_green = TddGuardScript().execute(
+            args=["--repo-root", tmpdir, "verify-green"],
+            stdout=io.StringIO(),
+            stderr=err_green,
+        )
+        self.assertEqual(
+            rc_green, 0, f"[{phase_label}] verify-green: {err_green.getvalue()}"
+        )
+        self.assertEqual(err_green.getvalue(), "")
+        with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+          rec = json.load(f)
+        self.assertTrue(rec["verified_green"])
+        self.assertEqual(rec["forensic_log"], [])
+
+        err_cite = io.StringIO()
+        rc_cite = TddGuardScript().execute(
+            args=[
+                "--repo-root",
+                tmpdir,
+                "verify-citation",
+                "--cite",
+                "spec.txt:1",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_cite,
+        )
+        self.assertEqual(
+            rc_cite, 0, f"[{phase_label}] verify-citation: {err_cite.getvalue()}"
+        )
+        self.assertEqual(err_cite.getvalue(), "")
+
+  def test_plugin_repo_post_witness_edit_to_pre_witness_edited_governance_file_fails(
+      self,
+  ):
+    """Post-witness edit to an already pre-witness-edited governance file fails verify-green and verify-citation (GH-290)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(tmpdir)
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_EDIT = True\n")
+
+      cmd = _unit_test_cmd()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc_red, 0)
+
+      _fix_calc_bug(tmpdir)
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("# POST_WITNESS_TAMPER = True\n")
+
+      for expected_count, sub_args in enumerate(
+          (
+              ["--repo-root", tmpdir, "verify-green"],
+              ["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+          ),
+          start=1,
+      ):
+        err_buf = io.StringIO()
+        rc = TddGuardScript().execute(
+            args=sub_args, stdout=io.StringIO(), stderr=err_buf
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+        self.assertNotIn("witnessed_head_sha", err_buf.getvalue())
+        with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+          rec = json.load(f)
+        self.assertFalse(rec["verified_green"])
+        collisions = [
+            e
+            for e in rec.get("forensic_log", [])
+            if e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+        ]
+        self.assertEqual(len(collisions), expected_count)
+
+  def test_plugin_repo_post_witness_revert_of_pre_witness_governance_edit_fails(
+      self,
+  ):
+    """Post-witness revert of a pre-witness governance edit back to committed HEAD fails verify-green and verify-citation (GH-290)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(tmpdir)
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_EDIT_TO_REVERT = True\n")
+
+      cmd = _unit_test_cmd()
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              cmd,
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc_red, 0)
+
+      _fix_calc_bug(tmpdir)
+      subprocess.run(
+          ["git", "checkout", "--", "lib/base_script.py"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      for expected_count, sub_args in enumerate(
+          (
+              ["--repo-root", tmpdir, "verify-green"],
+              ["--repo-root", tmpdir, "verify-citation", "--cite", "spec.txt:1"],
+          ),
+          start=1,
+      ):
+        err_buf = io.StringIO()
+        rc = TddGuardScript().execute(
+            args=sub_args, stdout=io.StringIO(), stderr=err_buf
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+        with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+          rec = json.load(f)
+        self.assertFalse(rec["verified_green"])
+        collisions = [
+            e
+            for e in rec.get("forensic_log", [])
+            if e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+        ]
+        self.assertEqual(len(collisions), expected_count)
+
+  def test_plugin_repo_post_witness_governance_deletion_or_untracked_creation_fails(
+      self,
+  ):
+    """Post-witness deletion of lib/base_script.py or untracked creation of missing lib/git_index.py alongside a pre-witness edit fails verify-green (GH-290)."""
+    # Case 1: Post-witness deletion of lib/base_script.py after pre-witness edit
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(tmpdir)
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_BEFORE_DELETE = True\n")
+
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              _unit_test_cmd(),
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc_red, 0)
+
+      _fix_calc_bug(tmpdir)
+      os.remove(base_script_path)
+
+      err_del = io.StringIO()
+      rc_del = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_del,
+      )
+      self.assertEqual(rc_del, 2)
+      self.assertIn(
+          "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+          err_del.getvalue(),
+      )
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_del = json.load(f)
+      self.assertFalse(rec_del["verified_green"])
+      self.assertTrue(
+          any(
+              e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+              for e in rec_del.get("forensic_log", [])
+          )
+      )
+
+    # Case 2: Untracked creation of previously missing lib/git_index.py alongside pre-witness edit
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(
+          tmpdir, omit_governance_files=("lib/git_index.py",)
+      )
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_WITH_MISSING_GIT_INDEX = True\n")
+
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              _unit_test_cmd(),
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc_red, 0)
+
+      _fix_calc_bug(tmpdir)
+      with open(
+          os.path.join(tmpdir, "lib", "git_index.py"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# UNTRACKED_POST_WITNESS_GOVERNANCE_FILE = True\n")
+
+      err_new = io.StringIO()
+      rc_new = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green"],
+          stdout=io.StringIO(),
+          stderr=err_new,
+      )
+      self.assertEqual(rc_new, 2)
+      self.assertIn(
+          "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+          err_new.getvalue(),
+      )
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_new = json.load(f)
+      self.assertFalse(rec_new["verified_green"])
+      self.assertTrue(
+          any(
+              e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+              for e in rec_new.get("forensic_log", [])
+          )
+      )
+
+  def test_plugin_repo_pre_witness_governance_edit_with_allow_head_move(self):
+    """Pre-witness governance edit with mid-phase unrelated commit and --allow-head-move passes unless governance bytes change post-witness (GH-290)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._init_plugin_fixture_repo(tmpdir)
+      base_script_path = os.path.join(tmpdir, "lib", "base_script.py")
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("\n# PRE_WITNESS_ALLOW_HEAD_MOVE = True\n")
+
+      rc_red = TddGuardScript().execute(
+          args=[
+              "--repo-root",
+              tmpdir,
+              "witness-red",
+              "--test-dir",
+              "tests",
+              "--cmd",
+              _unit_test_cmd(),
+          ],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc_red, 0)
+
+      _fix_calc_bug(tmpdir)
+      with open(
+          os.path.join(tmpdir, "README_NOTE.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write("unrelated mid-phase commit\n")
+      subprocess.run(
+          ["git", "add", "README_NOTE.txt"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "-m", "chore: unrelated mid-phase commit"],
+          cwd=tmpdir,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
+
+      err_ok = io.StringIO()
+      rc_ok = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green", "--allow-head-move"],
+          stdout=io.StringIO(),
+          stderr=err_ok,
+      )
+      self.assertEqual(rc_ok, 0, err_ok.getvalue())
+      self.assertEqual(err_ok.getvalue(), "")
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_ok = json.load(f)
+      self.assertTrue(rec_ok["verified_green"])
+      self.assertTrue(rec_ok["head_move_allowed"])
+      self.assertEqual(rec_ok["forensic_log"], [])
+
+      # Post-witness alteration of lib/base_script.py fails even with --allow-head-move
+      with open(base_script_path, "a", encoding="utf-8") as f:
+        f.write("# POST_WITNESS_TAMPER_WITH_HEAD_MOVE = True\n")
+      err_tamper = io.StringIO()
+      rc_tamper = TddGuardScript().execute(
+          args=["--repo-root", tmpdir, "verify-green", "--allow-head-move"],
+          stdout=io.StringIO(),
+          stderr=err_tamper,
+      )
+      self.assertEqual(rc_tamper, 2)
+      self.assertIn(
+          "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+          err_tamper.getvalue(),
+      )
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        rec_tamper = json.load(f)
+      self.assertFalse(rec_tamper["verified_green"])
+      self.assertFalse(rec_tamper["head_move_allowed"])
+      self.assertTrue(
+          any(
+              e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+              for e in rec_tamper.get("forensic_log", [])
+          )
+      )
+
+  def test_governance_toolchain_verification_fails_closed_on_missing_or_empty_hash(
+      self,
+  ):
+    """_verify_governance_toolchain fails closed with exit 2 when toolchain_hash is missing, empty, or non-string (GH-290)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      head_sha = self._init_plugin_fixture_repo(tmpdir)
+      invalid_receipts = [
+          {"forensic_log": [], "verified_green": True},
+          {"forensic_log": [], "toolchain_hash": "", "verified_green": True},
+          {"forensic_log": [], "toolchain_hash": None, "verified_green": True},
+          {"forensic_log": [], "toolchain_hash": 123, "verified_green": True},
+      ]
+      for receipt in invalid_receipts:
+        guard = TddGuardScript()
+        guard.repo_root = tmpdir
+        guard.receipt_path = _receipt_path(tmpdir)
+        err_buf = io.StringIO()
+        guard.stderr = err_buf
+        rc = guard._verify_governance_toolchain(receipt, head_sha)
+        self.assertEqual(
+            rc, 2, f"Expected fail-closed exit 2 for receipt={receipt!r}"
+        )
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_buf.getvalue(),
+        )
+        self.assertFalse(receipt["verified_green"])
+        self.assertTrue(
+            any(
+                e.get("violation_code") == "GOVERNANCE_TOOLCHAIN_TAMPERED"
+                for e in receipt.get("forensic_log", [])
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -1161,6 +1161,23 @@ class TddGuardScript(BaseScript):
   def _verify_governance_toolchain(
       self, receipt: Dict[str, Any], sealed_head: str
   ) -> Optional[int]:
+    """Verifies core governance files match the witnessed Red-phase digest.
+
+    Hashes ``CORE_GOVERNANCE_FILES`` from the repository root for Makeflow
+    plugin checkouts (including checkouts where plugin markers existed at
+    ``sealed_head``) or from ``_DEFAULT_REPO_ROOT`` for external consumer
+    repositories. Fails closed when the sealed digest is missing, invalid, or
+    mismatched.
+
+    Args:
+      receipt: Loaded and seal-verified Red-phase receipt dictionary.
+      sealed_head: Git commit SHA witnessed during ``witness-red``.
+
+    Returns:
+      None when the live governance toolchain matches the witnessed digest, or
+      exit code 2 after rolling back Green state, appending a forensic
+      collision entry, and emitting a Vector 4 Reflex.
+    """
     sealed_hash = receipt.get("toolchain_hash")
     is_plugin_repo = _is_makeflow_plugin_repo(
         self.repo_root
@@ -1170,55 +1187,35 @@ class TddGuardScript(BaseScript):
         if is_plugin_repo
         else _hash_toolchain_from_root(_DEFAULT_REPO_ROOT)
     )
-    hasher_mismatch = bool(sealed_hash and current_hash != sealed_hash)
+    hasher_mismatch = not (
+        isinstance(sealed_hash, str)
+        and bool(sealed_hash)
+        and hmac.compare_digest(current_hash, sealed_hash)
+    )
 
-    diff_tampered = False
-    diff_desc = ""
-    if is_plugin_repo:
-      try:
-        diff_proc = subprocess.run(
-            ["git", "diff", "--name-only", sealed_head, "--", "scripts/", "lib/"],
-            cwd=self.repo_root,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            check=False,
-            timeout=15,
-        )
-        if diff_proc.returncode == 0 and diff_proc.stdout.strip():
-          raw_lines = [
-              f.strip().replace(os.sep, "/")
-              for f in diff_proc.stdout.splitlines()
-              if f.strip()
-          ]
-          modified = [
-              f
-              for f in raw_lines
-              if f in CORE_GOVERNANCE_FILES
-              or any(
-                  f.endswith("/" + os.path.basename(p))
-                  for p in CORE_GOVERNANCE_FILES
-              )
-          ]
-          if modified:
-            diff_tampered = True
-            diff_desc = ", ".join(modified)
-      except (subprocess.SubprocessError, OSError):
-        pass
-
-    if hasher_mismatch or diff_tampered:
+    if hasher_mismatch:
       details = (
-          "Core governance toolchain in 'scripts/' or 'lib/' was tampered relative to witnessed state"
-          + (f" ({diff_desc})" if diff_desc else " (toolchain digest mismatch).")
+          "Core governance toolchain in 'scripts/' or 'lib/' drifted from the "
+          "witnessed Red-phase state (toolchain digest mismatch)."
       )
       rb_note = self._record_collision(
-          receipt, "GOVERNANCE_TOOLCHAIN_TAMPERED", details, scar_id="SCAR-TEST-12"
+          receipt,
+          "GOVERNANCE_TOOLCHAIN_TAMPERED",
+          details,
+          scar_id="SCAR-TEST-12",
       )
       return self._fail(
           code="GOVERNANCE_TOOLCHAIN_TAMPERED",
           trigger=f"{details}{rb_note}",
-          rejected="Modifying or tampering with core makeflow governance scripts during the Green phase.",
-          reflex="Revert all changes to scripts/ and lib/ relative to witnessed_head_sha and fix the defect strictly in production code.",
+          rejected=(
+              "Modifying or tampering with core makeflow governance scripts "
+              "after witness-red."
+          ),
+          reflex=(
+              "Restore core governance files in scripts/ and lib/ to their "
+              "witnessed Red-phase state. Fix the defect strictly in "
+              "production code."
+          ),
           scar_id="TEST-12",
       )
     return None
