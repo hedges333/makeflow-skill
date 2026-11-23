@@ -3768,5 +3768,110 @@ class TestPostCommitTarget50ExitGate(unittest.TestCase):
       self.assertEqual(payload["head_tree"], tree_hash)
 
 
+class TestParkedSessionStateMachine(unittest.TestCase):
+  """Tests PARKED sub-state rendering in 99_next_action.md, active_target.json, and Target 00 restore (GH-47)."""
+
+  def test_parked_t70_renders_status_preserves_milestones_and_clears_on_t75(
+      self,
+  ) -> None:
+    """Renders PARKED in 99_next_action.md without COMPLETE, restores at T00, and clears on T75."""
+    from lib.parking_state import ParkingState, ParkingStateStore
+    from lib.state_machine import (
+        ALL_TARGETS,
+        advance_workflow_target,
+        read_active_target,
+        restore_session_state,
+        write_active_target,
+    )
+
+    self.assertEqual(len(ALL_TARGETS), 14)
+
+    with tempfile.TemporaryDirectory() as repo:
+      _init_git_repo(repo, branch="feat/47-parked-sm")
+      state_dir = os.path.join(repo, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      _write_file(
+          os.path.join(state_dir, "10_ticket.json"),
+          json.dumps({"ticket_id": "GH-47", "title": "Session parking"}),
+      )
+      _write_file(
+          os.path.join(state_dir, "70_bot_triage.md"),
+          "# Target 70\n- Status: PARKED\n",
+      )
+      write_active_target(
+          state_dir,
+          {
+              "previousTarget": "T60",
+              "target": "T70",
+              "targetName": "bot-quiescence",
+          },
+      )
+      store = ParkingStateStore(state_dir)
+      store.save(
+          ParkingState(
+              parked=True,
+              pr_number=47,
+              head_branch="feat/47-parked-sm",
+              reason="Awaiting peer review approvals: 1/2",
+              ci_status="SUCCESS",
+              approvals_count=1,
+              required_approvals=2,
+          )
+      )
+
+      ok, msg = restore_session_state(state_dir, workspace_dir=repo)
+      self.assertTrue(ok, msg)
+      self.assertIn("PARKED", msg)
+      self.assertIn("resume-parked", msg)
+
+      active = read_active_target(state_dir)
+      self.assertEqual(active["target"], "T70")
+      self.assertTrue(active.get("parked"))
+      self.assertIn("1/2", active.get("parkingReason", ""))
+
+      with open(
+          os.path.join(state_dir, "99_next_action.md"), "r", encoding="utf-8"
+      ) as f:
+        na_text = f.read()
+      self.assertIn(
+          "- Session Status: PARKED (Awaiting peer review approvals: 1/2)",
+          na_text,
+      )
+      self.assertIn("- [>] T70: bot-quiescence", na_text)
+      self.assertNotIn("COMPLETE", na_text)
+      # NBO-8: Verify every canonical milestone checklist line remains rendered while parked (SCAR-PROC-158)
+      expected_milestones = (
+          "- [x] T00: read-init-d",
+          "- [x] T10: ticket-assigned",
+          "- [x] T15: archaeology-verified",
+          "- [x] T20: approved-plan (Human Pause Gate)",
+          "- [x] T30: implementation-diff (Red-Green TDD)",
+          "- [x] T40: adversarial-review (Six Pillars)",
+          "- [x] T45: approved-review (Human Pause Gate)",
+          "- [x] T50: commit (Human Pause Gate)",
+          "- [x] T60: push (Human Pause Gate)",
+          "- [>] T70: bot-quiescence (CI and Bot Poll)",
+          "- [ ] T75: ready-to-land (Human Pause Gate)",
+          "- [ ] T80: land (Merge and Cleanup)",
+          "- [ ] T90: finish (History Ledger)",
+      )
+      milestone_lines = [
+          ln for ln in na_text.splitlines() if ln.startswith("- [")
+      ]
+      self.assertEqual(tuple(milestone_lines), expected_milestones)
+
+      # Advancing T70 -> T75 clears parking state automatically
+      ok_adv, msg_adv = advance_workflow_target(
+          "T70",
+          "T75",
+          evidence={},
+          workspace_dir=repo,
+          state_dir=state_dir,
+      )
+      self.assertTrue(ok_adv, msg_adv)
+      self.assertFalse(store.exists())
+      self.assertFalse(read_active_target(state_dir).get("parked", False))
+
+
 if __name__ == "__main__":
   unittest.main()

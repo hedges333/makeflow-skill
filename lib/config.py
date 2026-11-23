@@ -32,11 +32,33 @@ DB_ENV_MAPPINGS = {
 CI_ENV_MAPPINGS = {
     "MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS": "quiescenceSeconds",
     "MAKEFILE_WORKFLOW_CI_POLL_INTERVAL": "pollIntervalSeconds",
+    "MAKEFILE_WORKFLOW_CI_MIN_APPROVALS": "minApprovals",
+}
+
+CI_BOOL_ENV_MAPPINGS = {
+    "MAKEFILE_WORKFLOW_CI_ENABLE_PEER_REVIEWS": "enablePeerReviews",
+    "MAKEFILE_WORKFLOW_CI_REQUIRE_CODEOWNER_REVIEWS": "requireCodeOwnerReviews",
+    "MAKEFILE_WORKFLOW_CI_ENABLE_SESSION_PARKING": "enableSessionParking",
+}
+
+CI_STR_ENV_MAPPINGS = {
+    "MAKEFILE_WORKFLOW_CI_PARKING_CRON": "parkingCronExpression",
 }
 
 _CI_FIELD_SPECS = {
     "pollIntervalSeconds": (30, 1),
     "quiescenceSeconds": (180, 0),
+    "minApprovals": (0, 0),
+}
+
+_CI_BOOL_DEFAULTS = {
+    "enablePeerReviews": False,
+    "requireCodeOwnerReviews": False,
+    "enableSessionParking": False,
+}
+
+_CI_STR_DEFAULTS = {
+    "parkingCronExpression": "",
 }
 
 MAKE_RECURSION_ENV_VARS = (
@@ -146,21 +168,48 @@ def _parse_positive_int(val, default):
   return _parse_int_min(val, default, 1)
 
 
+def _parse_bool_env(raw_val: Optional[str]) -> Optional[bool]:
+  """Parses a boolean environment variable string.
+
+  Args:
+    raw_val: Raw environment variable value, or None.
+
+  Returns:
+    True/False for recognized boolean strings, or None when unset or invalid.
+  """
+  if raw_val is None:
+    return None
+  lowered = raw_val.strip().lower()
+  if lowered in ("1", "true", "yes"):
+    return True
+  if lowered in ("0", "false", "no"):
+    return False
+  return None
+
+
 def _normalize_ci_config(raw_ci):
-  """Normalizes CI configuration values to validated integer bounds.
+  """Normalizes CI configuration values to validated bounds and types.
 
   Args:
     raw_ci: Raw ``ci`` configuration mapping or invalid non-dict value.
 
   Returns:
-    Dictionary with validated ``pollIntervalSeconds`` (>= 1) and
-    ``quiescenceSeconds`` (>= 0) integers.
+    Dictionary with validated ``pollIntervalSeconds``, ``quiescenceSeconds``,
+    ``minApprovals``, ``enablePeerReviews``, ``requireCodeOwnerReviews``,
+    ``enableSessionParking``, and ``parkingCronExpression`` values.
   """
   ci_dict = raw_ci if isinstance(raw_ci, dict) else {}
-  return {
+  normalized = {
       key: _parse_int_min(ci_dict.get(key), default_val, min_val)
       for key, (default_val, min_val) in _CI_FIELD_SPECS.items()
   }
+  for key, default_bool in _CI_BOOL_DEFAULTS.items():
+    raw_bool = ci_dict.get(key)
+    normalized[key] = raw_bool if isinstance(raw_bool, bool) else default_bool
+  for key, default_str in _CI_STR_DEFAULTS.items():
+    raw_str = ci_dict.get(key)
+    normalized[key] = raw_str.strip() if isinstance(raw_str, str) else default_str
+  return normalized
 
 
 def _apply_ci_env_overrides(ci_cfg):
@@ -179,6 +228,16 @@ def _apply_ci_env_overrides(ci_cfg):
     if num is not None:
       ci_cfg[ci_key] = num
       applied.append((env_var, num))
+  for env_var, ci_key in CI_BOOL_ENV_MAPPINGS.items():
+    parsed_bool = _parse_bool_env(os.getenv(env_var))
+    if parsed_bool is not None:
+      ci_cfg[ci_key] = parsed_bool
+      applied.append((env_var, parsed_bool))
+  for env_var, ci_key in CI_STR_ENV_MAPPINGS.items():
+    raw_str = os.getenv(env_var)
+    if raw_str is not None and raw_str.strip():
+      ci_cfg[ci_key] = raw_str.strip()
+      applied.append((env_var, ci_cfg[ci_key]))
   return applied
 
 
@@ -304,6 +363,11 @@ def load_default_config():
       "ci": {
           "pollIntervalSeconds": 30,
           "quiescenceSeconds": 180,
+          "enablePeerReviews": False,
+          "minApprovals": 0,
+          "requireCodeOwnerReviews": False,
+          "enableSessionParking": False,
+          "parkingCronExpression": "",
       },
       "database": {
           "prodDatabases": [],

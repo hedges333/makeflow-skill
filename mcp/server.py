@@ -52,6 +52,10 @@ from lib.git_safety import (
     _evaluate_git_tokens_safety,
     evaluate_git_safety,
 )
+from lib.parking_state import (
+    ParkingStateStore,
+    format_parking_status_label,
+)
 from lib.ticket_state import TICKET_JSON_FILENAME
 from lib.shell_safety import (
     DB_TOOLS,
@@ -361,6 +365,13 @@ def handle_tools_list(request_id):
                   "maxWaitSeconds": {
                       "type": "integer",
                       "description": "Maximum seconds before polling timeout (default 600)",
+                  },
+                  "expectedBranch": {
+                      "type": "string",
+                      "description": (
+                          "Optional expected PR head branch name for"
+                          " multi-contributor PR-branch firewalling"
+                      ),
                   },
               },
               "required": ["prNumber"],
@@ -707,6 +718,14 @@ def handle_tools_call(request_id, tool_name, arguments):
     summary = f"Found {len(files)} state card(s) in {state_dir}:\n" + "\n".join(
         f"- {f}" for f in files
     )
+    parking = ParkingStateStore(state_dir).load()
+    if parking is not None and parking.parked:
+      summary += (
+          f"\nSESSION_STATUS: {format_parking_status_label(parking)}"
+          f" (PR #{parking.pr_number},"
+          f" branch={parking.head_branch or 'unknown'},"
+          f" approvals={parking.approvals_count}/{parking.required_approvals})"
+      )
     sync = inspect_main_sync(ws)
     sync_status = sync.get("status", "NO_REMOTE")
     upstream_ref = sync.get("upstream_ref") or "origin/main"
@@ -909,12 +928,21 @@ def handle_tools_call(request_id, tool_name, arguments):
             f"Invalid '{field_name}' argument '{field_val}'. {hint}",
         )
     max_wait = arguments.get("maxWaitSeconds", 600)
+    raw_expected_branch = arguments.get("expectedBranch")
+    if raw_expected_branch is not None and not isinstance(
+        raw_expected_branch, str
+    ):
+      return _error_result(
+          request_id,
+          f"Invalid 'expectedBranch' argument '{raw_expected_branch}'. Provide a string.",
+      )
     res = poll_ci_status(
         pr_number=pr_num,
         ws=ws,
         quiescence_sec=q_sec,
         poll_interval_sec=p_sec,
         max_wait_sec=max_wait,
+        expected_branch=raw_expected_branch,
     )
     return {
         "jsonrpc": "2.0",

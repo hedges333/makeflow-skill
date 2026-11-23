@@ -9,8 +9,9 @@ At the start of every turn, inspect `<workspace>/.workflow/state/`:
 1. If `.workflow/state/` does not exist, start at Target 10.
 2. If `.workflow/state/` exists, read `10_ticket.json` (if present) and all `.md` files in alphabetical order (`00_governance.md` through `99_next_action.md`).
 3. Restore the active ticket ID, branch name, and active target.
-4. If an active ticket is restored, update the terminal tab title to `{dir_name}/: {ticket_number} {issue_tag}`.
-5. If the user only asks for status, print the readerboard in chat and stop.
+4. If `.workflow/state/70_parking_state.json` marks the session `PARKED` at Target 70, run `make -f .workflow/state/Makefile resume-parked` to check the PR once. If ready, Makeflow clears parking and advances directly to Target 75 (`ready-to-land`) for human landing approval (`SCAR-PROC-102`).
+5. If an active ticket is restored, update the terminal tab title to `{dir_name}/: {ticket_number} {issue_tag}`.
+6. If the user only asks for status, print the readerboard in chat and stop.
 
 ## 2. Target 10: Ticket Intake and Git Branching
 

@@ -158,6 +158,51 @@ class TestSessionStartScript(unittest.TestCase):
       self.assertIn("prodHosts=['db.prod.internal']", msg)
       mock_title.assert_called_once_with(repo_root=ws_dir)
 
+  def test_parked_session_injects_local_resume_note_without_network(self):
+    """Reads 70_parking_state.json locally and injects PARKED status note without subprocess calls (GH-47)."""
+    from lib.parking_state import ParkingState, ParkingStateStore
+
+    with (
+        tempfile.TemporaryDirectory() as ws_dir,
+        tempfile.TemporaryDirectory() as fake_home,
+        mock.patch.dict(os.environ, _clean_env(fake_home), clear=True),
+        mock.patch("lib.terminal_title.set_terminal_title"),
+        mock.patch(
+            "lib.session_start.refresh_state_makefile_if_ignored",
+            return_value=False,
+        ),
+        mock.patch("subprocess.run") as mock_subp,
+    ):
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "70_bot_triage.md"), "w", encoding="utf-8"
+      ) as fh:
+        fh.write("# Target 70\n")
+      ParkingStateStore(state_dir).save(
+          ParkingState(
+              parked=True,
+              pr_number=47,
+              head_branch="feat/47-parked",
+              reason="Awaiting peer review approvals: 1/2",
+              ci_status="SUCCESS",
+              approvals_count=1,
+              required_approvals=2,
+          )
+      )
+
+      code, out_text, err_text = self._execute_isolated(
+          json.dumps({"workspacePaths": [ws_dir]})
+      )
+      self.assertEqual(code, 0)
+      self.assertEqual(err_text, "")
+      mock_subp.assert_not_called()
+      data = json.loads(out_text)
+      msg = data["injectSteps"][0]["systemMessage"]["systemMessage"]
+      self.assertIn("PARKED (Awaiting peer review approvals: 1/2)", msg)
+      self.assertIn("PR #47", msg)
+      self.assertIn("resume-parked", msg)
+
   def test_clean_workspace_and_complete_state_report_ready_for_intake(self):
     """Verifies empty and COMPLETE workspaces report clean Target 10 readiness (GH-203)."""
     with (
