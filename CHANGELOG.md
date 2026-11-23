@@ -64,3 +64,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-271: Canonicalize bare numeric, hash, and prefixed ticket IDs in lib/ticket_state.py and WorkflowGatesScript intake and release paths.
 - GH-279: Strip POSIX backslash-newline continuations in lib/shell_safety.py, preprocess redirection guards, and detect CLI entry-card writes in lib/turn_boundary.py.
 - GH-242: Isolate external consumer repositories from Makeflow governance toolchain hashes, git diff checks, and shell self-modification guards in lib/tdd_guard.py and scripts/pre_tool_guard.py.
+- GH-290: Verify CORE_GOVERNANCE_FILES against sealed witness-red toolchain hashes in lib/tdd_guard.py instead of HEAD-relative git diffs.

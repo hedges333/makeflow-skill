@@ -2993,5 +2993,24 @@
     "closes_issue": true,
     "tests_added": 18,
     "scars_earned": []
+  },
+  {
+    "id": "GH-290",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/290",
+    "title": "[BUG] verify-green flags pre-witness edits to CORE_GOVERNANCE_FILES in self-hosted tickets",
+    "request": "Remove the HEAD-relative git diff check in lib/tdd_guard.py::_verify_governance_toolchain() so verify-green and verify-citation validate CORE_GOVERNANCE_FILES strictly against the sealed witness-red toolchain_hash using fail-closed constant-time hmac.compare_digest while preserving _is_makeflow_plugin_repo_at_commit, update GOVERNANCE_TOOLCHAIN_TAMPERED reflex wording and docstrings, and add 7 hermetic boundary tests in tests/test_tdd_guard.py.",
+    "branch": "fix/290-verify-green-pre-witness-governance",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-23T18:25:44Z",
+    "completed_at": "2026-11-23T20:23:06Z",
+    "commit_sha": "0c0daf11a6d48559668c5a5f1ec86c87b8ef58ef",
+    "pr_number": 297,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/297",
+    "closes_issue": true,
+    "tests_added": 7,
+    "scars_earned": []
   }
 ]
