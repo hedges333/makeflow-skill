@@ -12613,5 +12613,191 @@ class TestReviewPromotionAndNboGateContract(unittest.TestCase):
         )
 
 
+BLACK_BOX_HARNESS_CONTRACT_FILES = (
+    "rules/AGENTS.md",
+    "skills/makeflow/SKILL.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+BLACK_BOX_HARNESS_ADAPTER_FILES = (
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+
+def check_black_box_harness_boundary_contract(
+    files_by_relpath: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-222 Black-Box Harness Boundary rules across AGENTS.md, SKILL.md, and all 5 adapters.
+
+  Args:
+    files_by_relpath: Optional in-memory map of repo-relative paths to contents.
+    repo_root: Optional repository root directory override.
+
+  Returns:
+    List of diagnostic error strings (empty when all GH-222 contracts hold).
+  """
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if files_by_relpath is not None:
+    files_map = dict(files_by_relpath)
+  else:
+    for rel in BLACK_BOX_HARNESS_CONTRACT_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in BLACK_BOX_HARNESS_CONTRACT_FILES:
+    if rel not in files_map and f"Missing {rel}" not in errs:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. rules/AGENTS.md (Section 1.14)
+  agents_rel = "rules/AGENTS.md"
+  sec114 = _extract_markdown_h3_section(
+      files_map[agents_rel], "### 1.14 Black-Box Harness Boundary"
+  )
+  if not sec114:
+    errs.append(
+        f"{agents_rel} missing '### 1.14 Black-Box Harness Boundary (SCAR-PROC-124)'"
+    )
+  else:
+    for tok in (
+        "SCAR-PROC-124",
+        "Target 30",
+        "Target 90",
+        "black box",
+        ".workflow/state/gate_entry.json",
+        ".workflow/state/active_target.json",
+        ".workflow/state/active_subagent.json",
+        ".workflow/state/Makefile",
+        "make -f .workflow/state/Makefile",
+        "Vector 4 Reflex",
+        ".workflow/state/20_plan.md",
+        "conversationId != supervisorConversationId",
+    ):
+      if tok not in sec114:
+        errs.append(f"{agents_rel} Section 1.14 must document '{tok}'")
+    errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.14]", sec114))
+
+  # 2. skills/makeflow/SKILL.md (Core Rules + budget + platform neutrality)
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  skill_bytes = len(skill_text.encode("utf-8"))
+  if skill_bytes > 24576:
+    errs.append(
+        f"{skill_rel} exceeds 24,576-byte budget ({skill_bytes} bytes)"
+    )
+  if "<brain>" in skill_text:
+    errs.append(f"{skill_rel} must stay platform-neutral without '<brain>'")
+  core_rules = skill_text.split("---", 2)[-1].split("---", 1)[0]
+  for tok in (
+      "black box",
+      "Target 30",
+      "Target 90",
+      "SCAR-PROC-124",
+      "make -f .workflow/state/Makefile",
+      "Vector 4 Reflex",
+  ):
+    if tok not in core_rules:
+      errs.append(f"{skill_rel} Core Rules must document '{tok}'")
+  errs.extend(_check_section_simple_english(f"{skill_rel} [Core Rules]", core_rules))
+
+  # 3. All 5 cross-agent adapters
+  for adapter_rel in BLACK_BOX_HARNESS_ADAPTER_FILES:
+    ad_text = files_map[adapter_rel]
+    matching_lines = [
+        ln for ln in ad_text.splitlines() if "SCAR-PROC-124" in ln
+    ]
+    if not matching_lines:
+      errs.append(f"{adapter_rel} must document SCAR-PROC-124 Black-Box Harness Boundary")
+      continue
+    rule_block = "\n".join(matching_lines)
+    for tok in (
+        "black box",
+        "Target 30",
+        "Target 90",
+        ".workflow/state/gate_entry.json",
+        "make -f .workflow/state/Makefile",
+        "Vector 4 Reflex",
+    ):
+      if tok not in rule_block:
+        errs.append(f"{adapter_rel} SCAR-PROC-124 rule must document '{tok}'")
+    errs.extend(
+        _check_section_simple_english(f"{adapter_rel} [SCAR-PROC-124]", rule_block)
+    )
+
+  return errs
+
+
+class TestBlackBoxHarnessBoundaryContract(unittest.TestCase):
+  """Section-anchored contract, Simple English, and negative falsification tests for GH-222."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in BLACK_BOX_HARNESS_CONTRACT_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_black_box_harness_boundary_contract(self) -> None:
+    """Verifies live AGENTS.md, SKILL.md, and all 5 adapters satisfy GH-222 contracts."""
+    self.assertEqual(check_black_box_harness_boundary_contract(), [])
+
+  def test_negative_falsification_rejects_dropped_boundary_rules_and_simple_english_drift(
+      self,
+  ) -> None:
+    """In-memory mutations removing GH-222 invariants or breaking Simple English must fail."""
+    base = self._load_base_files()
+    self.assertEqual(check_black_box_harness_boundary_contract(base), [])
+
+    mutations = (
+        ("rules/AGENTS.md", "### 1.14 Black-Box Harness Boundary", "### 1.14 Removed"),
+        ("rules/AGENTS.md", ".workflow/state/gate_entry.json", "REMOVED_LOCK"),
+        ("rules/AGENTS.md", "Do not read out-of-scope", "Don't read out-of-scope"),
+        ("skills/makeflow/SKILL.md", "SCAR-PROC-124", "REMOVED_SCAR"),
+        ("skills/makeflow/SKILL.md", "black box", "open box"),
+        ("CLAUDE.md", "SCAR-PROC-124", "REMOVED_SCAR"),
+        (".cursorrules", "SCAR-PROC-124", "REMOVED_SCAR"),
+        (".cursor/rules/makeflow.mdc", "SCAR-PROC-124", "REMOVED_SCAR"),
+        (".github/copilot-instructions.md", "SCAR-PROC-124", "REMOVED_SCAR"),
+        ("adapters/chatgpt/instructions.md", "SCAR-PROC-124", "REMOVED_SCAR"),
+    )
+    for rel, token, repl in mutations:
+      with self.subTest(file=rel, mutated=token):
+        mut = dict(base)
+        mut[rel] = mut[rel].replace(token, repl)
+        self.assertNotEqual(mut[rel], base[rel])
+        errs = check_black_box_harness_boundary_contract(mut)
+        self.assertTrue(
+            any(rel in e for e in errs),
+            f"Expected rejection when '{token}' mutated in {rel}, got: {errs}",
+        )
+
+    # Verify SKILL.md platform-neutrality and byte ceiling falsification
+    mut_brain = dict(base)
+    mut_brain["skills/makeflow/SKILL.md"] += "\n<brain>/plan.md\n"
+    brain_errs = check_black_box_harness_boundary_contract(mut_brain)
+    self.assertTrue(any("<brain>" in e for e in brain_errs), brain_errs)
+
+    mut_big = dict(base)
+    mut_big["skills/makeflow/SKILL.md"] += "\n" + ("x" * 10000)
+    big_errs = check_black_box_harness_boundary_contract(mut_big)
+    self.assertTrue(any("24,576-byte" in e for e in big_errs), big_errs)
+
+
 if __name__ == "__main__":
   unittest.main()
