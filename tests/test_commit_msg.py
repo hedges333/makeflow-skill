@@ -1052,5 +1052,489 @@ class TestReceiptHostingModeParsing(unittest.TestCase):
         self.assertFalse(receipt_declares_pure_git(receipt_path))
 
 
+class TestCommitInvocationAndPostCommitValidation(unittest.TestCase):
+  """Tests commit invocation parsing, context detection, and HEAD validation (GH-292)."""
+
+  def test_scripts_commit_msg_reexports_all_planned_symbols(self):
+    """Asserts scripts/commit_msg.py re-exports every planned public symbol (SCAR-GENUI-0008)."""
+    import lib.commit_msg as lib_cm
+    import scripts.commit_msg as cli_cm
+
+    planned_symbols = (
+        "CANONICAL_TYPES",
+        "CommitInvocation",
+        "CommitMsgScript",
+        "FileChange",
+        "HeadCommitCheckResult",
+        "HeaderInfo",
+        "ValidationResult",
+        "detect_commit_context",
+        "extract_commit_invocation",
+        "format_commit_message",
+        "normalize_commit_message",
+        "parse_commit_header",
+        "read_head_commit_message",
+        "validate_commit_message",
+        "validate_head_commit",
+    )
+    for sym in planned_symbols:
+      self.assertIn(sym, cli_cm.__all__, f"Missing {sym} in scripts/commit_msg.py __all__")
+      self.assertTrue(hasattr(lib_cm, sym), f"Missing {sym} in lib/commit_msg.py")
+      self.assertIs(getattr(cli_cm, sym), getattr(lib_cm, sym))
+
+  def test_extract_commit_invocation_handles_message_file_repo_dir_and_amend_flags(self):
+    """Parses -m, multi-m, --message=, -F, --file=, -C, --amend, --no-edit, and non-commit tokens."""
+    from lib.commit_msg import CommitInvocation, extract_commit_invocation
+
+    self.assertIsNone(extract_commit_invocation(["git", "status"]))
+    self.assertIsNone(extract_commit_invocation(["echo", "git", "commit"]))
+
+    inv_single = extract_commit_invocation(["git", "commit", "-m", "feat: one"])
+    self.assertEqual(
+        inv_single,
+        CommitInvocation(messages=("feat: one",)),
+    )
+
+    inv_multi = extract_commit_invocation([
+        "env",
+        "FOO=1",
+        "git",
+        "-C",
+        "sub",
+        "-C",
+        "pkg",
+        "commit",
+        "-am",
+        "feat(core): subject",
+        "--message=Body paragraph",
+        "--message",
+        "Issue: #292",
+    ])
+    self.assertEqual(
+        inv_multi,
+        CommitInvocation(
+            messages=("feat(core): subject", "Body paragraph", "Issue: #292"),
+            repo_dir=os.path.join("sub", "pkg"),
+        ),
+    )
+
+    inv_file = extract_commit_invocation(
+        ["git", "-Cnested", "commit", "-F", ".workflow/state/50_commit_msg.txt"]
+    )
+    self.assertEqual(
+        inv_file,
+        CommitInvocation(
+            message_file=".workflow/state/50_commit_msg.txt",
+            repo_dir="nested",
+        ),
+    )
+
+    inv_stdin = extract_commit_invocation(["git", "commit", "--file=-"])
+    self.assertEqual(inv_stdin, CommitInvocation(message_file="-"))
+
+    inv_amend = extract_commit_invocation(
+        ["git", "commit", "--amend", "--no-edit"]
+    )
+    self.assertEqual(
+        inv_amend,
+        CommitInvocation(is_amend=True, no_edit=True),
+    )
+
+    inv_bare = extract_commit_invocation(["git", "commit"])
+    self.assertEqual(inv_bare, CommitInvocation())
+
+    # End-of-options '--' stops flag parsing; attached -F<path> and -m<msg> parse cleanly
+    inv_dd = extract_commit_invocation([
+        "git",
+        "commit",
+        "-mfeat: attached",
+        "--",
+        "-m",
+        "ignored-path",
+        "-F",
+        "ignored.txt",
+        "--amend",
+    ])
+    self.assertEqual(inv_dd, CommitInvocation(messages=("feat: attached",)))
+
+    inv_attached_f = extract_commit_invocation(
+        ["git", "commit", "-F.workflow/state/50_commit_msg.txt"]
+    )
+    self.assertEqual(
+        inv_attached_f,
+        CommitInvocation(message_file=".workflow/state/50_commit_msg.txt"),
+    )
+
+    # Alternate message-source flags are captured (BLOCKER-1)
+    alt_cases = [
+        (["git", "commit", "--amend", "--no-edit", "-C", "HEAD~1"], ("-C",)),
+        (["git", "commit", "--amend", "--no-edit", "-CHEAD~1"], ("-C",)),
+        (["git", "commit", "--amend", "--no-edit", "-c", "HEAD~1"], ("-c",)),
+        (
+            ["git", "commit", "--amend", "--no-edit", "--reuse-message", "HEAD~1"],
+            ("--reuse-message",),
+        ),
+        (
+            ["git", "commit", "--amend", "--no-edit", "--reuse-message=HEAD~1"],
+            ("--reuse-message",),
+        ),
+        (
+            ["git", "commit", "--amend", "--no-edit", "--reedit-message=HEAD~1"],
+            ("--reedit-message",),
+        ),
+        (
+            ["git", "commit", "--amend", "--no-edit", "--fixup=HEAD"],
+            ("--fixup",),
+        ),
+        (
+            ["git", "commit", "--amend", "--no-edit", "--squash=HEAD"],
+            ("--squash",),
+        ),
+        (["git", "commit", "--amend", "--no-edit", "-t", "tmpl.txt"], ("-t",)),
+        (["git", "commit", "--amend", "--no-edit", "-ttmpl.txt"], ("-t",)),
+        (
+            ["git", "commit", "--amend", "--no-edit", "--template=tmpl.txt"],
+            ("--template",),
+        ),
+    ]
+    for tokens, expected_flags in alt_cases:
+      with self.subTest(tokens=tokens):
+        inv = extract_commit_invocation(tokens)
+        self.assertIsNotNone(inv)
+        self.assertEqual(inv.alternate_message_flags, expected_flags)
+
+    # Last-flag-wins between --no-edit and --edit / -e (BLOCKER-1)
+    inv_no_then_e = extract_commit_invocation(
+        ["git", "commit", "--amend", "--no-edit", "-e"]
+    )
+    self.assertFalse(inv_no_then_e.no_edit)
+    self.assertTrue(inv_no_then_e.explicit_edit)
+
+    inv_no_then_edit = extract_commit_invocation(
+        ["git", "commit", "--amend", "--no-edit", "--edit"]
+    )
+    self.assertFalse(inv_no_then_edit.no_edit)
+    self.assertTrue(inv_no_then_edit.explicit_edit)
+
+    inv_no_then_ae = extract_commit_invocation(
+        ["git", "commit", "--amend", "--no-edit", "-ae"]
+    )
+    self.assertFalse(inv_no_then_ae.no_edit)
+    self.assertTrue(inv_no_then_ae.explicit_edit)
+
+    inv_edit_then_no = extract_commit_invocation(
+        ["git", "commit", "--amend", "--edit", "--no-edit"]
+    )
+    self.assertTrue(inv_edit_then_no.no_edit)
+    self.assertFalse(inv_edit_then_no.explicit_edit)
+
+    inv_ae_then_no = extract_commit_invocation(
+        ["git", "commit", "--amend", "-ae", "--no-edit"]
+    )
+    self.assertTrue(inv_ae_then_no.no_edit)
+    self.assertFalse(inv_ae_then_no.explicit_edit)
+
+  def test_detect_commit_context_uses_structured_ticket_json_branch_remote_and_receipt(self):
+    """Resolves (is_local, ticket_id) from 10_ticket.json, branch, remote, and receipt (SCAR-ARCH-10)."""
+    from lib.commit_msg import detect_commit_context
+    from lib.ticket_state import TicketStateStore
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = _init_github_repo(tmpdir, branch="feat/292-commit-enforcement")
+      TicketStateStore(state_dir).save(
+          {"ticket_id": "GH-292", "title": "Enforce CC", "source": "github"}
+      )
+      self.assertEqual(
+          detect_commit_context(tmpdir, state_dir=state_dir),
+          (False, "GH-292"),
+      )
+
+      # Explicit PURE_GIT receipt overrides github remote
+      with open(
+          os.path.join(state_dir, "15_archaeology_receipt.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# Receipt\n- **HOSTING_MODE**: PURE_GIT\n")
+      self.assertEqual(
+          detect_commit_context(tmpdir, state_dir=state_dir),
+          (True, "GH-292"),
+      )
+
+      # Explicit override wins
+      self.assertEqual(
+          detect_commit_context(
+              tmpdir, state_dir=state_dir, explicit_is_local=False
+          ),
+          (False, "GH-292"),
+      )
+
+    # Local ticket JSON in non-git directory
+    with tempfile.TemporaryDirectory() as nongit_dir:
+      state_dir = os.path.join(nongit_dir, ".workflow", "state")
+      TicketStateStore(state_dir).save(
+          {"ticket_id": "LOCAL-9", "title": "Local task", "source": "local"}
+      )
+      self.assertEqual(
+          detect_commit_context(nongit_dir, state_dir=state_dir),
+          (True, "LOCAL-9"),
+      )
+
+      # Remote GH ticket JSON in non-git directory honors structured metadata
+      TicketStateStore(state_dir).save(
+          {"ticket_id": "GH-42", "title": "Remote task", "source": "github"}
+      )
+      self.assertEqual(
+          detect_commit_context(nongit_dir, state_dir=state_dir),
+          (False, "GH-42"),
+      )
+
+    # Local branch overrides github remote and extracts ticket_id
+    with tempfile.TemporaryDirectory() as local_branch_dir:
+      state_dir = _init_github_repo(
+          local_branch_dir, branch="fix/local-12-offline"
+      )
+      self.assertEqual(
+          detect_commit_context(local_branch_dir, state_dir=state_dir),
+          (True, "LOCAL-12"),
+      )
+
+  def test_normalize_and_validate_head_commit_enforces_message_match_and_tree_lock(self):
+    """Verifies HEAD message CC validation, CRLF-normalized match to 50_commit_msg.txt, and HEAD^{tree} lock."""
+    from lib.commit_msg import normalize_commit_message, validate_head_commit
+
+    self.assertEqual(
+        normalize_commit_message("feat: x\r\n\r\nIssue: #1\r\n"),
+        "feat: x\n\nIssue: #1",
+    )
+
+    with tempfile.TemporaryDirectory() as repo:
+      state_dir = _init_github_repo(repo, branch="feat/292-post-commit")
+      with open(os.path.join(repo, "app.py"), "w", encoding="utf-8") as f:
+        f.write("VALUE = 1\n")
+      subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+      tree_hash = subprocess.run(
+          ["git", "write-tree"],
+          cwd=repo,
+          capture_output=True,
+          text=True,
+          check=True,
+      ).stdout.strip()
+      with open(
+          os.path.join(state_dir, "approved_tree.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write(tree_hash + "\n")
+
+      approved_msg = (
+          "feat(hooks): enforce conventional commits (closes #292)\n\n"
+          "Validates git commit in PreToolUse and post-commit T50 exit.\n\n"
+          "Issue: #292\n"
+      )
+      msg_path = os.path.join(state_dir, "50_commit_msg.txt")
+      # Write with CRLF to test newline normalization
+      with open(msg_path, "wb") as f:
+        f.write(approved_msg.replace("\n", "\r\n").encode("utf-8"))
+
+      # 1. Invalid HEAD commit message fails before matching
+      subprocess.run(
+          [
+              "git",
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=t@example.com",
+              "commit",
+              "-q",
+              "-m",
+              "bad commit message without type",
+          ],
+          cwd=repo,
+          check=True,
+      )
+      bad_res = validate_head_commit(repo, state_dir=state_dir)
+      self.assertFalse(bad_res.ok)
+      self.assertEqual(bad_res.scar_id, "GIT-20")
+      self.assertEqual(bad_res.violation_code, "INVALID_COMMIT_MESSAGE_CONTRACT")
+
+      # 2. Valid CC HEAD message that differs from 50_commit_msg.txt fails with drift
+      subprocess.run(
+          [
+              "git",
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=t@example.com",
+              "commit",
+              "--amend",
+              "-q",
+              "-m",
+              "feat(hooks): different message (closes #292)\n\nIssue: #292\n",
+          ],
+          cwd=repo,
+          check=True,
+      )
+      drift_res = validate_head_commit(repo, state_dir=state_dir)
+      self.assertFalse(drift_res.ok)
+      self.assertEqual(drift_res.scar_id, "GIT-20")
+      self.assertEqual(drift_res.violation_code, "COMMIT_MESSAGE_DRIFT")
+
+      # 3. Matching HEAD message (LF vs CRLF) and matching HEAD^{tree} passes
+      subprocess.run(
+          [
+              "git",
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=t@example.com",
+              "commit",
+              "--amend",
+              "-q",
+              "-m",
+              approved_msg,
+          ],
+          cwd=repo,
+          check=True,
+      )
+      ok_res = validate_head_commit(repo, state_dir=state_dir)
+      self.assertTrue(ok_res.ok, ok_res)
+      self.assertEqual(ok_res.head_tree, tree_hash)
+
+      # 4. HEAD^{tree} drift fails with SCAR-GIT-25 UNAPPROVED_TREE_DRIFT
+      with open(os.path.join(repo, "app.py"), "w", encoding="utf-8") as f:
+        f.write("VALUE = 2\n")
+      subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+      subprocess.run(
+          [
+              "git",
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=t@example.com",
+              "commit",
+              "--amend",
+              "-q",
+              "-m",
+              approved_msg,
+          ],
+          cwd=repo,
+          check=True,
+      )
+      tree_drift_res = validate_head_commit(repo, state_dir=state_dir)
+      self.assertFalse(tree_drift_res.ok)
+      self.assertEqual(tree_drift_res.scar_id, "GIT-25")
+      self.assertEqual(tree_drift_res.violation_code, "UNAPPROVED_TREE_DRIFT")
+
+  def test_read_head_commit_message_unborn_head_and_validate_boundary_cases(self):
+    """Tests fail-closed read_head_commit_message, unborn HEAD branch fallback, and missing/empty artifacts."""
+    from lib.commit_msg import (
+        detect_commit_context,
+        read_head_commit_message,
+        validate_head_commit,
+    )
+
+    # Missing/nonexistent directory fails closed without running git in CWD (BLOCKER-2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+      missing_dir = os.path.join(tmpdir, "does_not_exist")
+      self.assertIsNone(read_head_commit_message(""))
+      self.assertIsNone(read_head_commit_message(missing_dir))
+
+      # Unborn HEAD repository with local branch and github remote (NBO-4 + NBO-2)
+      unborn_repo = os.path.join(tmpdir, "unborn")
+      os.makedirs(unborn_repo)
+      subprocess.run(["git", "init", "-q"], cwd=unborn_repo, check=True)
+      subprocess.run(
+          ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+          cwd=unborn_repo,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "checkout", "-q", "-b", "feat/local-7-init"],
+          cwd=unborn_repo,
+          check=True,
+      )
+      self.assertIsNone(read_head_commit_message(unborn_repo))
+      self.assertEqual(
+          detect_commit_context(unborn_repo),
+          (True, "LOCAL-7"),
+      )
+      unborn_res = validate_head_commit(unborn_repo)
+      self.assertFalse(unborn_res.ok)
+      self.assertEqual(unborn_res.scar_id, "GIT-20")
+      self.assertEqual(
+          unborn_res.violation_code, "INVALID_COMMIT_MESSAGE_CONTRACT"
+      )
+
+      # Repo with valid HEAD commit testing missing 50_commit_msg.txt, missing/empty approved_tree.txt, and FILE override
+      repo = os.path.join(tmpdir, "boundary")
+      os.makedirs(repo)
+      state_dir = _init_github_repo(repo, branch="feat/292-boundary")
+      approved_msg = "feat(gates): boundary check (closes #292)\n\nIssue: #292\n"
+      subprocess.run(
+          [
+              "git",
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=t@example.com",
+              "commit",
+              "--amend",
+              "--allow-empty",
+              "-q",
+              "-m",
+              approved_msg,
+          ],
+          cwd=repo,
+          check=True,
+      )
+      self.assertEqual(
+          read_head_commit_message(repo).strip(), approved_msg.strip()
+      )
+
+      # Missing 50_commit_msg.txt
+      missing_msg_res = validate_head_commit(repo, state_dir=state_dir)
+      self.assertFalse(missing_msg_res.ok)
+      self.assertEqual(missing_msg_res.scar_id, "GIT-20")
+      self.assertEqual(missing_msg_res.violation_code, "COMMIT_MESSAGE_DRIFT")
+
+      # Write custom message file override; missing approved_tree.txt fails with GIT-25
+      custom_msg = os.path.join(repo, "custom_msg.txt")
+      with open(custom_msg, "w", encoding="utf-8") as f:
+        f.write(approved_msg)
+      missing_tree_res = validate_head_commit(
+          repo, state_dir=state_dir, commit_msg_file="custom_msg.txt"
+      )
+      self.assertFalse(missing_tree_res.ok)
+      self.assertEqual(missing_tree_res.scar_id, "GIT-25")
+      self.assertEqual(
+          missing_tree_res.violation_code, "UNAPPROVED_TREE_DRIFT"
+      )
+
+      # Empty approved_tree.txt fails with GIT-25
+      tree_path = os.path.join(state_dir, "approved_tree.txt")
+      with open(tree_path, "w", encoding="utf-8") as f:
+        f.write("   \n")
+      empty_tree_res = validate_head_commit(
+          repo, state_dir=state_dir, commit_msg_file="custom_msg.txt"
+      )
+      self.assertFalse(empty_tree_res.ok)
+      self.assertEqual(empty_tree_res.scar_id, "GIT-25")
+      self.assertEqual(empty_tree_res.violation_code, "UNAPPROVED_TREE_DRIFT")
+
+      # Valid approved_tree.txt + explicit FILE override passes
+      head_tree = subprocess.run(
+          ["git", "rev-parse", "HEAD^{tree}"],
+          cwd=repo,
+          capture_output=True,
+          text=True,
+          check=True,
+      ).stdout.strip()
+      with open(tree_path, "w", encoding="utf-8") as f:
+        f.write(head_tree + "\n")
+      ok_override = validate_head_commit(
+          repo, state_dir=state_dir, commit_msg_file="custom_msg.txt"
+      )
+      self.assertTrue(ok_override.ok, ok_override)
+
+
 if __name__ == "__main__":
   unittest.main()

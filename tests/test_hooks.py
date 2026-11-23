@@ -172,16 +172,31 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               "workspacePaths": [ws_dir],
               "toolCall": {
                   "name": "run_command",
-                  "args": {"CommandLine": "git commit -m 'feat: add test'"},
+                  "args": {
+                      "CommandLine": (
+                          "git commit -m 'feat: add test' -m 'Ticket: LOCAL-1'"
+                      )
+                  },
               },
           },
           cwd=hook_cwd,
           env=env,
       )
-      assert r5_present["decision"] == "force_ask"
+      assert r5_present["decision"] == "force_ask", r5_present
       assert "present" in r5_present["reason"]
 
       # Regression test for BLOCKER-2: Realistic 99_next_action.md with static milestone list
+      with open(
+          os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump(
+            {
+                "ticket_id": "GH-42",
+                "title": "Fix auth timeout",
+                "source": "github",
+            },
+            f,
+        )
       with open(
           os.path.join(state_dir, "99_next_action.md"), "w", encoding="utf-8"
       ) as f:
@@ -213,16 +228,38 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               "workspacePaths": [ws_dir],
               "toolCall": {
                   "name": "run_command",
-                  "args": {"CommandLine": "git commit -m 'feat: regular feature commit'"},
+                  "args": {
+                      "CommandLine": (
+                          "git commit -m 'feat: regular feature commit (closes #42)'"
+                      )
+                  },
               },
           },
           cwd=hook_cwd,
           env=env,
       )
-      assert r5_milestones_present["decision"] == "force_ask"
+      assert r5_milestones_present["decision"] == "force_ask", r5_milestones_present
       assert "Target 50 Commit Gate" in r5_milestones_present["reason"]
       assert "Target 90 History Ledger Gate" not in r5_milestones_present["reason"]
       assert "present" in r5_milestones_present["reason"]
+
+      # Active Target 50 remote commit missing issue trailer is denied (GH-292)
+      r5_missing_trailer = run_hook(
+          PRE_TOOL,
+          {
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": "git commit -m 'feat: regular feature commit'"
+                  },
+              },
+          },
+          cwd=hook_cwd,
+          env=env,
+      )
+      assert r5_missing_trailer["decision"] == "deny", r5_missing_trailer
+      assert "INVALID_COMMIT_MESSAGE_CONTRACT" in r5_missing_trailer["reason"]
 
       # Also test missing review card in presence of 99_next_action.md
       os.remove(os.path.join(state_dir, "45_review_approved.md"))
@@ -232,13 +269,17 @@ class TestHooksLifecycleAndParity(unittest.TestCase):
               "workspacePaths": [ws_dir],
               "toolCall": {
                   "name": "run_command",
-                  "args": {"CommandLine": "git commit -m 'feat: regular feature commit'"},
+                  "args": {
+                      "CommandLine": (
+                          "git commit -m 'feat: regular feature commit (closes #42)'"
+                      )
+                  },
               },
           },
           cwd=hook_cwd,
           env=env,
       )
-      assert r5_milestones_missing["decision"] == "force_ask"
+      assert r5_milestones_missing["decision"] == "force_ask", r5_milestones_missing
       assert "Target 50 Commit Gate" in r5_milestones_missing["reason"]
       assert "Target 90 History Ledger Gate" not in r5_milestones_missing["reason"]
       assert "missing" in r5_milestones_missing["reason"]

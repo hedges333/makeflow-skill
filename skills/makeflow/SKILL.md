@@ -147,8 +147,8 @@ Read `references/05` and `references/06` for pre-commit hygiene and pull request
 
 1. At Target 50, run formatters, linters, full repository tests, and write `.workflow/state/50_commit_msg.txt` (`Ticket: LOCAL-<N>` for local tasks).
 2. Run `make -f .workflow/state/Makefile commit APPROVED=1`, which enforces `check-approved-tree` and `check-commit-msg` (`closes #<N>` trap on `LOCAL-<N>` tasks).
-3. Print the commit proposal, pause for `human-commit-approval`, then run `git commit -F .workflow/state/50_commit_msg.txt`.
-4. At Target 60, run `make -f .workflow/state/Makefile push APPROVED=1` (`git merge-tree`) and pause for `human-push-approval`. If operator-approved rebase resolves conflicts, re-lock `approved_tree.txt`, run `make test-static`, and run `make -f .workflow/state/Makefile adversarial-review FROM=T60`. Otherwise, push the branch and run `gh pr create`.
+3. Print the commit proposal, pause for `human-commit-approval`, then run `git commit -F .workflow/state/50_commit_msg.txt`. The `PreToolUse` hook validates commit messages before Git runs and denies invalid, missing, stdin, or bare commits.
+4. At Target 60, run `make -f .workflow/state/Makefile push APPROVED=1` (`git merge-tree`) and pause for `human-push-approval`. Exiting Target 50 (`T50 -> T60` or `T50 -> T70`) revalidates `HEAD` against `50_commit_msg.txt` and `approved_tree.txt`. If operator-approved rebase resolves conflicts, re-lock `approved_tree.txt`, run `make test-static`, and run `make -f .workflow/state/Makefile adversarial-review FROM=T60`. Otherwise, push the branch and run `gh pr create`.
 5. In Pure Git Mode (`SCAR-GIT-30`), set `HOSTING_MODE: PURE_GIT`. If zero Git remotes exist, skip Target 60 via `T50 -> T70` (`bot-quiescence APPROVED=1`). If a remote exists, enter Target 60 to push and skip `gh pr create`.
 
 ### Target 70, Target 75, Target 80, and Target 90: CI, Landing, and Ledger

@@ -14,10 +14,12 @@ import os
 import re
 import subprocess
 import sys
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.reflex import emit_reflex
+from lib.shell_safety import GIT_GLOBAL_VALUE_FLAGS, _unwrap_command_tokens
+from lib.ticket_state import TicketStateStore
 
 CANONICAL_TYPES: Tuple[str, ...] = (
     "feat",
@@ -105,6 +107,550 @@ class ValidationResult:
 
   def __bool__(self) -> bool:
     return self.valid
+
+
+@dataclass(frozen=True)
+class CommitInvocation:
+  """Parsed ``git commit`` invocation arguments for PreToolUse validation.
+
+  Attributes:
+    messages: Ordered inline ``-m`` / ``--message`` values.
+    message_file: Path passed to ``-F`` / ``--file`` (including ``"-"``).
+    repo_dir: Combined repository directory from global ``-C`` flags, if any.
+    is_amend: True when ``--amend`` is specified.
+    no_edit: True when ``--no-edit`` is the effective edit option (last flag wins).
+    explicit_edit: True when ``--edit`` / ``-e`` is the effective edit option
+      (last flag wins).
+    alternate_message_flags: Alternate message-source flags (such as ``-C``,
+      ``-c``, ``--reuse-message``, ``--reedit-message``, ``--fixup``,
+      ``--squash``, ``-t``, ``--template``) present on the command.
+  """
+
+  messages: Tuple[str, ...] = ()
+  message_file: Optional[str] = None
+  repo_dir: Optional[str] = None
+  is_amend: bool = False
+  no_edit: bool = False
+  explicit_edit: bool = False
+  alternate_message_flags: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class HeadCommitCheckResult:
+  """Result of post-commit HEAD message and approved tree verification.
+
+  Attributes:
+    ok: True when HEAD message and tree pass all post-commit invariants.
+    scar_id: Canonical scar identifier (``"GIT-20"`` or ``"GIT-25"``) on failure.
+    violation_code: Machine-readable violation code on failure.
+    reason: Human-readable explanation of the failure.
+    head_message: Raw ``git log -1 --pretty=%B HEAD`` message when readable.
+    head_tree: Resolved ``git rev-parse HEAD^{tree}`` hash when readable.
+    expected_tree: Expected tree hash read from ``approved_tree.txt``.
+  """
+
+  ok: bool
+  scar_id: str = ""
+  violation_code: str = ""
+  reason: str = ""
+  head_message: str = ""
+  head_tree: str = ""
+  expected_tree: str = ""
+
+
+_COMMIT_LONG_ALT_MESSAGE_FLAGS = frozenset({
+    "--reuse-message",
+    "--reedit-message",
+    "--fixup",
+    "--squash",
+    "--template",
+})
+_COMMIT_LONG_OTHER_VALUE_FLAGS = frozenset({
+    "--cleanup",
+    "--date",
+    "--author",
+    "--trailer",
+    "--pathspec-from-file",
+})
+_COMMIT_SHORT_ALT_MESSAGE_CHARS = frozenset({"c", "C", "t"})
+_COMMIT_SHORT_OTHER_VALUE_CHARS = frozenset({"X"})
+
+
+def normalize_commit_message(msg: str) -> str:
+  """Normalizes line endings and surrounding whitespace for commit comparisons.
+
+  Args:
+    msg: Raw commit message text.
+
+  Returns:
+    Commit message with CRLF converted to LF and outer whitespace stripped.
+  """
+  return (msg or "").replace("\r\n", "\n").strip()
+
+
+def _parse_git_global_and_subcommand(
+    git_args: Sequence[str],
+) -> Tuple[Optional[str], List[str], Optional[str]]:
+  """Splits global git options from the subcommand while capturing ``-C`` paths.
+
+  Args:
+    git_args: Token list following the ``git`` executable.
+
+  Returns:
+    Tuple of ``(subcommand, subcommand_args, combined_repo_dir)``.
+  """
+  idx = 0
+  n = len(git_args)
+  repo_dir: Optional[str] = None
+  while idx < n:
+    tok = git_args[idx]
+    if tok == "--":
+      if idx + 1 < n:
+        return git_args[idx + 1], list(git_args[idx + 2 :]), repo_dir
+      return None, [], repo_dir
+    if tok == "-C":
+      if idx + 1 < n:
+        val = git_args[idx + 1]
+        repo_dir = (
+            val
+            if os.path.isabs(val) or not repo_dir
+            else os.path.join(repo_dir, val)
+        )
+      idx += 2
+      continue
+    if tok.startswith("-C") and len(tok) > 2:
+      val = tok[2:]
+      repo_dir = (
+          val
+          if os.path.isabs(val) or not repo_dir
+          else os.path.join(repo_dir, val)
+      )
+      idx += 1
+      continue
+    if tok == "-c":
+      idx += 2
+      continue
+    if tok.startswith("-c") and len(tok) > 2:
+      idx += 1
+      continue
+    if tok in GIT_GLOBAL_VALUE_FLAGS:
+      idx += 2
+      continue
+    if any(tok.startswith(flag + "=") for flag in GIT_GLOBAL_VALUE_FLAGS):
+      idx += 1
+      continue
+    if tok.startswith("-"):
+      idx += 1
+      continue
+    return tok, list(git_args[idx + 1 :]), repo_dir
+  return None, [], repo_dir
+
+
+def extract_commit_invocation(
+    tokens: Sequence[str],
+) -> Optional[CommitInvocation]:
+  """Extracts structured commit arguments from a single tokenized shell command.
+
+  Args:
+    tokens: Tokenized single shell command (may include wrappers such as ``env``).
+
+  Returns:
+    CommitInvocation when ``tokens`` invokes ``git commit``, or None otherwise.
+  """
+  if not tokens:
+    return None
+  exe, rem = _unwrap_command_tokens(list(tokens))
+  if not exe or os.path.basename(exe).lower() not in ("git", "git.exe"):
+    return None
+  subcmd, sub_args, repo_dir = _parse_git_global_and_subcommand(rem)
+  if subcmd != "commit":
+    return None
+
+  messages: List[str] = []
+  message_file: Optional[str] = None
+  is_amend = False
+  no_edit = False
+  explicit_edit = False
+  alternate_message_flags: List[str] = []
+  i = 0
+  n = len(sub_args)
+  while i < n:
+    tok = sub_args[i]
+    if tok == "--":
+      break
+    if tok.startswith("--"):
+      flag_name = tok.split("=", 1)[0]
+      if tok == "--amend":
+        is_amend = True
+      elif tok == "--no-edit":
+        no_edit = True
+        explicit_edit = False
+      elif tok == "--edit":
+        no_edit = False
+        explicit_edit = True
+      elif tok == "--message":
+        if i + 1 < n:
+          messages.append(sub_args[i + 1])
+          i += 2
+          continue
+      elif tok.startswith("--message="):
+        messages.append(tok.split("=", 1)[1])
+      elif tok == "--file":
+        if i + 1 < n:
+          message_file = sub_args[i + 1]
+          i += 2
+          continue
+      elif tok.startswith("--file="):
+        message_file = tok.split("=", 1)[1]
+      elif flag_name in _COMMIT_LONG_ALT_MESSAGE_FLAGS:
+        alternate_message_flags.append(flag_name)
+        if "=" not in tok and i + 1 < n:
+          i += 2
+          continue
+      elif tok in _COMMIT_LONG_OTHER_VALUE_FLAGS:
+        i += 2
+        continue
+      i += 1
+      continue
+    if tok.startswith("-") and len(tok) > 1:
+      for j in range(1, len(tok)):
+        ch = tok[j]
+        if ch == "e":
+          no_edit = False
+          explicit_edit = True
+          continue
+        if ch == "m":
+          val = (
+              tok[j + 1 :]
+              if j < len(tok) - 1
+              else (sub_args[i + 1] if i + 1 < n else "")
+          )
+          messages.append(val)
+          if j == len(tok) - 1 and i + 1 < n:
+            i += 1
+          break
+        if ch == "F":
+          val = (
+              tok[j + 1 :]
+              if j < len(tok) - 1
+              else (sub_args[i + 1] if i + 1 < n else "")
+          )
+          message_file = val
+          if j == len(tok) - 1 and i + 1 < n:
+            i += 1
+          break
+        if ch in _COMMIT_SHORT_ALT_MESSAGE_CHARS:
+          alternate_message_flags.append(f"-{ch}")
+          if j == len(tok) - 1 and i + 1 < n:
+            i += 1
+          break
+        if ch in _COMMIT_SHORT_OTHER_VALUE_CHARS:
+          if j == len(tok) - 1 and i + 1 < n:
+            i += 1
+          break
+      i += 1
+      continue
+    i += 1
+
+  return CommitInvocation(
+      messages=tuple(messages),
+      message_file=message_file,
+      repo_dir=repo_dir,
+      is_amend=is_amend,
+      no_edit=no_edit,
+      explicit_edit=explicit_edit,
+      alternate_message_flags=tuple(alternate_message_flags),
+  )
+
+
+def _run_git_readonly(
+    repo_root: str, *args: str
+) -> Optional[subprocess.CompletedProcess]:
+  """Runs a read-only git command inside repo_root.
+
+  Args:
+    repo_root: Directory to execute git inside.
+    *args: Git command arguments.
+
+  Returns:
+    CompletedProcess on execution, or None when repo_root is unavailable or git
+    cannot be spawned.
+  """
+  if not repo_root or not os.path.isdir(repo_root):
+    return None
+  try:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+  except (subprocess.SubprocessError, OSError):
+    return None
+
+
+def read_head_commit_message(repo_root: str) -> Optional[str]:
+  """Reads ``git log -1 --pretty=%B HEAD`` fail-closed inside ``repo_root``.
+
+  Fails closed by returning None immediately when ``repo_root`` is empty,
+  missing, or not a directory, or when ``git log`` returns a non-zero exit code.
+
+  Args:
+    repo_root: Existing Git repository directory path.
+
+  Returns:
+    Raw ``HEAD`` commit message text on success, or None on any error.
+  """
+  log_proc = _run_git_readonly(repo_root, "log", "-1", "--pretty=%B", "HEAD")
+  if log_proc is None or log_proc.returncode != 0:
+    return None
+  return log_proc.stdout
+
+
+def detect_commit_context(
+    repo_root: str,
+    state_dir: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    explicit_is_local: Optional[bool] = None,
+) -> Tuple[bool, Optional[str]]:
+  """Resolves commit validation mode and ticket identifier from workspace state.
+
+  Reads structured ``10_ticket.json`` via ``TicketStateStore`` (SCAR-ARCH-10),
+  active Git branch, Git ``origin`` remote, and ``15_archaeology_receipt.md``
+  hosting metadata without scraping Markdown prose.
+
+  Args:
+    repo_root: Repository or workspace root directory.
+    state_dir: Optional explicit ``.workflow/state`` directory path.
+    ticket_id: Optional caller-provided ticket identifier override.
+    explicit_is_local: Optional explicit boolean mode override.
+
+  Returns:
+    Tuple of ``(is_local, resolved_ticket_id)``.
+  """
+  eff_state_dir = state_dir or (
+      os.path.join(repo_root, ".workflow", "state") if repo_root else ""
+  )
+  resolved_ticket: Optional[str] = (ticket_id or "").strip() or None
+  ticket_meta = (
+      TicketStateStore(eff_state_dir).load() if eff_state_dir else None
+  )
+  if resolved_ticket is None and ticket_meta and ticket_meta.ticket_id:
+    resolved_ticket = ticket_meta.ticket_id
+
+  git_dir_proc = _run_git_readonly(repo_root, "rev-parse", "--git-dir")
+  in_git_repo = bool(git_dir_proc is not None and git_dir_proc.returncode == 0)
+
+  branch_is_local = False
+  if in_git_repo:
+    branch_proc = _run_git_readonly(
+        repo_root, "rev-parse", "--abbrev-ref", "HEAD"
+    )
+    b_name = ""
+    if branch_proc is not None and branch_proc.returncode == 0:
+      b_name = branch_proc.stdout.strip()
+    else:
+      sym_proc = _run_git_readonly(repo_root, "symbolic-ref", "--short", "HEAD")
+      if sym_proc is not None and sym_proc.returncode == 0:
+        b_name = sym_proc.stdout.strip()
+    if b_name:
+      m_branch = _LOCAL_BRANCH_RE.match(b_name)
+      if m_branch:
+        branch_is_local = True
+        if m_branch.group(1) and (
+            not resolved_ticket
+            or not resolved_ticket.upper().startswith("LOCAL-")
+        ):
+          resolved_ticket = f"LOCAL-{m_branch.group(1)}"
+
+  if explicit_is_local is not None:
+    return explicit_is_local, resolved_ticket
+
+  if resolved_ticket and resolved_ticket.upper().startswith("LOCAL-"):
+    return True, resolved_ticket
+
+  if ticket_meta and ticket_meta.source.lower() == "local":
+    return True, resolved_ticket
+
+  if branch_is_local:
+    return True, resolved_ticket
+
+  receipt_card = (
+      os.path.join(eff_state_dir, "15_archaeology_receipt.md")
+      if eff_state_dir
+      else ""
+  )
+  if receipt_declares_pure_git(receipt_card):
+    return True, resolved_ticket
+
+  if in_git_repo:
+    remote_proc = _run_git_readonly(repo_root, "remote", "get-url", "origin")
+    if (
+        remote_proc is None
+        or remote_proc.returncode != 0
+        or "github.com" not in (remote_proc.stdout or "").lower()
+    ):
+      return True, resolved_ticket
+    return False, resolved_ticket
+
+  if ticket_meta and (
+      ticket_meta.source.lower() == "github"
+      or ticket_meta.ticket_id.upper().startswith("GH-")
+  ):
+    return False, resolved_ticket
+
+  return True, resolved_ticket
+
+
+def validate_head_commit(
+    repo_root: str,
+    state_dir: Optional[str] = None,
+    commit_msg_file: Optional[str] = None,
+) -> HeadCommitCheckResult:
+  """Validates ``HEAD`` commit message, ``50_commit_msg.txt`` match, and tree lock.
+
+  Checks three post-commit invariants required when exiting Target 50:
+  1. ``git log -1 --pretty=%B HEAD`` satisfies Conventional Commits 1.0.0 and
+     remote/local trailer rules (SCAR-GIT-20 / SCAR-GIT-24).
+  2. Normalized ``HEAD`` message equals normalized ``50_commit_msg.txt``.
+  3. ``git rev-parse HEAD^{tree}`` equals ``approved_tree.txt`` (SCAR-GIT-23).
+
+  Args:
+    repo_root: Git repository root directory.
+    state_dir: Optional explicit ``.workflow/state`` directory path.
+    commit_msg_file: Optional explicit path to the approved commit message file.
+
+  Returns:
+    HeadCommitCheckResult describing pass/fail status and diagnostic fields.
+  """
+  eff_state_dir = state_dir or os.path.join(repo_root, ".workflow", "state")
+  if commit_msg_file:
+    msg_path = (
+        commit_msg_file
+        if os.path.isabs(commit_msg_file)
+        else os.path.join(repo_root, commit_msg_file)
+    )
+  else:
+    msg_path = os.path.join(eff_state_dir, "50_commit_msg.txt")
+  tree_path = os.path.join(eff_state_dir, "approved_tree.txt")
+
+  log_proc = _run_git_readonly(repo_root, "log", "-1", "--pretty=%B", "HEAD")
+  if log_proc is None or log_proc.returncode != 0:
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-20",
+        violation_code="INVALID_COMMIT_MESSAGE_CONTRACT",
+        reason=(
+            f"Failed to read HEAD commit message in {repo_root}: "
+            f"{(log_proc.stderr or '').strip() if log_proc else 'git unavailable'}"
+        ),
+    )
+  head_msg = log_proc.stdout
+
+  is_local, ticket_id = detect_commit_context(
+      repo_root, state_dir=eff_state_dir
+  )
+  val_res = validate_commit_message(
+      head_msg, is_local=is_local, ticket_id=ticket_id
+  )
+  if not val_res.valid:
+    mode_name = "Local session" if is_local else "Remote issue"
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-20",
+        violation_code="INVALID_COMMIT_MESSAGE_CONTRACT",
+        reason=(
+            f"{mode_name} HEAD commit message failed validation: "
+            f"{' '.join(val_res.errors)}"
+        ),
+        head_message=head_msg,
+    )
+
+  if not os.path.isfile(msg_path):
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-20",
+        violation_code="COMMIT_MESSAGE_DRIFT",
+        reason=f"Approved commit message file not found: {msg_path}",
+        head_message=head_msg,
+    )
+  try:
+    with open(msg_path, "r", encoding="utf-8", errors="replace") as f:
+      expected_msg = f.read()
+  except OSError as exc:
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-20",
+        violation_code="COMMIT_MESSAGE_DRIFT",
+        reason=f"Failed to read approved commit message file {msg_path}: {exc}",
+        head_message=head_msg,
+    )
+
+  if normalize_commit_message(head_msg) != normalize_commit_message(
+      expected_msg
+  ):
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-20",
+        violation_code="COMMIT_MESSAGE_DRIFT",
+        reason=(
+            "HEAD commit message does not match approved "
+            ".workflow/state/50_commit_msg.txt."
+        ),
+        head_message=head_msg,
+    )
+
+  if not os.path.isfile(tree_path):
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-25",
+        violation_code="UNAPPROVED_TREE_DRIFT",
+        reason=f"Approved tree lock file not found: {tree_path}",
+        head_message=head_msg,
+    )
+  try:
+    with open(tree_path, "r", encoding="utf-8", errors="replace") as f:
+      expected_tree = f.read().strip()
+  except OSError as exc:
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-25",
+        violation_code="UNAPPROVED_TREE_DRIFT",
+        reason=f"Failed to read approved tree lock file {tree_path}: {exc}",
+        head_message=head_msg,
+    )
+  if not expected_tree:
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-25",
+        violation_code="UNAPPROVED_TREE_DRIFT",
+        reason=f"Approved tree lock file is empty: {tree_path}",
+        head_message=head_msg,
+    )
+
+  tree_proc = _run_git_readonly(repo_root, "rev-parse", "HEAD^{tree}")
+  actual_tree = (tree_proc.stdout or "").strip() if tree_proc else ""
+  if tree_proc is None or tree_proc.returncode != 0 or actual_tree != expected_tree:
+    return HeadCommitCheckResult(
+        ok=False,
+        scar_id="GIT-25",
+        violation_code="UNAPPROVED_TREE_DRIFT",
+        reason=(
+            f"HEAD^{{tree}} ({actual_tree or 'error'}) does not match "
+            f"approved_tree.txt ({expected_tree})."
+        ),
+        head_message=head_msg,
+        head_tree=actual_tree,
+        expected_tree=expected_tree,
+    )
+
+  return HeadCommitCheckResult(
+      ok=True,
+      head_message=head_msg,
+      head_tree=actual_tree,
+      expected_tree=expected_tree,
+  )
 
 
 def parse_commit_header(line: str) -> Optional[HeaderInfo]:
@@ -317,7 +863,8 @@ def validate_commit_message(
         f"Format: <type>(<scope>): <description>. Types allowed: {', '.join(CANONICAL_TYPES)}."
     )
   else:
-    if header.description.endswith("."):
+    desc_body = _INLINE_CLOSES_RE.sub("", header.description).rstrip()
+    if header.description.endswith(".") or desc_body.endswith("."):
       errors.append(
           "Subject line description must not end with a trailing period."
       )
@@ -693,53 +1240,12 @@ class CommitMsgScript(BaseScript):
 
   def _detect_is_local(self) -> bool:
     """Detects whether current workspace context is local task mode."""
-    if self.is_local is not None:
-      return self.is_local
-
-    if self.ticket and self.ticket.startswith("LOCAL-"):
-      return True
-
-    # Check git branch
-    try:
-      branch_proc = subprocess.run(
-          ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-          cwd=self.repo_root,
-          capture_output=True,
-          text=True,
-          check=False,
-      )
-      if branch_proc.returncode == 0:
-        b_name = branch_proc.stdout.strip()
-        if _LOCAL_BRANCH_RE.match(b_name):
-          return True
-    except (subprocess.SubprocessError, OSError):
-      pass
-
-    # Check git remote
-    try:
-      remote_proc = subprocess.run(
-          ["git", "remote", "get-url", "origin"],
-          cwd=self.repo_root,
-          capture_output=True,
-          text=True,
-          check=False,
-      )
-      if (
-          remote_proc.returncode != 0
-          or "github.com" not in (remote_proc.stdout or "").lower()
-      ):
-        return True
-    except (subprocess.SubprocessError, OSError):
-      return True
-
-    # Check receipt card
-    receipt_card = os.path.join(
-        self.repo_root, ".workflow", "state", "15_archaeology_receipt.md"
+    is_local, _ = detect_commit_context(
+        self.repo_root,
+        ticket_id=self.ticket,
+        explicit_is_local=self.is_local,
     )
-    if receipt_declares_pure_git(receipt_card):
-      return True
-
-    return False
+    return is_local
 
   def _run_validate(self) -> int:
     msg_text = ""

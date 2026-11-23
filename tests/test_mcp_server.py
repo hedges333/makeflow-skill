@@ -2575,8 +2575,22 @@ class TestMcpMainSyncTransitions(unittest.TestCase):
           capture_output=True,
           text=True,
       )
+      tree_hash = subprocess.run(
+          ["git", "write-tree"],
+          cwd=clone1,
+          check=True,
+          capture_output=True,
+          text=True,
+      ).stdout.strip()
+      with open(
+          os.path.join(state_dir, "approved_tree.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write(tree_hash + "\n")
+      msg_path = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_path, "w", encoding="utf-8") as f:
+        f.write("feat(sync): commit local shared.txt\n\nTicket: LOCAL-1\n")
       subprocess.run(
-          ["git", "commit", "-q", "-m", "feat: commit local shared.txt"],
+          ["git", "commit", "-q", "-F", msg_path],
           cwd=clone1,
           check=True,
           capture_output=True,
@@ -4211,6 +4225,27 @@ class TestMcpPureGitTransitions(unittest.TestCase):
           encoding="utf-8",
       ) as f:
         f.write("# Receipt\nHOSTING_MODE: PURE_GIT\n")
+      tree_hash = subprocess.run(
+          ["git", "write-tree"],
+          cwd=no_remote_repo,
+          check=True,
+          capture_output=True,
+          text=True,
+      ).stdout.strip()
+      with open(
+          os.path.join(state_dir, "approved_tree.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write(tree_hash + "\n")
+      msg_path = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_path, "w", encoding="utf-8") as f:
+        f.write("chore(git): initial local task\n\nTicket: LOCAL-1\n")
+      subprocess.run(
+          ["git", "commit", "--amend", "-q", "-F", msg_path],
+          cwd=no_remote_repo,
+          check=True,
+          capture_output=True,
+          text=True,
+      )
 
       for bad_ev in ({}, {"humanCommitApproved": False}):
         blocked_no_ev = handle_tools_call(
