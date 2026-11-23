@@ -25,6 +25,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-252: Shift OO patterns, cohesion rules, TDD planning, and workflow scar exclusion into Targets 15 through 30.
 - GH-221: Add lib/review_promotion.py, promote-review target, concise Target 45 pillar summaries, and plain-chat Target 42 and Target 45 NBO pause-gate rules.
 - GH-222: Add Black-Box Harness Boundary guard in lib/harness_boundary.py, lib/pre_tool_guard.py, rules, SKILL.md, and cross-agent adapters.
+- GH-292: Enforce Conventional Commits in PreToolUse git commit checks and add post-commit Target 50 exit revalidation across lib/commit_msg.py, lib/pre_tool_guard.py, lib/state_machine.py, and lib/workflow_gates.py.
 
 ### Changed
 
