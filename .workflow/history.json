@@ -2927,5 +2927,28 @@
     "closes_issue": true,
     "tests_added": 19,
     "scars_earned": []
+  },
+  {
+    "id": "GH-209",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/209",
+    "title": "[REFACTOR] Simplify scar sync and subagent transformation into three single-purpose scripts",
+    "request": "Replace multi-flag sync_synthetic_scars.py and 3,382-line lib/scars_db.py monolith with three single-purpose BaseScript CLIs (sync_synthetic_scars.py, import_synthetic_scars.py, write_scar_probes.py), lib/scar_metadata.py, lib/scar_subagent.py, ScriptArgumentParser in lib/base_script.py, lossless 4-field raw_hash backfill, read-only JSON-only subagent definitions, ScarCandidateValidator contraction and math/code sentence-splitting parity, conditional circuit_breaker filtering in query_scars(), and deletion of obsolete scripts and notes (superseding GH-202).",
+    "branch": "feat/209-simplify-scar-sync-scripts",
+    "subprojects": [
+      "agents",
+      "lib",
+      "notes",
+      "scripts",
+      "skills/makeflow/references",
+      "tests"
+    ],
+    "started_at": "2026-11-21T23:20:22-08:00",
+    "completed_at": "2026-11-23T01:45:37Z",
+    "commit_sha": "1df653345e31c1ee54da999d593d07dc3ca35eb5",
+    "pr_number": 293,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/293",
+    "closes_issue": true,
+    "tests_added": 25,
+    "scars_earned": []
   }
 ]

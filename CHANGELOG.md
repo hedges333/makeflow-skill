@@ -38,6 +38,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-213: Extract Git safety, hosting discovery, and CI polling from mcp/server.py into lib/git_safety.py and lib/ci_polling.py.
 - GH-204: Extract PreToolUse guard logic into lib/pre_tool_guard.py with PreToolGuardScript and add stdin injection to BaseScript.
 - GH-203: Extract SessionStart hook logic into lib/session_start.py with SessionStartScript and reduce scripts/session_start.py to a thin BaseScript wrapper.
+- GH-209: Decompose lib/scars_db.py and sync_synthetic_scars.py into three single-purpose BaseScript CLIs, lib/scar_metadata.py, lib/scar_subagent.py, and read-only JSON-only subagents.
 
 ### Fixed
 
