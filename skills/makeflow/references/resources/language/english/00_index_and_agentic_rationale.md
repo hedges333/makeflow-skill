@@ -56,14 +56,14 @@ When you edit, compress, or paraphrase technical text, preserve all executable a
 
 ### 3.3 Validator tokenization and word-counting rules
 
-The validator in `scripts/validate_scar_candidate.py` and `lib/scar_candidate.py` enforces deterministic sentence splitting and word counting through `ScarCandidateValidator` and three helper functions:
+The validator in `lib/scar_candidate.py` enforces deterministic sentence splitting and word counting through `ScarCandidateValidator` and three helper functions:
 
 | Validator component | Exact tokenization behavior | Word-count impact |
 | :--- | :--- | :--- |
 | `mask_code_and_math_spans` | Replaces fenced code (`__FENCED_CODE__`), inline code (`__INLINE_CODE__`), display math (`__DISPLAY_MATH__`), and inline math (`__INLINE_MATH__`) with atomic placeholder tokens. | Prevents periods, question marks, or semicolons inside code or math from splitting sentences or triggering prose punctuation errors. |
-| `split_into_sentences` | Masks protected spans first, then splits text on the regular expression `(?<=[.!?])(?:\s+|$)`. | Treats each sentence ending with `.`, `!`, or `?` as an independent unit for word-limit checks. |
+| `split_into_sentences` | Masks protected spans first, splits across standalone newline-delimited `$$...$$` display math blocks and fenced code blocks, and splits prose on `(?<=[.!?])(?:\s+|$)`. | Treats each sentence ending with `.`, `!`, or `?` and prose separated by standalone math or code blocks as independent units for word-limit checks. |
 | `count_words_in_sentence` | Splits the masked sentence on whitespace and strips `_PUNCTUATION_CHARS` (`string.punctuation + "«»“”‘’"`) from each token. | Counts each masked span (`__INLINE_CODE__`, `__INLINE_MATH__`), hyphenated compound (`read-only`), or solid token (`15ms`) as 1 word. Counts spaced numbers with units (`15 ms`, `64 GB`) as 2 words. Strips standalone punctuation tokens to 0 words. |
-| `ScarCandidateValidator` | Validates `wound` and `trap` at 25 words or fewer per sentence, and `circuit_breaker` and `reflex` at 20 words or fewer per sentence. | Validates `socratic_probe` at up to 3 question sentences, where each sentence ends with `?` and contains 20 words or fewer. |
+| `ScarCandidateValidator` | Validates `wound` and `trap` at 25 words or fewer per sentence, validates `circuit_breaker` and `reflex` at 20 words or fewer per sentence, and rejects contractions (`_CONTRACTION_RE`), semicolons, and em-dashes in masked prose. | Validates `socratic_probe` at up to 3 question sentences, where each sentence ends with `?` and contains 20 words or fewer. |
 
 ## 4. Algorithmic sentence-splitting and compression recipes
 

@@ -157,15 +157,15 @@ The `scars_fts` table indexes `id`, `ss_id`, `original_id`, `keywords`, `languag
 
 ### 4.1 Multi-Dimensional Query Filters
 
-Use `workflow_query_scars` or `scripts/sync_synthetic_scars.py` to filter scars by multiple dimensions:
+Use `workflow_query_scars` (or `lib/scars_db.py`) to filter scars by multiple dimensions:
 
-1. `query` (`--query`): Search by canonical `id`, upstream `ss_id`, `original_id`, or technical keywords.
-2. `category` (`--category`): Filter by canonical domain code (for example `UI`, `RIV`, `ARCH`), prose name, or language tag.
-3. `language` (`--language`): Filter by normalized language (for example `dart`, `python`, `rust`, `go`, or `universal`).
-4. `framework` (`--framework`): Filter by framework or library (for example `flutter`, `riverpod`, `bloc`, `a2ui`, `genui`, `opentelemetry`, or `sqlite`).
-5. `diagnosticCode` (`--diagnostic-code`): Filter by compiler, signal, or runtime code (for example `StateError`, `UNDEFINED_GETTER`, or `SIGTERM`).
-6. `workflowPhase` (`--workflow-phase`): Filter by canonical target phase label (for example `Target 20: plan` or `Target 30: tdd`).
-7. `mfTarget` (`--mf-target`): Filter by integer Makeflow target binding stored in `mf_targets` (for example `15`, `20`, `30`, or `40`).
+1. `query`: Search by canonical `id`, upstream `ss_id`, `original_id`, or technical keywords.
+2. `category`: Filter by canonical domain code (for example `UI`, `RIV`, `ARCH`), prose name, or language tag.
+3. `language`: Filter by normalized language (for example `dart`, `python`, `rust`, `go`, or `universal`).
+4. `framework`: Filter by framework or library (for example `flutter`, `riverpod`, `bloc`, `a2ui`, `genui`, `opentelemetry`, or `sqlite`).
+5. `diagnosticCode`: Filter by compiler, signal, or runtime code (for example `StateError`, `UNDEFINED_GETTER`, or `SIGTERM`).
+6. `workflowPhase`: Filter by canonical target phase label (for example `Target 20: plan` or `Target 30: tdd`).
+7. `mfTarget`: Filter by integer Makeflow target binding stored in `mf_targets` (for example `15`, `20`, `30`, or `40`).
 8. `excludeCategories`: Exclude a list of category codes, prose aliases, or `"WORKFLOW"` to omit workflow governance tags during universal queries.
 
 ### 4.2 Reference Ontology
@@ -193,15 +193,19 @@ Makeflow preserves raw upstream phase labels in `ss_targets`. Shift-left target 
 | Human prose names (`Architecture`, `Testing`, `Process`, `Security`, `Database`, `System`, `Environment`, `Documentation`, `Tooling`) | Canonical 68-Code Key | Map human prose names to `ARCH`, `TEST`, `PROC`, `SEC`, `DB`, `SYS`, `ENV`, `DOC`, `TOOL`. |
 | Empty or unknown category | Prefix or Inferred Domain | Read valid `^SCAR-([A-Z0-9]+)-\d+$` prefix first, or infer from content. |
 
-### 4.4 Registry Sync, Migration, and Batch Transformation
+### 4.4 Registry Sync and Three-Script Maintenance Pipeline
 
-If you import or synchronize upstream scars, run one command to sync and transform pending rows with `agy --print`:
+Three single-purpose maintainer scripts synchronize upstream scars and populate validated fields in `skills/makeflow/data/scars_registry.db`:
 
 ```bash
-python3 scripts/sync_synthetic_scars.py --db-path skills/makeflow/data/scars_registry.db --batch-size 10
+make sync-scars
+make import-scars
+make probe-scars
 ```
 
-Pass `--no-fetch` to transform existing incomplete rows offline. Run `--migrate-ontology` or `make migrate-scars-ontology` to upgrade legacy SQLite schemas losslessly. Run `make enrich-scars` or `python3 scripts/sync_synthetic_scars.py --enrich` to refresh metadata and `scars_fts`.
+1. `scripts/sync_synthetic_scars.py` (`make sync-scars`): Fetches `https://syntheticscars.org/registry.json`, updates changed matched `ss_id` rows in place, imports unseen scars deterministically, preserves `source = 'makeflow'` rows, rebuilds `scars_fts`, and prints scar counts.
+2. `scripts/import_synthetic_scars.py` (`make import-scars`): Calls `agy --print --agent synthetic-scar-importer` one scar at a time, validates JSON with `ScarCandidateValidator` in `lib/scar_candidate.py`, and commits each scar immediately. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model.
+3. `scripts/write_scar_probes.py` (`make probe-scars`): Calls `agy --print --agent socratic-probe-writer` one scar at a time, validates `socratic_probe` with `validate_socratic_probe()`, enriches metadata, commits immediately, and rebuilds `scars_fts` on exit. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model.
 
 ### 4.5 Two-Query MCP Playbook
 

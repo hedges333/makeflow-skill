@@ -24,7 +24,7 @@ define STAGE_TO_DIR
 )
 endef
 
-.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars sync-scars-registry enrich-scars migrate-scars-ontology test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets test-changelog check-plugin-files check-skill-budget check-intake release-intake help
+.PHONY: all validate install uninstall test test-static ast-lint test-ast-scrub test-safe-copy test-env-preflight test-signal-trap test-mcp test-sync-scars sync-scars import-scars probe-scars test-scar-candidate test-compat test-compat-cwd test-base-script test-terminal-title test-hooks test-reflex test-tdd-guard test-workspace-mutex test-commit-msg test-interpreter-invocation test-local-tickets test-changelog check-plugin-files check-skill-budget check-intake release-intake help
 
 all: validate test
 
@@ -37,11 +37,11 @@ help:
 	@echo "  make test-env-preflight - Test native runtime environment path pre-flight (SCAR-SYS-06)"
 	@echo "  make test-signal-trap   - Test POSIX signal trapping and worker cleanup (SCAR-SYS-07)"
 	@echo "  make test-mcp           - Test Model Context Protocol (MCP) server over stdio"
-	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync and query"
+	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync, query, and agy pipeline"
 	@echo "  make test-scar-candidate - Test synthetic scar candidate validator (GH-146)"
 	@echo "  make sync-scars         - Sync public synthetic scars registry into bundled package database"
-	@echo "  make enrich-scars       - Enrich multi-dimensional metadata and rebuild FTS5 index"
-	@echo "  make migrate-scars-ontology - Deterministically migrate bundled scars DB to canonical ontology"
+	@echo "  make import-scars       - Write Simple English scar fields with agy (optional MODEL=<name>)"
+	@echo "  make probe-scars        - Write Socratic probes for transformed scars with agy (optional MODEL=<name>)"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
 	@echo "  make test-base-script   - Test BaseScript execution lifecycle (SCAR-ARCH-05)"
@@ -148,28 +148,26 @@ test-mcp:
 		--reflex "Run $(PYTHON) -m unittest -v -f tests/test_mcp_server.py, inspect failing JSON-RPC case, and fix mcp/server.py."
 
 test-sync-scars:
-	@echo "Testing synthetic scars SQLite sync and query..."
-	@$(PYTHON) -m unittest "$(TESTS_DIR)/test_sync_synthetic_scars.py" -v || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
+	@echo "Testing synthetic scars SQLite sync, query, and agy pipeline..."
+	@$(PYTHON) -m unittest -v "$(TESTS_DIR)/test_sync_synthetic_scars.py" "$(TESTS_DIR)/test_scar_pipeline.py" || $(PYTHON) "$(SCRIPTS_DIR)/emit_reflex.py" \
 		--scar-id ARCH-05 \
 		--code SCARS_SYNC_SUITE_FAILED \
-		--trigger "tests/test_sync_synthetic_scars.py failed." \
-		--rejected "Failing synthetic scars synchronization, FTS5 indexing, or query tests." \
-		--reflex "Run $(PYTHON) -m unittest -v tests/test_sync_synthetic_scars.py, fix failing tests, and re-run make test-sync-scars."
+		--trigger "tests/test_sync_synthetic_scars.py or tests/test_scar_pipeline.py failed." \
+		--rejected "Failing synthetic scars synchronization, FTS5 indexing, query, or agy pipeline tests." \
+		--reflex "Run $(PYTHON) -m unittest -v tests/test_sync_synthetic_scars.py tests/test_scar_pipeline.py, fix failing tests, and re-run make test-sync-scars."
 
 sync-scars:
 	@echo "Syncing public synthetic scars registry into bundled package database..."
 	@mkdir -p "$(REPO_ROOT)/skills/makeflow/data"
-	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(BATCH_SIZE), --batch-size $(BATCH_SIZE),)$(if $(NO_FETCH), --no-fetch,)
+	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"
 
-sync-scars-registry: sync-scars
+import-scars:
+	@echo "Importing Simple English scar fields with agy..."
+	@$(PYTHON) "$(SCRIPTS_DIR)/import_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)
 
-enrich-scars:
-	@echo "Enriching multi-dimensional metadata in bundled scars database..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/enrich_scars_index.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"
-
-migrate-scars-ontology:
-	@echo "Migrating bundled scars database to canonical scar ID ontology..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db" --migrate-ontology
+probe-scars:
+	@echo "Writing Socratic probes for transformed scars with agy..."
+	@$(PYTHON) "$(SCRIPTS_DIR)/write_scar_probes.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)
 
 test-scar-candidate:
 	@echo "Testing synthetic scar candidate validator..."

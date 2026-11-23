@@ -1747,7 +1747,7 @@ class TestMcpServerMultiDimensionalQueryScars(unittest.TestCase):
   def test_workflow_query_scars_multidimensional_filters(self):
     if REPO_ROOT not in sys.path:
       sys.path.insert(0, REPO_ROOT)
-    from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+    from lib.scars_db import enrich_scars_database, init_scars_db_schema
     from mcp.server import handle_tools_call, handle_tools_list
 
     tools_resp = handle_tools_list(1)
@@ -1770,12 +1770,8 @@ class TestMcpServerMultiDimensionalQueryScars(unittest.TestCase):
     with tempfile.TemporaryDirectory() as tmp_dir:
       db_path = os.path.join(tmp_dir, "mcp_multidim.db")
       conn = sqlite3.connect(db_path)
-      conn.close()
-
-      script = SyncSyntheticScarsScript()
-      script.db_path = db_path
-      script._init_db_schema()
-      cur = script.conn.cursor()
+      init_scars_db_schema(conn)
+      cur = conn.cursor()
       cur.execute(
           """
           INSERT INTO scars (
@@ -1840,8 +1836,8 @@ class TestMcpServerMultiDimensionalQueryScars(unittest.TestCase):
           )
           """
       )
-      script.conn.commit()
-      script.cleanup(0)
+      conn.commit()
+      conn.close()
 
       enrich_scars_database(db_path)
 
@@ -1945,7 +1941,7 @@ class TestMcpServerOntologyAndMfTarget(unittest.TestCase):
   def test_workflow_query_scars_mf_target_and_ss_id_fields(self):
     if REPO_ROOT not in sys.path:
       sys.path.insert(0, REPO_ROOT)
-    from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+    from lib.scars_db import enrich_scars_database, init_scars_db_schema
     from mcp.server import handle_tools_call, handle_tools_list
 
     tools_resp = handle_tools_list(1)
@@ -1956,10 +1952,9 @@ class TestMcpServerOntologyAndMfTarget(unittest.TestCase):
 
     with tempfile.TemporaryDirectory() as tmp_dir:
       db_path = os.path.join(tmp_dir, "mcp_ontology.db")
-      script = SyncSyntheticScarsScript()
-      script.db_path = db_path
-      script._init_db_schema()
-      cur = script.conn.cursor()
+      conn = sqlite3.connect(db_path)
+      init_scars_db_schema(conn)
+      cur = conn.cursor()
       cur.execute(
           """
           INSERT INTO scars (
@@ -2030,8 +2025,8 @@ class TestMcpServerOntologyAndMfTarget(unittest.TestCase):
           )
           """
       )
-      script.conn.commit()
-      script.conn.close()
+      conn.commit()
+      conn.close()
 
       enrich_scars_database(db_path)
 
@@ -2643,12 +2638,11 @@ def _build_scars_fixture_db(db_path):
   """
   if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
-  from lib.scars_db import SyncSyntheticScarsScript, enrich_scars_database
+  from lib.scars_db import enrich_scars_database, init_scars_db_schema
 
-  script = SyncSyntheticScarsScript()
-  script.db_path = db_path
-  script._init_db_schema()
-  cur = script.conn.cursor()
+  conn = sqlite3.connect(db_path)
+  init_scars_db_schema(conn)
+  cur = conn.cursor()
   cur.execute(
       """
       INSERT INTO scars (
@@ -2684,8 +2678,8 @@ def _build_scars_fixture_db(db_path):
       )
       """
   )
-  script.conn.commit()
-  script.conn.close()
+  conn.commit()
+  conn.close()
   enrich_scars_database(db_path)
 
 

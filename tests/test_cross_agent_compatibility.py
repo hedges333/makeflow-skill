@@ -849,8 +849,16 @@ def validate_three_layer_python_architecture():
           if top in script_modules or top == "scripts":
             errors.append(f"scripts/{fname} must not import from peer script '{mod}'")
 
-  if not os.path.isfile(os.path.join(scripts_dir, "validate_scar_candidate.py")):
-    errors.append("Missing scripts/validate_scar_candidate.py")
+  for scar_cli in (
+      "sync_synthetic_scars.py",
+      "import_synthetic_scars.py",
+      "write_scar_probes.py",
+  ):
+    if not os.path.isfile(os.path.join(scripts_dir, scar_cli)):
+      errors.append(f"Missing scripts/{scar_cli}")
+  for removed_cli in ("validate_scar_candidate.py", "enrich_scars_index.py"):
+    if os.path.exists(os.path.join(scripts_dir, removed_cli)):
+      errors.append(f"Removed scripts/{removed_cli} must not exist")
 
   if not os.path.isdir(tests_dir):
     errors.append("Missing tests/ directory")
@@ -864,10 +872,15 @@ def validate_three_layer_python_architecture():
   if os.path.isfile(importer_path):
     with open(importer_path, "r", encoding="utf-8") as f:
       imp_text = f.read()
-    if "scripts/validate_scar_candidate.py" not in imp_text:
-      errors.append(f"{importer_rel} must reference scripts/validate_scar_candidate.py")
-    if "scripts/test_scar_candidate.py" in imp_text:
-      errors.append(f"{importer_rel} must not reference scripts/test_scar_candidate.py")
+    for forbidden_tok in (
+        "scripts/validate_scar_candidate.py",
+        "scripts/test_scar_candidate.py",
+        "sqlite3",
+        "/tmp/",
+        "send_message",
+    ):
+      if forbidden_tok in imp_text:
+        errors.append(f"{importer_rel} must not reference '{forbidden_tok}'")
 
   ci_rel = ".github/workflows/ci.yml"
   ci_path = repo_path(ci_rel)
@@ -3264,17 +3277,36 @@ def validate_subagent_tool_mounting_permissions():
       "agents/synthetic-scar-importer.md": {
           "name": "synthetic-scar-importer",
           "tools": [
-              "send_message",
               "read_file",
-              "search_web",
-              "schedule",
-              "generate_image",
+          ],
+          "prohibited_tools": [
               "write_file",
               "edit_file",
               "run_command",
+              "send_message",
+              "search_web",
+              "schedule",
+              "generate_image",
               "manage_task",
+              "call_mcp_tool",
+              "list_resources",
+              "read_resource",
+          ],
+      },
+      "agents/socratic-probe-writer.md": {
+          "name": "socratic-probe-writer",
+          "tools": [
+              "read_file",
           ],
           "prohibited_tools": [
+              "write_file",
+              "edit_file",
+              "run_command",
+              "send_message",
+              "search_web",
+              "schedule",
+              "generate_image",
+              "manage_task",
               "call_mcp_tool",
               "list_resources",
               "read_resource",
@@ -6032,7 +6064,7 @@ INDEX_SECTION_REQUIRED_TOKENS = {
     "## 3. Operational modes, token preservation, and validator word-counting rules": (
         "Plain Mode",
         "Strict Mode",
-        "validate_scar_candidate.py",
+        "lib/scar_candidate.py",
         "mask_code_and_math_spans",
         "split_into_sentences",
         "count_words_in_sentence",
@@ -6799,7 +6831,7 @@ def validate_open_technical_english_specs():
       "Enforce 20 words, 25 words, 6 sentences, 3 words, and 10 words limits.\n"
       "Rule 8 bans contractions and Rule 9 bans semicolons and em-dashes.\n\n"
       "## 3. Operational modes, token preservation, and validator word-counting rules\n"
-      "Cover Plain Mode, Strict Mode, and validate_scar_candidate.py mechanics.\n"
+      "Cover Plain Mode, Strict Mode, and lib/scar_candidate.py mechanics.\n"
       "Functions mask_code_and_math_spans, split_into_sentences, and count_words_in_sentence use "
       "__FENCED_CODE__, __INLINE_CODE__, __DISPLAY_MATH__, and __INLINE_MATH__ inside ScarCandidateValidator.\n\n"
       "## 4. Algorithmic sentence-splitting and compression recipes\n"
@@ -6936,8 +6968,10 @@ TRACKED_CANONICAL_FILENAMES = (
     "terminal_title.py",
     "session_start.py",
     "sync_synthetic_scars.py",
-    "enrich_scars_index.py",
-    "validate_scar_candidate.py",
+    "import_synthetic_scars.py",
+    "write_scar_probes.py",
+    "scar_metadata.py",
+    "scar_subagent.py",
     "shell_safety.py",
     "commit_msg.py",
     "base_script.py",
@@ -7602,7 +7636,9 @@ def _collect_compatibility_errors():
         "ss_id",
         "original_id",
         "mf_targets",
-        "--batch-size",
+        "sync-scars",
+        "import-scars",
+        "probe-scars",
     ):
       if required_doc_term not in r09_text:
         errors.append(
@@ -11182,20 +11218,12 @@ def check_tempdir_test_isolation_invariants(
     if "SCAR-TEST-45" in raw_line:
       _check_procedural_line_word_limit(tdd_rel, raw_line, "Rule 15")
 
-  # 6. agents/socratic-probe-writer.md
+  # 6. agents/socratic-probe-writer.md (GH-209 read-only JSON-only contract)
   spw_rel = "agents/socratic-probe-writer.md"
   spw_text = files_map[spw_rel]
-  if "/tmp/" in spw_text:
-    errs.append(f"{spw_rel} must not contain hardcoded '/tmp/' path")
-  if "mktemp -d" not in spw_text and "TemporaryDirectory" not in spw_text:
-    errs.append(
-        f"{spw_rel} must use unique OS-managed temp directory (mktemp -d or TemporaryDirectory)"
-    )
-  for raw_line in spw_text.splitlines():
-    if re.match(r"^\s*5\.\s+", raw_line):
-      _check_procedural_line_word_limit(spw_rel, raw_line, "Rule 5")
-      if "inside it" in raw_line.lower():
-        errs.append(f"{spw_rel} Rule 5 must not use bare pronoun 'inside it'")
+  for forbidden_tok in ("/tmp/", "mktemp", "sqlite3", "send_message"):
+    if forbidden_tok in spw_text:
+      errs.append(f"{spw_rel} must not contain '{forbidden_tok}'")
 
   return errs
 
@@ -11288,7 +11316,7 @@ class TestTempDirTestIsolationInvariants(unittest.TestCase):
         "Expected agents/tdd-worker.md token rejection",
     )
 
-    # 6. agents/socratic-probe-writer.md: reintroduce /tmp/ and drop mktemp -d/TemporaryDirectory
+    # 6. agents/socratic-probe-writer.md: reintroduce /tmp/ and sqlite3
     spw_rel = "agents/socratic-probe-writer.md"
     mut_spw_tmp = dict(base)
     mut_spw_tmp[spw_rel] = mut_spw_tmp[spw_rel] + "\nUse /tmp/fixed/socratic_prompt.txt.\n"
@@ -11296,15 +11324,11 @@ class TestTempDirTestIsolationInvariants(unittest.TestCase):
         any("/tmp/" in e for e in check_tempdir_test_isolation_invariants(mut_spw_tmp)),
         "Expected agents/socratic-probe-writer.md /tmp/ rejection",
     )
-    mut_spw_helper = dict(base)
-    mut_spw_helper[spw_rel] = (
-        mut_spw_helper[spw_rel]
-        .replace("mktemp -d", "REMOVED")
-        .replace("TemporaryDirectory", "REMOVED")
-    )
+    mut_spw_sql = dict(base)
+    mut_spw_sql[spw_rel] = mut_spw_sql[spw_rel] + "\nRun sqlite3 directly.\n"
     self.assertTrue(
-        any("mktemp -d" in e for e in check_tempdir_test_isolation_invariants(mut_spw_helper)),
-        "Expected agents/socratic-probe-writer.md missing temp helper rejection",
+        any("sqlite3" in e for e in check_tempdir_test_isolation_invariants(mut_spw_sql)),
+        "Expected agents/socratic-probe-writer.md sqlite3 rejection",
     )
 
 
