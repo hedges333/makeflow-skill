@@ -21,6 +21,15 @@ from lib.config import (
 from lib.git_safety import (
     classify_git_tokens,
 )
+from lib.harness_boundary import (
+    KNOWN_PLUGIN_CACHE_PREFIXES as _KNOWN_PLUGIN_CACHE_PREFIXES,
+    MAKEFLOW_REPO_MARKERS as _MAKEFLOW_REPO_MARKERS,
+    MAKEFLOW_REPO_ROOT_REAL as _MAKEFLOW_REPO_ROOT_REAL,
+    PLUGIN_CACHE_RAW_PREFIXES as _PLUGIN_CACHE_RAW_PREFIXES,
+    evaluate_harness_read_boundary,
+    find_makeflow_plugin_root as _find_makeflow_plugin_root,
+    is_plugin_cache_path as _is_plugin_cache_path,
+)
 from lib.shell_safety import (
     DB_TOOLS,
     ENV_ASSIGN_RE,
@@ -71,8 +80,6 @@ from lib.turn_boundary import (
     read_gate_entry,
     record_gate_entry,
 )
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _resolve_effective_state_dir(state_dir=None):
@@ -317,6 +324,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/shell_safety.py",
     "lib/target90_guard.py",
     "lib/turn_boundary.py",
+    "lib/harness_boundary.py",
     "hooks.json",
     *STATE_GOVERNANCE_RELPATHS,
 })
@@ -330,35 +338,6 @@ def _normalize_gov_path(raw_token):
   while token.startswith("./"):
     token = token[2:]
   return token.rstrip("/")
-
-
-_PLUGIN_CACHE_RAW_PREFIXES = (
-    "~/.gemini/config/plugins",
-    "~/.gemini/plugins",
-    "~/.claude/plugins",
-)
-
-
-def _is_plugin_cache_path(abs_target):
-  """Checks whether abs_target or its realpath lies inside a plugin cache root.
-
-  Args:
-    abs_target: Absolute target path to inspect.
-
-  Returns:
-    True if abs_target or its resolved realpath falls under a known plugin
-    cache directory. Returns False otherwise.
-  """
-  prefixes = set(_KNOWN_PLUGIN_CACHE_PREFIXES)
-  for raw_pref in _PLUGIN_CACHE_RAW_PREFIXES:
-    prefixes.add(os.path.abspath(os.path.expanduser(raw_pref)))
-  all_prefixes = prefixes | {os.path.realpath(p) for p in prefixes}
-  for cand in (abs_target, os.path.realpath(abs_target)):
-    if any(
-        cand == pref or cand.startswith(pref + os.sep) for pref in all_prefixes
-    ):
-      return True
-  return False
 
 
 def _extract_cd_roots(cmd, base_roots):
@@ -683,55 +662,6 @@ def _is_state_governance_dir(raw_token):
   return any(token.endswith("/" + rel) for rel in STATE_GOVERNANCE_DIR_RELPATHS)
 
 
-_KNOWN_PLUGIN_CACHE_PREFIXES = tuple(
-    os.path.abspath(os.path.expanduser(p))
-    for p in _PLUGIN_CACHE_RAW_PREFIXES
-)
-
-
-_MAKEFLOW_REPO_ROOT_REAL = os.path.realpath(_REPO_ROOT)
-_MAKEFLOW_REPO_MARKERS = (
-    "hooks.json",
-    os.path.join("skills", "makeflow", "SKILL.md"),
-    os.path.join("rules", "AGENTS.md"),
-)
-
-
-def _find_makeflow_plugin_root(abs_target):
-  """Returns the enclosing Makeflow plugin root directory for abs_target.
-
-  Recognizes Makeflow's own repository root, directories containing co-located
-  Makeflow repository markers, and directories containing a Makeflow
-  plugin.json manifest.
-
-  Args:
-    abs_target: Target path to resolve upward.
-
-  Returns:
-    Absolute path to the enclosing Makeflow plugin root directory, or None if
-    no Makeflow root encloses abs_target.
-  """
-  curr = os.path.dirname(os.path.abspath(abs_target))
-  while curr and curr != os.path.dirname(curr):
-    if os.path.realpath(curr) == _MAKEFLOW_REPO_ROOT_REAL:
-      return curr
-    if all(
-        os.path.isfile(os.path.join(curr, m)) for m in _MAKEFLOW_REPO_MARKERS
-    ):
-      return curr
-    pj = os.path.join(curr, "plugin.json")
-    if os.path.isfile(pj):
-      try:
-        with open(pj, "r", encoding="utf-8") as f:
-          data = json.load(f)
-        if isinstance(data, dict) and data.get("name") == "makeflow":
-          return curr
-      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        pass
-    curr = os.path.dirname(curr)
-  return None
-
-
 def _resolve_direct_target_paths(target_path, workspace_paths):
   """Resolves absolute candidate paths for a write_file/edit_file target."""
   expanded = os.path.expanduser(target_path)
@@ -903,6 +833,13 @@ def evaluate_tool_call(payload):
   if tool_name not in ("run_command", "Bash", "bash", "shell"):
     if tool_name == "ask_question":
       ok, reason = evaluate_ask_question_turn_boundary(transcript_path)
+      if not ok:
+        return {"decision": "deny", "reason": reason}
+      return {"decision": "allow"}
+    if tool_name == "read_file":
+      ok, reason = evaluate_harness_read_boundary(
+          payload, state_dir, workspace_paths=workspace_paths
+      )
       if not ok:
         return {"decision": "deny", "reason": reason}
       return {"decision": "allow"}

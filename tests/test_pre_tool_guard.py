@@ -3424,6 +3424,116 @@ class TestPreToolGuardScriptExecution(unittest.TestCase):
       })
       self.assertEqual(active_res["decision"], "allow")
 
+  def test_lib_harness_boundary_is_protected_governance_file(self):
+    """Verifies GH-222 lib/harness_boundary.py is write-protected in GOVERNANCE_FILE_RELPATHS."""
+    import lib.pre_tool_guard as guard_lib
+
+    self.assertIn("lib/harness_boundary.py", GOVERNANCE_FILE_RELPATHS)
+    self.assertIn("lib/harness_boundary.py", guard_lib.GOVERNANCE_FILE_RELPATHS)
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as plugin_ws:
+      os.makedirs(os.path.join(plugin_ws, ".git"))
+      os.makedirs(os.path.join(plugin_ws, "lib"))
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+
+      safe, reason = evaluate_self_modification_safety(
+          "echo hacked > lib/harness_boundary.py", [plugin_ws]
+      )
+      self.assertFalse(safe)
+      self.assertIn("lib/harness_boundary.py", reason)
+
+      target_file = os.path.join(plugin_ws, "lib", "harness_boundary.py")
+      res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "write_file",
+              "args": {"Path": target_file},
+          },
+      })
+      self.assertEqual(res["decision"], "deny")
+
+  def test_read_file_harness_boundary_wire_and_fast_path(self):
+    """Verifies GH-222 PreToolGuardScript JSON deny on out-of-scope read_file and fast-path allow."""
+    import lib.pre_tool_guard as guard_lib
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as plugin_ws:
+      os.makedirs(os.path.join(plugin_ws, "lib"))
+      state_dir = os.path.join(plugin_ws, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      with open(
+          os.path.join(plugin_ws, "lib", "turn_boundary.py"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# turn boundary\n")
+      with open(
+          os.path.join(plugin_ws, "README.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# README\n")
+      with open(
+          os.path.join(state_dir, "active_target.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"target": "T30", "previousTarget": "T20"}, f)
+      with open(
+          os.path.join(state_dir, "20_plan.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("# Plan\n\nEdit `README.md` only.\n")
+
+      # Out-of-scope governance read denied via PreToolGuardScript JSON wire output
+      deny_payload = {
+          "workspacePaths": [plugin_ws],
+          "conversationId": "sup-1",
+          "toolCall": {
+              "name": "read_file",
+              "args": {
+                  "Path": os.path.join(plugin_ws, "lib", "turn_boundary.py")
+              },
+          },
+      }
+      code, stdout_text, stderr_text = self._run_script_isolated(
+          json.dumps(deny_payload)
+      )
+      self.assertEqual(code, 0)
+      self.assertEqual(stderr_text, "")
+      parsed = json.loads(stdout_text)
+      self.assertEqual(parsed["decision"], "deny")
+      self.assertIn("[SCAR-ID: PROC-124]", parsed["reason"])
+      self.assertIn("OUT_OF_SCOPE_HARNESS_INSPECTION", parsed["reason"])
+      self.assertIn("make -f .workflow/state/Makefile", parsed["reason"])
+
+      # Fast-path read_file skips write governance and advance_target extraction
+      allow_payload = {
+          "workspacePaths": [plugin_ws],
+          "conversationId": "sup-1",
+          "toolCall": {
+              "name": "read_file",
+              "args": {"Path": os.path.join(plugin_ws, "README.md")},
+          },
+      }
+      with (
+          mock.patch.object(
+              guard_lib,
+              "_check_direct_file_governance",
+              side_effect=AssertionError("read_file must bypass write guard"),
+          ),
+          mock.patch.object(
+              guard_lib,
+              "extract_advance_target_calls",
+              side_effect=AssertionError(
+                  "read_file must bypass advance extraction"
+              ),
+          ),
+      ):
+        res = evaluate_tool_call(allow_payload)
+      self.assertEqual(res, {"decision": "allow"})
+
 
 if __name__ == "__main__":
   unittest.main()

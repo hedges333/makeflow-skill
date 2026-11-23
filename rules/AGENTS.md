@@ -159,6 +159,17 @@ When the Depth-0 supervisor dispatches a Makeflow phase subagent (`archaeology-w
 7. On `archaeology-worker` wakeup, write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
 8. Before dispatching `archaeology-worker` at Target 15, capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree`. If `repo-tree` requires `SCAR-TOOL-16` triage, interview the user first, then attach the index. Use `workflow_repo_tree` as the read-only MCP fallback if the dispatch omits an index.
 
+### 1.14 Black-Box Harness Boundary (SCAR-PROC-124)
+
+During Target 30 through Target 90, treat the Makeflow workflow harness as a black box.
+
+1. Do not read out-of-scope Makeflow guard, hook, or gate source files from the Depth-0 supervisor.
+2. Do not read `.workflow/state/gate_entry.json`, `.workflow/state/active_target.json`, `.workflow/state/active_subagent.json`, or `.workflow/state/Makefile` during Target 30 through Target 90.
+3. Run `make -f .workflow/state/Makefile` targets directly and follow any Vector 4 Reflex emitted on exit code `2`.
+4. Read only files listed in `.workflow/state/20_plan.md`, files changed in the active Git diff, or workflow manuals in `skills/makeflow/`.
+5. Child subagents (`conversationId != supervisorConversationId`) and external consumer repositories remain unblocked while installed plugin cache source files stay guarded.
+6. If a guard denies an action with no documented path, stop tool calls and ask the user (`SCAR-PROC-124`).
+
 ## 2. Production Data Protection Rules
 
 Never connect tests or agent commands to live systems.
