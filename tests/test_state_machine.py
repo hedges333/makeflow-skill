@@ -1566,10 +1566,18 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
 
       _write_file(os.path.join(clone1, "README.md"), "# Local Conflict\n")
       _git(clone1, "add", "README.md")
-      _git(clone1, "commit", "-q", "-m", "feat: local edit")
+      WorkflowGatesScript().execute(["--repo-root", clone1, "init-makefile"])
+      _lock_approved_tree(clone1)
+      msg_file = os.path.join(
+          clone1, ".workflow", "state", "50_commit_msg.txt"
+      )
+      _write_file(
+          msg_file,
+          "feat(sync): local edit\n\nTicket: LOCAL-1\n",
+      )
+      _git(clone1, "commit", "-q", "-F", msg_file)
       _git(clone1, "fetch", "-q", "origin", "main")
 
-      WorkflowGatesScript().execute(["--repo-root", clone1, "init-makefile"])
       blocked_push = _assert_make_rc(
           self,
           _run_make(clone1, "push", "FROM=T50", "APPROVED=1", "NO_FETCH=1"),
@@ -3544,6 +3552,220 @@ class TestMakeAdvanceEnvSanitization(unittest.TestCase):
         receipt = json.load(f)
       self.assertTrue(receipt["verified"])
       self.assertEqual(receipt["regression_cmd"], unittest_cmd)
+
+
+class TestPostCommitTarget50ExitGate(unittest.TestCase):
+  """Tests post-commit HEAD validation on T50 -> T60/T70 and check-post-commit (GH-292)."""
+
+  def _setup_t50_repo(
+      self,
+      repo_dir: str,
+      branch: str = "feat/292-post-commit",
+      with_github_origin: bool = True,
+  ) -> tuple:
+    """Initializes a repo ready for Target 50 commit and exit transitions."""
+    from lib.workflow_gates import WorkflowGatesScript
+
+    _init_git_repo(repo_dir, branch="main")
+    if with_github_origin:
+      _git(
+          repo_dir,
+          "remote",
+          "add",
+          "origin",
+          "git@github.com:owner/repo.git",
+      )
+    _git(repo_dir, "checkout", "-q", "-b", branch)
+    self.assertEqual(
+        WorkflowGatesScript().execute(
+            ["--repo-root", repo_dir, "init-makefile"]
+        ),
+        0,
+    )
+    state_dir = os.path.join(repo_dir, ".workflow", "state")
+    _write_file(os.path.join(repo_dir, "feature.py"), "ENABLED = True\n")
+    _git(repo_dir, "add", "feature.py")
+    tree_hash = _lock_approved_tree(repo_dir)
+    if with_github_origin:
+      approved_msg = (
+          "feat(gates): add post-commit validation (closes #292)\n\n"
+          "Revalidates HEAD message and tree on Target 50 exit.\n\n"
+          "Issue: #292\n"
+      )
+    else:
+      approved_msg = (
+          "feat(gates): add local post-commit validation\n\n"
+          "Revalidates HEAD message and tree in Pure Git Mode.\n\n"
+          "Ticket: LOCAL-5\n"
+      )
+    msg_file = os.path.join(state_dir, "50_commit_msg.txt")
+    _write_file(msg_file, approved_msg)
+    _write_file(
+        os.path.join(state_dir, "active_target.json"),
+        json.dumps({
+            "previousTarget": "T45",
+            "target": "T50",
+            "targetName": "commit",
+        }),
+    )
+    return state_dir, msg_file, approved_msg, tree_hash
+
+  def test_t50_to_t60_blocks_invalid_head_message_drift_and_tree_drift(self):
+    """T50 -> T60 rejects bad HEAD msg, 50_commit_msg drift, and HEAD^{tree} drift, then passes when clean."""
+    from lib.state_machine import advance_workflow_target, read_active_target
+
+    with tempfile.TemporaryDirectory() as tmp:
+      repo = os.path.join(tmp, "repo")
+      os.makedirs(repo)
+      state_dir, msg_file, approved_msg, _ = self._setup_t50_repo(
+          repo, branch="feat/292-t50-t60", with_github_origin=True
+      )
+
+      # 1. Invalid HEAD commit message blocks T50 -> T60 (SCAR-GIT-20)
+      _git(repo, "commit", "-q", "-m", "bad commit without cc prefix")
+      ok_bad, msg_bad = advance_workflow_target(
+          "T50",
+          "T60",
+          evidence={"humanCommitApproved": True, "skipMainFetch": True},
+          workspace_dir=repo,
+          state_dir=state_dir,
+      )
+      self.assertFalse(ok_bad, msg_bad)
+      self.assertIn("SCAR-GIT-20", msg_bad)
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", msg_bad)
+      self.assertEqual(read_active_target(state_dir)["target"], "T50")
+
+      # 2. Valid CC message differing from 50_commit_msg.txt blocks with COMMIT_MESSAGE_DRIFT
+      _git(
+          repo,
+          "commit",
+          "--amend",
+          "-q",
+          "-m",
+          "feat(gates): unapproved alternate text (closes #292)\n\nIssue: #292\n",
+      )
+      ok_drift, msg_drift = advance_workflow_target(
+          "T50",
+          "T60",
+          evidence={"humanCommitApproved": True, "skipMainFetch": True},
+          workspace_dir=repo,
+          state_dir=state_dir,
+      )
+      self.assertFalse(ok_drift, msg_drift)
+      self.assertIn("SCAR-GIT-20", msg_drift)
+      self.assertIn("COMMIT_MESSAGE_DRIFT", msg_drift)
+
+      # 3. Matching message (with CRLF in 50_commit_msg.txt) but drifted HEAD^{tree} blocks (SCAR-GIT-25)
+      with open(msg_file, "wb") as f:
+        f.write(approved_msg.replace("\n", "\r\n").encode("utf-8"))
+      _write_file(os.path.join(repo, "extra_unapproved.py"), "SNEAK = 1\n")
+      _git(repo, "add", "extra_unapproved.py")
+      _git(repo, "commit", "--amend", "-q", "-m", approved_msg)
+      ok_tree, msg_tree = advance_workflow_target(
+          "T50",
+          "T60",
+          evidence={"humanCommitApproved": True, "skipMainFetch": True},
+          workspace_dir=repo,
+          state_dir=state_dir,
+      )
+      self.assertFalse(ok_tree, msg_tree)
+      self.assertIn("SCAR-GIT-25", msg_tree)
+      self.assertIn("UNAPPROVED_TREE_DRIFT", msg_tree)
+
+      # 4. Restore approved tree and matching commit -> make push succeeds and advances to T60
+      _git(repo, "rm", "-q", "extra_unapproved.py")
+      _git(repo, "commit", "--amend", "-q", "-m", approved_msg)
+      _assert_make_rc(
+          self,
+          _run_make(repo, "push", "FROM=T50", "APPROVED=1", "NO_FETCH=1"),
+          0,
+      )
+      self.assertEqual(read_active_target(state_dir)["target"], "T60")
+
+  def test_t50_to_t70_pure_git_post_commit_validation_and_scar_git_30_precedence(
+      self,
+  ):
+    """Preserves SCAR-GIT-30 precedence on T50 -> T70 and enforces post-commit HEAD checks."""
+    from lib.state_machine import advance_workflow_target, read_active_target
+
+    with tempfile.TemporaryDirectory() as tmp:
+      # 1. Repo with remote AND invalid HEAD -> SCAR-GIT-30 fires FIRST
+      repo_rem = os.path.join(tmp, "with_remote")
+      os.makedirs(repo_rem)
+      st_rem, _, _, _ = self._setup_t50_repo(
+          repo_rem, branch="feat/292-rem", with_github_origin=True
+      )
+      _git(repo_rem, "commit", "-q", "-m", "bad message")
+      ok_rem, msg_rem = advance_workflow_target(
+          "T50",
+          "T70",
+          evidence={"humanCommitApproved": True},
+          workspace_dir=repo_rem,
+          state_dir=st_rem,
+      )
+      self.assertFalse(ok_rem)
+      self.assertIn("SCAR-GIT-30", msg_rem)
+
+      # 2. Remote-less Pure Git repo enforces post-commit HEAD check on T50 -> T70
+      repo_local = os.path.join(tmp, "no_remote")
+      os.makedirs(repo_local)
+      st_local, _, approved_msg, _ = self._setup_t50_repo(
+          repo_local, branch="fix/local-5-pure", with_github_origin=False
+      )
+      _write_file(
+          os.path.join(st_local, "15_archaeology_receipt.md"),
+          "# Receipt\nHOSTING_MODE: PURE_GIT\n",
+      )
+      _git(repo_local, "commit", "-q", "-m", "bad local message")
+      blk_t70 = _assert_make_rc(
+          self,
+          _run_make(repo_local, "bot-quiescence", "FROM=T50", "APPROVED=1"),
+          2,
+      )
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", blk_t70.stderr)
+
+      # Amend to approved message and tree -> T50 -> T70 succeeds
+      _git(repo_local, "commit", "--amend", "-q", "-m", approved_msg)
+      _assert_make_rc(
+          self,
+          _run_make(repo_local, "bot-quiescence", "FROM=T50", "APPROVED=1"),
+          0,
+      )
+      self.assertEqual(read_active_target(st_local)["target"], "T70")
+
+  def test_post_commit_gate_subcommand_and_makefile_check_post_commit_target(
+      self,
+  ):
+    """Tests scripts/workflow_gates.py post-commit and make check-post-commit target."""
+    from lib.workflow_gates import WorkflowGatesScript
+
+    with tempfile.TemporaryDirectory() as tmp:
+      repo = os.path.join(tmp, "repo")
+      os.makedirs(repo)
+      _, _, approved_msg, tree_hash = self._setup_t50_repo(
+          repo, branch="feat/292-check-target", with_github_origin=True
+      )
+      _git(repo, "commit", "-q", "-m", "invalid head")
+
+      fail_proc = _assert_make_rc(
+          self, _run_make(repo, "check-post-commit"), 2
+      )
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", fail_proc.stderr)
+
+      _git(repo, "commit", "--amend", "-q", "-m", approved_msg)
+      _assert_make_rc(self, _run_make(repo, "check-post-commit"), 0)
+
+      out = io.StringIO()
+      err = io.StringIO()
+      rc = WorkflowGatesScript().execute(
+          args=["--repo-root", repo, "post-commit", "--json"],
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(rc, 0, err.getvalue())
+      payload = json.loads(out.getvalue().strip())
+      self.assertTrue(payload["valid"])
+      self.assertEqual(payload["head_tree"], tree_hash)
 
 
 if __name__ == "__main__":

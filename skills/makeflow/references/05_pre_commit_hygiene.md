@@ -104,7 +104,7 @@ Use `scripts/commit_msg.py` to format and validate commit messages:
      --out .workflow/state/50_commit_msg.txt
    ```
 
-## 3. Human Commit Approval Gate
+## 3. Human Commit Approval Gate and Runtime Enforcement
 
 Target 50 is a mandatory human pause gate.
 
@@ -115,8 +115,19 @@ Target 50 is a mandatory human pause gate.
    ```bash
    git commit -F .workflow/state/50_commit_msg.txt
    ```
-5. Make sure that the committed Git tree hash matches the approved snapshot:
+5. The `PreToolUse` hook validates every active Target 50 `git commit` command before execution.
+   - Inline `-m` / `--message` values (joined with blank lines) and `-F <file>` / `--file=<file>` contents must pass Conventional Commits 1.0.0 and trailer rules.
+   - The hook denies stdin commits (`-F -`, `--file=-`), missing files, mixed `-m` and `-F` flags, and bare commits with `SCAR-GIT-20`.
+   - The hook denies alternate message flags (`-C`, `-c`, `--reuse-message`, `--reedit-message`, `--fixup`, `--squash`, `-t`, `--template`) and `--edit` / `-e` overrides.
+   - `git commit --amend --no-edit` validates the current `HEAD` message fail-closed in the target repository directory.
+   - Target 90 history commits, Target 80 landing commits, and inactive non-Makeflow workspaces stay unaffected.
+   - `SCAR-PROC-102` pause-gate bundling and same-turn checks always run before commit message validation.
+6. Run the standalone post-commit gate to verify the committed `HEAD` message and tree lock:
    ```bash
-   test "$(git rev-parse HEAD^{tree})" = "$(cat .workflow/state/approved_tree.txt)"
+   make -f .workflow/state/Makefile check-post-commit
    ```
-6. If a Git remote exists, run `make -f .workflow/state/Makefile push APPROVED=1` (or `humanCommitApproved: true`) to advance to Target 60. If zero remotes exist in Pure Git Mode (`SCAR-GIT-30`), run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (`T50 -> T70`).
+   This gate checks three invariants:
+   - `git log -1 --pretty=%B HEAD` passes Conventional Commits 1.0.0 and trailer validation (`SCAR-GIT-20`).
+   - The normalized `HEAD` message matches normalized `.workflow/state/50_commit_msg.txt` (`SCAR-GIT-20`).
+   - `git rev-parse HEAD^{tree}` equals `.workflow/state/approved_tree.txt` (`SCAR-GIT-23`, `SCAR-GIT-25`).
+7. If a Git remote exists, run `make -f .workflow/state/Makefile push APPROVED=1` (or set `humanCommitApproved: true`). If zero remotes exist in Pure Git Mode (`SCAR-GIT-30`), run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1`. Both Target 50 exit transitions (`T50 -> T60` and `T50 -> T70`) run post-commit `HEAD` revalidation automatically before advancing.

@@ -15,6 +15,7 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.commit_msg import validate_head_commit
 from lib.config import (
     is_ticket_active,
     resolve_workflow_config,
@@ -1207,6 +1208,23 @@ def advance_workflow_target(
     )
     if not gate_ok:
       return False, gate_reason
+
+  if (
+      current == "T50"
+      and next_t in ("T60", "T70")
+      and state_dir
+      and os.path.isdir(state_dir)
+      and eff_ws
+      and os.path.isdir(eff_ws)
+      and os.path.exists(os.path.join(eff_ws, ".git"))
+  ):
+    post_res = validate_head_commit(eff_ws, state_dir=state_dir)
+    if not post_res.ok:
+      return (
+          False,
+          f"BLOCKED: [SCAR-{post_res.scar_id}] {post_res.violation_code} on"
+          f" transition {current} -> {next_t}: {post_res.reason}",
+      )
 
   if state_dir and os.path.isdir(state_dir):
     if bool(ev.get("complete")) and next_t == "T90":

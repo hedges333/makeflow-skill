@@ -14,7 +14,11 @@ import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
-from lib.commit_msg import receipt_declares_pure_git, validate_commit_message
+from lib.commit_msg import (
+    detect_commit_context,
+    validate_commit_message,
+    validate_head_commit,
+)
 from lib.git_index import ephemeral_git_index
 from lib.reflex import emit_reflex
 from lib.repo_tree import (
@@ -38,9 +42,6 @@ REQUIRED_PLUGIN_FILES = (
 )
 
 _LEFTOVER_CARD_RE = re.compile(r"^(?:[1-8][0-9]_.*|approved_tree\.txt$)")
-_LOCAL_BRANCH_RE = re.compile(
-    r"^(?:feat|fix|ticket)/local-(?:([1-9][0-9]*)(?:-|$)|.+$)"
-)
 _GH_CLOSE_RE = re.compile(
     r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\d+\b"
 )
@@ -452,8 +453,8 @@ def generate_state_makefile(repo_root: str) -> str:
       "commit push bot-quiescence ready-to-land land "
       "codified-scars-consolidated finish advance "
       "check-intake release-intake check-approved-tree check-commit-msg "
-      "check-main-sync verify-regression check-regression repo-tree "
-      "promote-review witness-red verify-green verify-citation ast-lint"
+      "check-post-commit check-main-sync verify-regression check-regression "
+      "repo-tree promote-review witness-red verify-green verify-citation ast-lint"
   )
   recipes = _workflow_target_recipes(gates_script, quoted_root)
   return (
@@ -495,6 +496,8 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
       "check-commit-msg:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} commit-msg --make-env\n\n"
+      "check-post-commit:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} post-commit --make-env\n\n"
       "check-main-sync:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} main-sync --make-env\n\n"
       "verify-regression:\n"
@@ -783,6 +786,32 @@ class WorkflowGatesScript(BaseScript):
         help="Hydrate FILE from environment.",
     )
 
+    p_post = subparsers.add_parser(
+        "post-commit",
+        help="Verify HEAD commit message matches 50_commit_msg.txt and HEAD^{tree} matches approved_tree.txt.",
+        description="Revalidate HEAD commit message and tree lock on Target 50 exit.",
+        epilog="Example:\n  python3 scripts/workflow_gates.py post-commit",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_post.add_argument(
+        "--file",
+        dest="commit_msg_file",
+        default=None,
+        help="Path to approved commit message file (defaults to .workflow/state/50_commit_msg.txt).",
+    )
+    p_post.add_argument(
+        "--json",
+        action="store_true",
+        dest="sub_json",
+        help="Emit output or Vector 4 Reflex errors as JSON.",
+    )
+    p_post.add_argument(
+        "--make-env",
+        action="store_true",
+        dest="sub_make_env",
+        help="Hydrate FILE from environment.",
+    )
+
     p_title = subparsers.add_parser(
         "terminal-title",
         help="Update the interactive terminal title for the active ticket and directory.",
@@ -865,9 +894,9 @@ class WorkflowGatesScript(BaseScript):
     if not ns.gate:
       parser.error(
           "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
-          "intake, approved-tree, commit-msg, main-sync, verify-regression, "
-          "check-regression, repo-tree, promote-review, terminal-title, "
-          "release-intake, release-lock, read-init-d, or advance."
+          "intake, approved-tree, commit-msg, post-commit, main-sync, "
+          "verify-regression, check-regression, repo-tree, promote-review, "
+          "terminal-title, release-intake, release-lock, read-init-d, or advance."
       )
 
     self.repo_root = os.path.abspath(ns.repo_root)
@@ -881,7 +910,7 @@ class WorkflowGatesScript(BaseScript):
       if ns.max_bytes <= 0:
         parser.error("--max-bytes must be a positive integer.")
       self.max_bytes = ns.max_bytes
-    elif ns.gate == "commit-msg":
+    elif ns.gate in ("commit-msg", "post-commit"):
       self.commit_msg_file = ns.commit_msg_file
     elif ns.gate == "main-sync":
       self.no_fetch = bool(getattr(ns, "no_fetch", False))
@@ -1736,32 +1765,16 @@ class WorkflowGatesScript(BaseScript):
           reflex="Write a non-empty subject and body in .workflow/state/50_commit_msg.txt and re-run make -f .workflow/state/Makefile check-commit-msg.",
       )
 
-    is_local = False
-    local_num: Optional[str] = None
-
-    branch_proc = self._git("rev-parse", "--abbrev-ref", "HEAD")
-    if branch_proc.returncode == 0:
-      branch_name = branch_proc.stdout.strip()
-      m_branch = _LOCAL_BRANCH_RE.match(branch_name)
-      if m_branch:
-        is_local = True
-        if m_branch.group(1):
-          local_num = m_branch.group(1)
-
-    remote_proc = self._git("remote", "get-url", "origin")
-    if (
-        remote_proc.returncode != 0
-        or "github.com" not in (remote_proc.stdout or "").lower()
-    ):
-      is_local = True
-
-    receipt_card = os.path.join(
-        self.repo_root, ".workflow", "state", "15_archaeology_receipt.md"
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    is_local, ticket_id = detect_commit_context(
+        self.repo_root, state_dir=state_dir
     )
-    if receipt_declares_pure_git(receipt_card):
-      is_local = True
+    local_num: Optional[str] = None
+    if ticket_id and ticket_id.upper().startswith("LOCAL-"):
+      suffix = ticket_id[6:]
+      if suffix.isdigit():
+        local_num = suffix
 
-    ticket_id = f"LOCAL-{local_num}" if local_num else None
     validation = validate_commit_message(
         msg_text, is_local=is_local, ticket_id=ticket_id
     )
@@ -1805,6 +1818,62 @@ class WorkflowGatesScript(BaseScript):
             reflex="Format .workflow/state/50_commit_msg.txt using Conventional Commits and ensure issue reference trailer exists per 05_pre_commit_hygiene.md.",
         )
 
+    return 0
+
+  def _check_post_commit(self) -> int:
+    """Revalidates HEAD commit message, 50_commit_msg.txt match, and HEAD^{tree}."""
+    state_dir = os.path.join(self.repo_root, ".workflow", "state")
+    res = validate_head_commit(
+        self.repo_root,
+        state_dir=state_dir,
+        commit_msg_file=self.commit_msg_file,
+    )
+    if not res.ok:
+      if res.violation_code == "UNAPPROVED_TREE_DRIFT":
+        rejected = (
+            "Exiting Target 50 when committed HEAD^{tree} drifted from"
+            " .workflow/state/approved_tree.txt."
+        )
+        reflex = (
+            "Stage the intended tree, re-lock approved_tree.txt, and return"
+            " to Target 40 adversarial review before committing."
+        )
+      elif res.violation_code == "COMMIT_MESSAGE_DRIFT":
+        rejected = (
+            "Exiting Target 50 when HEAD commit message differs from"
+            " approved .workflow/state/50_commit_msg.txt."
+        )
+        reflex = (
+            "Amend HEAD using 'git commit --amend -F"
+            " .workflow/state/50_commit_msg.txt' after operator confirmation"
+            " and re-run check-post-commit."
+        )
+      else:
+        rejected = (
+            "Exiting Target 50 when HEAD commit message violates"
+            " Conventional Commits 1.0.0 or trailer invariants."
+        )
+        reflex = (
+            "Format .workflow/state/50_commit_msg.txt per"
+            " 05_pre_commit_hygiene.md, amend HEAD with '-F"
+            " .workflow/state/50_commit_msg.txt', and re-run check-post-commit."
+        )
+      return self._fail(
+          scar_id=res.scar_id or "GIT-20",
+          code=res.violation_code or "INVALID_COMMIT_MESSAGE_CONTRACT",
+          trigger=res.reason,
+          rejected=rejected,
+          reflex=reflex,
+      )
+    if self.as_json:
+      self.stdout.write(
+          json.dumps({
+              "valid": True,
+              "head_tree": res.head_tree,
+              "expected_tree": res.expected_tree,
+          })
+          + "\n"
+      )
     return 0
 
   def _gate_terminal_title(self) -> int:
@@ -1914,6 +1983,30 @@ class WorkflowGatesScript(BaseScript):
           trigger=msg,
           rejected="Advancing a branch with unresolved 3-way merge conflicts against upstream main.",
           reflex="Stop tool calls without altering Git state (SCAR-GIT-25) and ask the operator before rebasing or merging.",
+      )
+    if "UNAPPROVED_TREE_DRIFT" in msg:
+      return self._fail(
+          scar_id="GIT-25",
+          code="UNAPPROVED_TREE_DRIFT",
+          trigger=msg,
+          rejected="Advancing past Target 50 when committed HEAD^{tree} does not match approved_tree.txt.",
+          reflex="Verify committed files against approved_tree.txt or return to Target 40 for a fresh review.",
+      )
+    if "COMMIT_MESSAGE_DRIFT" in msg:
+      return self._fail(
+          scar_id="GIT-20",
+          code="COMMIT_MESSAGE_DRIFT",
+          trigger=msg,
+          rejected="Advancing past Target 50 when HEAD commit message differs from .workflow/state/50_commit_msg.txt.",
+          reflex="Amend HEAD with 'git commit --amend -F .workflow/state/50_commit_msg.txt' and retry.",
+      )
+    if "INVALID_COMMIT_MESSAGE_CONTRACT" in msg:
+      return self._fail(
+          scar_id="GIT-20",
+          code="INVALID_COMMIT_MESSAGE_CONTRACT",
+          trigger=msg,
+          rejected="Advancing past Target 50 when HEAD commit message violates Conventional Commits 1.0.0 or trailer rules.",
+          reflex="Fix .workflow/state/50_commit_msg.txt per 05_pre_commit_hygiene.md, amend HEAD with -F, and retry.",
       )
     if "Required state card" in msg:
       return self._fail(
@@ -2256,6 +2349,8 @@ class WorkflowGatesScript(BaseScript):
       return self._check_approved_tree()
     if self.gate == "commit-msg":
       return self._check_commit_msg()
+    if self.gate == "post-commit":
+      return self._check_post_commit()
     if self.gate == "main-sync":
       return self._check_main_sync()
     if self.gate == "verify-regression":

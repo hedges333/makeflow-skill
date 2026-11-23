@@ -422,6 +422,12 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
               encoding="utf-8",
           ) as f:
             f.write("# Approved\n")
+          with open(
+              os.path.join(state_dir, "50_commit_msg.txt"),
+              "w",
+              encoding="utf-8",
+          ) as f:
+            f.write("feat(hooks): enforce turn boundary\n\nTicket: LOCAL-1\n")
           transcript_path = os.path.join(ws_dir, "transcript.jsonl")
 
           # Same turn as entering gate_t -> deny
@@ -1168,11 +1174,14 @@ class TestPreToolGuardTurnBoundary(unittest.TestCase):
       os.makedirs(state_dir)
       for card in (
           "45_review_approved.md",
-          "50_commit_msg.txt",
           "70_bot_triage.md",
       ):
         with open(os.path.join(state_dir, card), "w", encoding="utf-8") as f:
           f.write("# Card\n")
+      with open(
+          os.path.join(state_dir, "50_commit_msg.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write("fix(git): land local task\n\nTicket: LOCAL-1\n")
 
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
       steps = [
@@ -2426,6 +2435,12 @@ class TestPosixLineContinuationGuards(unittest.TestCase):
           encoding="utf-8",
       ) as f:
         f.write("# Approved\n")
+      with open(
+          os.path.join(state_dir, "50_commit_msg.txt"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("fix(hooks): strip continuations\n\nTicket: LOCAL-1\n")
       transcript_path = os.path.join(ws_dir, "transcript.jsonl")
       steps = [
           {
@@ -2584,6 +2599,12 @@ class TestPosixLineContinuationGuards(unittest.TestCase):
           encoding="utf-8",
       ) as f:
         f.write("# Approved\n")
+      with open(
+          os.path.join(state_dir, "50_commit_msg.txt"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("fix(hooks): fallback gate entry\n\nTicket: LOCAL-1\n")
       with open(
           os.path.join(state_dir, "gate_entry.json"),
           "w",
@@ -3533,6 +3554,625 @@ class TestPreToolGuardScriptExecution(unittest.TestCase):
       ):
         res = evaluate_tool_call(allow_payload)
       self.assertEqual(res, {"decision": "allow"})
+
+
+class TestPreToolGuardCommitMessageEnforcement(unittest.TestCase):
+  """Tests PreToolUse Conventional Commits enforcement on git commit (GH-292)."""
+
+  def _init_repo(
+      self,
+      repo_dir: str,
+      branch: str = "feat/292-hooks",
+      github_remote: bool = True,
+      initial_msg: str = "chore: initial commit",
+  ) -> str:
+    """Initializes an isolated git repo with active workflow state directory."""
+    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Makeflow Test"],
+        cwd=repo_dir,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo_dir,
+        check=True,
+    )
+    if github_remote:
+      subprocess.run(
+          ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+          cwd=repo_dir,
+          check=True,
+      )
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", branch], cwd=repo_dir, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", initial_msg],
+        cwd=repo_dir,
+        check=True,
+    )
+    state_dir = os.path.join(repo_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(
+        os.path.join(state_dir, "45_review_approved.md"), "w", encoding="utf-8"
+    ) as f:
+      f.write("APPROVED\n")
+    return state_dir
+
+  def test_active_remote_ticket_validates_m_multi_m_and_message_equals(self):
+    """Allows valid remote -m / multi--m commits and denies malformed or trailer-less commits."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      self._init_repo(ws_dir, branch="feat/292-hooks", github_remote=True)
+
+      for valid_cmd in (
+          "git commit -m 'feat(hooks): enforce cc (closes #292)'",
+          "git commit -m 'feat(hooks): enforce cc' -m 'Issue: #292'",
+          "git commit --message='fix(gates): validate head' --message='closes #292'",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": valid_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "force_ask", (valid_cmd, res))
+        self.assertIn("Target 50 Commit Gate", res["reason"])
+
+      for invalid_cmd in (
+          "git commit -m 'random non conventional message'",
+          "git commit -m 'feat(hooks): missing issue trailer'",
+          "git commit -m 'feat(hooks): trailing period. (closes #292)'",
+          "git commit -m 'feat(hooks): wrong trailer' -m 'Ticket: LOCAL-1'",
+          "git commit -m 'feat(hooks): wrong gh trailer' -m 'Ticket: GH-292'",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": invalid_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "deny", (invalid_cmd, res))
+        self.assertIn("SCAR-GIT-20", res["reason"])
+        self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", res["reason"])
+
+  def test_active_local_ticket_enforces_local_trailer_and_blocks_closes_issue(self):
+    """Enforces Ticket: LOCAL-<N> and blocks closes #<N> on local session commits."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      self._init_repo(
+          ws_dir, branch="fix/local-7-offline", github_remote=False
+      )
+
+      ok_res = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "git commit -m 'fix(hooks): offline check'"
+                      " -m 'Ticket: LOCAL-7'"
+                  )
+              },
+          },
+      })
+      self.assertEqual(ok_res["decision"], "force_ask", ok_res)
+
+      for bad_cmd in (
+          "git commit -m 'fix(hooks): offline check (closes #7)' -m 'Ticket: LOCAL-7'",
+          "git commit -m 'fix(hooks): missing local trailer'",
+          "git commit -m 'fix(hooks): wrong local num' -m 'Ticket: LOCAL-9'",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": bad_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "deny", (bad_cmd, res))
+        self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", res["reason"])
+
+  def test_file_flag_dash_c_stdin_and_missing_file_handling(self):
+    """Validates -F / --file= with workspace and -C resolution, and denies missing or stdin files."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = self._init_repo(
+          ws_dir, branch="feat/292-file-flag", github_remote=True
+      )
+      msg_path = os.path.join(state_dir, "50_commit_msg.txt")
+      with open(msg_path, "w", encoding="utf-8") as f:
+        f.write("feat(hooks): validate file flag\n\nIssue: #292\n")
+
+      for ok_cmd in (
+          "git commit -F .workflow/state/50_commit_msg.txt",
+          "git commit --file=.workflow/state/50_commit_msg.txt",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": ok_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "force_ask", (ok_cmd, res))
+
+      # Nested -C <subdir> resolves relative -F path inside subdir
+      subdir = os.path.join(ws_dir, "subrepo")
+      os.makedirs(subdir)
+      with open(os.path.join(subdir, "commit.txt"), "w", encoding="utf-8") as f:
+        f.write("feat(sub): nested repo commit\n\nIssue: #292\n")
+      nested_ok = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git -C subrepo commit -F commit.txt"},
+          },
+      })
+      self.assertEqual(nested_ok["decision"], "force_ask", nested_ok)
+
+      # Invalid file content, missing file, and stdin '-F -' / '--file=-' are denied
+      with open(msg_path, "w", encoding="utf-8") as f:
+        f.write("not conventional\n")
+      for bad_cmd in (
+          "git commit -F .workflow/state/50_commit_msg.txt",
+          "git commit -F .workflow/state/does_not_exist.txt",
+          "git commit -F - <<'EOF'\nfeat: stdin\n\nIssue: #292\nEOF",
+          "git commit --file=-",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": bad_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "deny", (bad_cmd, res))
+        self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", res["reason"])
+
+      # Combining -m and -F is rejected (conflicting commit message sources)
+      with open(msg_path, "w", encoding="utf-8") as f:
+        f.write("feat(hooks): valid file\n\nIssue: #292\n")
+      mixed_res = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "git commit -m 'bad inline' -F"
+                      " .workflow/state/50_commit_msg.txt"
+                  )
+              },
+          },
+      })
+      self.assertEqual(mixed_res["decision"], "deny", mixed_res)
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", mixed_res["reason"])
+
+  def test_bare_commit_and_amend_no_edit_validation(self):
+    """Denies bare git commit / --amend without --no-edit, and validates HEAD for --amend --no-edit."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      self._init_repo(
+          ws_dir,
+          branch="feat/292-amend",
+          github_remote=True,
+          initial_msg="bad initial message",
+      )
+      for bad_cmd in (
+          "git commit",
+          "git commit --amend",
+          "git commit --amend --no-edit",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": bad_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "deny", (bad_cmd, res))
+        self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", res["reason"])
+
+      # Amend HEAD to valid Conventional Commit -> --amend --no-edit passes to force_ask
+      subprocess.run(
+          [
+              "git",
+              "commit",
+              "--amend",
+              "--allow-empty",
+              "-q",
+              "-m",
+              "feat(hooks): valid head commit\n\nIssue: #292\n",
+          ],
+          cwd=ws_dir,
+          check=True,
+      )
+      ok_amend = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git commit --amend --no-edit"},
+          },
+      })
+      self.assertEqual(ok_amend["decision"], "force_ask", ok_amend)
+      self.assertIn("Target 50 Commit Gate", ok_amend["reason"])
+
+  def test_target90_target80_and_inactive_workspace_bypass_commit_validation(self):
+    """Preserves Target 90, Target 80 landing, and inactive non-Makeflow workspace behavior."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as inactive_ws:
+      res_inactive = evaluate_tool_call({
+          "workspacePaths": [inactive_ws],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git commit -m 'wip non conventional'"},
+          },
+      })
+      self.assertEqual(res_inactive["decision"], "force_ask", res_inactive)
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = self._init_repo(
+          ws_dir, branch="feat/292-bypass", github_remote=True
+      )
+      # Target 90 history commit stays on Target 90 gate
+      res_t90_msg = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -m 'docs(history): record GH-292'"
+              },
+          },
+      })
+      self.assertEqual(res_t90_msg["decision"], "force_ask", res_t90_msg)
+      self.assertIn("Target 90 History Ledger Gate", res_t90_msg["reason"])
+
+      # Target 80 landing commit bypasses Target 50 CC check
+      with open(
+          os.path.join(state_dir, "active_target.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump(
+            {"previousTarget": "T75", "target": "T80", "targetName": "land"}, f
+        )
+      res_t80 = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git commit -m 'Merge branch feat/292-bypass'"
+              },
+          },
+      })
+      self.assertEqual(res_t80["decision"], "force_ask", res_t80)
+
+  def test_scar_proc_102_bundling_and_same_turn_precedence_over_invalid_commit_msg(
+      self,
+  ):
+    """SCAR-PROC-102 pause-gate bundling and same-turn denials fire before commit validation."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      self._init_repo(
+          ws_dir, branch="feat/292-precedence", github_remote=True
+      )
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Review ok"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Entering T50",
+              },
+          ],
+      )
+
+      # 1. Bundled make commit && git commit -m "bad" -> SCAR-PROC-102 wins
+      bundled = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile commit FROM=T45"
+                      ' APPROVED=1 && git commit -m "bad msg"'
+                  )
+              },
+          },
+      })
+      self.assertEqual(bundled["decision"], "deny", bundled)
+      self.assertIn("SCAR-PROC-102", bundled["reason"])
+
+      # 2. Enter T50 cleanly, then same-turn git commit -m "bad" -> SCAR-PROC-102 wins
+      enter_t50 = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile commit FROM=T45"
+                      " APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(enter_t50["decision"], "allow", enter_t50)
+
+      same_turn = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": 'git commit -m "bad msg"'},
+          },
+      })
+      self.assertEqual(same_turn["decision"], "deny", same_turn)
+      self.assertIn("SCAR-PROC-102", same_turn["reason"])
+
+      # 3. After human approval turn, invalid message is denied by SCAR-GIT-20
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Review ok"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Entering T50",
+              },
+              {
+                  "step_index": 3,
+                  "type": "USER_INPUT",
+                  "content": "Commit approved.",
+              },
+          ],
+      )
+      after_human = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": 'git commit -m "bad msg"'},
+          },
+      })
+      self.assertEqual(after_human["decision"], "deny", after_human)
+      self.assertIn("SCAR-GIT-20", after_human["reason"])
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", after_human["reason"])
+
+  def test_amend_no_edit_rejects_alternate_message_sources_and_interactive_edit(
+      self,
+  ):
+    """Denies --amend --no-edit with -C/-c/--reuse-message/--fixup/--squash/-t/--edit/-e and honors last-flag-wins (BLOCKER-1)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = self._init_repo(
+          ws_dir,
+          branch="feat/292-alt-sources",
+          github_remote=True,
+          initial_msg="wip invalid parent commit",
+      )
+      # Add a valid Conventional Commit as HEAD above invalid HEAD~1
+      subprocess.run(
+          [
+              "git",
+              "commit",
+              "--allow-empty",
+              "-q",
+              "-m",
+              "feat(hooks): valid head commit\n\nIssue: #292\n",
+          ],
+          cwd=ws_dir,
+          check=True,
+      )
+      with open(
+          os.path.join(state_dir, "50_commit_msg.txt"), "w", encoding="utf-8"
+      ) as f:
+        f.write("feat(hooks): valid file msg\n\nIssue: #292\n")
+
+      for bad_cmd in (
+          "git commit --amend --no-edit -C HEAD~1",
+          "git commit --amend --no-edit -CHEAD~1",
+          "git commit --amend --no-edit -c HEAD~1",
+          "git commit --amend --no-edit --reuse-message HEAD~1",
+          "git commit --amend --no-edit --reuse-message=HEAD~1",
+          "git commit --amend --no-edit --reedit-message=HEAD~1",
+          "git commit --amend --no-edit --fixup=HEAD",
+          "git commit --amend --no-edit --squash=HEAD",
+          "git commit --amend --no-edit -t .workflow/state/50_commit_msg.txt",
+          "git commit --amend --no-edit --template=.workflow/state/50_commit_msg.txt",
+          "git commit --amend --no-edit -e",
+          "git commit --amend --no-edit --edit",
+          "git commit --amend --no-edit -ae",
+          "git commit -m 'feat(hooks): valid (closes #292)' --edit",
+          "git commit -F .workflow/state/50_commit_msg.txt -e",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": bad_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "deny", (bad_cmd, res))
+        self.assertIn("SCAR-GIT-20", res["reason"], (bad_cmd, res))
+        self.assertIn(
+            "INVALID_COMMIT_MESSAGE_CONTRACT", res["reason"], (bad_cmd, res)
+        )
+
+      # Last-flag-wins: --edit/--e followed by --no-edit validates HEAD and passes
+      for ok_cmd in (
+          "git commit --amend --edit --no-edit",
+          "git commit --amend -e --no-edit",
+          "git commit --amend -ae --no-edit",
+      ):
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {"CommandLine": ok_cmd},
+            },
+        })
+        self.assertEqual(res["decision"], "force_ask", (ok_cmd, res))
+
+  def test_amend_no_edit_fails_closed_for_nonexistent_dash_c_directory(self):
+    """Denies git -C <nonexistent> commit --amend --no-edit without falling back to process CWD (BLOCKER-2)."""
+    real_cwd = os.getcwd()
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as outer_dir:
+      host_repo = os.path.join(outer_dir, "host_repo")
+      os.makedirs(host_repo)
+      self._init_repo(
+          host_repo,
+          branch="feat/292-host",
+          github_remote=True,
+          initial_msg="feat(host): valid host head\n\nIssue: #292\n",
+      )
+      ws_dir = os.path.join(outer_dir, "workspace")
+      os.makedirs(ws_dir)
+      ws_state = self._init_repo(
+          ws_dir,
+          branch="feat/292-ws",
+          github_remote=True,
+          initial_msg="feat(ws): valid ws head\n\nIssue: #292\n",
+      )
+      with open(
+          os.path.join(ws_state, "10_ticket.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump(
+            {"ticket_id": "GH-292", "title": "Enforce CC", "source": "github"},
+            f,
+        )
+
+      try:
+        os.chdir(host_repo)
+        res = evaluate_tool_call({
+            "workspacePaths": [ws_dir],
+            "toolCall": {
+                "name": "run_command",
+                "args": {
+                    "CommandLine": (
+                        "git -C nonexistent_subdir commit --amend --no-edit"
+                    )
+                },
+            },
+        })
+      finally:
+        os.chdir(real_cwd)
+
+      self.assertEqual(res["decision"], "deny", res)
+      self.assertIn("SCAR-GIT-20", res["reason"])
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", res["reason"])
+
+  def test_active_target_json_is_authoritative_over_stale_next_action_and_fallbacks(
+      self,
+  ):
+    """Protected active_target.json overrides stale 99_next_action.md T80; covers T90, T80 fallback, and chained add (BLOCKER-3, NBO-2)."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = self._init_repo(
+          ws_dir, branch="feat/292-authoritative", github_remote=True
+      )
+      # active_target.json says T50 while 99_next_action.md is stale/tampered with Target 80
+      active_path = os.path.join(state_dir, "active_target.json")
+      next_path = os.path.join(state_dir, "99_next_action.md")
+      with open(active_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"previousTarget": "T45", "target": "T50", "targetName": "commit"},
+            f,
+        )
+      with open(next_path, "w", encoding="utf-8") as f:
+        f.write("# 99_next_action\n- Active Target: Target 80 (land)\n")
+
+      denied = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git commit -m 'wip bypass attempt'"},
+          },
+      })
+      self.assertEqual(denied["decision"], "deny", denied)
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", denied["reason"])
+
+      # Chained git add && git commit validates commit subcommand
+      chained_bad = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": "git add app.py && git commit -m 'bad msg'"
+              },
+          },
+      })
+      self.assertEqual(chained_bad["decision"], "deny", chained_bad)
+      self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", chained_bad["reason"])
+
+      chained_ok = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "git add app.py && git commit -m 'feat(hooks): chained"
+                      " commit (closes #292)'"
+                  )
+              },
+          },
+      })
+      self.assertEqual(chained_ok["decision"], "force_ask", chained_ok)
+
+      # active_target.json T90 bypasses T50 CC validation
+      with open(active_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"previousTarget": "T80", "target": "T90", "targetName": "finish"},
+            f,
+        )
+      t90_res = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git commit -m 'Merge release branch'"},
+          },
+      })
+      self.assertEqual(t90_res["decision"], "force_ask", t90_res)
+
+      # When active_target.json is absent, 99_next_action.md Target 80 fallback applies
+      os.unlink(active_path)
+      t80_fallback = evaluate_tool_call({
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": "git commit -m 'Merge branch feat/292'"},
+          },
+      })
+      self.assertEqual(t80_fallback["decision"], "force_ask", t80_fallback)
+
+  def test_lib_commit_msg_is_protected_governance_file(self):
+    """Verifies lib/commit_msg.py is protected against shell and direct self-modification (NBO-1)."""
+    import lib.pre_tool_guard as guard_lib
+
+    self.assertIn("lib/commit_msg.py", GOVERNANCE_FILE_RELPATHS)
+    self.assertIn("lib/commit_msg.py", guard_lib.GOVERNANCE_FILE_RELPATHS)
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as plugin_ws:
+      os.makedirs(os.path.join(plugin_ws, ".git"))
+      os.makedirs(os.path.join(plugin_ws, "lib"))
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+
+      for cmd in (
+          "echo hacked > lib/commit_msg.py",
+          "rm -f lib/commit_msg.py",
+      ):
+        safe, reason = evaluate_self_modification_safety(cmd, [plugin_ws])
+        self.assertFalse(safe, f"Expected deny for shell cmd={cmd!r}")
+        self.assertIn("lib/commit_msg.py", reason)
+
+      target_file = os.path.join(plugin_ws, "lib", "commit_msg.py")
+      res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "edit_file",
+              "args": {"Path": target_file},
+          },
+      })
+      self.assertEqual(res["decision"], "deny", res)
 
 
 if __name__ == "__main__":

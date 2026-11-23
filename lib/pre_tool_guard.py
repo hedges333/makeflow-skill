@@ -7,9 +7,15 @@ governance files, subagent halt airlocks, and milestone pause gates.
 import json
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
+from lib.commit_msg import (
+    detect_commit_context,
+    extract_commit_invocation,
+    read_head_commit_message,
+    validate_commit_message,
+)
 from lib.config import (
     _normalize_str_list,
     _parse_csv_env,
@@ -71,11 +77,13 @@ from lib.turn_boundary import (
     PAUSE_GATE_TARGETS,
     VALID_TRANSITIONS,
     clear_gate_entry,
+    detect_latest_target,
     evaluate_advance_target_turn_boundary,
     evaluate_ask_question_turn_boundary,
     evaluate_command_turn_boundary,
     evaluate_subagent_airlock,
     extract_advance_target_calls,
+    load_transcript_steps,
     mark_gate_human_verified,
     read_gate_entry,
     record_gate_entry,
@@ -139,6 +147,216 @@ _HOOK_DENY_REASONS = {
         "Force-pushing is forbidden across all branches in the agent workflow."
     ),
 }
+
+
+_TARGET_80_NEXT_ACTION_RE = re.compile(
+    r"(?im)^-\s*Active Target:\s*(?:Target\s*80|T80)\b"
+)
+
+
+def _derive_workspace_root(state_dir: str) -> str:
+  """Derives the workspace root directory from a ``.workflow/state`` path.
+
+  Args:
+    state_dir: Workflow state directory path.
+
+  Returns:
+    Absolute workspace root directory path.
+  """
+  abs_state = os.path.abspath(state_dir)
+  parent = os.path.dirname(abs_state)
+  if os.path.basename(abs_state) == "state" and os.path.basename(parent) == ".workflow":
+    return os.path.dirname(parent)
+  return parent
+
+
+def _is_post_landing_target(state_dir: str, transcript_path: str = "") -> bool:
+  """Returns True when the active workflow target is T80 (land) or T90 (finish).
+
+  Args:
+    state_dir: Active ``.workflow/state`` directory path.
+    transcript_path: Optional path to the session transcript JSONL.
+
+  Returns:
+    True when Target 80 or Target 90 is active so landing/history commits are
+    not validated against Target 50 feature commit rules.
+  """
+  active_path = os.path.join(state_dir, "active_target.json")
+  if os.path.isfile(active_path):
+    try:
+      with open(active_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+      if isinstance(data, dict):
+        raw_target = data.get("target")
+        if isinstance(raw_target, str) and raw_target.strip():
+          return raw_target.strip() in ("T80", "T90")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+      pass
+
+  next_action = os.path.join(state_dir, "99_next_action.md")
+  if os.path.isfile(next_action):
+    try:
+      with open(next_action, "r", encoding="utf-8") as f:
+        if _TARGET_80_NEXT_ACTION_RE.search(f.read()):
+          return True
+    except (OSError, UnicodeDecodeError):
+      pass
+    return False
+
+  if transcript_path:
+    steps = load_transcript_steps(transcript_path)
+    if detect_latest_target(steps, state_dir=state_dir) in ("T80", "T90"):
+      return True
+
+  return False
+
+
+def _should_validate_commit_message(
+    effective_state_dir: Optional[str],
+    is_history_msg: bool,
+    is_t90_state: bool,
+    transcript_path: str = "",
+) -> bool:
+  """Returns True when PreToolUse should validate commit message syntax.
+
+  Args:
+    effective_state_dir: Resolved workflow state directory, if any.
+    is_history_msg: True when command is a Target 90 history/release commit.
+    is_t90_state: True when workspace is in Target 90 / COMPLETE state.
+    transcript_path: Optional transcript path for T80/T90 fallback detection.
+
+  Returns:
+    True only for active non-T80/T90 ticket workspaces.
+  """
+  if is_history_msg or is_t90_state:
+    return False
+  if not effective_state_dir or not is_ticket_active(effective_state_dir):
+    return False
+  if _is_post_landing_target(effective_state_dir, transcript_path):
+    return False
+  return True
+
+
+def _validate_pre_tool_commit_tokens(
+    tokens: List[str], effective_state_dir: str
+) -> Tuple[bool, str]:
+  """Validates a single ``git commit`` command's message before execution.
+
+  Args:
+    tokens: Tokenized single shell subcommand.
+    effective_state_dir: Active ``.workflow/state`` directory path.
+
+  Returns:
+    Tuple of ``(is_valid, deny_reason)``.
+  """
+  inv = extract_commit_invocation(tokens)
+  if inv is None:
+    return True, ""
+
+  workspace_root = _derive_workspace_root(effective_state_dir)
+  if inv.repo_dir:
+    commit_repo_dir = (
+        inv.repo_dir
+        if os.path.isabs(inv.repo_dir)
+        else os.path.abspath(os.path.join(workspace_root, inv.repo_dir))
+    )
+  else:
+    commit_repo_dir = workspace_root
+
+  is_local, ticket_id = detect_commit_context(
+      commit_repo_dir, state_dir=effective_state_dir
+  )
+
+  msg_text = ""
+  if inv.alternate_message_flags:
+    flags_str = ", ".join(inv.alternate_message_flags)
+    return (
+        False,
+        "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Alternate"
+        f" commit message flag(s) ({flags_str}) cannot be validated in"
+        " PreToolUse. Write .workflow/state/50_commit_msg.txt and run 'git"
+        " commit -F .workflow/state/50_commit_msg.txt'.",
+    )
+  if inv.explicit_edit:
+    return (
+        False,
+        "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Interactive"
+        " editor flag ('--edit' / '-e') cannot be validated in PreToolUse."
+        " Use 'git commit -F .workflow/state/50_commit_msg.txt' without"
+        " '--edit' or '-e'.",
+    )
+  if inv.message_file is not None and inv.messages:
+    return (
+        False,
+        "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Cannot"
+        " combine '-m' / '--message' with '-F' / '--file' in the same 'git"
+        " commit' invocation. Use '-F .workflow/state/50_commit_msg.txt'.",
+    )
+  if inv.message_file is not None:
+    if inv.message_file == "-":
+      return (
+          False,
+          "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Reading a"
+          " commit message from stdin ('-F -' / '--file=-') cannot be validated"
+          " in PreToolUse. Write the message to"
+          " .workflow/state/50_commit_msg.txt and run 'git commit -F"
+          " .workflow/state/50_commit_msg.txt'.",
+      )
+    msg_file_path = (
+        inv.message_file
+        if os.path.isabs(inv.message_file)
+        else os.path.abspath(os.path.join(commit_repo_dir, inv.message_file))
+    )
+    if not os.path.isfile(msg_file_path):
+      return (
+          False,
+          "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Commit"
+          f" message file not found: '{inv.message_file}'. Write"
+          " .workflow/state/50_commit_msg.txt before committing.",
+      )
+    try:
+      with open(msg_file_path, "r", encoding="utf-8", errors="replace") as f:
+        msg_text = f.read()
+    except OSError as exc:
+      return (
+          False,
+          "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Failed to"
+          f" read commit message file '{inv.message_file}': {exc}",
+      )
+  elif inv.messages:
+    msg_text = "\n\n".join(inv.messages)
+  elif inv.is_amend and inv.no_edit:
+    head_msg = read_head_commit_message(commit_repo_dir)
+    if head_msg is None:
+      return (
+          False,
+          "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Could not"
+          " read HEAD commit message for 'git commit --amend --no-edit'"
+          f" in '{commit_repo_dir}'.",
+      )
+    msg_text = head_msg
+  else:
+    return (
+        False,
+        "BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: Bare 'git"
+        " commit' without '-F .workflow/state/50_commit_msg.txt' or a valid"
+        " '-m' message cannot be validated. Use 'git commit -F"
+        " .workflow/state/50_commit_msg.txt'.",
+    )
+
+  val_res = validate_commit_message(
+      msg_text, is_local=is_local, ticket_id=ticket_id
+  )
+  if not val_res.valid:
+    mode_name = "Local session" if is_local else "Remote issue"
+    err_summary = " ".join(val_res.errors)
+    return (
+        False,
+        f"BLOCKED: [SCAR-GIT-20] INVALID_COMMIT_MESSAGE_CONTRACT: {mode_name}"
+        f" commit message validation failed: {err_summary} Format"
+        " .workflow/state/50_commit_msg.txt per 05_pre_commit_hygiene.md.",
+    )
+  return True, ""
 
 
 def _evaluate_git_tokens(
@@ -246,6 +464,18 @@ def _evaluate_git_tokens(
       )
       if not ok:
         return "deny", reason
+    effective_state_dir = _resolve_effective_state_dir(state_dir)
+    if _should_validate_commit_message(
+        effective_state_dir,
+        is_history_msg=is_history_msg,
+        is_t90_state=is_t90_state,
+        transcript_path=transcript_path,
+    ):
+      msg_ok, msg_reason = _validate_pre_tool_commit_tokens(
+          tokens, effective_state_dir
+      )
+      if not msg_ok:
+        return "deny", msg_reason
     if has_review:
       reason = (
           "Target 50 Commit Gate: 45_review_approved.md is present. "
@@ -312,6 +542,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
     "lib/base_script.py",
+    "lib/commit_msg.py",
     "lib/git_index.py",
     "lib/git_safety.py",
     "lib/pre_tool_guard.py",
@@ -900,12 +1131,16 @@ def evaluate_tool_call(payload):
   git_res = evaluate_git_command(
       cmd, has_review, state_dir=state_dir, transcript_path=transcript_path
   )
-  if git_res.get("decision") == "deny":
-    return git_res
-  if (
+  enters_pause_gate = bool(
       shell_adv_calls
-      and git_res.get("decision") == "force_ask"
       and any(a["nextTarget"] in PAUSE_GATE_TARGETS for a in shell_adv_calls)
+  )
+  is_commit_msg_deny = (
+      git_res.get("decision") == "deny"
+      and "INVALID_COMMIT_MESSAGE_CONTRACT" in str(git_res.get("reason") or "")
+  )
+  if enters_pause_gate and (
+      git_res.get("decision") == "force_ask" or is_commit_msg_deny
   ):
     return {
         "decision": "deny",
@@ -915,6 +1150,8 @@ def evaluate_tool_call(payload):
             " and wait for explicit human approval."
         ),
     }
+  if git_res.get("decision") == "deny":
+    return git_res
   if shell_adv_calls:
     _commit_advance_calls_state(shell_adv_calls, state_dir, transcript_path)
   return git_res
