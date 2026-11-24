@@ -9,10 +9,12 @@ queries, protected-span extraction, and per-ticket session scar tracking.
 import hashlib
 import json
 import os
+from pathlib import PurePath
 import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
+from lib.agent_paths import AgentPathRegistry
 from lib.scar_metadata import (
     _normalize_workflow_phases,
     extract_scar_metadata,
@@ -128,7 +130,7 @@ def resolve_scars_db_path(
 
   Args:
     db_path: Optional explicit filesystem path override.
-    agent: Optional agent flavor name (gemini, claude, cursor, copilot, chatgpt).
+    agent: Optional agent flavor name (gemini, claude, cursor, copilot, codex, chatgpt).
     workspace_dir: Optional workspace directory to check for a local cache DB.
     package_root: Optional plugin root directory override.
 
@@ -158,32 +160,12 @@ def resolve_scars_db_path(
 
   home = os.path.expanduser("~")
   agent_key = (agent or "").strip().lower()
-
-  agent_paths = {
-      "gemini": os.path.join(
-          home,
-          ".gemini",
-          "antigravity-cli",
-          "plugin_data",
-          "makeflow",
-          "scars_registry.db",
-      ),
-      "claude": os.path.join(
-          home, ".claude", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-      "cursor": os.path.join(
-          home, ".cursor", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-      "copilot": os.path.join(
-          home, ".copilot", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-      "chatgpt": os.path.join(
-          home, ".chatgpt", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-  }
-
-  if agent_key in agent_paths:
-    return agent_paths[agent_key]
+  if agent_key:
+    registry = AgentPathRegistry(home_dir=home)
+    try:
+      return registry.get_profile(agent_key).scars_db_path
+    except ValueError:
+      pass
 
   xdg_cache = os.getenv("XDG_CACHE_HOME")
   if xdg_cache:
@@ -198,26 +180,37 @@ def resolve_scars_db_path(
   return os.path.abspath(bundled_path)
 
 
+def _resolve_custom_path(raw_path: str, workspace_dir: Optional[str]) -> str:
+  """Expand user tilde and resolve relative custom scar paths against workspace_dir."""
+  expanded = os.path.expanduser(raw_path.strip())
+  if not os.path.isabs(expanded) and workspace_dir:
+    expanded = os.path.join(workspace_dir, expanded)
+  return os.path.abspath(expanded)
+
+
 def resolve_scars_db_paths(
     db_path: Optional[str] = None,
     agent: Optional[str] = None,
     workspace_dir: Optional[str] = None,
     package_root: Optional[str] = None,
+    custom_dirs: Optional[Sequence[str]] = None,
 ) -> List[str]:
-  """Resolve all existing SQLite scars databases in 5-tier precedence order.
+  """Resolve all existing SQLite scars databases in multi-tier precedence order.
 
   Precedence order:
     1. Explicit ``db_path``.
     2. Environment override ``MAKEFLOW_SCARS_DB``.
     3. Workspace database under ``<workspace_dir>/.workflow/``.
     4. User database under agent plugin_data or cache directories.
-    5. Bundled database under ``<package_root>/skills/makeflow/data/``.
+    5. Custom configured scar directories (``<dir>/scars_registry.db``).
+    6. Bundled database under ``<package_root>/skills/makeflow/data/``.
 
   Args:
     db_path: Optional explicit database file path.
     agent: Optional agent flavor name.
     workspace_dir: Optional workspace directory path.
     package_root: Optional plugin root directory override.
+    custom_dirs: Optional sequence of custom configured scar directories.
 
   Returns:
     Deduplicated list of existing absolute database file paths.
@@ -240,35 +233,11 @@ def resolve_scars_db_paths(
     )
 
   home = os.path.expanduser("~")
-  agent_paths = {
-      "gemini": os.path.join(
-          home,
-          ".gemini",
-          "antigravity-cli",
-          "plugin_data",
-          "makeflow",
-          "scars_registry.db",
-      ),
-      "claude": os.path.join(
-          home, ".claude", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-      "cursor": os.path.join(
-          home, ".cursor", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-      "copilot": os.path.join(
-          home, ".copilot", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-      "chatgpt": os.path.join(
-          home, ".chatgpt", "plugin_data", "makeflow", "scars_registry.db"
-      ),
-  }
-
-  agent_key = (agent or "").strip().lower()
-  if agent_key in agent_paths:
-    candidates.append(agent_paths[agent_key])
-  for k, p in agent_paths.items():
-    if k != agent_key:
-      candidates.append(p)
+  registry = AgentPathRegistry(home_dir=home)
+  try:
+    candidates.extend(registry.scars_db_paths(active_agent=agent))
+  except ValueError:
+    candidates.extend(registry.scars_db_paths(active_agent=None))
 
   xdg_cache = os.getenv("XDG_CACHE_HOME")
   if xdg_cache:
@@ -276,6 +245,15 @@ def resolve_scars_db_paths(
   candidates.append(
       os.path.join(home, ".cache", "makeflow", "scars_registry.db")
   )
+
+  for raw_dir in custom_dirs or ():
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+      continue
+    resolved_dir = _resolve_custom_path(raw_dir, workspace_dir)
+    if resolved_dir.endswith(".db"):
+      candidates.append(resolved_dir)
+    else:
+      candidates.append(os.path.join(resolved_dir, "scars_registry.db"))
 
   pkg_root = package_root or _REPO_ROOT
   candidates.append(
@@ -291,6 +269,59 @@ def resolve_scars_db_paths(
     if norm_p not in seen and os.path.isfile(norm_p):
       seen.add(norm_p)
       resolved.append(norm_p)
+  return resolved
+
+
+def resolve_scar_markdown_dirs(
+    workspace_dir: Optional[str] = None,
+    agent: Optional[str] = None,
+    custom_dirs: Optional[Sequence[str]] = None,
+    home_dir: Optional[str] = None,
+) -> List[str]:
+  """Resolve existing Markdown scar directories in 3-tier precedence order.
+
+  Precedence order:
+    1. Project-local ``<workspace_dir>/.workflow/scars``.
+    2. User-wide agent ``plugin_data/makeflow/scars`` (active agent first).
+    3. Custom configured scar directories from cascaded ``scars.directories``.
+
+  Args:
+    workspace_dir: Optional project root directory.
+    agent: Optional active agent override.
+    custom_dirs: Optional sequence of configured custom scar directories.
+    home_dir: Optional home directory override for isolated testing.
+
+  Returns:
+    Deduplicated list of existing absolute Markdown scar directory paths.
+  """
+  candidates: List[str] = []
+  if workspace_dir:
+    candidates.append(
+        os.path.join(
+            os.path.abspath(os.path.expanduser(workspace_dir)),
+            ".workflow",
+            "scars",
+        )
+    )
+
+  registry = AgentPathRegistry(home_dir=home_dir)
+  try:
+    candidates.extend(registry.scars_dirs(active_agent=agent))
+  except ValueError:
+    candidates.extend(registry.scars_dirs(active_agent=None))
+
+  for raw_dir in custom_dirs or ():
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+      continue
+    candidates.append(_resolve_custom_path(raw_dir, workspace_dir))
+
+  resolved: List[str] = []
+  seen: Set[str] = set()
+  for raw_dir in candidates:
+    norm_dir = os.path.abspath(os.path.expanduser(raw_dir))
+    if norm_dir not in seen and os.path.isdir(norm_dir):
+      seen.add(norm_dir)
+      resolved.append(norm_dir)
   return resolved
 
 
@@ -976,8 +1007,8 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
   }
 
 
-def _query_single_scars_db(
-    db_path: str,
+def _query_scars_connection(
+    conn: sqlite3.Connection,
     query: str = "",
     category: Optional[str] = None,
     language: Optional[str] = None,
@@ -989,15 +1020,9 @@ def _query_single_scars_db(
     mf_target: Optional[int] = None,
     exclude_categories: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
-  """Query a single SQLite scars database for complete processed scars only."""
-  if not db_path or not os.path.isfile(db_path):
-    return []
-
+  """Execute multi-dimensional FTS5/LIKE scar query on an open SQLite connection."""
   excluded_tokens = resolve_excluded_category_tokens(exclude_categories)
-
-  conn = None
   try:
-    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
     cur.execute(
@@ -1324,9 +1349,154 @@ def _query_single_scars_db(
     return results
   except (sqlite3.Error, OSError, ValueError):
     return []
+
+
+def _query_single_scars_db(
+    db_path: str,
+    query: str = "",
+    category: Optional[str] = None,
+    language: Optional[str] = None,
+    limit: int = 3,
+    source: Optional[str] = None,
+    framework: Optional[str] = None,
+    diagnostic_code: Optional[str] = None,
+    workflow_phase: Optional[str] = None,
+    mf_target: Optional[int] = None,
+    exclude_categories: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
+  """Query a single file-backed SQLite scars database for complete processed scars only."""
+  if not db_path or not os.path.isfile(db_path):
+    return []
+
+  conn = None
+  try:
+    conn = sqlite3.connect(db_path)
+    return _query_scars_connection(
+        conn=conn,
+        query=query,
+        category=category,
+        language=language,
+        limit=limit,
+        source=source,
+        framework=framework,
+        diagnostic_code=diagnostic_code,
+        workflow_phase=workflow_phase,
+        mf_target=mf_target,
+        exclude_categories=exclude_categories,
+    )
+  except (sqlite3.Error, OSError, ValueError):
+    return []
   finally:
     if conn:
       conn.close()
+
+
+def _infer_markdown_dir_tier(md_dir: str) -> str:
+  """Infer source tier label (``local``, ``user``, or ``custom``) for a Markdown scar directory."""
+  norm = os.path.normpath(os.path.abspath(os.path.expanduser(md_dir)))
+  parts = PurePath(norm).parts
+  if len(parts) >= 2 and parts[-2:] == (".workflow", "scars"):
+    return "local"
+  if len(parts) >= 3 and parts[-3:] == ("plugin_data", "makeflow", "scars"):
+    return "user"
+  return "custom"
+
+
+def _query_markdown_scars_dir(
+    md_dir: str,
+    query: str = "",
+    category: Optional[str] = None,
+    language: Optional[str] = None,
+    limit: int = 3,
+    source: Optional[str] = None,
+    framework: Optional[str] = None,
+    diagnostic_code: Optional[str] = None,
+    workflow_phase: Optional[str] = None,
+    mf_target: Optional[int] = None,
+    exclude_categories: Optional[Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
+  """Parse a Markdown scar directory into an ephemeral in-memory FTS5 SQLite DB and query it."""
+  if not md_dir or not os.path.isdir(md_dir):
+    return []
+  # Scoped import avoids circular dependency (scar_miner -> scar_candidate -> scars_db).
+  from lib.scar_miner import MarkdownScarStore
+
+  source_tier = _infer_markdown_dir_tier(md_dir)
+  parsed_rows = MarkdownScarStore().parse_directory(
+      md_dir, source_tier=source_tier
+  )
+  if not parsed_rows:
+    return []
+
+  conn = None
+  try:
+    conn = sqlite3.connect(":memory:")
+    has_fts5 = init_scars_db_schema(conn)
+    cur = conn.cursor()
+    for row in parsed_rows:
+      cur.execute(
+          """
+          INSERT OR REPLACE INTO scars (
+              id, title, category, category_slug, visibility, applies_when,
+              graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
+              raw_reflex, wound, trap, circuit_breaker, reflex,
+              socratic_probe, source
+          ) VALUES (?, ?, ?, ?, 'local', ?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          """,
+          (
+              row["id"],
+              row["title"],
+              row["category"],
+              row["category_slug"],
+              row.get("applies_when", ""),
+              row["wound"],
+              row["trap"],
+              row.get("circuit_breaker", ""),
+              row["reflex"],
+              row["wound"],
+              row["trap"],
+              row.get("circuit_breaker", ""),
+              row["reflex"],
+              row["socratic_probe"],
+              row["source"],
+          ),
+      )
+    enrich_scars_cursor(cur)
+    if has_fts5:
+      populate_scars_fts(cur)
+    conn.commit()
+    return _query_scars_connection(
+        conn=conn,
+        query=query,
+        category=category,
+        language=language,
+        limit=limit,
+        source=source,
+        framework=framework,
+        diagnostic_code=diagnostic_code,
+        workflow_phase=workflow_phase,
+        mf_target=mf_target,
+        exclude_categories=exclude_categories,
+    )
+  except (sqlite3.Error, OSError, ValueError):
+    return []
+  finally:
+    if conn:
+      conn.close()
+
+
+def count_markdown_dir_scars(markdown_dirs: Sequence[str]) -> int:
+  """Count total valid parsed scars across a sequence of Markdown scar directories."""
+  if not markdown_dirs:
+    return 0
+  from lib.scar_miner import MarkdownScarStore
+
+  store = MarkdownScarStore()
+  total = 0
+  for md_dir in markdown_dirs:
+    if md_dir and os.path.isdir(md_dir):
+      total += len(store.parse_directory(md_dir))
+  return total
 
 
 def query_scars(
@@ -1341,12 +1511,13 @@ def query_scars(
     workflow_phase: Optional[str] = None,
     mf_target: Optional[int] = None,
     exclude_categories: Optional[Iterable[str]] = None,
+    markdown_dirs: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
-  """Query one or more stacked SQLite scars databases in precedence order.
+  """Query stacked Markdown scar directories and SQLite scars databases in precedence order.
 
   Returns only complete processed scars (non-empty ``wound``, ``trap``,
   ``reflex``, ``socratic_probe``, plus non-empty ``circuit_breaker`` whenever
-  ``raw_circuit_breaker`` is non-empty) and deduplicates across databases by
+  ``raw_circuit_breaker`` is non-empty) and deduplicates across tiers by
   ``id``, ``ss_id``, and ``original_id``.
 
   Args:
@@ -1355,23 +1526,30 @@ def query_scars(
     category: Optional category code or prose alias filter.
     language: Optional normalized language tag filter.
     limit: Maximum number of matching scars to return.
-    source: Optional source filter (``makeflow`` or ``upstream``).
+    source: Optional source filter (``makeflow``, ``upstream``, ``local``,
+      ``user``, or ``custom``).
     framework: Optional framework or library filter.
     diagnostic_code: Optional compiler or runtime diagnostic code filter.
     workflow_phase: Optional workflow phase label filter.
     mf_target: Optional Makeflow integer target filter.
     exclude_categories: Optional iterable of category codes, prose aliases, or
       ``WORKFLOW`` to exclude from results.
+    markdown_dirs: Optional ordered sequence of Markdown scar directories to
+      index ephemerally via in-memory FTS5 ahead of SQLite databases.
 
   Returns:
     List of structured scar dictionaries up to ``limit``.
   """
-  if not db_path:
+  if not db_path and not markdown_dirs:
     return []
-  if isinstance(db_path, str):
+  if not db_path:
+    paths: List[str] = []
+  elif isinstance(db_path, str):
     paths = [db_path]
   else:
     paths = [str(p) for p in db_path if p]
+
+  md_dir_list = [str(d) for d in (markdown_dirs or ()) if d]
 
   resolved_excluded = resolve_excluded_category_tokens(exclude_categories)
   eff_limit = max(1, limit)
@@ -1380,27 +1558,11 @@ def query_scars(
   seen_upstream_keys: Set[str] = set()
   seen_legacy_upstream_ids: Set[str] = set()
 
-  for single_path in paths:
-    if not os.path.isfile(single_path):
-      continue
-    prior_seen_count = len(seen_makeflow_keys) + len(seen_upstream_keys)
-    db_matches = _query_single_scars_db(
-        db_path=single_path,
-        query=query,
-        category=category,
-        language=language,
-        limit=eff_limit + prior_seen_count + 5,
-        source=source,
-        framework=framework,
-        diagnostic_code=diagnostic_code,
-        workflow_phase=workflow_phase,
-        mf_target=mf_target,
-        exclude_categories=resolved_excluded,
-    )
+  def _merge_batch(batch_rows: List[Dict[str, Any]]) -> bool:
     current_makeflow_ids: Set[str] = set()
     current_upstream_ids: Set[str] = set()
     current_legacy_upstream_ids: Set[str] = set()
-    for row in db_matches:
+    for row in batch_rows:
       scar_id = str(row.get("id") or "")
       ss_id = str(row.get("ssId") or row.get("ss_id") or "")
       orig_id = str(row.get("originalId") or row.get("original_id") or "")
@@ -1420,10 +1582,51 @@ def query_scars(
           current_legacy_upstream_ids.add(scar_id)
       combined.append(row)
       if len(combined) >= eff_limit:
-        return combined
+        return True
     seen_makeflow_keys.update(current_makeflow_ids)
     seen_upstream_keys.update(current_upstream_ids)
     seen_legacy_upstream_ids.update(current_legacy_upstream_ids)
+    return False
+
+  for md_dir in md_dir_list:
+    if not os.path.isdir(md_dir):
+      continue
+    prior_seen_count = len(seen_makeflow_keys) + len(seen_upstream_keys)
+    md_matches = _query_markdown_scars_dir(
+        md_dir=md_dir,
+        query=query,
+        category=category,
+        language=language,
+        limit=eff_limit + prior_seen_count + 5,
+        source=source,
+        framework=framework,
+        diagnostic_code=diagnostic_code,
+        workflow_phase=workflow_phase,
+        mf_target=mf_target,
+        exclude_categories=resolved_excluded,
+    )
+    if _merge_batch(md_matches):
+      return combined
+
+  for single_path in paths:
+    if not os.path.isfile(single_path):
+      continue
+    prior_seen_count = len(seen_makeflow_keys) + len(seen_upstream_keys)
+    db_matches = _query_single_scars_db(
+        db_path=single_path,
+        query=query,
+        category=category,
+        language=language,
+        limit=eff_limit + prior_seen_count + 5,
+        source=source,
+        framework=framework,
+        diagnostic_code=diagnostic_code,
+        workflow_phase=workflow_phase,
+        mf_target=mf_target,
+        exclude_categories=resolved_excluded,
+    )
+    if _merge_batch(db_matches):
+      return combined
 
   return combined
 

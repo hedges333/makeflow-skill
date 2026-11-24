@@ -8,11 +8,13 @@ Different teams use different AI providers, API keys, and cost budgets. For that
 
 ## 2. Configuration Precedence Order
 
-When a session starts or `workflow_get_config` runs, the plugin resolves configuration in this order (later environment variables override JSON values):
+When a session starts or `workflow_get_config` runs, Makeflow cascades configuration from lowest to highest precedence:
 
-1. Workspace file: `<workspace>/.workflow/config.json` (git-ignored).
-2. Global user file: `~/.gemini/config/makeflow.json`.
-3. Environment variables:
+1. Canonical defaults in `./default_config.json` (packaged at repository root).
+2. Legacy global file: `~/.gemini/config/makeflow.json` (preserved for backward compatibility).
+3. Active agent user-global file: `<agent_plugin_data>/config.json` (selected by `MAKEFLOW_AGENT`, defaulting to `gemini`).
+4. Project-local workspace file: `<workspace>/.workflow/config.json` (git-ignored).
+5. Environment variable overrides:
    - `MAKEFILE_WORKFLOW_CRITIC_MODEL` for `adversarial-critic`.
    - `MAKEFILE_WORKFLOW_WORKER_MODEL` or `MAKEFILE_WORKFLOW_ARCHAEOLOGY_MODEL` for `archaeology-worker`.
    - `MAKEFILE_WORKFLOW_TDD_MODEL` for `tdd-worker`.
@@ -21,6 +23,7 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `MAKEFILE_WORKFLOW_PROD_DBS` for comma-separated live database names to block.
    - `MAKEFILE_WORKFLOW_TEST_DBS` for comma-separated safe test database names to allow.
    - `MAKEFILE_WORKFLOW_PROD_HOSTS` for comma-separated live database hosts to block.
+   - `MAKEFILE_WORKFLOW_SCAR_DIRS` for comma-separated custom synthetic scar directories.
    - `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS` for continuous integration quiet window in seconds (default 180). Set this variable to `0` to disable the post-CI quiescence wait.
    - `MAKEFILE_WORKFLOW_CI_POLL_INTERVAL` for continuous integration polling interval in seconds (default 30). Use an integer of `1` or higher.
    - `MAKEFILE_WORKFLOW_CI_ENABLE_PEER_REVIEWS` set to `true` or `1` to enforce PR peer review approvals, CODEOWNERS, and unresolved review threads at Target 70 (default `false`).
@@ -29,8 +32,12 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `MAKEFILE_WORKFLOW_CI_ENABLE_SESSION_PARKING` set to `true` or `1` to park Target 70 sessions cleanly while awaiting peer reviews or slow CI (default `false`).
    - `MAKEFILE_WORKFLOW_CI_PARKING_CRON` for optional background polling cron expression while parked (default `""`).
    - `MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION` for completed state card action (`unlink` or `archive`, default `unlink`).
+   - `MAKEFLOW_AGENT` for selecting the active agent path profile (`gemini`, `claude`, `cursor`, `copilot`, `codex`, `chatgpt`).
    - `MAKEFLOW_DISABLE_TERMINAL_TITLE` set to `1` or `true` to disable automatic terminal tab title updates.
-4. Canonical defaults in `./default_config.json` (packaged at repository root). Single-item user overrides in `.workflow/config.json` deep-merge recursively into defaults without dropping unset default fields:
+
+Scalar and nested dictionary keys override earlier layers recursively. List settings merge as deduplicated unions across layers. For `scars.directories`, order runs `project-local`, `user-global`, `legacy`, then `MAKEFILE_WORKFLOW_SCAR_DIRS`. Database protection lists combine all layers safely. `workflow_get_config` returns `configSource` (highest-precedence loaded file) and `configSources` (full loaded cascade).
+
+Canonical defaults in `./default_config.json`:
    - `adversarial-critic`: `inherit`
    - `archaeology-worker`: `inherit`
    - `tdd-worker`: `inherit`
@@ -47,11 +54,23 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `ci.enableSessionParking`: `false`. Set to `true` to park Target 70 sessions cleanly while waiting on peer reviews or long-running CI.
    - `ci.parkingCronExpression`: `""`. Optional background polling cron schedule while parked (for example `"*/30 * * * *"`).
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
+   - `scars.directories`: `[]` (optional custom directories containing categorized Markdown scar files or `scars_registry.db`).
    - Database guard: blocks standalone `prod` and `production` names automatically.
+
+### Cross-Agent User-Global Paths
+
+| Agent | User-Global Config | User-Wide Scars Directory | User-Wide SQLite Registry |
+| :--- | :--- | :--- | :--- |
+| `gemini` | `~/.gemini/antigravity-cli/plugin_data/makeflow/config.json` | `~/.gemini/antigravity-cli/plugin_data/makeflow/scars/` | `~/.gemini/antigravity-cli/plugin_data/makeflow/scars_registry.db` |
+| `claude` | `~/.claude/plugin_data/makeflow/config.json` | `~/.claude/plugin_data/makeflow/scars/` | `~/.claude/plugin_data/makeflow/scars_registry.db` |
+| `cursor` | `~/.cursor/plugin_data/makeflow/config.json` | `~/.cursor/plugin_data/makeflow/scars/` | `~/.cursor/plugin_data/makeflow/scars_registry.db` |
+| `copilot` | `~/.copilot/plugin_data/makeflow/config.json` | `~/.copilot/plugin_data/makeflow/scars/` | `~/.copilot/plugin_data/makeflow/scars_registry.db` |
+| `codex` | `~/.codex/plugin_data/makeflow/config.json` | `~/.codex/plugin_data/makeflow/scars/` | `~/.codex/plugin_data/makeflow/scars_registry.db` |
+| `chatgpt` | `~/.chatgpt/plugin_data/makeflow/config.json` | `~/.chatgpt/plugin_data/makeflow/scars/` | `~/.chatgpt/plugin_data/makeflow/scars_registry.db` |
 
 ## 3. Configuration File Schema
 
-Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) to `<workspace>/.workflow/config.json` or `~/.gemini/config/makeflow.json`:
+Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) to `<workspace>/.workflow/config.json` or your agent user-global config path:
 
 ```json
 {
@@ -87,6 +106,9 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
   },
   "state": {
     "completedCardAction": "unlink"
+  },
+  "scars": {
+    "directories": []
   }
 }
 ```

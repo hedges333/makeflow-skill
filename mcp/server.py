@@ -18,15 +18,19 @@ if _REPO_ROOT not in sys.path:
 
 try:
   from lib.scars_db import (
+      count_markdown_dir_scars,
       load_session_scars,
       partition_session_scars,
       query_scars,
+      resolve_scar_markdown_dirs,
       resolve_scars_db_path,
       resolve_scars_db_paths,
       save_session_scars,
   )
 except ImportError:
+  count_markdown_dir_scars = None
   query_scars = None
+  resolve_scar_markdown_dirs = None
   resolve_scars_db_path = None
   resolve_scars_db_paths = None
   load_session_scars = None
@@ -380,9 +384,11 @@ def handle_tools_list(request_id):
       {
           "name": "workflow_query_scars",
           "description": (
-              "Queries public synthetic scars database using full-text search"
-              " (FTS5) or keywords with category, language, framework,"
-              " diagnostic code, and workflow phase filters."
+              "Queries multi-tier synthetic scars across project-local,"
+              " user-wide agent, and custom Markdown directories plus stacked"
+              " SQLite registries using full-text search (FTS5) or keywords"
+              " with category, language, framework, diagnostic code, and"
+              " workflow phase filters."
           ),
           "inputSchema": {
               "type": "object",
@@ -429,7 +435,7 @@ def handle_tools_list(request_id):
                   },
                   "source": {
                       "type": "string",
-                      "description": "Optional source filter (e.g. 'makeflow', 'upstream')",
+                      "description": "Optional source filter (e.g. 'makeflow', 'upstream', 'local', 'user', 'custom')",
                   },
                   "workspaceDir": {
                       "type": "string",
@@ -1061,18 +1067,30 @@ def handle_tools_call(request_id, tool_name, arguments):
             },
         }
       db_paths = [explicit_abs]
+      md_dirs = []
     else:
+      cfg = resolve_workflow_config(ws)
+      custom_scar_dirs = (cfg.get("scars") or {}).get("directories") or []
       db_paths = (
           resolve_scars_db_paths(
               db_path=None,
               workspace_dir=ws,
               package_root=_REPO_ROOT,
+              custom_dirs=custom_scar_dirs,
           )
           if resolve_scars_db_paths is not None
           else []
       )
+      md_dirs = (
+          resolve_scar_markdown_dirs(
+              workspace_dir=ws,
+              custom_dirs=custom_scar_dirs,
+          )
+          if resolve_scar_markdown_dirs is not None
+          else []
+      )
 
-    if not db_paths:
+    if not db_paths and not md_dirs:
       fallback_path = resolve_scars_db_path(
           db_path=explicit_db,
           workspace_dir=ws,
@@ -1130,27 +1148,35 @@ def handle_tools_call(request_id, tool_name, arguments):
         workflow_phase=workflow_phase,
         mf_target=mf_target,
         exclude_categories=exclude_categories,
+        markdown_dirs=md_dirs,
     )
 
     if not raw_results:
       all_empty = True
-      for p_db in db_paths:
-        conn = None
-        try:
-          conn = sqlite3.connect(p_db)
-          cur = conn.cursor()
-          cur.execute("SELECT COUNT(*) FROM scars")
-          row = cur.fetchone()
-          if row and row[0] > 0:
-            all_empty = False
-            break
-        except sqlite3.Error:
-          pass
-        finally:
-          if conn:
-            conn.close()
+      if (
+          count_markdown_dir_scars is not None
+          and count_markdown_dir_scars(md_dirs) > 0
+      ):
+        all_empty = False
+      if all_empty:
+        for p_db in db_paths:
+          conn = None
+          try:
+            conn = sqlite3.connect(p_db)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM scars")
+            row = cur.fetchone()
+            if row and row[0] > 0:
+              all_empty = False
+              break
+          except sqlite3.Error:
+            pass
+          finally:
+            if conn:
+              conn.close()
 
       if all_empty:
+        empty_target = db_paths[0] if db_paths else (md_dirs[0] if md_dirs else "")
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -1160,7 +1186,7 @@ def handle_tools_call(request_id, tool_name, arguments):
                     "text": json.dumps({
                         "status": "EMPTY",
                         "message": (
-                            f"Scars database at '{db_paths[0]}' contains 0 scars. "
+                            f"Scars database at '{empty_target}' contains 0 scars. "
                             "Bundled registry database is unpopulated. "
                             "Run 'make sync-scars' (maintainer) to rebuild."
                         ),
@@ -1197,6 +1223,7 @@ def handle_tools_call(request_id, tool_name, arguments):
                     "scars": scars_out,
                     "alreadyLoaded": already_loaded_out,
                     "searchedDatabases": db_paths,
+                    "searchedDirectories": md_dirs,
                 }, indent=2),
             }]
         },

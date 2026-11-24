@@ -12,7 +12,49 @@ import os
 import re
 from typing import Dict, Mapping, Optional
 
+from lib.agent_paths import AgentPathRegistry
 from lib.ticket_state import TICKET_JSON_FILENAME
+
+SCARS_ENV_VAR = "MAKEFILE_WORKFLOW_SCAR_DIRS"
+
+DEFAULT_WORKFLOW_CONFIG = {
+    "models": {
+        "adversarial-critic": "inherit",
+        "archaeology-worker": "inherit",
+        "tdd-worker": "inherit",
+        "triage-worker": "inherit",
+        "synthetic-scar-importer": "inherit",
+    },
+    "review": {
+        "maxReviewRounds": 3,
+        "strictSixPillars": True,
+        "allowCriticHermeticTests": False,
+    },
+    "testing": {
+        "regressionCommand": "",
+        "regressionTimeoutSeconds": 300,
+    },
+    "ci": {
+        "pollIntervalSeconds": 30,
+        "quiescenceSeconds": 180,
+        "enablePeerReviews": False,
+        "minApprovals": 0,
+        "requireCodeOwnerReviews": False,
+        "enableSessionParking": False,
+        "parkingCronExpression": "",
+    },
+    "database": {
+        "prodDatabases": [],
+        "testDatabases": [],
+        "prodHosts": [],
+    },
+    "state": {
+        "completedCardAction": "unlink",
+    },
+    "scars": {
+        "directories": [],
+    },
+}
 
 ENV_MAPPINGS = {
     "MAKEFILE_WORKFLOW_CRITIC_MODEL": "adversarial-critic",
@@ -302,6 +344,137 @@ def _normalize_str_list(items):
   return [x.strip() for x in items if isinstance(x, str) and x.strip()]
 
 
+def _union_str_lists(*lists):
+  """Compute an order-preserving deduplicated union of string lists."""
+  merged = []
+  seen = set()
+  for items in lists:
+    for item in _normalize_str_list(items):
+      if item not in seen:
+        seen.add(item)
+        merged.append(item)
+  return merged
+
+
+def _union_path_lists(*lists):
+  """Compute an order-preserving deduplicated union of filesystem path lists."""
+  merged = []
+  seen = set()
+  for items in lists:
+    for item in _normalize_str_list(items):
+      norm_key = os.path.normpath(os.path.expanduser(item))
+      if norm_key not in seen:
+        seen.add(norm_key)
+        merged.append(item)
+  return merged
+
+
+def _normalize_scars_config(raw_scars):
+  """Normalize ``scars`` configuration block to a deduplicated ``directories`` list."""
+  scars_dict = raw_scars if isinstance(raw_scars, dict) else {}
+  return {
+      "directories": _union_path_lists(scars_dict.get("directories")),
+  }
+
+
+def _iter_cascaded_config_candidates(workspace_paths, agent=None):
+  """Build ordered ``(path, label, layer_kind)`` config candidates from lowest to highest precedence.
+
+  Order:
+    1. Legacy global file (``~/.gemini/config/makeflow.json``).
+    2. Active agent user-global file (``<agent_plugin_data>/config.json``).
+    3. Project-local workspace file (``<workspace>/.workflow/config.json``).
+  """
+  profile = AgentPathRegistry().get_profile(agent)
+  candidates = []
+  seen_paths = set()
+
+  def _add(path, label, layer_kind):
+    if not path:
+      return
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    if abs_path not in seen_paths:
+      seen_paths.add(abs_path)
+      candidates.append((abs_path, label or abs_path, layer_kind))
+
+  for legacy_path in profile.legacy_config_paths:
+    _add(legacy_path, "~/.gemini/config/makeflow.json", "legacy")
+
+  _add(profile.global_config_path, profile.global_config_path, "user_global")
+
+  local_candidates = []
+  for ws in workspace_paths or []:
+    local_candidates.append(os.path.join(ws, ".workflow", "config.json"))
+  if not workspace_paths and not is_plugin_dir(os.getcwd()):
+    local_candidates.append(os.path.join(os.getcwd(), ".workflow", "config.json"))
+
+  for local_path in local_candidates:
+    if os.path.isfile(local_path):
+      _add(local_path, local_path, "project_local")
+
+  return candidates
+
+
+def _load_cascaded_config_layers(workspace_paths, agent=None):
+  """Load existing config files in cascade order and compute merged layers.
+
+  Returns:
+    Tuple of ``(loaded_layers, loaded_sources, union_db_cfg, union_scar_dirs)``
+    where ``loaded_layers`` is a list of ``(layer_kind, loaded_dict)`` and
+    ``loaded_sources`` is a list of ``(abs_path, display_label)`` in cascade order.
+  """
+  candidates = _iter_cascaded_config_candidates(workspace_paths, agent=agent)
+  loaded_layers = []
+  loaded_sources = []
+  db_lists_by_key = {
+      "prodDatabases": [],
+      "testDatabases": [],
+      "prodHosts": [],
+  }
+  scar_dirs_by_kind = {
+      "project_local": [],
+      "user_global": [],
+      "legacy": [],
+  }
+
+  loaded_project_local = False
+  for cfg_path, label, layer_kind in candidates:
+    if layer_kind == "project_local" and loaded_project_local:
+      continue
+    if not os.path.isfile(cfg_path):
+      continue
+    try:
+      with open(cfg_path, "r", encoding="utf-8") as f:
+        loaded = json.load(f)
+      if isinstance(loaded, dict):
+        if layer_kind == "project_local":
+          loaded_project_local = True
+        loaded_layers.append((layer_kind, loaded))
+        loaded_sources.append((cfg_path, label))
+        raw_db = loaded.get("database")
+        if isinstance(raw_db, dict):
+          for db_key in ("prodDatabases", "testDatabases", "prodHosts"):
+            if db_key in raw_db:
+              db_lists_by_key[db_key].append(raw_db[db_key])
+        raw_scars = loaded.get("scars")
+        if isinstance(raw_scars, dict) and "directories" in raw_scars:
+          scar_dirs_by_kind[layer_kind].append(raw_scars["directories"])
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+      pass
+
+  union_db_cfg = {
+      db_key: _union_str_lists(*db_lists_by_key[db_key])
+      for db_key in ("prodDatabases", "testDatabases", "prodHosts")
+  }
+  # scars.directories priority union: project-local -> user-global -> legacy
+  union_scar_dirs = _union_path_lists(
+      *scar_dirs_by_kind["project_local"],
+      *scar_dirs_by_kind["user_global"],
+      *scar_dirs_by_kind["legacy"],
+  )
+  return loaded_layers, loaded_sources, union_db_cfg, union_scar_dirs
+
+
 def _parse_csv_env(env_name):
   raw = os.getenv(env_name, "")
   if not raw:
@@ -343,41 +516,7 @@ def load_default_config():
           return data
       except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
-  return {
-      "models": {
-          "adversarial-critic": "inherit",
-          "archaeology-worker": "inherit",
-          "tdd-worker": "inherit",
-          "triage-worker": "inherit",
-          "synthetic-scar-importer": "inherit",
-      },
-      "review": {
-          "maxReviewRounds": 3,
-          "strictSixPillars": True,
-          "allowCriticHermeticTests": False,
-      },
-      "testing": {
-          "regressionCommand": "",
-          "regressionTimeoutSeconds": 300,
-      },
-      "ci": {
-          "pollIntervalSeconds": 30,
-          "quiescenceSeconds": 180,
-          "enablePeerReviews": False,
-          "minApprovals": 0,
-          "requireCodeOwnerReviews": False,
-          "enableSessionParking": False,
-          "parkingCronExpression": "",
-      },
-      "database": {
-          "prodDatabases": [],
-          "testDatabases": [],
-          "prodHosts": [],
-      },
-      "state": {
-          "completedCardAction": "unlink",
-      },
-  }
+  return copy.deepcopy(DEFAULT_WORKFLOW_CONFIG)
 
 
 def is_plugin_dir(path):
@@ -411,43 +550,33 @@ def is_plugin_dir(path):
   return False
 
 
-def get_workflow_config(workspace_paths):
+def get_workflow_config(workspace_paths, agent=None):
   """Resolves normalized hook workflow configuration and source label.
+
+  Cascades ``default_config.json`` -> legacy ``~/.gemini/config/makeflow.json``
+  -> active agent user-global ``config.json`` -> project-local
+  ``.workflow/config.json`` -> environment overrides.
 
   Args:
     workspace_paths: List of candidate workspace root paths.
+    agent: Optional active agent override.
 
   Returns:
     Tuple of ``(config_dict, source_label)`` where ``source_label`` is ``None``
     when no config file or environment override applies.
   """
-  default_cfg = load_default_config()
-  raw_cfg = {}
+  merged_cfg = load_default_config()
+  loaded_layers, loaded_sources, union_db_cfg, union_scar_dirs = (
+      _load_cascaded_config_layers(workspace_paths, agent=agent)
+  )
+  for _, layer_data in loaded_layers:
+    merged_cfg = deep_merge(merged_cfg, layer_data)
+
   source = None
-
-  candidates = []
-  for ws in workspace_paths:
-    candidates.append((os.path.join(ws, ".workflow", "config.json"), None))
-  if not workspace_paths and not is_plugin_dir(os.getcwd()):
-    candidates.append((os.path.join(os.getcwd(), ".workflow", "config.json"), None))
-  candidates.append((
-      os.path.expanduser("~/.gemini/config/makeflow.json"),
-      "~/.gemini/config/makeflow.json",
-  ))
-
-  for cfg_path, label in candidates:
-    if os.path.isfile(cfg_path):
-      try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-          loaded = json.load(f)
-        if isinstance(loaded, dict):
-          raw_cfg = loaded
-          source = label or cfg_path
-          break
-      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        pass
-
-  merged_cfg = deep_merge(default_cfg, raw_cfg)
+  if len(loaded_sources) == 1:
+    source = loaded_sources[0][1]
+  elif len(loaded_sources) > 1:
+    source = " + ".join(label for _, label in loaded_sources)
 
   models = {}
   raw_models = merged_cfg.get("models")
@@ -457,15 +586,14 @@ def get_workflow_config(workspace_paths):
         models[m_key] = m_val.strip()
 
   db_cfg = {
-      "prodDatabases": [],
-      "testDatabases": [],
-      "prodHosts": [],
+      "prodDatabases": list(union_db_cfg["prodDatabases"]),
+      "testDatabases": list(union_db_cfg["testDatabases"]),
+      "prodHosts": list(union_db_cfg["prodHosts"]),
   }
-  raw_db = merged_cfg.get("database")
-  if isinstance(raw_db, dict):
-    for db_key in ("prodDatabases", "testDatabases", "prodHosts"):
-      if db_key in raw_db:
-        db_cfg[db_key] = _normalize_str_list(raw_db[db_key])
+  scars_cfg = _normalize_scars_config(merged_cfg.get("scars"))
+  scars_cfg["directories"] = _union_path_lists(
+      union_scar_dirs, scars_cfg["directories"]
+  )
 
   ci_cfg = _normalize_ci_config(merged_cfg.get("ci"))
 
@@ -484,12 +612,15 @@ def get_workflow_config(workspace_paths):
     if val:
       items = [x.strip() for x in val.split(",") if x.strip()]
       if items:
-        merged = list(db_cfg[db_key])
-        for item in items:
-          if item not in merged:
-            merged.append(item)
-        db_cfg[db_key] = merged
+        db_cfg[db_key] = _union_str_lists(db_cfg[db_key], items)
         env_applied.append(env_var)
+
+  env_scar_dirs = _parse_csv_env(SCARS_ENV_VAR)
+  if env_scar_dirs:
+    scars_cfg["directories"] = _union_path_lists(
+        scars_cfg["directories"], env_scar_dirs
+    )
+    env_applied.append(SCARS_ENV_VAR)
 
   state_cfg = {"completedCardAction": "unlink"}
   raw_state = merged_cfg.get("state")
@@ -512,48 +643,27 @@ def get_workflow_config(workspace_paths):
       "ci": ci_cfg,
       "database": db_cfg,
       "state": state_cfg,
+      "scars": scars_cfg,
+      "configSources": [path for path, _ in loaded_sources],
   }, source
 
 
-def load_database_config(payload):
-  """Loads database isolation rules from workspace config, global config, and env."""
+def load_database_config(payload, agent=None):
+  """Loads cascaded database isolation rules from global config, workspace config, and env."""
+  workspace_paths = (payload or {}).get("workspacePaths") or []
+  _, _, union_db_cfg, _ = _load_cascaded_config_layers(
+      workspace_paths, agent=agent
+  )
   db_cfg = {
-      "prodDatabases": [],
-      "testDatabases": [],
-      "prodHosts": [],
+      "prodDatabases": list(union_db_cfg["prodDatabases"]),
+      "testDatabases": list(union_db_cfg["testDatabases"]),
+      "prodHosts": list(union_db_cfg["prodHosts"]),
   }
-
-  candidates = []
-  workspace_paths = payload.get("workspacePaths") or []
-  for ws in workspace_paths:
-    candidates.append(os.path.join(ws, ".workflow", "config.json"))
-  if not workspace_paths and not is_plugin_dir(os.getcwd()):
-    candidates.append(os.path.join(os.getcwd(), ".workflow", "config.json"))
-  candidates.append(os.path.expanduser("~/.gemini/config/makeflow.json"))
-
-  for cfg_path in candidates:
-    if os.path.isfile(cfg_path):
-      try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-          loaded = json.load(f)
-        if isinstance(loaded, dict):
-          if isinstance(loaded.get("database"), dict):
-            raw_db = loaded["database"]
-            for key in ("prodDatabases", "testDatabases", "prodHosts"):
-              if key in raw_db:
-                db_cfg[key] = _normalize_str_list(raw_db[key])
-          break
-      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        pass
 
   for env_var, key in DB_ENV_MAPPINGS.items():
     vals = _parse_csv_env(env_var)
     if vals:
-      merged = list(db_cfg[key])
-      for v in vals:
-        if v not in merged:
-          merged.append(v)
-      db_cfg[key] = merged
+      db_cfg[key] = _union_str_lists(db_cfg[key], vals)
 
   return db_cfg
 
@@ -672,42 +782,44 @@ def map_to_agy_tier(model_value):
   return "inherit"
 
 
-def resolve_workflow_config(workspace_dir=None):
-  """Resolves workflow configuration from workspace, global path, or environment.
+def resolve_workflow_config(workspace_dir=None, agent=None):
+  """Resolves cascaded workflow configuration from global, workspace, and env layers.
+
+  Precedence order:
+    ``default_config.json`` -> legacy ``~/.gemini/config/makeflow.json`` ->
+    active agent user-global ``config.json`` -> project-local
+    ``.workflow/config.json`` -> ``MAKEFILE_WORKFLOW_*`` environment variables.
 
   Args:
     workspace_dir: Optional project root directory path.
+    agent: Optional active agent override.
 
   Returns:
     Normalized workflow configuration dictionary including ``configSource``,
-    ``envOverrides``, and ``agyModelTiers``.
+    ``configSources``, ``envOverrides``, ``scars``, and ``agyModelTiers``.
   """
   ws = workspace_dir if workspace_dir is not None else resolve_workspace_dir({})
-  local_cfg_path = os.path.join(ws, ".workflow", "config.json") if ws else None
-  global_cfg_path = os.path.expanduser("~/.gemini/config/makeflow.json")
+  ws_list = [ws] if ws else []
 
   config = load_default_config()
-  config["configSource"] = "defaults"
-  config["envOverrides"] = []
+  loaded_layers, loaded_sources, union_db_cfg, union_scar_dirs = (
+      _load_cascaded_config_layers(ws_list, agent=agent)
+  )
+  for _, layer_data in loaded_layers:
+    config = deep_merge(config, layer_data)
 
-  candidates = [p for p in (local_cfg_path, global_cfg_path) if p]
-  for cfg_path in candidates:
-    if os.path.isfile(cfg_path):
-      try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-          loaded = json.load(f)
-        if isinstance(loaded, dict):
-          config = deep_merge(config, loaded)
-          if "database" in config and isinstance(config["database"], dict):
-            for db_key in ("prodDatabases", "testDatabases", "prodHosts"):
-              if db_key in config["database"]:
-                config["database"][db_key] = _normalize_str_list(
-                    config["database"][db_key]
-                )
-          config["configSource"] = cfg_path
-          break
-      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        pass
+  config["database"] = {
+      "prodDatabases": list(union_db_cfg["prodDatabases"]),
+      "testDatabases": list(union_db_cfg["testDatabases"]),
+      "prodHosts": list(union_db_cfg["prodHosts"]),
+  }
+  config["scars"] = _normalize_scars_config(config.get("scars"))
+  config["scars"]["directories"] = _union_path_lists(
+      union_scar_dirs, config["scars"]["directories"]
+  )
+  config["configSources"] = [path for path, _ in loaded_sources]
+  config["configSource"] = loaded_sources[-1][0] if loaded_sources else "defaults"
+  config["envOverrides"] = []
 
   config["ci"] = _normalize_ci_config(config.get("ci"))
   config["review"] = _normalize_review_config(config.get("review"))
@@ -722,12 +834,19 @@ def resolve_workflow_config(workspace_dir=None):
   for env_var, db_key in DB_ENV_MAPPINGS.items():
     vals = _parse_csv_env(env_var)
     if vals:
-      merged = list(config["database"][db_key])
-      for v in vals:
-        if v not in merged:
-          merged.append(v)
-      config["database"][db_key] = merged
+      config["database"][db_key] = _union_str_lists(
+          config["database"][db_key], vals
+      )
       config["envOverrides"].append(f"{env_var}={','.join(vals)}")
+
+  env_scar_dirs = _parse_csv_env(SCARS_ENV_VAR)
+  if env_scar_dirs:
+    config["scars"]["directories"] = _union_path_lists(
+        config["scars"]["directories"], env_scar_dirs
+    )
+    config["envOverrides"].append(
+        f"{SCARS_ENV_VAR}={','.join(env_scar_dirs)}"
+    )
 
   for env_var, num in _apply_ci_env_overrides(config["ci"]):
     config["envOverrides"].append(f"{env_var}={num}")

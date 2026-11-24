@@ -69,17 +69,18 @@ In Antigravity CLI, `agents/*.md` files declare `name`, `description`, and `tool
 
 ### 1.6 Synthetic Scar Creation Lifecycle and Two-Tier Discovery
 
-Synthetic Scars use a two-tier storage and discovery lifecycle:
+Synthetic Scars use a multi-tier storage and discovery lifecycle built on the Two-Tier core and local model:
 
-1. Tier 1 core scars live in `skills/makeflow/references/scars/` and `skills/makeflow/references/polyglot/`.
-2. Tier 2 project-local scars live in `.workflow/scars/` (for example `.workflow/scars/local.md`).
-3. If a core scar is a ticket deliverable, scope it in Target 15 and plan it in Target 20.
-4. Author and test core scars with `tdd-worker` at Target 30 on a feature branch, and review in Target 40.
-5. Target 90 never creates or modifies core catalog files on `main`.
-6. At Target 90, record only merged scar IDs in `.workflow/history.json` and `.workflow/history.md`. Update `CHANGELOG.md` under `## [Unreleased]` and prompt the user for a release.
-7. Inside `makeflow-skill`, record incidental session lessons in ticket notes for a future feature request ticket.
-8. Inside external user projects, offer to record project-specific lessons in `.workflow/scars/local.md` at Target 90.
-9. During Target 15, Target 20, Target 30, Target 40, and Target 70, inspect both `skills/makeflow/references/scars/` and `.workflow/scars/`, and query stacked SQLite registries via `workflow_query_scars`.
+1. Tier 1 core scars live in `skills/makeflow/references/scars/`, `skills/makeflow/references/polyglot/`, and bundled `skills/makeflow/data/scars_registry.db`.
+2. Tier 2 project-local scars live in `.workflow/scars/` (categorized files such as `data.md`, `process.md`, or `.workflow/scars/local.md`).
+3. User-wide agent scars live in `<agent_plugin_data>/scars/` and custom team directories live in cascaded `scars.directories`.
+4. If a core scar is a ticket deliverable, scope it in Target 15 and plan it in Target 20.
+5. Author and test core scars with `tdd-worker` at Target 30 on a feature branch, and review in Target 40.
+6. Target 90 never creates or modifies core catalog files on `main`.
+7. At Target 90, run the Rapid-Regret Miner via `scripts/scar_miner.py`. Offer project, user-wide agent, or custom directory storage. Save optional `scars.directories` paths to `user-global`, `project-local`, or `both` configs.
+8. Offer to submit an upstream enhancement issue on `hedges333/makeflow-skill` after local save. Require explicit human confirmation (`--approved`) under `SCAR-PROC-108` and omit assigned integer scar IDs.
+9. Record merged and earned scar IDs in `.workflow/history.json` and `.workflow/history.md`. Update `CHANGELOG.md` under `## [Unreleased]` and prompt the user for a release.
+10. During Target 15, Target 20, Target 30, Target 40, and Target 70, inspect `skills/makeflow/references/scars/` and `.workflow/scars/`. Also query all four tiers (project, user-wide agent, custom `scars.directories`, and bundled SQLite) via `workflow_query_scars`.
 
 ### 1.7 Full Discussion and Comment Thread Ingestion at Intake (SCAR-PROC-107)
 

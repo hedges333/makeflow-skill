@@ -22,7 +22,7 @@ Move through these targets in dependency order:
 - Target 70 (bot-quiescence): Check CI status and automated review comments.
 - Target 75 (ready-to-land): Present policy checks and wait for merge approval.
 - Target 80 (land): Merge the pull request, delete the ticket branch, and update `main`.
-- Target 90 (finish): Record lessons learned, update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md`, and prompt whether to cut a release.
+- Target 90 (finish): Run the Rapid-Regret Miner to save lessons to `.workflow/scars/`, `~/.chatgpt/plugin_data/makeflow/scars/`, or `scars.directories`. Cascade `~/.chatgpt/plugin_data/makeflow/config.json` and `.workflow/config.json`. Offer human-approved upstreaming without integer IDs. Update `.workflow/history.json`, `.workflow/history.md`, and `CHANGELOG.md`, then ask whether to cut a release.
 
 2. DATABASE ISOLATION AND QUERY SPEED
 - Never connect tests to live production databases.
