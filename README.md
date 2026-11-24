@@ -241,7 +241,12 @@ Copy [`.workflow/config.json.example`](./.workflow/config.json.example) to `<wor
   },
   "ci": {
     "pollIntervalSeconds": 30,
-    "quiescenceSeconds": 180
+    "quiescenceSeconds": 180,
+    "enablePeerReviews": false,
+    "minApprovals": 0,
+    "requireCodeOwnerReviews": false,
+    "enableSessionParking": false,
+    "parkingCronExpression": ""
   },
   "database": {
     "prodDatabases": [],
@@ -272,7 +277,30 @@ export MAKEFILE_WORKFLOW_TEST_DBS="billing_sandbox,myapp_test"
 export MAKEFILE_WORKFLOW_PROD_HOSTS="db.company.internal"
 ```
 
-### 3. Interactive IDE Model Switch Reminders
+### 3. Multi-Contributor Peer Reviews, CODEOWNERS, and Session Parking
+
+By default, Makeflow runs in zero-wait sole-developer mode (`enablePeerReviews: false`, `enableSessionParking: false`). Target 70 checks PR-scoped CI workflows and review bots, then moves straight to Target 75 without waiting for human `+1` approvals. PR-branch firewalling (`headRefName` verification on single-PR GraphQL queries) is always active to prevent cross-PR interference.
+
+When your team adds branch protection or `.github/CODEOWNERS`, opt in inside `<workspace>/.workflow/config.json`:
+
+```json
+{
+  "ci": {
+    "enablePeerReviews": true,
+    "minApprovals": 1,
+    "requireCodeOwnerReviews": true,
+    "enableSessionParking": true,
+    "parkingCronExpression": "*/30 * * * *"
+  }
+}
+```
+
+- `ci.enablePeerReviews`: Enforces GitHub branch protection approval counts, stale review dismissal, CODEOWNERS, `CHANGES_REQUESTED`, and unresolved review threads.
+- `ci.minApprovals` and `ci.requireCodeOwnerReviews`: Provide local floors that work even when non-admin tokens receive HTTP `403` or `404` on branch protection lookups.
+- `ci.enableSessionParking`: Parks Target 70 cleanly in `.workflow/state/70_parking_state.json` while waiting for peer reviews or slow CI. Run `make -f .workflow/state/Makefile resume-parked` at Target 00 to re-check the PR and advance directly to Target 75 for human landing approval.
+- `ci.parkingCronExpression`: Optional background polling schedule while parked (leave empty for on-demand Target 00 resumption).
+
+### 4. Interactive IDE Model Switch Reminders
 
 Interactive IDE tools (Cursor, GitHub Copilot, ChatGPT) cannot switch models automatically through subagent calls. If `.workflow/config.json` specifies models or "inherit", the agent bypasses the model picker prompt. When unconfigured, the agent prompts you at Target 40 to select your deep-reasoning model in the UI picker and pauses before starting review. At Target 45, the agent tells you that you can switch back. Read [13. Configuration and User Preferences](./skills/makeflow/references/13_configuration_and_user_preferences.md) for full details.
 

@@ -18,7 +18,12 @@
   },
   "ci": {
     "pollIntervalSeconds": 30,
-    "quiescenceSeconds": 180
+    "quiescenceSeconds": 180,
+    "enablePeerReviews": false,
+    "minApprovals": 0,
+    "requireCodeOwnerReviews": false,
+    "enableSessionParking": false,
+    "parkingCronExpression": ""
   },
   "database": {
     "prodDatabases": [],

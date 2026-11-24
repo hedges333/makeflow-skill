@@ -23,6 +23,11 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `MAKEFILE_WORKFLOW_PROD_HOSTS` for comma-separated live database hosts to block.
    - `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS` for continuous integration quiet window in seconds (default 180). Set this variable to `0` to disable the post-CI quiescence wait.
    - `MAKEFILE_WORKFLOW_CI_POLL_INTERVAL` for continuous integration polling interval in seconds (default 30). Use an integer of `1` or higher.
+   - `MAKEFILE_WORKFLOW_CI_ENABLE_PEER_REVIEWS` set to `true` or `1` to enforce PR peer review approvals, CODEOWNERS, and unresolved review threads at Target 70 (default `false`).
+   - `MAKEFILE_WORKFLOW_CI_MIN_APPROVALS` for local minimum `+1` approvals floor when peer reviews are enabled (default `0`).
+   - `MAKEFILE_WORKFLOW_CI_REQUIRE_CODEOWNER_REVIEWS` set to `true` or `1` to require pending CODEOWNERS team reviews when peer reviews are enabled (default `false`).
+   - `MAKEFILE_WORKFLOW_CI_ENABLE_SESSION_PARKING` set to `true` or `1` to park Target 70 sessions cleanly while awaiting peer reviews or slow CI (default `false`).
+   - `MAKEFILE_WORKFLOW_CI_PARKING_CRON` for optional background polling cron expression while parked (default `""`).
    - `MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION` for completed state card action (`unlink` or `archive`, default `unlink`).
    - `MAKEFLOW_DISABLE_TERMINAL_TITLE` set to `1` or `true` to disable automatic terminal tab title updates.
 4. Canonical defaults in `./default_config.json` (packaged at repository root). Single-item user overrides in `.workflow/config.json` deep-merge recursively into defaults without dropping unset default fields:
@@ -36,6 +41,11 @@ When a session starts or `workflow_get_config` runs, the plugin resolves configu
    - `testing.regressionTimeoutSeconds`: `300`. Positive timeout in seconds for `verify-regression` execution.
    - `ci.quiescenceSeconds`: `180`. Set to `0` to disable the post-CI quiescence wait.
    - `ci.pollIntervalSeconds`: `30`. Use `1` or higher.
+   - `ci.enablePeerReviews`: `false` (sole-developer default). Set to `true` to enforce GitHub branch protection approvals, stale review dismissal, CODEOWNERS, `CHANGES_REQUESTED`, and unresolved review threads.
+   - `ci.minApprovals`: `0`. Optional local floor (`>= 0`) for required `+1` approvals when `ci.enablePeerReviews` is `true`.
+   - `ci.requireCodeOwnerReviews`: `false`. Optional local toggle to require pending CODEOWNERS reviews when `ci.enablePeerReviews` is `true`.
+   - `ci.enableSessionParking`: `false`. Set to `true` to park Target 70 sessions cleanly while waiting on peer reviews or long-running CI.
+   - `ci.parkingCronExpression`: `""`. Optional background polling cron schedule while parked (for example `"*/30 * * * *"`).
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
    - Database guard: blocks standalone `prod` and `production` names automatically.
 
@@ -63,7 +73,12 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
   },
   "ci": {
     "pollIntervalSeconds": 30,
-    "quiescenceSeconds": 180
+    "quiescenceSeconds": 180,
+    "enablePeerReviews": false,
+    "minApprovals": 0,
+    "requireCodeOwnerReviews": false,
+    "enableSessionParking": false,
+    "parkingCronExpression": ""
   },
   "database": {
     "prodDatabases": [],
@@ -72,6 +87,23 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
   },
   "state": {
     "completedCardAction": "unlink"
+  }
+}
+```
+
+### Upgrading from Sole Developer to a Multi-Contributor Team
+
+Sole developers keep default values (`enablePeerReviews: false`, `enableSessionParking: false`) for zero-wait landing after CI and bot triage.
+When your team adds GitHub branch protection or `.github/CODEOWNERS`, opt in inside `<workspace>/.workflow/config.json`:
+
+```json
+{
+  "ci": {
+    "enablePeerReviews": true,
+    "minApprovals": 1,
+    "requireCodeOwnerReviews": true,
+    "enableSessionParking": true,
+    "parkingCronExpression": "*/30 * * * *"
   }
 }
 ```

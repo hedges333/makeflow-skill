@@ -15,6 +15,7 @@ from lib.config import (
     is_plugin_dir,
     is_ticket_active,
 )
+from lib.parking_state import ParkingStateStore, format_parking_status_label
 from lib.ticket_state import TICKET_JSON_FILENAME
 from lib.workflow_gates import refresh_state_makefile_if_ignored
 
@@ -106,6 +107,15 @@ class SessionStartScript(BaseScript):
           f"{state_dir}. Read all state cards at Target 00 (read-init-d) "
           "before taking new action."
       )
+      parking = ParkingStateStore(state_dir).load()
+      if parking is not None and parking.parked:
+        label = format_parking_status_label(parking)
+        pr_info = f" (PR #{parking.pr_number})" if parking.pr_number else ""
+        notes.append(
+            f"Session Status: {label}{pr_info}. Run "
+            "'make -f .workflow/state/Makefile resume-parked' at Target 00 "
+            "to re-check status."
+        )
       ws_root = workspace_paths[0] if workspace_paths else os.getcwd()
       set_dynamic_terminal_title(ws_root)
     else:
