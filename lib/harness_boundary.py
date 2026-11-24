@@ -100,6 +100,7 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "lib/repo_tree.py",
     "lib/safe_copy.py",
     "lib/signal_trap.py",
+    "lib/parking_state.py",
 })
 
 _TRAILING_BOUNDARY_PATTERN = r"(?![A-Za-z0-9_/\-]|\.[A-Za-z0-9_])"

@@ -563,6 +563,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/repo_tree.py",
     "lib/safe_copy.py",
     "lib/signal_trap.py",
+    "lib/parking_state.py",
     "hooks.json",
     *STATE_GOVERNANCE_RELPATHS,
 })
