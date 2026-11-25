@@ -2904,7 +2904,7 @@ def validate_ast_scrubber_scar_ast_01():
       if expected_dir_tok not in ast_lint_block:
         errors.append(f"{mk_rel} 'ast-lint:' must scrub $({expected_dir_tok})")
 
-  gates_rel = "lib/workflow_gates.py"
+  gates_rel = "lib/state_makefile.py"
   gates_path = repo_path(gates_rel)
   if not os.path.exists(gates_path):
     errors.append(f"Missing {gates_rel}")
@@ -3364,8 +3364,12 @@ def validate_subagent_tool_mounting_permissions():
   ):
     errors.append("Negative falsification failed to catch omitted required tool 'send_message'")
 
-  # Verify scripts/workflow_gates.py and lib/workflow_gates.py do NOT contain subagent-def or _gate_subagent_def
-  for gates_rel in ("scripts/workflow_gates.py", "lib/workflow_gates.py"):
+  # Verify scripts/workflow_gates.py, lib/workflow_gates.py, and lib/workflow_gates_cli.py do NOT contain subagent-def or _gate_subagent_def
+  for gates_rel in (
+      "scripts/workflow_gates.py",
+      "lib/workflow_gates.py",
+      "lib/workflow_gates_cli.py",
+  ):
     gates_script = repo_path(gates_rel)
     if not os.path.exists(gates_script):
       errors.append(f"Missing {gates_rel}")

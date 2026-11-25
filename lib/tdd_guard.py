@@ -207,16 +207,23 @@ CORE_GOVERNANCE_FILES = (
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
     "lib/base_script.py",
+    "lib/commit_gates.py",
     "lib/commit_msg.py",
     "lib/config.py",
     "lib/git_index.py",
+    "lib/intake_gates.py",
+    "lib/main_sync.py",
+    "lib/parking_gates.py",
+    "lib/plugin_gates.py",
     "lib/reflex.py",
     "lib/regression_gate.py",
     "lib/repo_tree.py",
     "lib/shell_safety.py",
+    "lib/state_makefile.py",
     "lib/tdd_guard.py",
     "lib/ticket_state.py",
     "lib/workflow_gates.py",
+    "lib/workflow_gates_cli.py",
 )
 
 
