@@ -3074,5 +3074,31 @@
     "closes_issue": true,
     "tests_added": 22,
     "scars_earned": []
+  },
+  {
+    "id": "GH-117",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/117",
+    "title": "[FEAT] Improve Rapid-Regret Miner with interactive multi-tier scar storage, cross-agent paths, and community upstreaming",
+    "request": "Add canonical six-agent path registry in lib/agent_paths.py, cascading default/legacy/user-global/project-local/env configuration with list-union merging in lib/config.py, Target 90 Rapid-Regret Miner engine and BaseScript CLI (lib/scar_miner.py, scripts/scar_miner.py) with Circuit Breaker support and human-approved GitHub upstreaming, four-tier Markdown and SQLite scar discovery in lib/scars_db.py and mcp/server.py, GH-296 governance closure registration for lib/agent_paths.py, updated manuals, rules, agent prompts, and adapters, plus 37 hermetic unit tests.",
+    "branch": "feat/117-rapid-regret-miner-multi-tier-scars",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "mcp",
+      "skills",
+      "agents",
+      "rules",
+      "tests"
+    ],
+    "started_at": "2026-11-23T18:26:32Z",
+    "completed_at": "2026-11-25T19:48:34Z",
+    "commit_sha": "43e5f432718a8946c88687ad4ef477ebfb030a7e",
+    "pr_number": 302,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/302",
+    "closes_issue": true,
+    "tests_added": 37,
+    "scars_earned": [
+      "SCAR-LOCAL-DATA-0001: Track Fenced Code Block State During Line-Based Markdown Parsing"
+    ]
   }
 ]

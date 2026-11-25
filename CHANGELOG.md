@@ -28,6 +28,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-292: Enforce Conventional Commits in PreToolUse git commit checks and add post-commit Target 50 exit revalidation across lib/commit_msg.py, lib/pre_tool_guard.py, lib/state_machine.py, and lib/workflow_gates.py.
 - GH-47: Add opt-in peer review approvals, CODEOWNERS checks, PR-branch firewalling, and Target 70 and Target 00 session parking with sole-developer defaults.
 - GH-296: Add forward-compatible AST import-closure parity tests, close top-level governance import gaps, and sync 03_tdd_and_code_quality.md with CORE_GOVERNANCE_FILES.
+- GH-117: Add multi-tier scar miner, six-agent paths, cascading config, and four-tier scar discovery.
 
 ### Changed
 
