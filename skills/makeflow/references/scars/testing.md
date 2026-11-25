@@ -40,7 +40,7 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 - **Wound**: Running a large test suite during active debugging generates hundreds of cascading tracebacks, exhausting context limits and obscuring the initial defect.
 - **Trap**: Running broad test suites without fail-fast flags while attempting to iterate on a single failing test.
 - **Permanent Reflex**: Use fail-fast flags (`pytest -x -v` or language equivalent) during active Red-Green TDD cycles. Iterate exclusively on the targeted failing test until green before running the full regression suite.
-- **Socratic Probe**: Can you develop and run targeted tests with fail-fast flags so execution stops immediately on failure? If you iterate on only the failing test until it passes, will you identify defects without drowning in cascading logs?
+- **Socratic Probe**: Can you develop and run targeted tests with fail-fast flags so execution stops immediately on failure? If you iterate on only the failing test until it passes, will you identify defects without drowning in cascading logs? Can you identify and fix the root cause without changing the test just to make it pass, or is there a specific and justifiable reason why the test needs to change?
 
 ### SCAR-TEST-10: Pre-Flight Structural Static Analysis Gate
 
