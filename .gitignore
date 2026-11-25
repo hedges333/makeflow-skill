@@ -33,7 +33,6 @@ Thumbs.db
 .tmp/
 *.tmp
 *.log
-.workflow/config.json
 !.workflow/config.json.example
 .workflow/state/
 .workflow/archive/
