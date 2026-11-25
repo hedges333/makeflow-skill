@@ -3034,5 +3034,25 @@
     "closes_issue": true,
     "tests_added": 30,
     "scars_earned": []
+  },
+  {
+    "id": "GH-296",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/296",
+    "title": "[DOCS/TEST] Keep governance file list in 03_tdd_and_code_quality.md in sync with CORE_GOVERNANCE_FILES and add forward-compatible parity test",
+    "request": "Close top-level transitive governance import gaps across CORE_GOVERNANCE_FILES (+5), GOVERNANCE_FILE_RELPATHS (+8 including lib/parking_state.py), and HARNESS_INTERNAL_RELPATHS (+4), update skills/makeflow/references/03_tdd_and_code_quality.md to list all 14 CORE_GOVERNANCE_FILES, and add 12 hermetic forward-compatible parity tests in tests/test_governance_parity.py covering doc bijection, cross-list subset invariants, hooks.json discovery, nested subpackage __init__.py resolution, malformed bullet rejection, and AST import-closure verification.",
+    "branch": "feat/296-governance-file-list-parity",
+    "subprojects": [
+      "lib",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-23T20:27:47Z",
+    "completed_at": "2026-11-25T19:03:51Z",
+    "commit_sha": "3d0612af360664890276d51debb3a50a7c86a511",
+    "pr_number": 299,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/299",
+    "closes_issue": true,
+    "tests_added": 12,
+    "scars_earned": []
   }
 ]
