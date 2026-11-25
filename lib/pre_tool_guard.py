@@ -542,6 +542,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
     "scripts/session_start.py",
+    "lib/agent_paths.py",
     "lib/base_script.py",
     "lib/commit_msg.py",
     "lib/git_index.py",

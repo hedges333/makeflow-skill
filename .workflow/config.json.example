@@ -1,5 +1,5 @@
 {
-  "$comment": "Makefile Workflow User Configuration Template. Subagent tiers are specific to Google Antigravity (agy). Valid tiers are inherit, flash_lite, flash, and pro. When set to inherit, subagents inherit the active model and session reasoning effort (/effort). Other platforms ignore this section.",
+  "$comment": "Makefile Workflow User Configuration Template. Cascades default -> legacy ~/.gemini/config/makeflow.json -> agent plugin_data/makeflow/config.json -> .workflow/config.json -> env. Subagent tiers are specific to Google Antigravity (agy). Valid tiers are inherit, flash_lite, flash, and pro. When set to inherit, subagents inherit the active model and session reasoning effort (/effort). Other platforms ignore this section.",
   "models": {
     "adversarial-critic": "inherit",
     "archaeology-worker": "inherit",
@@ -32,5 +32,8 @@
   },
   "state": {
     "completedCardAction": "unlink"
+  },
+  "scars": {
+    "directories": []
   }
 }

@@ -1,5 +1,5 @@
 {
-  "$comment": "Canonical default configuration for makeflow. Overridden by .workflow/config.json or ~/.gemini/config/makeflow.json.",
+  "$comment": "Canonical default configuration for makeflow. Cascades default -> legacy ~/.gemini/config/makeflow.json -> agent plugin_data/makeflow/config.json -> .workflow/config.json -> MAKEFILE_WORKFLOW_* env overrides.",
   "models": {
     "adversarial-critic": "inherit",
     "archaeology-worker": "inherit",
@@ -32,6 +32,9 @@
   },
   "state": {
     "completedCardAction": "unlink"
+  },
+  "scars": {
+    "directories": []
   },
   "targets": {
     "T00": {

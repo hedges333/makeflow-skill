@@ -107,22 +107,28 @@ If the repository runs without pull requests, follow this lifecycle:
 Run these steps during Target 90 after a pull request merges:
 
 1. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90 (`finish`) while keeping the session active. Create `.workflow/` if the directory does not exist.
-2. Read `.workflow/history.json`, or start with `[]` when the file is new.
-3. Append the completed ticket object to `.workflow/history.json`.
-4. Add a matching summary row to `.workflow/history.md`.
-5. If a ticket bullet is missing, add a ticket-prefixed bullet under `## [Unreleased]` in `CHANGELOG.md` using `python3 scripts/changelog.py add`. Start each bullet with the normalized ticket ID, such as `- GH-1234: Added feature` or `- LOCAL-1234: Added task`. In external projects, update `CHANGELOG.md` when it exists or when the user asks to create it.
-6. If the ticket is a local ticket, run `python3 scripts/local_tickets.py close --ticket <id> --comment-file <file>` with the resolution summary.
-7. Run the full repository test suite (`make test` or project equivalent) and confirm zero failures before committing.
-8. Commit the ledger and changelog updates when tracked in Git: `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
-9. If direct push to `main` is permitted, push the updates with `git push origin main`.
-10. If the ticket is a GitHub issue, post the "Target 90: Workflow Complete" summary with `gh issue comment <number> --body-file <file>`. Use the same "Target 90: Workflow Complete" chat message to give a brief, high-level overview of delivered changes.
-11. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
-12. Ask the user via `ask_question` whether to stay on `[Unreleased]` or cut a `patch`, `minor`, or `major` release. If they stay unreleased, skip to step 17.
-13. Move `## [Unreleased]` entries into `## [X.Y.Z] - YYYY-MM-DD` inside `CHANGELOG.md`. Keep an empty `## [Unreleased]` heading at the top.
-14. Bump versions across all project manifests (such as `./plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, or `package.json`) and docs (`SCAR-DOC-20`).
-15. Run the full repository test suite and confirm zero failures before committing (`make test`).
-16. Under Mode 1, cut `release/vX.Y.Z`, commit with `git commit -m "docs(release): cut vX.Y.Z"`, and open a pull request. Under Mode 2 or Mode 3, commit with `git commit -m "docs(release): cut vX.Y.Z"`, push to `main`, and optionally run `gh release create vX.Y.Z --generate-notes` or tag `vX.Y.Z`.
-17. Run `make -f .workflow/state/Makefile finish` to release the intake lock, clean up completed state cards per `state.completedCardAction`, and render `COMPLETE (make finish satisfied)` in `.workflow/state/99_next_action.md`:
+2. Run the Rapid-Regret Miner for each operational lesson learned during the ticket:
+   - Display the full scar draft (Title, Category, Wound, Trap, optional Circuit Breaker, Permanent Reflex, and Socratic Probe).
+   - Inspect resolved paths with `python3 scripts/scar_miner.py paths --workspace .`. Ask the user to pick a tier: `./.workflow/scars/`, agent `plugin_data/makeflow/scars/`, or a custom directory.
+   - If the user enters a custom directory, offer to save it into `scars.directories`. Run `python3 scripts/scar_miner.py save-config` for user-global, project-local, or both configs.
+   - Persist the scar to its categorized Markdown file via `python3 scripts/scar_miner.py save`. Never edit Tier 1 core catalog files on `main`.
+   - Offer to open a community enhancement issue on `hedges333/makeflow-skill`. Verify `gh` CLI authentication via `python3 scripts/scar_miner.py upstream-check`. Wait for explicit human approval (`SCAR-PROC-108`), then run `python3 scripts/scar_miner.py upstream-submit --approved` without integer scar IDs.
+3. Read `.workflow/history.json`, or start with `[]` when the file is new.
+4. Append the completed ticket object (including earned scar IDs in `scars_earned`) to `.workflow/history.json`.
+5. Add a matching summary row to `.workflow/history.md`.
+6. If a ticket bullet is missing, add a ticket-prefixed bullet under `## [Unreleased]` in `CHANGELOG.md` using `python3 scripts/changelog.py add`. Start each bullet with the normalized ticket ID, such as `- GH-1234: Added feature` or `- LOCAL-1234: Added task`. In external projects, update `CHANGELOG.md` when it exists or when the user asks to create it.
+7. If the ticket is a local ticket, run `python3 scripts/local_tickets.py close --ticket <id> --comment-file <file>` with the resolution summary.
+8. Run the full repository test suite (`make test` or project equivalent) and confirm zero failures before committing.
+9. Commit the ledger and changelog updates when tracked in Git: `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
+10. If direct push to `main` is permitted, push the updates with `git push origin main`.
+11. If the ticket is a GitHub issue, post the "Target 90: Workflow Complete" summary with `gh issue comment <number> --body-file <file>`. Use the same "Target 90: Workflow Complete" chat message to give a brief, high-level overview of delivered changes.
+12. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
+13. Ask the user via `ask_question` whether to stay on `[Unreleased]` or cut a `patch`, `minor`, or `major` release. If they stay unreleased, skip to step 18.
+14. Move `## [Unreleased]` entries into `## [X.Y.Z] - YYYY-MM-DD` inside `CHANGELOG.md`. Keep an empty `## [Unreleased]` heading at the top.
+15. Bump versions across all project manifests (such as `./plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, or `package.json`) and docs (`SCAR-DOC-20`).
+16. Run the full repository test suite and confirm zero failures before committing (`make test`).
+17. Under Mode 1, cut `release/vX.Y.Z`, commit with `git commit -m "docs(release): cut vX.Y.Z"`, and open a pull request. Under Mode 2 or Mode 3, commit with `git commit -m "docs(release): cut vX.Y.Z"`, push to `main`, and optionally run `gh release create vX.Y.Z --generate-notes` or tag `vX.Y.Z`.
+18. Run `make -f .workflow/state/Makefile finish` to release the intake lock, clean up completed state cards per `state.completedCardAction`, and render `COMPLETE (make finish satisfied)` in `.workflow/state/99_next_action.md`:
    - If `state.completedCardAction` is `unlink` (default), `finish` removes intermediate cards `10_` through `80_` and `approved_tree.txt` from `.workflow/state/`.
    - If `state.completedCardAction` is `archive`, `finish` moves intermediate cards `10_` through `80_` and `approved_tree.txt` to `.workflow/archive/<ticket-id>/`.
-18. Print the closing summary in chat.
+19. Print the closing summary in chat.

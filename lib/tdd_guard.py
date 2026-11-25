@@ -206,6 +206,7 @@ CORE_GOVERNANCE_FILES = (
     "scripts/tdd_guard.py",
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
+    "lib/agent_paths.py",
     "lib/base_script.py",
     "lib/commit_gates.py",
     "lib/commit_msg.py",
