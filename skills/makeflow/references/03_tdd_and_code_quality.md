@@ -35,7 +35,24 @@ In multi-agent runtimes, fork `tdd-worker` via `invoke_subagent` and enforce Imm
 
 ### Anchored TDD Receipts (`SCAR-TEST-12`)
 
-The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, and test files. The seal also hashes core governance files: `scripts/tdd_guard.py`, `scripts/workflow_gates.py`, `scripts/emit_reflex.py`, `lib/base_script.py`, `lib/regression_gate.py`, `lib/tdd_guard.py`, `lib/workflow_gates.py`, and `lib/reflex.py`. The tree hash covers untracked fixtures such as `conftest.py` and ignores cache folders such as `__pycache__` and `.pytest_cache`. The `verify-green` gate verifies the receipt seal, Git `HEAD`, test tree hash, and governance toolchain before replaying the command. It also verifies that `.workflow/state/Makefile` matches the canonical template. Tampering returns a Vector 4 Reflex (a runtime recovery directive) with exit code `2` and appends to `forensic_log`.
+The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a cryptographic seal (a tamper-detection hash) over Git `HEAD`, `test_cmd`, and test files. The seal also hashes these core governance files:
+
+- `scripts/tdd_guard.py`
+- `scripts/workflow_gates.py`
+- `scripts/emit_reflex.py`
+- `lib/base_script.py`
+- `lib/commit_msg.py`
+- `lib/config.py`
+- `lib/git_index.py`
+- `lib/reflex.py`
+- `lib/regression_gate.py`
+- `lib/repo_tree.py`
+- `lib/shell_safety.py`
+- `lib/tdd_guard.py`
+- `lib/ticket_state.py`
+- `lib/workflow_gates.py`
+
+The tree hash covers untracked fixtures such as `conftest.py` and ignores cache folders such as `__pycache__` and `.pytest_cache`. The `verify-green` gate verifies the receipt seal, Git `HEAD`, test tree hash, and governance toolchain before replaying the command. It also verifies that `.workflow/state/Makefile` matches the canonical template. Tampering returns a Vector 4 Reflex (a runtime recovery directive) with exit code `2` and appends to `forensic_log`.
 
 The `verify-regression` gate in `lib/regression_gate.py` runs the full active subproject regression suite. It seals `.workflow/state/30_regression_receipt.json` over the live working-tree hash, Git `HEAD`, command, toolchain hash, and Makefile digest. If tests fail or mutate workspace files, `verify-regression` exits with code `2` and removes stale receipts. Before Target 40, `check-regression` verifies the sealed receipt against live ground truth and `.workflow/state/approved_tree.txt`.
 
