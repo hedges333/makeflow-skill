@@ -3054,5 +3054,25 @@
     "closes_issue": true,
     "tests_added": 12,
     "scars_earned": []
+  },
+  {
+    "id": "GH-274",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/274",
+    "title": "[REFACTOR] Decompose lib/workflow_gates.py into cohesive domain modules (SCAR-ARCH-08)",
+    "request": "Split the 2,840-line lib/workflow_gates.py monolith into seven cohesive library modules under lib/ (main_sync.py, state_makefile.py, plugin_gates.py, intake_gates.py, commit_gates.py, parking_gates.py, and workflow_gates_cli.py) without shebang headers while preserving WorkflowGatesScript, public imports, refresh_state_makefile_if_ignored identity, and mock.patch compatibility, unify the canonical frozen GateFailure dataclass in lib/reflex.py, break the circular import with lib/state_machine.py, register all extracted modules across governance lists and 03_tdd_and_code_quality.md, and add 22 hermetic unit tests in tests/test_workflow_gates_decomposition.py.",
+    "branch": "feat/274-decompose-workflow-gates",
+    "subprojects": [
+      "lib",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-23T18:26:05Z",
+    "completed_at": "2026-11-25T19:27:37Z",
+    "commit_sha": "f37fe4b3b134af186edee1b6faa75cb36b510388",
+    "pr_number": 301,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/301",
+    "closes_issue": true,
+    "tests_added": 22,
+    "scars_earned": []
   }
 ]

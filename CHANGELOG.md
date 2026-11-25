@@ -43,6 +43,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-204: Extract PreToolUse guard logic into lib/pre_tool_guard.py with PreToolGuardScript and add stdin injection to BaseScript.
 - GH-203: Extract SessionStart hook logic into lib/session_start.py with SessionStartScript and reduce scripts/session_start.py to a thin BaseScript wrapper.
 - GH-209: Decompose lib/scars_db.py and sync_synthetic_scars.py into three single-purpose BaseScript CLIs, lib/scar_metadata.py, lib/scar_subagent.py, and read-only JSON-only subagents.
+- GH-274: Decompose lib/workflow_gates.py into seven cohesive domain modules and unify GateFailure in lib/reflex.py.
 
 ### Fixed
 
