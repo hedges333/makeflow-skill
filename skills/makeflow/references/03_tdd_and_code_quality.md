@@ -41,16 +41,23 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 - `scripts/workflow_gates.py`
 - `scripts/emit_reflex.py`
 - `lib/base_script.py`
+- `lib/commit_gates.py`
 - `lib/commit_msg.py`
 - `lib/config.py`
 - `lib/git_index.py`
+- `lib/intake_gates.py`
+- `lib/main_sync.py`
+- `lib/parking_gates.py`
+- `lib/plugin_gates.py`
 - `lib/reflex.py`
 - `lib/regression_gate.py`
 - `lib/repo_tree.py`
 - `lib/shell_safety.py`
+- `lib/state_makefile.py`
 - `lib/tdd_guard.py`
 - `lib/ticket_state.py`
 - `lib/workflow_gates.py`
+- `lib/workflow_gates_cli.py`
 
 The tree hash covers untracked fixtures such as `conftest.py` and ignores cache folders such as `__pycache__` and `.pytest_cache`. The `verify-green` gate verifies the receipt seal, Git `HEAD`, test tree hash, and governance toolchain before replaying the command. It also verifies that `.workflow/state/Makefile` matches the canonical template. Tampering returns a Vector 4 Reflex (a runtime recovery directive) with exit code `2` and appends to `forensic_log`.
 

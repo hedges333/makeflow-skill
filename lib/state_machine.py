@@ -39,7 +39,7 @@ from lib.turn_boundary import (
     record_gate_entry,
     verify_mcp_gate_exit,
 )
-from lib.workflow_gates import (
+from lib.main_sync import (
     _run_repo_git,
     fetch_and_inspect_main_sync,
     inspect_main_sync,

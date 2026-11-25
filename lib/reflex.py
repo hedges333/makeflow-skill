@@ -6,6 +6,7 @@ without inflating static SKILL.md context.
 """
 
 import argparse
+from dataclasses import dataclass
 import glob
 import json
 import os
@@ -20,6 +21,25 @@ _HEAVY_BORDER = "=" * 80
 _LIGHT_BORDER = "-" * 80
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CORE_SCAR_PROBE_CACHE: Dict[str, str] = {}
+
+
+@dataclass(frozen=True)
+class GateFailure:
+  """Canonical Vector 4 Reflex failure payload returned by deterministic gates.
+
+  Attributes:
+    scar_id: Synthetic scar identifier (for example ``GIT-25`` or ``PROC-99``).
+    code: Machine-readable violation code.
+    trigger: Concrete condition that triggered the gate failure.
+    rejected: Action or trap rejected by the gate.
+    reflex: Actionable recovery directive for the caller.
+  """
+
+  scar_id: str
+  code: str
+  trigger: str
+  rejected: str
+  reflex: str
 
 
 def normalize_scar_id(raw_scar_id: str) -> Tuple[str, str]:
