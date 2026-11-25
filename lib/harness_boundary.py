@@ -78,6 +78,7 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "scripts/commit_msg.py",
     "scripts/session_start.py",
     "scripts/workspace_mutex.py",
+    "lib/agent_paths.py",
     "lib/base_script.py",
     "lib/git_index.py",
     "lib/git_safety.py",
