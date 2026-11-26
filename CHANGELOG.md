@@ -32,6 +32,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-300: Add forward-compatible AST import-closure parity tests for non-hook HARNESS_INTERNAL_RELPATHS seeds and register four mcp/server.py helpers.
 - GH-281: Add canonical pretty-printed JSON state stores, deterministic Markdown renderers, and workflow_submit_report MCP tool.
 - GH-273: Add distilled TDD resource pack, SCAR-TEST-46 through SCAR-TEST-49, complexity-scaled slice budgets, and completed_cycles archiving.
+- GH-270: Add canonical plan validation, pause-gate ask_question blocking, configurable BDD planning modes, full plan ingestion, and SCAR-PROC-160 and SCAR-PROC-161.
 
 ### Changed
 

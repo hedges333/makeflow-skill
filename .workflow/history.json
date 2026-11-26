@@ -3195,5 +3195,31 @@
       "SCAR-TEST-48: False Red Witnesses and Unverified Test-After Rationalization",
       "SCAR-TEST-49: Premature Test Refactoring and Skipped Post-Green Cleanup"
     ]
+  },
+  {
+    "id": "GH-270",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/270",
+    "title": "Plan artifact specification and BDD ask_question interrogation in planning",
+    "request": "Add canonical eight-section Target 20 plan specification and hard gate (lib/plan_validation.py, check-plan, approved-plan, T20 validation), enforce full verbatim 20_plan.md ingestion by tdd-worker, block ask_question at pause gates and separate planning discovery from artifact approval (SCAR-PROC-161), add configurable planning.bddMode (adaptive, full_gherkin, planning_only, ask), distill 8 attributed BDD resources into skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md, and codify SCAR-PROC-160 and SCAR-PROC-161.",
+    "branch": "feat/270-plan-spec-bdd-interrogation",
+    "subprojects": [
+      "lib",
+      "skills",
+      "agents",
+      "rules",
+      "adapters",
+      "tests"
+    ],
+    "started_at": "2026-11-25T20:04:19Z",
+    "completed_at": "2026-11-26T23:46:07Z",
+    "commit_sha": "12182a7",
+    "pr_number": 329,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/329",
+    "closes_issue": true,
+    "tests_added": 21,
+    "scars_earned": [
+      "SCAR-PROC-160: Canonical Plan Specification and Verbatim TDD Worker Plan Ingestion",
+      "SCAR-PROC-161: Planning-Stage ask_question and Target 20 Artifact Approval Separation"
+    ]
   }
 ]
