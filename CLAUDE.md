@@ -33,7 +33,7 @@ This repository uses the Makefile Workflow. Follow these rules for every coding 
 ## Model Selection and Configuration
 
 Read cascaded config from `~/.claude/plugin_data/makeflow/config.json` (or legacy `~/.gemini/config/makeflow.json`) and `.workflow/config.json` when present.
-User-wide synthetic scars live in `~/.claude/plugin_data/makeflow/scars/` alongside project `.workflow/scars/` and configured `scars.directories`.
+User-wide synthetic scars live in `~/.claude/plugin_data/makeflow/scars_registry.db`. Project scars live in `.workflow/scars/scars_registry.db` alongside configured `scars.databases` tiers.
 If `.workflow/config.json` specifies models or "inherit", bypass the model switch prompt.
 Use your session model for standard implementation tasks.
 When unconfigured in interactive sessions, prompt the user to switch models and pause before review. At Target 40, run the Six-Pillar review with a high-reasoning model:

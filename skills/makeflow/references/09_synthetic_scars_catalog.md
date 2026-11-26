@@ -7,9 +7,9 @@ This manual serves as the Master Routing Index for all Synthetic Scars (engineer
 Synthetic Scars operate across four discovery tiers anchored by the Two-Tier core and local foundation:
 
 1. **Tier 1 (Core Built-In Scars)**: Universal engineering rules live in `skills/makeflow/references/scars/`, `skills/makeflow/references/polyglot/`, and the bundled SQLite registry `skills/makeflow/data/scars_registry.db`.
-2. **Tier 2 (Project-Local Scars)**: Workspace-specific domain rules live in `.workflow/scars/` (for example `.workflow/scars/data.md`, `.workflow/scars/process.md`, or `.workflow/scars/local.md`).
-3. **User-Wide Agent Scars**: Cross-project personal scars live in `<agent_plugin_data>/scars/` (for example `~/.gemini/antigravity-cli/plugin_data/makeflow/scars/` or `~/.claude/plugin_data/makeflow/scars/`).
-4. **Custom Configured Directories**: Shared team scar directories live in the union of `scars.directories` from cascaded user-global and project-local configuration files.
+2. **Tier 2 (Project-Local Scars)**: Workspace-specific domain rules live in `.workflow/scars/scars_registry.db`.
+3. **User-Wide Agent Scars**: Cross-project personal scars live in `<agent_plugin_data>/scars_registry.db` (for example `~/.gemini/antigravity-cli/plugin_data/makeflow/scars_registry.db` or `~/.claude/plugin_data/makeflow/scars_registry.db`).
+4. **Custom Configured Databases**: Shared team SQLite scar databases live in the ordered `scars.databases` list. Higher-precedence databases override lower-precedence rows with the same scar ID.
 
 To scale the synthetic scar catalog to hundreds of community contributions without hitting context limits (`SCAR-PROC-99`) or causing Git merge conflicts, scars are organized into a **Hub-and-Spoke** architecture:
 
@@ -147,10 +147,10 @@ Query them on demand with `workflow_query_scars` using `language` and `framework
 
 1. Target 90 runs the unified Rapid-Regret Miner across every project without editing Tier 1 core catalog files on `main`.
 2. For each session lesson, draft Title, Category, Wound, Trap, optional Circuit Breaker, Permanent Reflex, and Socratic Probe.
-3. Ask where to save the scar: `./.workflow/scars/`, user-wide agent `plugin_data/makeflow/scars/`, or a custom directory.
-4. If the user chooses a custom directory, offer to save it into `scars.directories`. Run `python3 scripts/scar_miner.py save-config` for user-global, project-local, or both configs.
-5. Save the scar to a categorized Markdown file using `python3 scripts/scar_miner.py save`. Categories map to `data.md`, `process.md`, `testing.md`, `architecture.md`, `security.md`, `git_and_shell.md`, `system.md`, `tooling.md`, or `ui.md`. Tier-scoped IDs (`SCAR-LOCAL-<CAT>-<NNNN>`, `SCAR-USER-<CAT>-<NNNN>`, `SCAR-CUSTOM-<CAT>-<NNNN>`) prevent collisions without writing binary SQLite files to `.workflow/scars/`.
-6. Inside `makeflow-skill`, record incidental session lessons in ticket notes or project-local files for a future feature request ticket. External user projects may also use `.workflow/scars/local.md` or categorized `.workflow/scars/*.md` files.
+3. Ask where to save the scar: `.workflow/scars/scars_registry.db`, user-wide `<agent_plugin_data>/scars_registry.db`, or a custom SQLite database (`--custom-db`).
+4. If the user chooses a custom SQLite database, offer to save it into `scars.databases`. Run `python3 scripts/scar_miner.py save-config --db <path>` for `user-global`, `project-local`, or `both` configs.
+5. Save or override the scar in SQLite using `python3 scripts/scar_miner.py save`. Auto-allocated tier-scoped IDs (`SCAR-LOCAL-<CAT>-<NNNN>`, `SCAR-USER-<CAT>-<NNNN>`, `SCAR-CUSTOM-<CAT>-<NNNN>`) prevent collisions. Pass `--id <SCAR-ID>` (for example `--id SCAR-ARCH-0001`) to override a lower-precedence scar in place and refresh `scars_fts`.
+6. Inside `makeflow-skill`, record incidental session lessons in ticket notes or `.workflow/scars/scars_registry.db` for a future feature request ticket. External user projects also record project-local scars in `.workflow/scars/scars_registry.db`.
 7. After saving locally, offer to open an enhancement issue on `hedges333/makeflow-skill`. Verify `gh` CLI access via `python3 scripts/scar_miner.py upstream-check`. Wait for explicit human approval (`SCAR-PROC-108`), then run `python3 scripts/scar_miner.py upstream-submit --approved` without integer scar IDs.
 8. Record earned scar IDs in `.workflow/history.json` and `.workflow/history.md`.
 
@@ -221,4 +221,4 @@ Run two bounded `workflow_query_scars` calls at Target 15, Target 20, and Target
 1. Query language and framework scars with `workflowPhase`, `language: "<lang>"`, optional `framework`, and `limit: 5`.
 2. Query universal software-development scars with `workflowPhase`, `language: "universal"`, `excludeCategories: ["WORKFLOW"]`, optional domain `category`, and `limit: 5`.
 3. Pass `refreshLoaded: true` inside fresh isolated subagents (`tdd-worker` and `adversarial-critic`) so prior session lookups do not strip scar fields.
-4. Always inspect `09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`, and `.workflow/scars/` alongside `workflow_query_scars`. The MCP tool queries project-local, user-wide agent, cascaded `scars.directories`, and bundled SQLite tiers. It returns `searchedDirectories` and `searchedDatabases`.
+4. Always inspect `09_synthetic_scars_catalog.md` and `skills/makeflow/references/scars/` alongside `workflow_query_scars`. The MCP tool queries configured `scars.databases` tiers in order with strict same-ID shadowing. It returns `searchedDatabases`.

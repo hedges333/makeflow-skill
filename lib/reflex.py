@@ -7,7 +7,6 @@ without inflating static SKILL.md context.
 
 import argparse
 from dataclasses import dataclass
-import glob
 import json
 import os
 import re
@@ -15,6 +14,7 @@ import sys
 from typing import Dict, List, Optional, TextIO, Tuple
 
 from lib.base_script import BaseScript, ReflexArgumentError, SilentArgumentParser
+from lib.scar_locations import resolve_scar_locations
 
 REFLEX_EXIT_CODE = 2
 _HEAVY_BORDER = "=" * 80
@@ -66,7 +66,6 @@ def resolve_core_scar_probe(
   if cache_key in _CORE_SCAR_PROBE_CACHE:
     return _CORE_SCAR_PROBE_CACHE[cache_key]
 
-  scars_dir = os.path.join(root, "skills", "makeflow", "references", "scars")
   header_pat = re.compile(
       rf"^###\s+{re.escape(full_id)}\b", re.IGNORECASE | re.MULTILINE
   )
@@ -74,7 +73,7 @@ def resolve_core_scar_probe(
       r"^-\s+\*\*Socratic Probe\*\*:\s*(.+)$", re.MULTILINE
   )
 
-  for md_path in sorted(glob.glob(os.path.join(scars_dir, "*.md"))):
+  for md_path in resolve_scar_locations(plugin_root=root).process_scar_files:
     try:
       with open(md_path, "r", encoding="utf-8") as f:
         text = f.read()

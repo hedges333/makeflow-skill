@@ -34,7 +34,11 @@
     "completedCardAction": "unlink"
   },
   "scars": {
-    "directories": []
+    "databases": [
+      ".workflow/scars/scars_registry.db",
+      "{agent_data}/scars_registry.db",
+      "{plugin_root}/skills/makeflow/data/scars_registry.db"
+    ]
   },
   "targets": {
     "T00": {

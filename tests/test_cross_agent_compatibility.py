@@ -2502,10 +2502,10 @@ def validate_scar_lifecycle_and_two_tier_discovery(
         "09_synthetic_scars_catalog.md must explain noting incidental lessons"
         " in ticket notes inside makeflow-skill"
     )
-  if ".workflow/scars/local.md" not in catalog_text:
+  if ".workflow/scars/scars_registry.db" not in catalog_text:
     errors.append(
         "09_synthetic_scars_catalog.md must explain recording project-specific"
-        " lessons in .workflow/scars/local.md for external projects"
+        " lessons in .workflow/scars/scars_registry.db for external projects"
     )
 
   # 1e. SKILL.md Target 90 clarification
@@ -2540,7 +2540,7 @@ def validate_two_tier_scar_lifecycle_and_discovery() -> list[str]:
       "Target 90 never creates or modifies core catalog files on `main`.\n"
       "Record merged scar IDs in .workflow/history.json and .workflow/history.md.\n"
       "In makeflow-skill, record incidental lessons in ticket notes.\n"
-      "In external projects, record lessons in .workflow/scars/local.md.\n"
+      "In external projects, record lessons in .workflow/scars/scars_registry.db.\n"
   )
   valid_skill = (
       "At Target 90, record merged scar IDs in .workflow/history.* and"

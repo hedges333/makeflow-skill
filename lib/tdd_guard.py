@@ -221,6 +221,7 @@ CORE_GOVERNANCE_FILES = (
     "lib/regression_gate.py",
     "lib/repo_tree.py",
     "lib/report_renderers.py",
+    "lib/scar_locations.py",
     "lib/shell_safety.py",
     "lib/state_makefile.py",
     "lib/state_reports.py",

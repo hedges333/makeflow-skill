@@ -193,7 +193,7 @@ Test-Driven Development (TDD) is the core discipline of this workflow. The criti
 - **Socratic Probe**: What is the strongest objection an external reviewer could raise against this diff?
 
 ### 6. Immune Defenses & Crash Antibodies
-- **Two-Tier Scar Audit**: Audit the diff against Tier 1 core scars in `skills/makeflow/references/scars/`, Tier 2 project-local scars in `.workflow/scars/`, and stacked SQLite registries via `workflow_query_scars` (`workflowPhase: "Target 40: review"`).
+- **Two-Tier Scar Audit**: Audit the diff against Tier 1 core scars in `skills/makeflow/references/scars/`. Query `.workflow/scars/scars_registry.db` and configured `scars.databases` tiers via `workflow_query_scars` (`workflowPhase: "Target 40: review"`).
 - **Doc Comment Formatting & Machine-Extractable Documentation Tree Buildability (`SCAR-PROC-159`)**: Do modified doc comments follow language parser syntax? Does the documentation tree compiler build cleanly without warnings, invalid references, or broken links?
 - **Sensitive Runtime Boundaries**: Did the diff touch asynchronous streams, event loops, lifecycles, memory, or cache storage?
 - **Asynchronous 4-Tuple Contract**:
