@@ -3142,5 +3142,30 @@
     "closes_issue": true,
     "tests_added": 25,
     "scars_earned": []
+  },
+  {
+    "id": "GH-304",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/304",
+    "title": "[BUG] Convert tiered scar storage to ordered SQLite databases with configurable paths and ID overrides",
+    "request": "Store project-local, user-global, and custom synthetic scars in ordered SQLite registries under scars.databases, factor ScarLocations into lib/scar_locations.py, support explicit --id overrides and save-config persistence, migrate SCAR-LOCAL-DATA-0001 into .workflow/scars/scars_registry.db, enforce namespace-safe inter-tier shadowing, and update docs, adapters, and hermetic tests.",
+    "branch": "fix/304-sqlite-tiered-scar-storage",
+    "subprojects": [
+      "lib",
+      "scripts",
+      "mcp",
+      "skills",
+      "agents",
+      "rules",
+      "adapters",
+      "tests"
+    ],
+    "started_at": "2026-11-26T12:03:05Z",
+    "completed_at": "2026-11-26T13:58:35Z",
+    "commit_sha": "da19d742fa1ea5ac75fe5122a27c927fb4512901",
+    "pr_number": 320,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/320",
+    "closes_issue": true,
+    "tests_added": 3,
+    "scars_earned": []
   }
 ]
