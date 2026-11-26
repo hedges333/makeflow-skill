@@ -3100,5 +3100,24 @@
     "scars_earned": [
       "SCAR-LOCAL-DATA-0001: Track Fenced Code Block State During Line-Based Markdown Parsing"
     ]
+  },
+  {
+    "id": "GH-300",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/300",
+    "title": "[TEST] Add forward-compatible AST import-closure parity test for non-hook HARNESS_INTERNAL_RELPATHS seeds",
+    "request": "Audit non-hook HARNESS_INTERNAL_RELPATHS seeds (mcp/server.py, scripts/commit_msg.py, scripts/workspace_mutex.py, lib/review_promotion.py), register the four transitive mcp/server.py helper modules (lib/ci_polling.py, lib/scar_metadata.py, lib/scar_ontology.py, lib/scars_db.py) in lib/harness_boundary.py under Option 1 zero-allowlist closure, extend AST import resolution to mcp/ with _discover_mcp_config_scripts in tests/test_governance_parity.py, and add 4 hermetic parity and SCAR-PROC-124 boundary tests.",
+    "branch": "feat/300-harness-import-closure-parity",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-25T20:03:03Z",
+    "completed_at": "2026-11-26T18:27:29Z",
+    "commit_sha": "3d4c555dedfd9ca970efad92737656e859a8df2c",
+    "pr_number": 315,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/315",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
