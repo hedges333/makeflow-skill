@@ -30,6 +30,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-296: Add forward-compatible AST import-closure parity tests, close top-level governance import gaps, and sync 03_tdd_and_code_quality.md with CORE_GOVERNANCE_FILES.
 - GH-117: Add multi-tier scar miner, six-agent paths, cascading config, and four-tier scar discovery.
 - GH-300: Add forward-compatible AST import-closure parity tests for non-hook HARNESS_INTERNAL_RELPATHS seeds and register four mcp/server.py helpers.
+- GH-281: Add canonical pretty-printed JSON state stores, deterministic Markdown renderers, and workflow_submit_report MCP tool.
 
 ### Changed
 

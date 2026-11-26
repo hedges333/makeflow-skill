@@ -3119,5 +3119,28 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-281",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/281",
+    "title": "[FEAT] Use JSON for all makeflow state files and subagent reports",
+    "request": "Implement canonical pretty-printed JSON state stores (lib/active_state.py, lib/state_reports.py), deterministic Markdown renderers (lib/report_renderers.py), schema-validating MCP tool workflow_submit_report, JSON-first readers across workflow gates and turn boundaries, GH-296 governance parity, GH-47 parking preservation, and 25 new tests.",
+    "branch": "feat/281-json-state-subagent-reports",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "agents",
+      "rules",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-23T21:08:32Z",
+    "completed_at": "2026-11-26T18:50:32Z",
+    "commit_sha": "cde69ef2ee2486c064aac7eafa6c53d33d6ffe00",
+    "pr_number": 318,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/318",
+    "closes_issue": true,
+    "tests_added": 25,
+    "scars_earned": []
   }
 ]
