@@ -12,6 +12,9 @@
     "strictSixPillars": true,
     "allowCriticHermeticTests": false
   },
+  "planning": {
+    "bddMode": ""
+  },
   "testing": {
     "regressionCommand": "",
     "regressionTimeoutSeconds": 300

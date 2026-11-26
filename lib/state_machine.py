@@ -32,6 +32,7 @@ from lib.parking_state import (
     ParkingStateStore,
     format_parking_status_label,
 )
+from lib.plan_validation import validate_plan_file
 from lib.state_reports import (
     ARCHAEOLOGY_JSON_FILENAME,
     BOT_TRIAGE_JSON_FILENAME,
@@ -1010,7 +1011,21 @@ def _validate_transition_inputs(
   )
   if blockers_err is not None:
     return blockers_err
-  return _check_required_card(current, next_t, state_dir)
+  card_err = _check_required_card(current, next_t, state_dir)
+  if card_err is not None:
+    return card_err
+  if next_t == "T20" and state_dir and os.path.isdir(state_dir):
+    plan_path = os.path.join(state_dir, "20_plan.md")
+    approved_path = os.path.join(state_dir, "20_plan_approved.md")
+    if os.path.isfile(plan_path) or not os.path.isfile(approved_path):
+      plan_res = validate_plan_file(plan_path)
+      if not plan_res.valid:
+        details = "; ".join(plan_res.errors)
+        return (
+            f"BLOCKED: [SCAR-PROC-160] INVALID_PLAN_SPEC on transition"
+            f" {current} -> {next_t}: {details}"
+        )
+  return None
 
 
 def _finalize_completed_ticket(

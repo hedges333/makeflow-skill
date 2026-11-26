@@ -4174,6 +4174,369 @@ class TestPreToolGuardCommitMessageEnforcement(unittest.TestCase):
       })
       self.assertEqual(res["decision"], "deny", res)
 
+  def test_ask_question_denied_at_all_six_pause_gates_scar_proc_161(self):
+    """GH-270: Denies ask_question with SCAR-PROC-161 at T20, T42, T45, T50, T60, and T75."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Continue"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Full proposal summary with [plan](file:///tmp/plan.md).",
+                  "tool_calls": [],
+              },
+          ],
+      )
+
+      for gate_id in ("T20", "T42", "T45", "T50", "T60", "T75"):
+        with self.subTest(source="active_target", gate=gate_id):
+          active_path = os.path.join(state_dir, "active_target.json")
+          with open(active_path, "w", encoding="utf-8") as fh:
+            json.dump({"target": gate_id, "previousTarget": "T15"}, fh)
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": "ask_question", "args": {}},
+          })
+          self.assertEqual(res["decision"], "deny", res)
+          reason = res.get("reason", "")
+          self.assertIn("[SCAR-ID: PROC-161]", reason)
+          self.assertIn("ASK_QUESTION_AT_PAUSE_GATE", reason)
+          os.unlink(active_path)
+
+        with self.subTest(source="gate_entry", gate=gate_id):
+          gate_path = os.path.join(state_dir, "gate_entry.json")
+          with open(gate_path, "w", encoding="utf-8") as fh:
+            json.dump({"gate": gate_id, "fromTarget": "T15"}, fh)
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": "ask_question", "args": {}},
+          })
+          self.assertEqual(res["decision"], "deny", res)
+          reason = res.get("reason", "")
+          self.assertIn("[SCAR-ID: PROC-161]", reason)
+          self.assertIn("ASK_QUESTION_AT_PAUSE_GATE", reason)
+          os.unlink(gate_path)
+
+  def test_ask_question_denied_when_bundled_with_plan_write_or_gate_entry_in_same_turn(
+      self,
+  ):
+    """GH-270: Denies ask_question in the same turn after writing 20_plan.md or advancing to T20."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+
+      # Case 1: Writing 20_plan.md in the same turn then calling ask_question
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Draft plan"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Drafted plan at [20_plan.md](file:///tmp/20_plan.md).",
+                  "tool_calls": [{
+                      "name": "write_file",
+                      "args": {"Path": os.path.join(state_dir, "20_plan.md")},
+                  }],
+              },
+              {
+                  "step_index": 3,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Should we approve?",
+                  "tool_calls": [{"name": "ask_question", "args": {}}],
+              },
+          ],
+      )
+      res_write = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {"name": "ask_question", "args": {}},
+      })
+      self.assertEqual(res_write["decision"], "deny", res_write)
+      self.assertIn("[SCAR-ID: PROC-161]", res_write.get("reason", ""))
+      self.assertIn("ASK_QUESTION_BUNDLED_WITH_PAUSE_GATE", res_write.get("reason", ""))
+
+      # Case 2: Advancing to T20 in the same turn then calling ask_question
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Enter T20"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Entering Target 20 with [20_plan.md](file:///tmp/20_plan.md).",
+                  "tool_calls": [{
+                      "name": "run_command",
+                      "args": {
+                          "CommandLine": "make -f .workflow/state/Makefile approved-plan"
+                      },
+                  }],
+              },
+          ],
+      )
+      res_adv = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {"name": "ask_question", "args": {}},
+      })
+      self.assertEqual(res_adv["decision"], "deny", res_adv)
+      self.assertIn("[SCAR-ID: PROC-161]", res_adv.get("reason", ""))
+      self.assertIn("ASK_QUESTION_BUNDLED_WITH_PAUSE_GATE", res_adv.get("reason", ""))
+
+  def test_ask_question_allowed_in_t15_t90_and_after_t20_to_t15_recovery(self):
+    """GH-270: Allows ask_question during T15 pre-plan discovery, T90 release, and T20->T15 recovery."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Clarify BDD scope"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Discovery context with [receipt](file:///tmp/15_archaeology_receipt.md).",
+                  "tool_calls": [],
+              },
+          ],
+      )
+
+      for target_id, prev_id in (("T15", "T10"), ("T90", "T80"), ("T15", "T20")):
+        with self.subTest(target=target_id, prev=prev_id):
+          with open(
+              os.path.join(state_dir, "active_target.json"), "w", encoding="utf-8"
+          ) as fh:
+            json.dump({"target": target_id, "previousTarget": prev_id}, fh)
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": "ask_question", "args": {}},
+          })
+          self.assertEqual(res["decision"], "allow", res)
+
+  def test_ask_question_active_target_precedence_over_stale_gate_entry_scar_proc_161(
+      self,
+  ):
+    """GH-270 BLOCKER-1: active_target.json overrides stale gate_entry.json; fallback still denies."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Clarify scope"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Context with [receipt](file:///tmp/15_archaeology_receipt.md).",
+                  "tool_calls": [],
+              },
+          ],
+      )
+
+      active_path = os.path.join(state_dir, "active_target.json")
+      gate_path = os.path.join(state_dir, "gate_entry.json")
+
+      # Stale gate_entry.json (T20 left behind after failed check-plan) with authoritative T15 or T90 -> ALLOW
+      for active_id, stale_gate in (("T15", "T20"), ("T90", "T20"), ("T90", "T50")):
+        with self.subTest(active=active_id, stale_gate=stale_gate):
+          with open(active_path, "w", encoding="utf-8") as fh:
+            json.dump({"target": active_id, "previousTarget": "T10"}, fh)
+          with open(gate_path, "w", encoding="utf-8") as fh:
+            json.dump({"gate": stale_gate, "fromTarget": "T15"}, fh)
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": "ask_question", "args": {}},
+          })
+          self.assertEqual(res["decision"], "allow", res)
+
+      # When active_target.json is missing or lacks a valid target, fallback to gate_entry.json -> DENY
+      with open(gate_path, "w", encoding="utf-8") as fh:
+        json.dump({"gate": "T20", "fromTarget": "T15"}, fh)
+
+      for label, active_raw in (
+          ("absent", None),
+          ("empty_obj", "{}"),
+          ("empty_target", '{"target": ""}'),
+          ("null_target", '{"target": null}'),
+          ("invalid_target", '{"target": "NOT_A_TARGET"}'),
+          ("corrupt_json", "{not-json"),
+      ):
+        with self.subTest(active_case=label):
+          if active_raw is None:
+            if os.path.isfile(active_path):
+              os.unlink(active_path)
+          else:
+            with open(active_path, "w", encoding="utf-8") as fh:
+              fh.write(active_raw)
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": "ask_question", "args": {}},
+          })
+          self.assertEqual(res["decision"], "deny", res)
+          self.assertIn("[SCAR-ID: PROC-161]", res.get("reason", ""))
+          self.assertIn("ASK_QUESTION_AT_PAUSE_GATE", res.get("reason", ""))
+
+  def test_ask_question_same_turn_t20_to_t15_recovery_clears_pause_gate_block(
+      self,
+  ):
+    """GH-270 BLOCKER-1: Same-turn T20 -> T15 recovery clears pause-gate block while late write re-blocks."""
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      with open(
+          os.path.join(state_dir, "active_target.json"), "w", encoding="utf-8"
+      ) as fh:
+        json.dump({"target": "T15", "previousTarget": "T20"}, fh)
+      with open(
+          os.path.join(state_dir, "gate_entry.json"), "w", encoding="utf-8"
+      ) as fh:
+        json.dump({"gate": "T20", "fromTarget": "T15"}, fh)
+
+      recovery_cases = (
+          (
+              "make_archaeology_verified",
+              {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": "make -f .workflow/state/Makefile archaeology-verified"
+                  },
+              },
+          ),
+          (
+              "workflow_gates_advance_t15",
+              {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": "python3 scripts/workflow_gates.py advance --to T15"
+                  },
+              },
+          ),
+          (
+              "mcp_workflow_advance_target_t15",
+              {
+                  "name": "call_mcp_tool",
+                  "args": {
+                      "ServerName": "makeflow_makeflow",
+                      "ToolName": "workflow_advance_target",
+                      "Arguments": {"currentTarget": "T20", "nextTarget": "T15"},
+                  },
+              },
+          ),
+      )
+
+      for label, recovery_call in recovery_cases:
+        with self.subTest(recovery=label):
+          _write_transcript(
+              transcript_path,
+              [
+                  {"step_index": 1, "type": "USER_INPUT", "content": "Revise plan"},
+                  {
+                      "step_index": 2,
+                      "type": "PLANNER_RESPONSE",
+                      "content": "Drafted [20_plan.md](file:///tmp/20_plan.md).",
+                      "tool_calls": [
+                          {
+                              "name": "write_file",
+                              "args": {"Path": os.path.join(state_dir, "20_plan.md")},
+                          },
+                          {
+                              "name": "run_command",
+                              "args": {
+                                  "CommandLine": (
+                                      "make -f .workflow/state/Makefile approved-plan"
+                                  )
+                              },
+                          },
+                      ],
+                  },
+                  {
+                      "step_index": 3,
+                      "type": "PLANNER_RESPONSE",
+                      "content": "Recovered to Target 15 for discovery.",
+                      "tool_calls": [recovery_call],
+                  },
+              ],
+          )
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {"name": "ask_question", "args": {}},
+          })
+          self.assertEqual(res["decision"], "allow", res)
+
+      # Single-step sequence where recovery happens BEFORE writing 20_plan.md MUST still DENY
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Re-enter"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Returned to T15 then wrote [20_plan.md](file:///tmp/20_plan.md).",
+                  "tool_calls": [
+                      {
+                          "name": "run_command",
+                          "args": {
+                              "CommandLine": (
+                                  "make -f .workflow/state/Makefile archaeology-verified"
+                              )
+                          },
+                      },
+                      {
+                          "name": "write_file",
+                          "args": {"Path": os.path.join(state_dir, "20_plan.md")},
+                      },
+                  ],
+              },
+          ],
+      )
+      res_late_write = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {"name": "ask_question", "args": {}},
+      })
+      self.assertEqual(res_late_write["decision"], "deny", res_late_write)
+      self.assertIn("[SCAR-ID: PROC-161]", res_late_write.get("reason", ""))
+      self.assertIn(
+          "ASK_QUESTION_BUNDLED_WITH_PAUSE_GATE",
+          res_late_write.get("reason", ""),
+      )
+
+  def test_evaluate_ask_question_turn_boundary_keeps_single_arg_compatibility(self):
+    """SCAR-API-0002: evaluate_ask_question_turn_boundary(transcript_path) still works with 1 arg."""
+    from lib.turn_boundary import evaluate_ask_question_turn_boundary
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      tr = os.path.join(tmpdir, "transcript.jsonl")
+      _write_transcript(
+          tr,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Hi"},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Context provided.",
+                  "tool_calls": [],
+              },
+          ],
+      )
+      ok, reason = evaluate_ask_question_turn_boundary(tr)
+      self.assertTrue(ok, reason)
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -11,7 +11,7 @@ Follow six rules before you modify any source file:
 3. Leave unrelated defects or style issues untouched, and note them for a separate ticket.
 4. Read applicable Tier 1 core scars (`09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`) across `.workflow/scars/scars_registry.db` and configured `scars.databases` tiers. Query active languages, frameworks, and diagnostic codes first. Then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
 5. Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`) under `SCAR-ARCH-08` and `SCAR-ARCH-05`.
-6. Read `.workflow/state/20_plan.md`, `04_testing_isolation.md`, `10_security_and_data_isolation.md`, `14_design_patterns_and_architecture.md`, and [`resources/tdd/00_index_and_tdd_synthesis.md`](./resources/tdd/00_index_and_tdd_synthesis.md) before writing Red tests. Follow planned OO design patterns, module cohesion boundaries, pre-agreed public seams, and carried-forward scar guardrails (`SCAR-TEST-46` through `SCAR-TEST-49`).
+6. Read `.workflow/state/20_plan.md`, `04_testing_isolation.md`, `10_security_and_data_isolation.md`, `14_design_patterns_and_architecture.md`, and [`resources/tdd/00_index_and_tdd_synthesis.md`](./resources/tdd/00_index_and_tdd_synthesis.md) before writing Red tests. Read `.workflow/state/20_plan.md` in full directly from disk with pagination when long, never relying on a summary (`SCAR-PROC-160`). Follow planned OO patterns, cohesion boundaries, pre-agreed public seams, and carried-forward scar guardrails (`SCAR-TEST-46` through `SCAR-TEST-49`).
 
 ## 2. Red-Green-Refactor TDD Loop
 
@@ -19,7 +19,7 @@ In multi-agent runtimes, fork `tdd-worker` via `invoke_subagent` and enforce Imm
 
 ### Phase 1: Red (Failing Test First)
 
-1. Write unit tests for the active slice at the declared public seam using independent literal expectations (`SCAR-TEST-47`). Mock only external system boundaries.
+1. Write unit tests for the active slice at the declared public seam with independent literal expectations (`SCAR-TEST-47`). Mock only external system boundaries. Derive tests from Section 2 Given-When-Then scenarios (`skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md`). If `planning.bddMode` is `full_gherkin` and a BDD runner exists, author matching `.feature` files too.
 2. If the subproject has no test files, create the smoke test approved in Target 20 first.
 3. Run the targeted subproject test command (`red_exit != 0`). Inspect the output to confirm Red fails on missing behavior, not a syntax typo (`SCAR-TEST-48`).
 4. Never write feature code before watching the test fail. If production code precedes a failing test, delete that code and start fresh from Red.
@@ -50,6 +50,7 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 - `lib/intake_gates.py`
 - `lib/main_sync.py`
 - `lib/parking_gates.py`
+- `lib/plan_validation.py`
 - `lib/plugin_gates.py`
 - `lib/reflex.py`
 - `lib/regression_gate.py`

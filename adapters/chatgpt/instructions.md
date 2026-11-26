@@ -41,6 +41,8 @@ Move through these targets in dependency order:
 - Enforce Immediate Supervisory Halt (`tool_calls: []`) while phase subagents run (SCAR-PROC-95). Defer live bug reproduction to Target 30 instead of Target 15.
 - Treat the Makeflow harness as a black box during Target 30 through Target 90 (SCAR-PROC-124). Do not read out-of-scope guard scripts or `.workflow/state/gate_entry.json`. Run `make -f .workflow/state/Makefile` targets directly and follow any Vector 4 Reflex on exit code `2`.
 - Persist structured subagent reports as canonical `.json` with rendered `.md` views via MCP `workflow_submit_report` (`SCAR-ARCH-10`, `SCAR-TOOL-13`).
+- Author `.workflow/state/20_plan.md` with all eight canonical sections and validate it with `check-plan` (SCAR-PROC-160). Read `.workflow/state/20_plan.md` in full from disk at Target 30 instead of using a summary.
+- Complete `ask_question` discovery in Target 15 before writing `20_plan.md` (SCAR-PROC-161). Never call `ask_question` at any pause gate (`T20`, `T42`, `T45`, `T50`, `T60`, `T75`).
 
 4. SIMPLE ENGLISH
 - Write documentation, plans, and commit messages in Simple English: short sentences, active voice, terms defined at first use, and no filler words.

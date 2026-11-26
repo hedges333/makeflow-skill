@@ -89,6 +89,7 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "lib/workflow_gates.py",
     "lib/main_sync.py",
     "lib/state_makefile.py",
+    "lib/plan_validation.py",
     "lib/plugin_gates.py",
     "lib/intake_gates.py",
     "lib/commit_gates.py",

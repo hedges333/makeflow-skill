@@ -102,7 +102,7 @@ def _workflow_target_recipes(gates_script: str, quoted_root: str) -> str:
   specs = (
       ("ticket-assigned", "", "--to T10"),
       ("archaeology-verified", "", "--to T15"),
-      ("approved-plan", "", "--to T20"),
+      ("approved-plan", " check-plan", "--to T20"),
       ("implementation-diff", "", "--to T30"),
       ("adversarial-review", " check-approved-tree check-regression", "--to T40"),
       ("triaged-blockers", "", "--to T42"),
@@ -151,7 +151,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "implementation-diff adversarial-review triaged-blockers approved-review "
       "commit push bot-quiescence ready-to-land land "
       "codified-scars-consolidated finish advance "
-      "check-intake release-intake check-approved-tree check-commit-msg "
+      "check-intake release-intake check-plan check-approved-tree check-commit-msg "
       "check-post-commit check-main-sync verify-regression check-regression "
       "repo-tree promote-review park-session resume-parked "
       "witness-red verify-green verify-citation ast-lint"
@@ -197,6 +197,8 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} intake --make-env\n\n"
       "release-intake:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} release-intake --make-env\n\n"
+      "check-plan:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} check-plan\n\n"
       "check-approved-tree:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} approved-tree\n\n"
       "check-commit-msg:\n"

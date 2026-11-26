@@ -216,6 +216,7 @@ CORE_GOVERNANCE_FILES = (
     "lib/intake_gates.py",
     "lib/main_sync.py",
     "lib/parking_gates.py",
+    "lib/plan_validation.py",
     "lib/plugin_gates.py",
     "lib/reflex.py",
     "lib/regression_gate.py",

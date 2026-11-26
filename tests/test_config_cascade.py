@@ -804,6 +804,142 @@ class TestScarLocationsAndConfigCascade(unittest.TestCase):
       )
       self.assertIn(ambient_custom_db, explicit.databases)
 
+  def test_planning_bdd_mode_default_cascade_env_override_and_invalid_fallback(self):
+    """GH-270: Verifies planning.bddMode defaults, file cascade, env override, and invalid fallback."""
+    from lib.config import VALID_PLANNING_BDD_MODES
+
+    self.assertEqual(
+        VALID_PLANNING_BDD_MODES,
+        ("adaptive", "full_gherkin", "planning_only", "ask"),
+    )
+    self.assertEqual(DEFAULT_WORKFLOW_CONFIG["planning"], {"bddMode": ""})
+    self.assertEqual(load_default_config()["planning"], {"bddMode": ""})
+
+    for rel_path in (
+        "default_config.json",
+        os.path.join(".workflow", "config.json.example"),
+    ):
+      with open(os.path.join(REPO_ROOT, rel_path), "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+      self.assertEqual(
+          data["planning"],
+          {"bddMode": ""},
+          msg=f"Missing planning.bddMode in {rel_path}",
+      )
+
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      registry = AgentPathRegistry(home_dir=fake_home)
+      global_cfg = registry.get_profile("gemini").global_config_path
+      os.makedirs(os.path.dirname(global_cfg), exist_ok=True)
+      with open(global_cfg, "w", encoding="utf-8") as fh:
+        json.dump({"planning": {"bddMode": "full_gherkin"}}, fh)
+
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        mcp_cfg = resolve_workflow_config(ws_dir)
+        hook_cfg, _ = get_workflow_config([ws_dir])
+      self.assertEqual(mcp_cfg["planning"]["bddMode"], "full_gherkin")
+      self.assertEqual(hook_cfg["planning"]["bddMode"], "full_gherkin")
+
+      # Project-local overrides user-global
+      local_cfg = os.path.join(ws_dir, ".workflow", "config.json")
+      os.makedirs(os.path.dirname(local_cfg), exist_ok=True)
+      with open(local_cfg, "w", encoding="utf-8") as fh:
+        json.dump({"planning": {"bddMode": "adaptive"}}, fh)
+
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        mcp_local = resolve_workflow_config(ws_dir)
+        hook_local, _ = get_workflow_config([ws_dir])
+      self.assertEqual(mcp_local["planning"]["bddMode"], "adaptive")
+      self.assertEqual(hook_local["planning"]["bddMode"], "adaptive")
+
+      # Env override takes highest precedence
+      env = _isolated_env(
+          fake_home, {"MAKEFILE_WORKFLOW_PLANNING_BDD_MODE": "planning_only"}
+      )
+      with mock.patch.dict(os.environ, env, clear=True):
+        mcp_env = resolve_workflow_config(ws_dir)
+        hook_env, hook_src = get_workflow_config([ws_dir])
+      self.assertEqual(mcp_env["planning"]["bddMode"], "planning_only")
+      self.assertEqual(hook_env["planning"]["bddMode"], "planning_only")
+      self.assertIn(
+          "MAKEFILE_WORKFLOW_PLANNING_BDD_MODE=planning_only",
+          mcp_env["envOverrides"],
+      )
+      self.assertIn("MAKEFILE_WORKFLOW_PLANNING_BDD_MODE", hook_src or "")
+
+      # Invalid env var value is safely ignored (preserves underlying file value)
+      env_bad = _isolated_env(
+          fake_home, {"MAKEFILE_WORKFLOW_PLANNING_BDD_MODE": "not_a_valid_mode"}
+      )
+      with mock.patch.dict(os.environ, env_bad, clear=True):
+        mcp_bad_env = resolve_workflow_config(ws_dir)
+        hook_bad_env, hook_bad_src = get_workflow_config([ws_dir])
+      self.assertEqual(mcp_bad_env["planning"]["bddMode"], "adaptive")
+      self.assertEqual(hook_bad_env["planning"]["bddMode"], "adaptive")
+      self.assertFalse(
+          any(
+              item.startswith("MAKEFILE_WORKFLOW_PLANNING_BDD_MODE=")
+              for item in mcp_bad_env["envOverrides"]
+          )
+      )
+      self.assertNotIn("MAKEFILE_WORKFLOW_PLANNING_BDD_MODE", hook_bad_src or "")
+
+      # Invalid config value falls back safely to ""
+      with open(local_cfg, "w", encoding="utf-8") as fh:
+        json.dump({"planning": {"bddMode": "bogus_mode"}}, fh)
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        mcp_bad = resolve_workflow_config(ws_dir)
+        hook_bad, _ = get_workflow_config([ws_dir])
+      self.assertEqual(mcp_bad["planning"]["bddMode"], "")
+      self.assertEqual(hook_bad["planning"]["bddMode"], "")
+
+  def test_save_planning_bdd_mode_persists_across_scopes_and_rejects_invalid_inputs(
+      self,
+  ):
+    """GH-270: Verifies save_planning_bdd_mode writes user-global, project-local, or both."""
+    from lib.config import save_planning_bdd_mode
+
+    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        # 1. Save project-local
+        res_local = save_planning_bdd_mode(
+            "adaptive", "project-local", workspace_dir=ws_dir
+        )
+        local_cfg = os.path.join(ws_dir, ".workflow", "config.json")
+        self.assertEqual(res_local["bddMode"], "adaptive")
+        self.assertEqual(res_local["updatedFiles"], [os.path.abspath(local_cfg)])
+        with open(local_cfg, "r", encoding="utf-8") as fh:
+          self.assertEqual(json.load(fh)["planning"]["bddMode"], "adaptive")
+
+        # 2. Save both scopes preserving unrelated keys
+        with open(local_cfg, "w", encoding="utf-8") as fh:
+          json.dump({"models": {"tdd-worker": "pro"}}, fh)
+        res_both = save_planning_bdd_mode(
+            "full_gherkin", "both", workspace_dir=ws_dir, agent="claude"
+        )
+        claude_cfg = AgentPathRegistry(home_dir=fake_home).get_profile("claude").global_config_path
+        self.assertEqual(len(res_both["updatedFiles"]), 2)
+        with open(local_cfg, "r", encoding="utf-8") as fh:
+          local_data = json.load(fh)
+        self.assertEqual(local_data["models"]["tdd-worker"], "pro")
+        self.assertEqual(local_data["planning"]["bddMode"], "full_gherkin")
+        with open(claude_cfg, "r", encoding="utf-8") as fh:
+          self.assertEqual(json.load(fh)["planning"]["bddMode"], "full_gherkin")
+
+        # 3. Invalid mode, invalid scope, missing workspace_dir, and non-dict JSON raise ValueError
+        with self.assertRaises(ValueError):
+          save_planning_bdd_mode("invalid", "user-global")
+        with self.assertRaises(ValueError):
+          save_planning_bdd_mode("ask", "invalid-scope")
+        with self.assertRaises(ValueError):
+          save_planning_bdd_mode("ask", "project-local", workspace_dir=None)
+        with open(local_cfg, "w", encoding="utf-8") as fh:
+          json.dump(["not", "a", "json", "object"], fh)
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+          save_planning_bdd_mode(
+              "adaptive", "project-local", workspace_dir=ws_dir
+          )
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -82,6 +82,8 @@ Agents must use Socratic Probes during:
 | `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-158` | Persistent Memento Readerboard Truncation Trap | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-PROC-159` | Project-Adaptive Code Documentation Standards and Tree Verification | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-160` | Canonical Eight-Section Plan Contract and Full Worker Ingestion | Process | [`scars/process.md`](./scars/process.md) |
+| `SCAR-PROC-161` | Pause-Gate `ask_question` Focus Capture and Plan Approval Separation | Process | [`scars/process.md`](./scars/process.md) |
 | `SCAR-TEST-05` | Isolated Test Environments | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-08` | Two-Tier Test Isolation | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-09` | Fail-Fast Targeted TDD Loop | Testing | [`scars/testing.md`](./scars/testing.md) |

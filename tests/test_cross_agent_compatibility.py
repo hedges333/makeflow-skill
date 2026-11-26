@@ -7693,8 +7693,8 @@ def _collect_compatibility_errors():
       if r09_text and not check_scar_catalog_routing(r09_text, scar_id, sf):
         errors.append(f"{ref_09_rel} Master Routing Table must strictly route {scar_id} to scars/{sf}")
 
-  if total_scars_found != 67:
-    errors.append(f"Expected 67 synthetic scars across category spokes, found {total_scars_found}")
+  if total_scars_found != 69:
+    errors.append(f"Expected 69 synthetic scars across category spokes, found {total_scars_found}")
 
   testing_spoke_rel = os.path.join(scars_dir_rel, "testing.md")
   testing_spoke = repo_path(testing_spoke_rel)
@@ -12837,6 +12837,229 @@ class TestJsonStateAndReportContract(unittest.TestCase):
               frontmatter,
               f"{rel} must omit call_mcp_tool from tools: frontmatter (SCAR-PROC-106).",
           )
+
+
+PLAN_SPEC_AND_BDD_CONTRACT_FILES = (
+    "skills/makeflow/references/02_archaeology_and_planning.md",
+    "skills/makeflow/references/03_tdd_and_code_quality.md",
+    "skills/makeflow/references/08_subagent_orchestration.md",
+    "skills/makeflow/references/09_synthetic_scars_catalog.md",
+    "skills/makeflow/references/12_request_history_ledger.md",
+    "skills/makeflow/references/13_configuration_and_user_preferences.md",
+    "skills/makeflow/references/scars/process.md",
+    "skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md",
+    "agents/tdd-worker.md",
+    "rules/AGENTS.md",
+    "skills/makeflow/SKILL.md",
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+PLAN_SPEC_ADAPTER_FILES = (
+    "CLAUDE.md",
+    ".cursorrules",
+    ".cursor/rules/makeflow.mdc",
+    ".github/copilot-instructions.md",
+    "adapters/chatgpt/instructions.md",
+)
+
+BDD_ATTRIBUTED_REPOS = (
+    "cucumber/docs",
+    "RSginer/spec-kit-bdd",
+    "H2Sxxa/spec-coding-skills",
+    "AsiaOstrich/universal-dev-standards",
+    "angelo-v/opencode-playground",
+    "openpracticelibrary/openpracticelibrary",
+    "bifravst/bdd-markdown",
+    "reqnroll/Sample-ReqOverflow",
+)
+
+
+def check_plan_spec_and_bdd_interrogation_contract(
+    files_by_relpath: dict[str, str] | None = None,
+    repo_root: str | None = None,
+) -> list[str]:
+  """Validates GH-270 canonical plan spec, SCAR-PROC-160/161, full tdd-worker plan reading, and BDD docs.
+
+  Args:
+    files_by_relpath: Optional in-memory map of repo-relative paths to contents.
+    repo_root: Optional repository root directory override.
+
+  Returns:
+    List of diagnostic error strings (empty when all GH-270 contracts hold).
+  """
+  errs: list[str] = []
+  base_dir = repo_root or REPO_ROOT
+  files_map: dict[str, str] = {}
+  if files_by_relpath is not None:
+    files_map = dict(files_by_relpath)
+  else:
+    for rel in PLAN_SPEC_AND_BDD_CONTRACT_FILES:
+      fpath = os.path.normpath(os.path.join(base_dir, rel))
+      if not os.path.isfile(fpath):
+        errs.append(f"Missing {rel}")
+      else:
+        with open(fpath, "r", encoding="utf-8") as f:
+          files_map[rel] = f.read()
+
+  for rel in PLAN_SPEC_AND_BDD_CONTRACT_FILES:
+    if rel not in files_map and f"Missing {rel}" not in errs:
+      errs.append(f"Missing {rel}")
+  if errs:
+    return errs
+
+  # 1. Core Scars SCAR-PROC-160 and SCAR-PROC-161 + Master Routing Table
+  proc_rel = "skills/makeflow/references/scars/process.md"
+  cat_rel = "skills/makeflow/references/09_synthetic_scars_catalog.md"
+  for scar_id in ("SCAR-PROC-160", "SCAR-PROC-161"):
+    if not check_scar_catalog_routing(files_map[cat_rel], scar_id, "process.md"):
+      errs.append(f"{cat_rel} must route {scar_id} to scars/process.md")
+    block = _extract_scar_block(files_map[proc_rel], scar_id)
+    if not block:
+      errs.append(f"{proc_rel} missing '{scar_id}' entry")
+    else:
+      for field in ("Wound", "Trap", "Permanent Reflex", "Socratic Probe"):
+        if f"**{field}**:" not in block:
+          errs.append(f"{proc_rel} {scar_id} missing '**{field}**:'")
+      errs.extend(_check_section_simple_english(f"{proc_rel} [{scar_id}]", block))
+
+  # 2. 02_archaeology_and_planning.md preserves anchored heading & documents 8-section spec + BDD
+  r02_rel = "skills/makeflow/references/02_archaeology_and_planning.md"
+  r02_text = files_map[r02_rel]
+  if "## 2. Target 20: Plan File Creation (`20_plan.md`)" not in r02_text:
+    errs.append(f"{r02_rel} must preserve heading '## 2. Target 20: Plan File Creation (`20_plan.md`)'")
+  for tok in (
+      "SCAR-PROC-160",
+      "SCAR-PROC-161",
+      "## 1. Problem Statement and Root Cause Summary",
+      "## 2. BDD Discovery and Acceptance Criteria",
+      "### Specific Edits to Existing Files",
+      "### New Files to Create",
+      "### Untouched Files and Scope Quarantine",
+      "planning.bddMode",
+      "check-plan",
+      "resources/bdd/00_bdd_discovery_and_scenarios.md",
+  ):
+    if tok not in r02_text:
+      errs.append(f"{r02_rel} must document '{tok}'")
+
+  # 3. Full verbatim 20_plan.md reading for tdd-worker across worker, 03, 08, AGENTS.md, SKILL.md
+  for rel in (
+      "agents/tdd-worker.md",
+      "skills/makeflow/references/03_tdd_and_code_quality.md",
+      "skills/makeflow/references/08_subagent_orchestration.md",
+  ):
+    txt = files_map[rel]
+    if "SCAR-PROC-160" not in txt:
+      errs.append(f"{rel} must reference SCAR-PROC-160")
+    if "20_plan.md" not in txt or "summary" not in txt.lower():
+      errs.append(f"{rel} must require full 20_plan.md disk read rather than a summary")
+
+  # 4. 12_request_history_ledger.md & 13_configuration_and_user_preferences.md
+  if "full_gherkin" not in files_map["skills/makeflow/references/12_request_history_ledger.md"]:
+    errs.append("skills/makeflow/references/12_request_history_ledger.md must document full_gherkin scenario recording")
+  r13_text = files_map["skills/makeflow/references/13_configuration_and_user_preferences.md"]
+  for tok in ("planning.bddMode", "MAKEFILE_WORKFLOW_PLANNING_BDD_MODE", "adaptive", "full_gherkin", "planning_only", "ask"):
+    if tok not in r13_text:
+      errs.append(f"skills/makeflow/references/13_configuration_and_user_preferences.md must document '{tok}'")
+
+  # 5. Attributed BDD resource guide + Simple English compliance
+  bdd_rel = "skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md"
+  bdd_text = files_map[bdd_rel]
+  for repo_slug in BDD_ATTRIBUTED_REPOS:
+    if repo_slug not in bdd_text:
+      errs.append(f"{bdd_rel} missing attribution for '{repo_slug}'")
+  for tok in ("Three Amigos", "Example Mapping", "Given", "When", "Then", "planning.bddMode"):
+    if tok not in bdd_text:
+      errs.append(f"{bdd_rel} must document '{tok}'")
+  errs.extend(_check_section_simple_english(bdd_rel, bdd_text))
+
+  # 6. rules/AGENTS.md Section 1.1, 1.2, 1.4
+  agents_rel = "rules/AGENTS.md"
+  sec11 = _extract_markdown_h3_section(files_map[agents_rel], "### 1.1 Target 20 Plan Artifact")
+  sec12 = _extract_markdown_h3_section(files_map[agents_rel], "### 1.2 Pause Gates")
+  sec14 = _extract_markdown_h3_section(files_map[agents_rel], "### 1.4 Explicit Six Pillars")
+  for tok in ("SCAR-PROC-160", "SCAR-PROC-161", "planning.bddMode", "ask_question"):
+    if tok not in sec11:
+      errs.append(f"{agents_rel} Section 1.1 must document '{tok}'")
+  if "Target 20" not in sec12 or "SCAR-PROC-161" not in sec12:
+    errs.append(f"{agents_rel} Section 1.2 must include Target 20 and SCAR-PROC-161")
+  if "SCAR-PROC-160" not in sec14:
+    errs.append(f"{agents_rel} Section 1.4 must document SCAR-PROC-160 full plan reading")
+  errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.1]", sec11))
+  errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.2]", sec12))
+  errs.extend(_check_section_simple_english(f"{agents_rel} [Section 1.4]", sec14))
+
+  # 7. SKILL.md byte budget, zero <brain>, and GH-270 tokens
+  skill_rel = "skills/makeflow/SKILL.md"
+  skill_text = files_map[skill_rel]
+  skill_bytes = len(skill_text.encode("utf-8"))
+  if skill_bytes > 24576:
+    errs.append(f"{skill_rel} exceeds 24,576-byte budget ({skill_bytes} bytes)")
+  if "<brain>" in skill_text:
+    errs.append(f"{skill_rel} must not contain '<brain>'")
+  for tok in ("check-plan", "SCAR-PROC-160", "SCAR-PROC-161", "planning.bddMode"):
+    if tok not in skill_text:
+      errs.append(f"{skill_rel} must document '{tok}'")
+
+  # 8. All 5 cross-agent adapters
+  for adapter_rel in PLAN_SPEC_ADAPTER_FILES:
+    ad_text = files_map[adapter_rel]
+    for tok in ("SCAR-PROC-160", "SCAR-PROC-161"):
+      if tok not in ad_text:
+        errs.append(f"{adapter_rel} must document '{tok}'")
+
+  return errs
+
+
+class TestPlanSpecAndBddInterrogationContract(unittest.TestCase):
+  """Section-anchored contract and negative falsification tests for GH-270."""
+
+  def _load_base_files(self) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    for rel in PLAN_SPEC_AND_BDD_CONTRACT_FILES:
+      with open(repo_path(rel), "r", encoding="utf-8") as f:
+        loaded[rel] = f.read()
+    return loaded
+
+  def test_live_repo_plan_spec_and_bdd_interrogation_contract(self) -> None:
+    """Verifies live manuals, scars, BDD resource, rules, SKILL.md, and adapters satisfy GH-270."""
+    self.assertEqual(check_plan_spec_and_bdd_interrogation_contract(), [])
+
+  def test_negative_falsification_rejects_dropped_scars_attribution_or_simple_english(
+      self,
+  ) -> None:
+    """In-memory mutations removing GH-270 contracts or attribution must trigger failures."""
+    base = self._load_base_files()
+    self.assertEqual(check_plan_spec_and_bdd_interrogation_contract(base), [])
+
+    mutations = (
+        ("skills/makeflow/references/09_synthetic_scars_catalog.md", "SCAR-PROC-160", "REMOVED_160"),
+        ("skills/makeflow/references/09_synthetic_scars_catalog.md", "SCAR-PROC-161", "REMOVED_161"),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", "check-plan", "REMOVED_GATE"),
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "cucumber/docs", "REMOVED_REPO"),
+        ("agents/tdd-worker.md", "SCAR-PROC-160", "REMOVED_160"),
+        ("rules/AGENTS.md", "SCAR-PROC-161", "REMOVED_161"),
+        ("skills/makeflow/SKILL.md", "SCAR-PROC-160", "REMOVED_160"),
+        ("CLAUDE.md", "SCAR-PROC-160", "REMOVED_160"),
+        (".cursorrules", "SCAR-PROC-161", "REMOVED_161"),
+        (".cursor/rules/makeflow.mdc", "SCAR-PROC-160", "REMOVED_160"),
+        (".github/copilot-instructions.md", "SCAR-PROC-161", "REMOVED_161"),
+        ("adapters/chatgpt/instructions.md", "SCAR-PROC-160", "REMOVED_160"),
+    )
+    for rel, token, repl in mutations:
+      with self.subTest(file=rel, mutated=token):
+        mut = dict(base)
+        mut[rel] = mut[rel].replace(token, repl)
+        self.assertNotEqual(mut[rel], base[rel])
+        errs = check_plan_spec_and_bdd_interrogation_contract(mut)
+        self.assertTrue(
+            any(rel in e for e in errs),
+            f"Expected rejection when '{token}' mutated in {rel}, got: {errs}",
+        )
 
 
 if __name__ == "__main__":

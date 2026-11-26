@@ -32,6 +32,7 @@ When a session starts or `workflow_get_config` runs, Makeflow cascades configura
    - `MAKEFILE_WORKFLOW_CI_ENABLE_SESSION_PARKING` set to `true` or `1` to park Target 70 sessions cleanly while awaiting peer reviews or slow CI (default `false`).
    - `MAKEFILE_WORKFLOW_CI_PARKING_CRON` for optional background polling cron expression while parked (default `""`).
    - `MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION` for completed state card action (`unlink` or `archive`, default `unlink`).
+   - `MAKEFILE_WORKFLOW_PLANNING_BDD_MODE` for Target 15/20 BDD planning mode (`adaptive`, `full_gherkin`, `planning_only`, or `ask`, default unset `""`).
    - `MAKEFLOW_AGENT` for selecting the active agent path profile (`gemini`, `claude`, `cursor`, `copilot`, `codex`, `chatgpt`).
    - `MAKEFLOW_DISABLE_TERMINAL_TITLE` set to `1` or `true` to disable automatic terminal tab title updates.
 
@@ -44,6 +45,7 @@ Canonical defaults in `./default_config.json`:
    - `triage-worker`: `inherit`
    - `synthetic-scar-importer`: `inherit`
    - `review.allowCriticHermeticTests`: `false`. Set to `true` only to allow read-only critic hermetic tests when no automated `T30 -> T40` gate exists.
+   - `planning.bddMode`: `""` (unset default). Valid values are `adaptive`, `full_gherkin`, `planning_only`, and `ask`. Invalid values fall back safely to `""`.
    - `testing.regressionCommand`: `""`. Set an explicit full subproject regression command for `verify-regression` when no `Makefile` `test:` target exists.
    - `testing.regressionTimeoutSeconds`: `300`. Positive timeout in seconds for `verify-regression` execution.
    - `ci.quiescenceSeconds`: `180`. Set to `0` to disable the post-CI quiescence wait.
@@ -85,6 +87,9 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
     "maxReviewRounds": 3,
     "strictSixPillars": true,
     "allowCriticHermeticTests": false
+  },
+  "planning": {
+    "bddMode": ""
   },
   "testing": {
     "regressionCommand": "",
