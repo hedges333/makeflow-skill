@@ -4,7 +4,7 @@ Follow the Makefile Workflow lifecycle when assisting in this repository:
 
 1. Read target files and their existing tests before you propose changes.
 2. Do all work on a dedicated branch, such as `feat/<id>-<slug>` or `fix/<id>-<slug>` (use `feat/local-<n>-<slug>` for local tasks).
-3. Write failing tests that reproduce the bug or specify the feature before you write production code.
+3. Follow `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`. Write failing seam tests before production code. Run `1` slice without padding on trivial fixes, or ordered vertical slices for multi-behavior tasks. Mock only external boundaries, and refactor after `verify-green`.
 4. Point tests to `*_test` databases, configured `database.testDatabases`, in-memory databases, or mock fixtures. Never connect to production databases.
 5. Keep edits small and favor object composition. If large datasets outgrow an ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
 6. Audit every diff against the Six Pillars: Intent, Verification (TDD, failure falsification, boundary limits), Architecture, Blast Radius (mandatory canary), Reviewer Defense (intentional non-changes, Simple English), and Immune Defenses & Crash Antibodies.

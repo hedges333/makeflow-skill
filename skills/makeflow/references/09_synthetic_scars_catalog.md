@@ -93,6 +93,10 @@ Agents must use Socratic Probes during:
 | `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-TEST-45` | Ephemeral Temporary Directory Isolation | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-46` | Horizontal Test-First Dumping and Uncalibrated Slice Granularity | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-47` | Tautological Assertions and Implementation-Coupled Mocks | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-48` | False Red Witnesses and Unverified Test-After Rationalization | Testing | [`scars/testing.md`](./scars/testing.md) |
+| `SCAR-TEST-49` | Premature Test Refactoring and Skipped Post-Green Cleanup | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Testing | [`scars/testing.md`](./scars/testing.md) |
 | `SCAR-SH-01` | Prefer Temporary Script Files Over Complex Shell Quoting | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |
 | `SCAR-SH-03` | Shell Redirection and Comment Stripping | Git & Shell | [`scars/git_and_shell.md`](./scars/git_and_shell.md) |

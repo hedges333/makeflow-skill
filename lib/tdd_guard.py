@@ -385,6 +385,57 @@ def _diff_manifests(
   return ", ".join(parts) if parts else "tree digest mismatch"
 
 
+def _archive_verified_cycle(
+    existing_receipt: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+  """Archives a prior verified Green cycle into the completed_cycles list.
+
+  Args:
+    existing_receipt: Previously persisted TDD receipt dictionary, or None.
+
+  Returns:
+    List of archived verified cycle summary dictionaries. Previously archived
+    entries are preserved, and existing_receipt is appended only when it
+    represents a verified Green cycle with a valid command and Red exit code.
+  """
+  if not isinstance(existing_receipt, dict):
+    return []
+  raw_cycles = existing_receipt.get("completed_cycles")
+  cycles: List[Dict[str, Any]] = (
+      [dict(item) for item in raw_cycles if isinstance(item, dict)]
+      if isinstance(raw_cycles, list)
+      else []
+  )
+  verified_green = existing_receipt.get("verified_green") is True
+  green_exit = existing_receipt.get("green_exit_code")
+  valid_green_exit = (
+      not isinstance(green_exit, bool)
+      and isinstance(green_exit, int)
+      and green_exit == 0
+  )
+  test_cmd = existing_receipt.get("test_cmd")
+  valid_test_cmd = isinstance(test_cmd, str) and bool(test_cmd.strip())
+  red_exit = existing_receipt.get("red_exit_code")
+  valid_red_exit = (
+      not isinstance(red_exit, bool)
+      and isinstance(red_exit, int)
+      and red_exit != 0
+  )
+  if not (
+      verified_green and valid_green_exit and valid_test_cmd and valid_red_exit
+  ):
+    return cycles
+  cycles.append({
+      "green_exit": green_exit,
+      "red_exit": red_exit,
+      "slice_index": len(cycles) + 1,
+      "test_cmd": test_cmd,
+      "verified_at": existing_receipt.get("green_verified_at"),
+      "witnessed_at": existing_receipt.get("witnessed_at"),
+  })
+  return cycles
+
+
 class TddGuardScript(BaseScript):
   """BaseScript runner for witness-red and verify-green TDD verification gates."""
 
@@ -695,19 +746,17 @@ class TddGuardScript(BaseScript):
             except OSError:
               pass
 
-  def _load_prior_forensic_log(self) -> List[Dict[str, Any]]:
+  def _load_prior_receipt(self) -> Optional[Dict[str, Any]]:
     if not os.path.isfile(self.receipt_path):
-      return []
+      return None
     try:
       with open(self.receipt_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-      if isinstance(data, dict) and isinstance(data.get("forensic_log"), list):
-        return [
-            item for item in data["forensic_log"] if isinstance(item, dict)
-        ]
+      if isinstance(data, dict):
+        return data
     except (OSError, ValueError, TypeError):
       pass
-    return []
+    return None
 
   def _write_receipt(self, receipt: Dict[str, Any]) -> Optional[str]:
     tmp_path: Optional[str] = None
@@ -851,7 +900,18 @@ class TddGuardScript(BaseScript):
           reflex="Write temporary test outputs inside tempfile.TemporaryDirectory(), clean the test directory, and re-run witness-red.",
       )
 
-    prior_log = self._load_prior_forensic_log()
+    prior_receipt = self._load_prior_receipt()
+    prior_log = (
+        [
+            item
+            for item in prior_receipt["forensic_log"]
+            if isinstance(item, dict)
+        ]
+        if isinstance(prior_receipt, dict)
+        and isinstance(prior_receipt.get("forensic_log"), list)
+        else []
+    )
+    completed_cycles = _archive_verified_cycle(prior_receipt)
     toolchain_hash = compute_toolchain_hash(self.repo_root)
     seal = _compute_receipt_seal(
         witnessed_head_sha=head_sha,
@@ -863,6 +923,7 @@ class TddGuardScript(BaseScript):
         toolchain_hash=toolchain_hash,
     )
     receipt: Dict[str, Any] = {
+        "completed_cycles": completed_cycles,
         "forensic_log": prior_log,
         "green_exit_code": None,
         "green_verified_at": None,

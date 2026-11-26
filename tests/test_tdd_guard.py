@@ -24,6 +24,7 @@ from lib.base_script import BaseScript
 from lib.tdd_guard import (
     CORE_GOVERNANCE_FILES,
     TddGuardScript,
+    _archive_verified_cycle,
     compute_test_tree_hash,
     compute_toolchain_hash,
 )
@@ -3770,6 +3771,414 @@ class TestTddGuardToolchainHashIsolation(unittest.TestCase):
                 for e in receipt.get("forensic_log", [])
             )
         )
+
+
+class TestTddGuardCompletedCycles(unittest.TestCase):
+  """Hermetic unit tests for single-slice and multi-slice completed_cycles tracking (GH-273)."""
+
+  def _run_guard(self, tmpdir: str, sub_args):
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = TddGuardScript().execute(
+        args=["--repo-root", tmpdir, *sub_args],
+        stdout=out,
+        stderr=err,
+    )
+    return rc, out.getvalue(), err.getvalue()
+
+  def test_single_slice_run_records_empty_completed_cycles(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      cmd = _unit_test_cmd()
+
+      rc_red, _, err_red = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd]
+      )
+      self.assertEqual(rc_red, 0, err_red)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        red_receipt = json.load(f)
+      self.assertEqual(red_receipt["completed_cycles"], [])
+
+      _fix_calc_bug(tmpdir)
+      rc_green, _, err_green = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc_green, 0, err_green)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        green_receipt = json.load(f)
+      self.assertTrue(green_receipt["verified_green"])
+      self.assertEqual(green_receipt["completed_cycles"], [])
+
+  def test_multi_slice_run_archives_and_accumulates_verified_cycles(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      cmd_slice1 = _unit_test_cmd()
+
+      # Slice 1: witness-red -> fix -> verify-green
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd_slice1]
+      )
+      self.assertEqual(rc, 0, err)
+      _fix_calc_bug(tmpdir)
+      rc, _, err = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc, 0, err)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        slice1_receipt = json.load(f)
+
+      # Slice 2: add failing multiply test -> witness-red -> fix -> verify-green
+      test_mul_path = os.path.join(tmpdir, "tests", "test_mul.py")
+      with open(test_mul_path, "w", encoding="utf-8") as f:
+        f.write(
+            "import unittest\n"
+            "from src.calc import mul\n\n"
+            "class TestMul(unittest.TestCase):\n"
+            "  def test_mul(self):\n"
+            "    self.assertEqual(mul(3, 4), 12)\n"
+        )
+      cmd_slice2 = (
+          f"{shlex.quote(sys.executable)} -m unittest -v tests/test_mul.py"
+      )
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd_slice2]
+      )
+      self.assertEqual(rc, 0, err)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        slice2_red = json.load(f)
+
+      self.assertEqual(len(slice2_red["completed_cycles"]), 1)
+      archived_1 = slice2_red["completed_cycles"][0]
+      self.assertEqual(archived_1["slice_index"], 1)
+      self.assertEqual(archived_1["test_cmd"], cmd_slice1)
+      self.assertEqual(archived_1["red_exit"], slice1_receipt["red_exit_code"])
+      self.assertEqual(archived_1["green_exit"], 0)
+      self.assertEqual(archived_1["witnessed_at"], slice1_receipt["witnessed_at"])
+      self.assertEqual(
+          archived_1["verified_at"], slice1_receipt["green_verified_at"]
+      )
+
+      with open(os.path.join(tmpdir, "src", "calc.py"), "a", encoding="utf-8") as f:
+        f.write("\ndef mul(a: int, b: int) -> int:\n  return a * b\n")
+      rc, _, err = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc, 0, err)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        slice2_green = json.load(f)
+      self.assertEqual(slice2_green["completed_cycles"], [archived_1])
+
+      # Slice 3: add failing sub test -> witness-red archives Slice 2
+      test_sub_path = os.path.join(tmpdir, "tests", "test_sub.py")
+      with open(test_sub_path, "w", encoding="utf-8") as f:
+        f.write(
+            "import unittest\n"
+            "from src.calc import sub\n\n"
+            "class TestSub(unittest.TestCase):\n"
+            "  def test_sub(self):\n"
+            "    self.assertEqual(sub(10, 4), 6)\n"
+        )
+      cmd_slice3 = (
+          f"{shlex.quote(sys.executable)} -m unittest -v tests/test_sub.py"
+      )
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd_slice3]
+      )
+      self.assertEqual(rc, 0, err)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        slice3_red = json.load(f)
+
+      self.assertEqual(len(slice3_red["completed_cycles"]), 2)
+      self.assertEqual(slice3_red["completed_cycles"][0], archived_1)
+      archived_2 = slice3_red["completed_cycles"][1]
+      self.assertEqual(archived_2["slice_index"], 2)
+      self.assertEqual(archived_2["test_cmd"], cmd_slice2)
+      self.assertEqual(archived_2["red_exit"], slice2_green["red_exit_code"])
+      self.assertEqual(archived_2["green_exit"], 0)
+      self.assertEqual(archived_2["witnessed_at"], slice2_green["witnessed_at"])
+      self.assertEqual(
+          archived_2["verified_at"], slice2_green["green_verified_at"]
+      )
+
+  def test_rewitness_after_unverified_red_does_not_append_unverified_cycle(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      cmd = _unit_test_cmd()
+
+      # First unverified witness-red
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd]
+      )
+      self.assertEqual(rc, 0, err)
+      # Second witness-red before verify-green
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd]
+      )
+      self.assertEqual(rc, 0, err)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+      self.assertEqual(receipt["completed_cycles"], [])
+
+      # Complete Slice 1 Green, then run two consecutive unverified Red attempts
+      _fix_calc_bug(tmpdir)
+      rc, _, err = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc, 0, err)
+
+      with open(os.path.join(tmpdir, "tests", "test_mul.py"), "w", encoding="utf-8") as f:
+        f.write(
+            "import unittest\n"
+            "from src.calc import mul\n\n"
+            "class TestMul(unittest.TestCase):\n"
+            "  def test_mul(self):\n"
+            "    self.assertEqual(mul(2, 3), 6)\n"
+        )
+      cmd2 = f"{shlex.quote(sys.executable)} -m unittest -v tests/test_mul.py"
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd2]
+      )
+      self.assertEqual(rc, 0, err)
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd2]
+      )
+      self.assertEqual(rc, 0, err)
+      with open(_receipt_path(tmpdir), "r", encoding="utf-8") as f:
+        after_retry = json.load(f)
+      self.assertEqual(len(after_retry["completed_cycles"]), 1)
+      self.assertEqual(after_retry["completed_cycles"][0]["slice_index"], 1)
+      self.assertEqual(after_retry["completed_cycles"][0]["test_cmd"], cmd)
+
+  def test_legacy_receipt_without_completed_cycles_verifies_green(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      cmd = _unit_test_cmd()
+
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd]
+      )
+      self.assertEqual(rc, 0, err)
+
+      # Strip completed_cycles to simulate a legacy pre-GH-273 receipt
+      rpath = _receipt_path(tmpdir)
+      with open(rpath, "r", encoding="utf-8") as f:
+        legacy = json.load(f)
+      legacy.pop("completed_cycles", None)
+      with open(rpath, "w", encoding="utf-8") as f:
+        json.dump(legacy, f, indent=2, sort_keys=True)
+
+      _fix_calc_bug(tmpdir)
+      rc, _, err = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc, 0, err)
+      with open(rpath, "r", encoding="utf-8") as f:
+        verified = json.load(f)
+      self.assertTrue(verified["verified_green"])
+
+      # Slice 2 witness-red on top of a legacy verified-green receipt (lacking completed_cycles)
+      with open(rpath, "r", encoding="utf-8") as f:
+        legacy_verified = json.load(f)
+      legacy_verified.pop("completed_cycles", None)
+      with open(rpath, "w", encoding="utf-8") as f:
+        json.dump(legacy_verified, f, indent=2, sort_keys=True)
+
+      test_mul_path = os.path.join(tmpdir, "tests", "test_mul.py")
+      with open(test_mul_path, "w", encoding="utf-8") as f:
+        f.write(
+            "import unittest\n"
+            "from src.calc import mul\n\n"
+            "class TestMul(unittest.TestCase):\n"
+            "  def test_mul(self):\n"
+            "    self.assertEqual(mul(3, 4), 12)\n"
+        )
+      cmd2 = f"{shlex.quote(sys.executable)} -m unittest -v tests/test_mul.py"
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd2]
+      )
+      self.assertEqual(rc, 0, err)
+      with open(rpath, "r", encoding="utf-8") as f:
+        slice2_red = json.load(f)
+      self.assertEqual(len(slice2_red["completed_cycles"]), 1)
+      archived = slice2_red["completed_cycles"][0]
+      self.assertEqual(archived["slice_index"], 1)
+      self.assertEqual(archived["test_cmd"], cmd)
+      self.assertEqual(archived["red_exit"], legacy_verified["red_exit_code"])
+      self.assertEqual(archived["green_exit"], 0)
+      self.assertEqual(archived["witnessed_at"], legacy_verified["witnessed_at"])
+      self.assertEqual(
+          archived["verified_at"], legacy_verified["green_verified_at"]
+      )
+
+  def test_rejects_forged_or_incomplete_verified_receipts(self):
+    base = {
+        "verified_green": True,
+        "green_exit_code": 0,
+        "red_exit_code": 1,
+        "test_cmd": "python3 -m unittest tests/test_calc.py",
+        "witnessed_at": "2026-11-26T00:00:00+00:00",
+        "green_verified_at": "2026-11-26T00:01:00+00:00",
+    }
+    invalid_variants = [
+        # Missing or blank/non-string test_cmd
+        {k: v for k, v in base.items() if k != "test_cmd"},
+        {**base, "test_cmd": ""},
+        {**base, "test_cmd": "   \t\n"},
+        {**base, "test_cmd": None},
+        {**base, "test_cmd": 123},
+        # Missing, zero, boolean, or non-int red_exit_code
+        {k: v for k, v in base.items() if k != "red_exit_code"},
+        {**base, "red_exit_code": None},
+        {**base, "red_exit_code": 0},
+        {**base, "red_exit_code": True},
+        {**base, "red_exit_code": False},
+        {**base, "red_exit_code": "1"},
+    ]
+    for variant in invalid_variants:
+      with self.subTest(variant=variant):
+        self.assertEqual(_archive_verified_cycle(variant), [])
+
+    # Valid receipt is archived cleanly
+    archived = _archive_verified_cycle(base)
+    self.assertEqual(len(archived), 1)
+    self.assertEqual(archived[0]["test_cmd"], base["test_cmd"])
+    self.assertEqual(archived[0]["red_exit"], 1)
+
+  def test_boolean_false_green_exit_code_is_not_archived(self):
+    # Python bool is a subclass of int (False == 0), so green_exit_code=False must be rejected
+    forged_bool_receipt = {
+        "verified_green": True,
+        "green_exit_code": False,
+        "red_exit_code": 1,
+        "test_cmd": "python3 -m unittest tests/test_calc.py",
+        "completed_cycles": [],
+    }
+    self.assertEqual(_archive_verified_cycle(forged_bool_receipt), [])
+
+    # Also verify through end-to-end witness-red
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      rpath = _receipt_path(tmpdir)
+      os.makedirs(os.path.dirname(rpath), exist_ok=True)
+      with open(rpath, "w", encoding="utf-8") as f:
+        json.dump(forged_bool_receipt, f)
+      cmd = _unit_test_cmd()
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd]
+      )
+      self.assertEqual(rc, 0, err)
+      with open(rpath, "r", encoding="utf-8") as f:
+        receipt = json.load(f)
+      self.assertEqual(receipt["completed_cycles"], [])
+
+  def test_corrupt_and_non_dict_prior_receipts_start_with_empty_completed_cycles(
+      self,
+  ):
+    for bad_payload in ("{not valid json", "[]", '"just a string"', "42"):
+      with self.subTest(payload=bad_payload):
+        with tempfile.TemporaryDirectory() as tmpdir:
+          _init_fixture_repo(tmpdir)
+          rpath = _receipt_path(tmpdir)
+          os.makedirs(os.path.dirname(rpath), exist_ok=True)
+          with open(rpath, "w", encoding="utf-8") as f:
+            f.write(bad_payload)
+
+          # Direct _load_prior_receipt check
+          script = TddGuardScript()
+          script.receipt_path = rpath
+          self.assertIsNone(script._load_prior_receipt())
+
+          # End-to-end witness-red cleanly starts with completed_cycles == []
+          cmd = _unit_test_cmd()
+          rc, _, err = self._run_guard(
+              tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd]
+          )
+          self.assertEqual(rc, 0, err)
+          with open(rpath, "r", encoding="utf-8") as f:
+            receipt = json.load(f)
+          self.assertEqual(receipt["completed_cycles"], [])
+
+  def test_malformed_completed_cycles_values_are_filtered_cleanly(self):
+    # Non-dict existing_receipt returns []
+    self.assertEqual(_archive_verified_cycle(None), [])
+    self.assertEqual(_archive_verified_cycle(["not", "a", "dict"]), [])  # type: ignore[arg-type]
+
+    # Non-list completed_cycles (e.g. string "bad") is ignored cleanly
+    non_list_receipt = {
+        "verified_green": True,
+        "green_exit_code": 0,
+        "red_exit_code": 1,
+        "test_cmd": "python3 -m unittest tests/test_calc.py",
+        "completed_cycles": "bad",
+    }
+    cycles = _archive_verified_cycle(non_list_receipt)
+    self.assertEqual(len(cycles), 1)
+    self.assertEqual(cycles[0]["slice_index"], 1)
+
+    # List containing non-dict items preserves only valid dicts without crashing
+    valid_prior = {
+        "slice_index": 1,
+        "test_cmd": "python3 -m unittest tests/test_prev.py",
+        "red_exit": 1,
+        "green_exit": 0,
+        "witnessed_at": "2026-11-26T00:00:00+00:00",
+        "verified_at": "2026-11-26T00:01:00+00:00",
+    }
+    mixed_receipt = {
+        "verified_green": False,
+        "green_exit_code": None,
+        "completed_cycles": ["garbage", 42, None, valid_prior],
+    }
+    filtered = _archive_verified_cycle(mixed_receipt)
+    self.assertEqual(filtered, [valid_prior])
+    # Returned dict is a defensive copy, not an alias
+    self.assertIsNot(filtered[0], valid_prior)
+
+  def test_failed_verify_green_rollback_preserves_prior_completed_cycles(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      _init_fixture_repo(tmpdir)
+      cmd_slice1 = _unit_test_cmd()
+
+      # Slice 1 passes Red -> Green
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd_slice1]
+      )
+      self.assertEqual(rc, 0, err)
+      _fix_calc_bug(tmpdir)
+      rc, _, err = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc, 0, err)
+
+      # Slice 2 witnesses Red
+      test_mul_path = os.path.join(tmpdir, "tests", "test_mul.py")
+      with open(test_mul_path, "w", encoding="utf-8") as f:
+        f.write(
+            "import unittest\n"
+            "from src.calc import mul\n\n"
+            "class TestMul(unittest.TestCase):\n"
+            "  def test_mul(self):\n"
+            "    self.assertEqual(mul(3, 4), 12)\n"
+        )
+      cmd_slice2 = (
+          f"{shlex.quote(sys.executable)} -m unittest -v tests/test_mul.py"
+      )
+      rc, _, err = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd_slice2]
+      )
+      self.assertEqual(rc, 0, err)
+
+      # Slice 2 verify-green fails (GREEN_VERIFICATION_FAILED via _persist_rollback)
+      rc_fail, out_fail, err_fail = self._run_guard(tmpdir, ["verify-green"])
+      self.assertEqual(rc_fail, 2)
+      self.assertIn("GREEN_VERIFICATION_FAILED", out_fail + err_fail)
+
+      rpath = _receipt_path(tmpdir)
+      with open(rpath, "r", encoding="utf-8") as f:
+        rolled_back = json.load(f)
+      self.assertFalse(rolled_back["verified_green"])
+      self.assertNotEqual(rolled_back["green_exit_code"], 0)
+      self.assertEqual(len(rolled_back["completed_cycles"]), 1)
+      self.assertEqual(rolled_back["completed_cycles"][0]["test_cmd"], cmd_slice1)
+
+      # Re-witness-red on Slice 2 preserves Slice 1 and does NOT archive failed Slice 2
+      rc_rewit, _, err_rewit = self._run_guard(
+          tmpdir, ["witness-red", "--test-dir", "tests", "--cmd", cmd_slice2]
+      )
+      self.assertEqual(rc_rewit, 0, err_rewit)
+      with open(rpath, "r", encoding="utf-8") as f:
+        after_rewit = json.load(f)
+      self.assertEqual(len(after_rewit["completed_cycles"]), 1)
+      self.assertEqual(after_rewit["completed_cycles"][0]["slice_index"], 1)
+      self.assertEqual(after_rewit["completed_cycles"][0]["test_cmd"], cmd_slice1)
 
 
 if __name__ == "__main__":

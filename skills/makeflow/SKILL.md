@@ -115,23 +115,23 @@ Read `references/02`, `references/08`, `references/09`, `references/11`, and `re
 
 ### Target 20: `approved-plan`
 
-Read `references/02`, `references/03`, `references/04_testing_isolation.md`, `references/09`, and `references/14` for Socratic planning, Red-Green TDD, OO patterns, cohesion, and scars.
+Read `references/02`, `references/03`, `references/04_testing_isolation.md`, `references/09`, `references/14`, and `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md` for Socratic planning, complexity-scaled TDD, OO patterns, cohesion, and scars.
 
-1. Evaluate Socratic deliberation questions on fail-fast loops, Red-Green-Refactor TDD, OO design patterns, and module cohesion. Also verify hermetic isolation, existing test edits, available reference manuals, and scoped boundaries.
+1. Evaluate Socratic deliberation questions on fail-fast loops, complexity-scaled Red-Green-Refactor TDD, OO design patterns, and module cohesion. Also verify hermetic isolation, existing test edits, available reference manuals, and scoped boundaries.
 2. Run two `workflow_query_scars` calls (`workflowPhase: "Target 20: plan"`, `limit: 5`): one for active languages and frameworks, and one for `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
-3. Write `.workflow/state/20_plan.md` with the Socratic Invariant Audit table, file paths, OO and cohesion choices, and Red-Green TDD steps. Disclose test commands, isolation facts, burden balance (`SCAR-TEST-11`), consulted reference paths, scar IDs, and Socratic probes for `tdd-worker`.
+3. Write `.workflow/state/20_plan.md` with the Socratic Invariant Audit table, file paths, OO patterns, and cohesion choices. Declare complexity tier, worker rounds, public seams, and TDD slice budget. Run `1` slice without padding for trivial fixes, or vertical slices for multi-behavior tasks. Disclose test commands, isolation facts, burden balance (`SCAR-TEST-11`), consulted reference paths, scar IDs, and Socratic probes for `tdd-worker`.
 4. Run `make -f .workflow/state/Makefile approved-plan`, print the plan summary with a `file://` link, and stop tool calls (`tool_calls: []`) for `human-plan-approval`.
 5. After human approval, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1`.
 
 ### Target 30: `implementation-diff`
 
-Read `references/03`, `references/04_testing_isolation.md`, `references/08`, `references/09`, `references/10`, and `references/14` for TDD, isolation, dispatch, scars, security, and design patterns.
+Read `references/03`, `references/04_testing_isolation.md`, `references/08`, `references/09`, `references/10`, `references/14`, and `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md` for TDD, isolation, dispatch, scars, security, and design patterns.
 
-1. Anchor explicit workspace manual paths (`20_plan.md`, `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `polyglot/<lang>.md`) in the prompt (`SCAR-PROC-105`). Also pass active plan scar IDs and Socratic probes to `tdd-worker`.
+1. Anchor explicit workspace manual paths (`20_plan.md`, `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`, `polyglot/<lang>.md`) in the prompt (`SCAR-PROC-105`). Also pass planned slice counts, worker rounds, active plan scar IDs, and Socratic probes to `tdd-worker`.
 2. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`), then enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`). Have the worker run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`). Query target languages, frameworks, and diagnostic codes first, then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
-3. Red phase: Write failing tests first and witness a non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
+3. Red phase: Honor the planned slice count (`1` for trivial fixes, ordered vertical slices for multi-behavior tasks). Write failing seam tests first and witness a meaningful non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
 4. Green phase: Write minimal production code following planned OO patterns and cohesion rules so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.
-5. Refactor phase: Run pre-flight static checks (`SCAR-TEST-10`) and update docstrings. Submit `.workflow/state/30_tdd_report.json` via MCP `workflow_submit_report` (`reportType: "tdd_report"`). Run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json` before Target 40.
+5. Refactor phase: After `verify-green` passes, clean duplicates, run pre-flight static checks (`SCAR-TEST-10`), and update docstrings. Submit `.workflow/state/30_tdd_report.json` via MCP `workflow_submit_report` (`reportType: "tdd_report"`). After all slices finish, run `make -f .workflow/state/Makefile verify-regression` to seal `.workflow/state/30_regression_receipt.json` before Target 40.
 
 ### Target 40, Target 42, and Target 45: Adversarial Review and Sign-Off
 
@@ -186,3 +186,4 @@ Read [11: Polyglot Monorepo Orchestration](./references/11_polyglot_monorepos.md
 - [12: Request History Ledger](./references/12_request_history_ledger.md)
 - [13: Configuration and User Preferences](./references/13_configuration_and_user_preferences.md)
 - [14: Design Patterns, Data Access, and Game Architecture](./references/14_design_patterns_and_architecture.md)
+- [TDD Resources: Index and Agentic Synthesis](./references/resources/tdd/00_index_and_tdd_synthesis.md)

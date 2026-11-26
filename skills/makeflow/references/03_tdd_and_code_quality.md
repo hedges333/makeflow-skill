@@ -11,18 +11,18 @@ Follow six rules before you modify any source file:
 3. Leave unrelated defects or style issues untouched, and note them for a separate ticket.
 4. Read applicable Tier 1 core scars (`09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`) across `.workflow/scars/scars_registry.db` and configured `scars.databases` tiers. Query active languages, frameworks, and diagnostic codes first. Then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
 5. Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`) under `SCAR-ARCH-08` and `SCAR-ARCH-05`.
-6. Read `.workflow/state/20_plan.md`, `04_testing_isolation.md`, `10_security_and_data_isolation.md`, and `14_design_patterns_and_architecture.md` before writing Red tests. Follow planned OO design patterns, module cohesion boundaries, and carried-forward scar guardrails.
+6. Read `.workflow/state/20_plan.md`, `04_testing_isolation.md`, `10_security_and_data_isolation.md`, `14_design_patterns_and_architecture.md`, and [`resources/tdd/00_index_and_tdd_synthesis.md`](./resources/tdd/00_index_and_tdd_synthesis.md) before writing Red tests. Follow planned OO design patterns, module cohesion boundaries, pre-agreed public seams, and carried-forward scar guardrails (`SCAR-TEST-46` through `SCAR-TEST-49`).
 
 ## 2. Red-Green-Refactor TDD Loop
 
-In multi-agent runtimes, fork `tdd-worker` via `invoke_subagent` and enforce Immediate Supervisory Halt (`tool_calls: []`) until `<SYSTEM_MESSAGE>` wakeup (`SCAR-PROC-95`). Execute every code change in three ordered phases.
+In multi-agent runtimes, fork `tdd-worker` via `invoke_subagent` and enforce Immediate Supervisory Halt (`tool_calls: []`) until `<SYSTEM_MESSAGE>` wakeup (`SCAR-PROC-95`). Scale the slice count to the complexity tier in `.workflow/state/20_plan.md` (`SCAR-TEST-46`). Run `1` slice without padding on trivial fixes, or run ordered vertical slices sequentially for multi-behavior tasks. On multi-slice tasks, each subsequent `witness-red` archives the prior verified Green cycle into `completed_cycles` inside `.workflow/state/30_tdd_receipt.json` (which stays `[]` on single-slice tasks). Execute each slice in three ordered phases.
 
 ### Phase 1: Red (Failing Test First)
 
-1. Write unit tests from the Given-When-Then scenarios created in Target 15.
+1. Write unit tests for the active slice at the declared public seam using independent literal expectations (`SCAR-TEST-47`). Mock only external system boundaries.
 2. If the subproject has no test files, create the smoke test approved in Target 20 first.
-3. Run the targeted subproject test command and make sure that the new test fails (`red_exit != 0`).
-4. Never write feature code before watching the test fail. A test that passes before code changes proves nothing.
+3. Run the targeted subproject test command (`red_exit != 0`). Inspect the output to confirm Red fails on missing behavior, not a syntax typo (`SCAR-TEST-48`).
+4. Never write feature code before watching the test fail. If production code precedes a failing test, delete that code and start fresh from Red.
 5. If tests live in a dedicated test directory, run `make -f .workflow/state/Makefile witness-red TEST_DIR=<dir> TEST_CMD="<cmd>"` (`SCAR-TEST-12`).
 
 ### Phase 2: Green (Minimal Production Code)
@@ -74,10 +74,11 @@ The `scripts/pre_tool_guard.py` hook blocks direct writes to protected governanc
 
 ### Phase 3: Refactor
 
-1. Remove duplicate logic, keep function interfaces clear, and verify one-way layer boundaries (`entrypoints -> library`, `SCAR-ARCH-08`).
-2. Run the code formatter and linter on the modified files.
-3. Re-run the targeted test command to make sure that tests stay green.
-4. Run `make -f .workflow/state/Makefile verify-regression` to execute the full active subproject regression suite and seal `.workflow/state/30_regression_receipt.json`.
+1. Wait until `verify-green` exits 0 before touching any test file or fixture (`SCAR-TEST-49`).
+2. Remove duplicate logic in production code and test helpers, keep function interfaces clear, and verify one-way layer boundaries (`entrypoints -> library`, `SCAR-ARCH-08`).
+3. Run the code formatter and linter on the modified files.
+4. Re-run the targeted test command to make sure that tests stay green before starting the next vertical slice.
+5. After all planned slices finish, run `make -f .workflow/state/Makefile verify-regression` to execute the full active subproject regression suite and seal `.workflow/state/30_regression_receipt.json`.
 
 ## 3. Targeted Subproject Test Loops and Pre-Flight Checks (`SCAR-PROC-104`, `SCAR-TEST-09`, `SCAR-TEST-10`)
 

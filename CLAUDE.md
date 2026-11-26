@@ -8,7 +8,7 @@ This repository uses the Makefile Workflow. Follow these rules for every coding 
 2. Before you write code, make sure that `git status --short` is clean on `main`, then create a ticket branch.
 3. Read target files before you edit them, apply small edits, and favor object composition. If large datasets outgrow an ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
 4. Point tests to isolated `*_test` databases, configured `database.testDatabases`, in-memory databases, or mock fixtures. If live versus test database names are unclear, ask the user first.
-5. Write failing unit tests before you write feature code, and run tests in the active subproject directory.
+5. Follow `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`. Write failing seam tests before feature code, and run tests in the active subproject directory. Run `1` slice without padding on trivial fixes, or ordered vertical slices for multi-behavior tasks. Mock only external boundaries, and refactor after `verify-green`.
 6. Stop and wait for explicit user approval at all six pause gates (`SCAR-PROC-102`):
    - Target 20: Plan approval.
    - Target 42: Blocker triage, when review finds blockers.
