@@ -78,6 +78,7 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "scripts/commit_msg.py",
     "scripts/session_start.py",
     "scripts/workspace_mutex.py",
+    "lib/active_state.py",
     "lib/agent_paths.py",
     "lib/base_script.py",
     "lib/git_index.py",
@@ -106,8 +107,10 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "lib/review_promotion.py",
     "lib/ticket_state.py",
     "lib/repo_tree.py",
+    "lib/report_renderers.py",
     "lib/safe_copy.py",
     "lib/signal_trap.py",
+    "lib/state_reports.py",
     "lib/parking_state.py",
     "lib/ci_polling.py",
     "lib/scar_metadata.py",
@@ -286,8 +289,7 @@ def _resolve_guarded_target(state_dir: str) -> Optional[str]:
   """
   if not state_dir or not os.path.isdir(state_dir):
     return None
-  na_path = os.path.join(state_dir, "99_next_action.md")
-  if os.path.isfile(na_path) and not is_ticket_active(state_dir):
+  if not is_ticket_active(state_dir):
     return None
   target = infer_current_target(state_dir)
   if target in POST_PLAN_TARGETS:

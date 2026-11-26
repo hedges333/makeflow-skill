@@ -128,10 +128,11 @@ class TestMcpServer(unittest.TestCase):
         "workflow_poll_ci",
         "workflow_query_scars",
         "workflow_repo_tree",
+        "workflow_submit_report",
     ):
       with self.subTest(tool=expected):
         self.assertIn(expected, tool_names)
-    self.assertEqual(len(tool_names), 8)
+    self.assertEqual(len(tool_names), 9)
 
   def test_safety_check_prod_and_safe_commands(self):
     """Checks workflow_safety_check blocks prod DBs and allows safe test commands."""
@@ -4681,14 +4682,14 @@ class TestMcpServerMultiContributorParking(unittest.TestCase):
   """Tests MCP tool count, expectedBranch forwarding, ci.* defaults, and PARKED state summary (GH-47)."""
 
   def test_tools_list_count_and_expected_branch_and_parked_state(self):
-    """Keeps 8 MCP tools, forwards expectedBranch, returns ci.* defaults, and surfaces PARKED state."""
+    """Keeps 9 MCP tools, forwards expectedBranch, returns ci.* defaults, and surfaces PARKED state."""
     from lib.parking_state import ParkingState, ParkingStateStore
 
     mcp_server = _load_mcp_server_module()
 
     tools_resp = mcp_server.handle_tools_list(1)
     tools = tools_resp["result"]["tools"]
-    self.assertEqual(len(tools), 8)
+    self.assertEqual(len(tools), 9)
     poll_tool = next(t for t in tools if t["name"] == "workflow_poll_ci")
     self.assertIn("expectedBranch", poll_tool["inputSchema"]["properties"])
 

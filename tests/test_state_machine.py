@@ -511,7 +511,11 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
               {"pid": None, "ticket_id": "GH-219", "workspace_path": repo}
           )
       )
-      self.assertIsNone(read_active_target(state_dir))
+      finished_active = read_active_target(state_dir)
+      self.assertIsNotNone(finished_active)
+      self.assertEqual(finished_active["target"], "T90")
+      self.assertEqual(finished_active["status"], "COMPLETE")
+      self.assertIs(finished_active["complete"], True)
       self.assertFalse(os.path.exists(os.path.join(state_dir, "10_ticket.json")))
       self.assertFalse(
           os.path.exists(os.path.join(state_dir, "approved_tree.txt"))

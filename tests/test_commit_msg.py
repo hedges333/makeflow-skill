@@ -1261,6 +1261,30 @@ class TestCommitInvocationAndPostCommitValidation(unittest.TestCase):
           (True, "GH-292"),
       )
 
+      # Canonical 15_archaeology_receipt.json takes precedence over legacy .md (GH-281)
+      with open(
+          os.path.join(state_dir, "15_archaeology_receipt.json"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        json.dump({"ticket_id": "GH-292", "hosting_mode": "GITHUB"}, f, indent=2)
+      self.assertEqual(
+          detect_commit_context(tmpdir, state_dir=state_dir),
+          (False, "GH-292"),
+      )
+
+      with open(
+          os.path.join(state_dir, "15_archaeology_receipt.json"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        json.dump({"ticket_id": "GH-292", "hosting_mode": "PURE_GIT"}, f, indent=2)
+      self.assertEqual(
+          detect_commit_context(tmpdir, state_dir=state_dir),
+          (True, "GH-292"),
+      )
+      os.unlink(os.path.join(state_dir, "15_archaeology_receipt.json"))
+
       # Explicit override wins
       self.assertEqual(
           detect_commit_context(

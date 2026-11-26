@@ -3,6 +3,7 @@
 import os
 import re
 
+from lib.active_state import ActiveStateStore
 from lib.shell_safety import (
     _expand_shell_subcommands,
     _parse_git_subcommand,
@@ -81,9 +82,31 @@ def is_target_90_next_action_text(text):
 
 
 def is_target_90_state_dir(state_dir):
-  """Return True if state_dir contains a Target 90 or COMPLETE 99_next_action.md."""
+  """Return True if state_dir indicates an active Target 90 workflow state.
+
+  Reads canonical ``active_target.json`` via ``ActiveStateStore`` first
+  (SCAR-ARCH-10). Explicit ``ACTIVE``/``PARKED``/``COMPLETE`` lifecycle states
+  are authoritative over ``99_next_action.md``. Falls back to legacy Markdown
+  inspection only when ``active_target.json`` is absent or lacks explicit
+  status fields.
+
+  Args:
+    state_dir: Path to ``.workflow/state``.
+
+  Returns:
+    True when Target 90 is active before ``finish``, otherwise False.
+  """
   if not state_dir or not os.path.isdir(state_dir):
     return False
+  active_state = ActiveStateStore(state_dir).load()
+  if active_state is not None:
+    if active_state.is_complete():
+      return False
+    if active_state.has_explicit_status():
+      return active_state.is_target_90()
+    next_action_card = os.path.join(state_dir, "99_next_action.md")
+    if not os.path.isfile(next_action_card):
+      return active_state.is_target_90()
   next_action_card = os.path.join(state_dir, "99_next_action.md")
   if not os.path.isfile(next_action_card):
     return False

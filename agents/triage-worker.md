@@ -27,5 +27,5 @@ You monitor remote continuous integration (CI) checks, automated review comments
    - `Defer`: Valid improvement outside ticket scope, logged for a future ticket.
    - `Acknowledge`: Informational note that needs no code change.
 6. If `ci.enableSessionParking` is `true` and the PR is waiting on peer approvals, CODEOWNERS, unresolved threads, or long-running CI without needing remediation, recommend `PARKED` state. If `ci.parkingCronExpression` is set, include optional cron schedule guidance (yielding on repeated timer conflicts under `SCAR-PROC-138`).
-7. Return the CI status, branch-firewall check, review summary, parking recommendation, and triage table to the supervisor agent via `send_message`.
+7. Submit your triage JSON via MCP `workflow_submit_report` (`reportType: "bot_triage"`) to write `70_bot_triage.json` and `70_bot_triage.md` atomically. Return CI status, branch-firewall checks, review summary, parking status, and triage actions via `send_message`.
 8. Do not edit source files or execute mutating commands. You have read-only access.

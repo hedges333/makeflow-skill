@@ -12803,5 +12803,41 @@ class TestBlackBoxHarnessBoundaryContract(unittest.TestCase):
     self.assertTrue(any("24,576-byte" in e for e in big_errs), big_errs)
 
 
+class TestJsonStateAndReportContract(unittest.TestCase):
+  """Verifies canonical JSON state and workflow_submit_report contracts across docs and adapters (GH-281)."""
+
+  def test_agents_docs_and_adapters_document_workflow_submit_report(self) -> None:
+    """Agent prompts, SKILL.md, AGENTS.md, and all 5 adapters document canonical JSON reports."""
+    required_files = (
+        "agents/archaeology-worker.md",
+        "agents/tdd-worker.md",
+        "agents/adversarial-critic.md",
+        "agents/triage-worker.md",
+        "skills/makeflow/SKILL.md",
+        "rules/AGENTS.md",
+        "CLAUDE.md",
+        ".cursorrules",
+        ".cursor/rules/makeflow.mdc",
+        ".github/copilot-instructions.md",
+        "adapters/chatgpt/instructions.md",
+    )
+    for rel in required_files:
+      with self.subTest(file=rel):
+        with open(repo_path(rel), "r", encoding="utf-8") as f:
+          text = f.read()
+        self.assertIn(
+            "workflow_submit_report",
+            text,
+            f"{rel} must document the workflow_submit_report MCP tool (GH-281).",
+        )
+        if rel.startswith("agents/"):
+          frontmatter = text.split("---", 2)[1]
+          self.assertNotIn(
+              "call_mcp_tool",
+              frontmatter,
+              f"{rel} must omit call_mcp_tool from tools: frontmatter (SCAR-PROC-106).",
+          )
+
+
 if __name__ == "__main__":
   unittest.main()

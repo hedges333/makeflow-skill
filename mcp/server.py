@@ -37,6 +37,7 @@ except ImportError:
   save_session_scars = None
   partition_session_scars = None
 
+from lib.active_state import list_state_card_files
 from lib.config import (
     _normalize_str_list,
     _parse_csv_env,
@@ -59,6 +60,10 @@ from lib.git_safety import (
 from lib.parking_state import (
     ParkingStateStore,
     format_parking_status_label,
+)
+from lib.state_reports import (
+    DEFAULT_REPORT_REGISTRY,
+    StateReportStore,
 )
 from lib.ticket_state import TICKET_JSON_FILENAME
 from lib.shell_safety import (
@@ -491,6 +496,47 @@ def handle_tools_list(request_id):
               },
           },
       },
+      {
+          "name": "workflow_submit_report",
+          "description": (
+              "Validates a structured subagent JSON report against its"
+              " canonical schema, atomically persists pretty-printed .json"
+              " inside .workflow/state/, and renders the matching human .md"
+              " view atomically."
+          ),
+          "inputSchema": {
+              "type": "object",
+              "properties": {
+                  "reportType": {
+                      "type": "string",
+                      "enum": list(DEFAULT_REPORT_REGISTRY.supported_types()),
+                      "description": (
+                          "Canonical report type identifier derived from"
+                          " ReportRegistry."
+                      ),
+                  },
+                  "payload": {
+                      "type": "object",
+                      "description": (
+                          "Structured JSON report object matching the schema"
+                          " for reportType."
+                      ),
+                  },
+                  "workspaceDir": {
+                      "type": "string",
+                      "description": "Absolute path to the project repository root",
+                  },
+                  "stateDir": {
+                      "type": "string",
+                      "description": (
+                          "Optional state directory inside workspaceDir"
+                          " (defaults to .workflow/state)"
+                      ),
+                  },
+              },
+              "required": ["reportType", "payload"],
+          },
+      },
   ]
   return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
 
@@ -642,6 +688,103 @@ def _handle_workflow_repo_tree(request_id, arguments):
   }
 
 
+def _resolve_confined_state_dir(workspace_dir, raw_state_dir):
+  """Resolves and verifies that state_dir stays strictly inside workspace_dir.
+
+  Args:
+    workspace_dir: Resolved project workspace root directory.
+    raw_state_dir: Optional relative or absolute stateDir argument.
+
+  Returns:
+    Tuple of ``(resolved_state_dir, error_message)``. On path traversal or
+    symlink escape outside ``workspace_dir``, returns ``(None, error_str)``.
+  """
+  if raw_state_dir is None:
+    candidate = os.path.join(workspace_dir, ".workflow", "state")
+  elif isinstance(raw_state_dir, str) and raw_state_dir.strip():
+    cleaned = raw_state_dir.strip()
+    candidate = (
+        os.path.abspath(cleaned)
+        if os.path.isabs(cleaned)
+        else os.path.abspath(os.path.join(workspace_dir, cleaned))
+    )
+  else:
+    return None, "Invalid 'stateDir' argument. Provide a non-empty path string."
+
+  abs_ws = os.path.abspath(workspace_dir)
+  real_ws = os.path.realpath(abs_ws)
+  real_candidate = os.path.realpath(candidate)
+  try:
+    if (
+        os.path.commonpath([abs_ws, candidate]) != abs_ws
+        or os.path.commonpath([real_ws, real_candidate]) != real_ws
+    ):
+      return (
+          None,
+          f"BLOCKED: stateDir '{raw_state_dir}' escapes workspaceDir '{workspace_dir}'.",
+      )
+  except ValueError:
+    return (
+        None,
+        f"BLOCKED: stateDir '{raw_state_dir}' escapes workspaceDir '{workspace_dir}'.",
+    )
+  return real_candidate, None
+
+
+def _handle_workflow_submit_report(request_id, arguments):
+  """Handles workflow_submit_report MCP calls with workspace containment."""
+  ws = resolve_workspace_dir(arguments)
+  if ws is None:
+    return _error_result(
+        request_id,
+        "BLOCKED: Running inside plugin installation directory without a workspaceDir. "
+        "Pass 'workspaceDir' with the absolute path to the project repository.",
+    )
+
+  state_dir, state_err = _resolve_confined_state_dir(
+      ws, arguments.get("stateDir")
+  )
+  if state_err is not None or state_dir is None:
+    return _error_result(request_id, state_err or "Invalid stateDir.")
+
+  report_type = arguments.get("reportType")
+  if not isinstance(report_type, str) or not report_type.strip():
+    supported = ", ".join(DEFAULT_REPORT_REGISTRY.supported_types())
+    return _error_result(
+        request_id,
+        f"Missing or invalid 'reportType'. Supported types: {supported}.",
+    )
+
+  if arguments.get("payload") is None:
+    return _error_result(
+        request_id,
+        "Missing required argument 'payload'. Provide a JSON object.",
+    )
+  payload, payload_err = _normalize_object_arg(
+      arguments.get("payload"), "payload"
+  )
+  if payload_err is not None or payload is None:
+    return _error_result(request_id, payload_err or "Invalid payload.")
+
+  result = StateReportStore(state_dir).submit(report_type.strip(), payload)
+  if not result.ok:
+    return _error_result(
+        request_id,
+        "Report validation failed: " + "; ".join(result.errors),
+    )
+
+  return {
+      "jsonrpc": "2.0",
+      "id": request_id,
+      "result": {
+          "content": [{
+              "type": "text",
+              "text": json.dumps(result.to_dict(), indent=2),
+          }]
+      },
+  }
+
+
 def handle_tools_call(request_id, tool_name, arguments):
   """Executes a named MCP tool call and returns a JSON-RPC 2.0 response.
 
@@ -686,11 +829,7 @@ def handle_tools_call(request_id, tool_name, arguments):
           },
       }
 
-    files = sorted(
-        f
-        for f in os.listdir(state_dir)
-        if f.endswith(".md") or f == TICKET_JSON_FILENAME
-    )
+    files = list_state_card_files(state_dir)
     if not files:
       return {
           "jsonrpc": "2.0",
@@ -1231,6 +1370,9 @@ def handle_tools_call(request_id, tool_name, arguments):
 
   elif tool_name == "workflow_repo_tree":
     return _handle_workflow_repo_tree(request_id, arguments)
+
+  elif tool_name == "workflow_submit_report":
+    return _handle_workflow_submit_report(request_id, arguments)
 
   return {
       "jsonrpc": "2.0",

@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.reflex import emit_reflex
 from lib.shell_safety import GIT_GLOBAL_VALUE_FLAGS, _unwrap_command_tokens
+from lib.state_reports import load_archaeology_hosting_mode
 from lib.ticket_state import TicketStateStore
 
 CANONICAL_TYPES: Tuple[str, ...] = (
@@ -417,8 +418,9 @@ def detect_commit_context(
   """Resolves commit validation mode and ticket identifier from workspace state.
 
   Reads structured ``10_ticket.json`` via ``TicketStateStore`` (SCAR-ARCH-10),
-  active Git branch, Git ``origin`` remote, and ``15_archaeology_receipt.md``
-  hosting metadata without scraping Markdown prose.
+  active Git branch, Git ``origin`` remote, and canonical
+  ``15_archaeology_receipt.json`` hosting mode (falling back to legacy
+  ``15_archaeology_receipt.md`` only when JSON is absent).
 
   Args:
     repo_root: Repository or workspace root directory.
@@ -476,13 +478,20 @@ def detect_commit_context(
   if branch_is_local:
     return True, resolved_ticket
 
-  receipt_card = (
-      os.path.join(eff_state_dir, "15_archaeology_receipt.md")
-      if eff_state_dir
-      else ""
+  json_hosting_mode = (
+      load_archaeology_hosting_mode(eff_state_dir) if eff_state_dir else None
   )
-  if receipt_declares_pure_git(receipt_card):
+  if json_hosting_mode == "PURE_GIT":
     return True, resolved_ticket
+
+  if json_hosting_mode is None:
+    receipt_card = (
+        os.path.join(eff_state_dir, "15_archaeology_receipt.md")
+        if eff_state_dir
+        else ""
+    )
+    if receipt_declares_pure_git(receipt_card):
+      return True, resolved_ticket
 
   if in_git_repo:
     remote_proc = _run_git_readonly(repo_root, "remote", "get-url", "origin")

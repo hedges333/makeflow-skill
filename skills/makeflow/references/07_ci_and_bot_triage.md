@@ -22,7 +22,7 @@ In multi-agent environments, the supervisor must remain at Depth 0:
 5. **Reactive Wakeup**:
    When CI is green and quiescence is satisfied (or if bot comments need triage), `triage-worker` classifies findings and notifies the supervisor via `send_message`. The platform delivers a reactive wakeup to resume the supervisor turn cleanly.
 6. **Card Persistence**:
-   The supervisor writes `.workflow/state/70_bot_triage.md` from the worker receipt and runs `make -f .workflow/state/Makefile ready-to-land` to advance to Target 75.
+   `triage-worker` submits JSON via MCP `workflow_submit_report` (`reportType: "bot_triage"`). The server writes `70_bot_triage.json` and renders `70_bot_triage.md` atomically. In non-MCP runtimes, the supervisor writes `.workflow/state/70_bot_triage.md` from the worker receipt. Then run `make -f .workflow/state/Makefile ready-to-land` to advance to Target 75.
 
 ### 1.2 Single-Agent CLI Fallback & Single-Probe Inspection
 
