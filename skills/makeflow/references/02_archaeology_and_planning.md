@@ -56,7 +56,7 @@ Do not draft implementation plans from passive checklists. Before writing `.work
 7. **Code Structure and Layer Separation (`SCAR-ARCH-08`)**: Does this change place reusable logic, thin entrypoints, and tests in idiomatic language layers without cross-entrypoint imports or unapproved reorganization?
 8. **Upstream Root-Cause Remediation (`SCAR-ARCH-09`)**: Would fixing the root cause upstream keep code simplest without harming other subsystems? Can you remove downstream workarounds instead of patching symptoms further down the control flow?
 9. **Preserve Structured Data (`SCAR-ARCH-10`)**: Does this module scrape prose with regexes for data that already exists as structured JSON upstream? Can consumers read one shared structured store instead?
-10. **Red-Green-Refactor TDD Methodology**: Does the plan sequence failing Red tests, minimal Green code, and Refactor checks using `03_tdd_and_code_quality.md` and `04_testing_isolation.md`?
+10. **Red-Green-Refactor TDD Methodology**: Does the plan sequence Red, Green, and post-green Refactor using `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, and `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`? Does it scale slice count to complexity (`1` for trivial fixes, or vertical slices) and declare public seams?
 11. **OO Design Patterns and Module Cohesion**: Does the plan follow `14_design_patterns_and_architecture.md` and favor object composition over inheritance? Does it define clear module cohesion and decomposition boundaries?
 12. **Available Reference Manuals and Scar Carry-Forward**: Did you inspect applicable manuals in `skills/makeflow/references/`? Did you record their paths, scar IDs, and Socratic probes in `20_plan.md` for `tdd-worker`?
 
@@ -92,7 +92,7 @@ Include these eleven items in every plan:
 7. Testing Strategy and Burden-Balance Analysis (`SCAR-TEST-11`): Disclose testing depth against speed and dependency constraints. Prohibit surface-only testing when hermetic boundary testing is feasible.
 8. Active Project Documentation Standard and Tree Assembly Command (`SCAR-PROC-159`): Disclose the active doc comment standard and tree assembly command in `20_plan.md` from project conventions or `skills/makeflow/references/polyglot/<lang>.md`.
 9. OO Design Patterns and Module Cohesion: Disclose object composition, module cohesion, size, and decomposition choices from `14_design_patterns_and_architecture.md`.
-10. Red-Green-Refactor TDD Plan: Disclose failing Red tests, minimal Green code steps, and Refactor verification citing `03_tdd_and_code_quality.md` and `04_testing_isolation.md`.
+10. Red-Green-Refactor TDD Plan: Consult `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`. Declare task complexity (`Trivial`, `Moderate`, or `Complex`), worker round estimate, and pre-agreed public seams. Plan `1` slice with zero padding for trivial fixes, or `2..N` ordered vertical slices for multi-behavior tasks. Disclose failing Red tests, minimal Green steps, and post-green Refactor checks citing `03_tdd_and_code_quality.md` and `04_testing_isolation.md`.
 11. Consulted Reference Manuals and Target 30 Scar Carry-Forward: List inspected paths in `skills/makeflow/references/`. Record applicable scar IDs and Socratic probes in `20_plan.md` for `tdd-worker`.
 
 ## 3. Human Plan Approval Gate

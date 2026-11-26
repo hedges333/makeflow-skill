@@ -6,7 +6,7 @@ Follow these rules for every coding task in Cursor:
 2. Create a dedicated Git branch for each task, such as `feat/<id>-<slug>` or `fix/<id>-<slug>` (use `feat/local-<n>-<slug>` for local tasks).
 3. Read target files before you edit them, apply small changes, and favor object composition. If large datasets outgrow an ORM, encapsulate parameterized SQL or NoSQL queries behind repository methods.
 4. Point tests to `*_test` databases, configured `database.testDatabases`, in-memory databases, or mock fixtures. Never connect to production databases.
-5. Write failing unit tests before you write feature logic, and run tests in the active subproject directory.
+5. Follow `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`. Write failing seam tests before feature logic, and run tests in the active subproject directory. Run `1` slice without padding on trivial fixes, or ordered vertical slices for multi-behavior tasks. Mock only external boundaries, and refactor after `verify-green`.
 6. Stop and wait for explicit human approval at all six pause gates: Target 20 (plan), Target 42 (blocker triage), Target 45 (review), Target 50 (commit), Target 60 (push), and Target 75 (landing). Never declare or approve gates yourself under SCAR-PROC-102. Forbid agent self-approval. Forbid `closes #` on local session commits.
 7. Run targeted tests during Target 30 inner loops. Before Target 40, run `verify-regression` to seal `.workflow/state/30_regression_receipt.json` for the active subproject. Run the full repository test suite before commit. Keep `review.allowCriticHermeticTests` set to `false` by default.
 8. Write documentation and commit messages in Simple English: short sentences, active voice, and terms defined at first use.

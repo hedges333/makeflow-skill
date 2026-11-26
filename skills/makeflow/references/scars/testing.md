@@ -17,6 +17,10 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 | `SCAR-TEST-29` | Red-Green Marginal-Line Test Law | Red-Green TDD Discipline |
 | `SCAR-TEST-44` | Phase-Separated Flakiness Discrimination | Test Flakiness & Defect Isolation |
 | `SCAR-TEST-45` | Ephemeral Temporary Directory Isolation | Scoped OS Temp Fixtures & Auto-Cleanup |
+| `SCAR-TEST-46` | Horizontal Test-First Dumping and Uncalibrated Slice Granularity | Complexity-Scaled Vertical TDD Slicing |
+| `SCAR-TEST-47` | Tautological Assertions and Implementation-Coupled Mocks | Public Seams & Boundary-Only Mocking |
+| `SCAR-TEST-48` | False Red Witnesses and Unverified Test-After Rationalization | Test-First Iron Law & Meaningful Red |
+| `SCAR-TEST-49` | Premature Test Refactoring and Skipped Post-Green Cleanup | Post-Green Refactor Discipline |
 | `SCAR-AST-01` | Structural AST Anti-Shortcut Scrubbing Gate | Structural AST Anti-Shortcut Gate |
 
 ---
@@ -102,6 +106,38 @@ This reference manual documents testing and verification scars (`SCAR-TEST-*`, `
 - **Circuit Breaker**: If a test writes temporary files, never hardcode `/tmp/` paths or call `mkdtemp`, `mktemp`, or `NamedTemporaryFile(delete=False)`.
 - **Permanent Reflex**: Create unique OS ephemeral temporary directories with automatic cleanup. Use Python `tempfile.TemporaryDirectory()`, Go `t.TempDir()`, Rust `tempfile::TempDir`, or shell `mktemp -d` with `trap`.
 - **Socratic Probe**: Does each test use an OS ephemeral temporary directory with automatic cleanup? If an assertion fails early, can fixed `/tmp/` paths or manual cleanup leak artifacts?
+
+### SCAR-TEST-46: Horizontal Test-First Dumping and Uncalibrated Slice Granularity
+
+- **Wound**: Dumping all tests upfront guesses unbuilt interfaces and breaks early. Conversely, padding trivial single-behavior fixes with extra cycles wastes tokens.
+- **Trap**: Treating every task with fixed horizontal test dumps or rigid multi-cycle padding regardless of behavioral complexity.
+- **Circuit Breaker**: If a fix changes one behavior, run 1 slice without padding. If multi-behavior, never dump all tests upfront.
+- **Permanent Reflex**: Scale TDD slice counts to complexity in `20_plan.md`. Run 1 slice for trivial fixes and ordered vertical slices for multi-behavior tasks.
+- **Socratic Probe**: Does your slice count match task complexity without horizontal test dumping or artificial padding on trivial fixes?
+
+### SCAR-TEST-47: Tautological Assertions and Implementation-Coupled Mocks
+
+- **Wound**: Tests that mirror production formulas or mock internal collaborators pass even when broken domain logic ships to users.
+- **Trap**: Copying production equations into assertions or mocking internal helpers instead of testing observable behavior at public seams.
+- **Circuit Breaker**: If a test mocks internal collaborators or copies production formulas, stop and rewrite it at the public seam.
+- **Permanent Reflex**: Test observable behavior through declared public seams using independent literal expectations. Mock only external system boundaries through injected interfaces.
+- **Socratic Probe**: Does this test assert independent expectations at a public seam? If you refactor private helpers, will this test stay green?
+
+### SCAR-TEST-48: False Red Witnesses and Unverified Test-After Rationalization
+
+- **Wound**: Tests written after production code or Red runs failing on syntax typos pass silently without proving defect detection.
+- **Trap**: Rationalizing that a change is too simple for Red or accepting any non-zero exit code without checking failure semantics.
+- **Circuit Breaker**: If production code precedes a failing test, delete that code and start fresh from a behavioral Red test.
+- **Permanent Reflex**: Write a failing test first and inspect the failure output before `witness-red`. Confirm that Red fails on missing behavior.
+- **Socratic Probe**: Did you delete premature production code before testing? Did Red fail on missing behavior rather than a syntax typo?
+
+### SCAR-TEST-49: Premature Test Refactoring and Skipped Post-Green Cleanup
+
+- **Wound**: Editing test files before `verify-green` triggers `EACCES_TEST_TAMPERING`. Skipping post-green cleanup leaves duplicate logic and brittle helpers across slices.
+- **Trap**: Tidying test files during Green before sealing the receipt, or rushing straight to the next slice without refactoring.
+- **Circuit Breaker**: If `verify-green` has not passed for the active slice, never modify sealed test files or fixtures.
+- **Permanent Reflex**: Keep test files untouched until `verify-green` exits 0. Refactor production code and test helpers after Green, then re-run targeted tests.
+- **Socratic Probe**: Did `verify-green` pass before you touched any test file? Did you remove duplicate logic after Green and re-run tests?
 
 ### SCAR-AST-01: Structural AST Anti-Shortcut Scrubbing Gate
 
