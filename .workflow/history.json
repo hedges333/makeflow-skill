@@ -3167,5 +3167,33 @@
     "closes_issue": true,
     "tests_added": 3,
     "scars_earned": []
+  },
+  {
+    "id": "GH-273",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/273",
+    "title": "[FEAT] TDD resources for supervisor planning and tdd-worker implementation",
+    "request": "Distill six core TDD principles from seven license-verified upstream repositories into four Simple English reference modules with attribution, exclude unlicensed mfranzon/tdd transparently, add SCAR-TEST-46 through SCAR-TEST-49 across testing.md, 09_synthetic_scars_catalog.md, and scars_registry.db, add complexity-scaled TDD slice budgets across supervisor planning, tdd-worker, SKILL.md, rules/AGENTS.md, README.md, and all five adapters, and track completed_cycles in lib/tdd_guard.py.",
+    "branch": "feat/273-tdd-resources",
+    "subprojects": [
+      "lib",
+      "skills",
+      "agents",
+      "rules",
+      "adapters",
+      "tests"
+    ],
+    "started_at": "2026-11-25T20:04:32Z",
+    "completed_at": "2026-11-26T22:20:42Z",
+    "commit_sha": "518757b02d90c3f32af8d67e5537c39812dd04a8",
+    "pr_number": 324,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/324",
+    "closes_issue": true,
+    "tests_added": 25,
+    "scars_earned": [
+      "SCAR-TEST-46: Horizontal Test-First Dumping and Uncalibrated Slice Granularity",
+      "SCAR-TEST-47: Tautological Assertions and Implementation-Coupled Mocks",
+      "SCAR-TEST-48: False Red Witnesses and Unverified Test-After Rationalization",
+      "SCAR-TEST-49: Premature Test Refactoring and Skipped Post-Green Cleanup"
+    ]
   }
 ]
