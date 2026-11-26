@@ -50,7 +50,8 @@ _PROTECTED_EXAMPLES_RE = re.compile(
     r"((?:`[^`]+`(?:,\s*(?:and\s+)?|\s+and\s+))*`[^`]+`)\."
 )
 _BACKTICK_TOKEN_RE = re.compile(r"`([^`]+)`")
-_LOCAL_GOVERNANCE_ROOTS = ("lib", "scripts")
+_ENV_VAR_PREFIX_RE = re.compile(r"^\$\{[^}]+\}/")
+_LOCAL_GOVERNANCE_ROOTS = ("lib", "scripts", "mcp")
 
 
 def _extract_anchored_receipts_section(doc_text: str) -> str:
@@ -202,6 +203,49 @@ def _discover_hooks_json_scripts(repo_root: str) -> Set[str]:
   return scripts
 
 
+def _discover_mcp_config_scripts(repo_root: str) -> Set[str]:
+  """Discovers all Python script relative paths registered in `mcp_config.json`.
+
+  Args:
+    repo_root: Repository root directory containing `mcp_config.json`.
+
+  Returns:
+    Set of POSIX-normalized relative `.py` script paths configured under
+    `mcpServers`.
+
+  Raises:
+    ValueError: If `mcp_config.json` does not contain a `mcpServers` mapping.
+  """
+  mcp_config_path = os.path.join(repo_root, "mcp_config.json")
+  with open(mcp_config_path, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+  mcp_servers = payload.get("mcpServers") if isinstance(payload, dict) else None
+  if not isinstance(mcp_servers, dict):
+    raise ValueError("Missing 'mcpServers' object in mcp_config.json.")
+
+  scripts: Set[str] = set()
+  for server_cfg in mcp_servers.values():
+    if not isinstance(server_cfg, dict):
+      continue
+    tokens: List[str] = []
+    command = server_cfg.get("command")
+    if isinstance(command, str) and command.strip():
+      tokens.extend(shlex.split(command))
+    args = server_cfg.get("args")
+    if isinstance(args, list):
+      tokens.extend(arg for arg in args if isinstance(arg, str))
+
+    for token in tokens:
+      normalized = token.replace("\\", "/")
+      normalized = _ENV_VAR_PREFIX_RE.sub("", normalized)
+      while normalized.startswith("./"):
+        normalized = normalized[2:]
+      if normalized.endswith(".py"):
+        scripts.add(normalized)
+  return scripts
+
+
 def _iter_module_level_import_nodes(
     statements: Sequence[ast.stmt],
 ) -> Iterator[Union[ast.Import, ast.ImportFrom]]:
@@ -246,12 +290,12 @@ def _iter_module_level_import_nodes(
 def _resolve_candidate_parts(
     repo_root: str, parts: Sequence[str]
 ) -> Set[str]:
-  """Resolves dotted module parts to existing local `lib/` or `scripts/` files.
+  """Resolves dotted module parts to existing local `lib/`, `scripts/`, or `mcp/` files.
 
   When `parts` resolves to a matching local module or subpackage, also includes
   every existing intermediate subpackage `__init__.py` (`parts[:depth]` for
   `2 <= depth < len(parts)`) that Python executes upon import, while keeping
-  root `lib/__init__.py` and `scripts/__init__.py` excluded.
+  root `lib/__init__.py`, `scripts/__init__.py`, and `mcp/__init__.py` excluded.
 
   Args:
     repo_root: Repository root directory on disk.
@@ -287,7 +331,7 @@ def _resolve_local_module_paths(
     source_relpath: str,
     node: Union[ast.Import, ast.ImportFrom],
 ) -> Set[str]:
-  """Resolves an AST import statement to local `lib/*.py` / `scripts/*.py` files.
+  """Resolves an AST import statement to local `lib/*.py`, `scripts/*.py`, or `mcp/*.py` files.
 
   Args:
     repo_root: Repository root directory on disk.
@@ -338,7 +382,8 @@ def _collect_top_level_import_closure(
 
   Returns:
     Set of POSIX relative paths for all visited Python seeds and every local
-    `lib/*.py` or `scripts/*.py` module transitively imported at module scope.
+    `lib/*.py`, `scripts/*.py`, or `mcp/*.py` module transitively imported at
+    module scope.
   """
   queue: List[str] = sorted(
       {
@@ -791,6 +836,167 @@ class TestGovernanceParity(unittest.TestCase):
               },
           )
           self.assertNotIn("lib/__init__.py", closure)
+
+  def test_harness_internal_relpaths_and_mcp_config_imports_are_closed(
+      self,
+  ) -> None:
+    """Verifies `mcp_config.json` scripts and all `HARNESS_INTERNAL_RELPATHS` top-level imports are closed (GH-300)."""
+    mcp_scripts = _discover_mcp_config_scripts(REPO_ROOT)
+    self.assertTrue(
+        mcp_scripts,
+        "Expected mcp_config.json to register at least one Python script.",
+    )
+    self.assertIn("mcp_config.json", HARNESS_INTERNAL_RELPATHS)
+
+    missing_mcp = sorted(mcp_scripts - set(HARNESS_INTERNAL_RELPATHS))
+    self.assertEqual(
+        missing_mcp,
+        [],
+        f"mcp_config.json scripts missing from HARNESS_INTERNAL_RELPATHS: {missing_mcp}",
+    )
+
+    hook_scripts = _discover_hooks_json_scripts(REPO_ROOT)
+    non_hook_seeds = set(HARNESS_INTERNAL_RELPATHS) - (
+        set(GOVERNANCE_FILE_RELPATHS) | hook_scripts
+    )
+    self.assertTrue(
+        non_hook_seeds,
+        "Expected non-hook HARNESS_INTERNAL_RELPATHS seeds to be non-empty.",
+    )
+    expected_non_hook_seeds = {
+        "mcp/server.py",
+        "scripts/commit_msg.py",
+        "scripts/workspace_mutex.py",
+        "lib/review_promotion.py",
+    }
+    missing_expected_seeds = sorted(expected_non_hook_seeds - non_hook_seeds)
+    self.assertEqual(
+        missing_expected_seeds,
+        [],
+        (
+            "Expected non-hook HARNESS_INTERNAL_RELPATHS seeds missing: "
+            f"{missing_expected_seeds}"
+        ),
+    )
+
+    closure = _collect_top_level_import_closure(
+        REPO_ROOT, set(HARNESS_INTERNAL_RELPATHS) | mcp_scripts
+    )
+    missing_from_harness = sorted(closure - set(HARNESS_INTERNAL_RELPATHS))
+    self.assertEqual(
+        missing_from_harness,
+        [],
+        (
+            "Top-level transitive imports missing from HARNESS_INTERNAL_RELPATHS: "
+            f"{missing_from_harness}"
+        ),
+    )
+
+  def test_ast_closure_detects_non_hook_harness_and_mcp_import_drift(
+      self,
+  ) -> None:
+    """Verifies non-hook harness and `mcp/` import drift is detected while excluding locals and root init (GH-300)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      os.makedirs(os.path.join(tmpdir, "mcp", "sub"))
+      os.makedirs(os.path.join(tmpdir, "scripts"))
+      os.makedirs(os.path.join(tmpdir, "lib"))
+
+      files = {
+          "mcp/__init__.py": "MCP_ROOT_INIT = True\n",
+          "mcp/server.py": (
+              "import mcp.protocol\n"
+              "from . import rel_helper\n"
+              "from mcp.sub.router import route\n"
+              "try:\n"
+              "  from lib import optional_dep\n"
+              "except ImportError:\n"
+              "  optional_dep = None\n"
+              "\n"
+              "def lazy_tool():\n"
+              "  from lib import deferred_mcp_dep\n"
+              "  return deferred_mcp_dep\n"
+          ),
+          "mcp/protocol.py": "PROTO = 1\n",
+          "mcp/rel_helper.py": "REL = 1\n",
+          "mcp/sub/__init__.py": "from . import sub_base\n",
+          "mcp/sub/sub_base.py": "SUB_BASE = 1\n",
+          "mcp/sub/router.py": "def route():\n  return True\n",
+          "scripts/non_hook_cli.py": "from lib.cli_support import run\n",
+          "lib/cli_support.py": "def run():\n  return 0\n",
+          "lib/internal_helper.py": "from lib import helper_dep\n",
+          "lib/helper_dep.py": "HELPER = 1\n",
+          "lib/optional_dep.py": "from lib import optional_transitive\n",
+          "lib/optional_transitive.py": "TRANSITIVE = 1\n",
+          "lib/deferred_mcp_dep.py": "DEFERRED = 1\n",
+      }
+      for rel, content in files.items():
+        with open(os.path.join(tmpdir, rel), "w", encoding="utf-8") as handle:
+          handle.write(content)
+
+      registered = {
+          "mcp/server.py",
+          "scripts/non_hook_cli.py",
+          "lib/internal_helper.py",
+      }
+      closure = _collect_top_level_import_closure(tmpdir, registered)
+
+      self.assertEqual(
+          closure - registered,
+          {
+              "mcp/protocol.py",
+              "mcp/rel_helper.py",
+              "mcp/sub/__init__.py",
+              "mcp/sub/sub_base.py",
+              "mcp/sub/router.py",
+              "lib/cli_support.py",
+              "lib/helper_dep.py",
+              "lib/optional_dep.py",
+              "lib/optional_transitive.py",
+          },
+      )
+      self.assertNotIn("mcp/__init__.py", closure)
+      self.assertNotIn("lib/deferred_mcp_dep.py", closure)
+
+  def test_mcp_config_discovery_detects_unregistered_future_server_script(
+      self,
+  ) -> None:
+    """Verifies adding a new script in synthetic `mcp_config.json` is detected as unregistered (GH-300)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      mcp_payload = {
+          "mcpServers": {
+              "makeflow": {
+                  "command": "python3",
+                  "args": ["./mcp/server.py"],
+              },
+              "future_args": {
+                  "command": "python3",
+                  "args": [
+                      "-u",
+                      "${CLAUDE_PLUGIN_ROOT}/mcp/future_server.py",
+                      "--stdio",
+                  ],
+              },
+              "future_command": {
+                  "command": "./scripts/future_mcp_entry.py",
+                  "args": [],
+              },
+          }
+      }
+      mcp_config_path = os.path.join(tmpdir, "mcp_config.json")
+      with open(mcp_config_path, "w", encoding="utf-8") as handle:
+        json.dump(mcp_payload, handle)
+
+      discovered = _discover_mcp_config_scripts(tmpdir)
+      registered = {"mcp/server.py"}
+      self.assertEqual(
+          discovered - registered,
+          {"mcp/future_server.py", "scripts/future_mcp_entry.py"},
+      )
+
+      with open(mcp_config_path, "w", encoding="utf-8") as handle:
+        json.dump({"other": {}}, handle)
+      with self.assertRaisesRegex(ValueError, "mcpServers"):
+        _discover_mcp_config_scripts(tmpdir)
 
 
 if __name__ == "__main__":

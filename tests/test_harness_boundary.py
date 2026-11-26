@@ -907,6 +907,122 @@ class TestBlackBoxHarnessBoundary(unittest.TestCase):
             )
             self.assertIn("[SCAR-ID: PROC-124]", reason)
 
+  def test_mcp_server_transitive_internals_guarded_at_t30_with_scope_escapes(
+      self,
+  ):
+    """Verifies MCP transitive internals are denied out-of-scope at T30 and allowed via plan, Git diff, or child subagent (GH-300)."""
+    target_relpaths = (
+        "lib/ci_polling.py",
+        "lib/scars_db.py",
+        "lib/scar_metadata.py",
+        "lib/scar_ontology.py",
+    )
+    with _isolated_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = _init_makeflow_checkout(
+          ws_dir, target="T30", plan_text="# Plan\n\nEdit `README.md` only.\n"
+      )
+      for rel in target_relpaths:
+        _write_file(os.path.join(ws_dir, rel), f"# {rel}\n")
+
+      # 1. Out-of-scope Depth-0 supervisor reads are denied at T30
+      for rel in target_relpaths:
+        with self.subTest(case="out_of_scope_deny", rel=rel):
+          ok, reason = evaluate_harness_read_boundary(
+              _read_payload(ws_dir, os.path.join(ws_dir, rel)),
+              state_dir,
+              [ws_dir],
+          )
+          self.assertFalse(ok, f"Expected deny for out-of-scope {rel}")
+          self.assertIn("[SCAR-ID: PROC-124]", reason)
+          self.assertIn("OUT_OF_SCOPE_HARNESS_INSPECTION", reason)
+          self.assertIn(rel, reason)
+
+      # 2. Reads explicitly listed in 20_plan.md are allowed
+      plan_lines = "\n".join(f"- `{rel}`" for rel in target_relpaths)
+      _write_file(
+          os.path.join(state_dir, "20_plan.md"),
+          f"# Plan\n\n{plan_lines}\n",
+      )
+      for rel in target_relpaths:
+        with self.subTest(case="plan_listed_allow", rel=rel):
+          ok, reason = evaluate_harness_read_boundary(
+              _read_payload(ws_dir, os.path.join(ws_dir, rel)),
+              state_dir,
+              [ws_dir],
+          )
+          self.assertTrue(
+              ok, f"Expected plan-listed allow for {rel}, got {reason}"
+          )
+
+      # 3. Reads modified in active Git diff (absent from 20_plan.md) are allowed
+      _write_file(
+          os.path.join(state_dir, "20_plan.md"),
+          "# Plan\n\nNo code paths listed.\n",
+      )
+      _run_git(ws_dir, "init", "-b", "main")
+      _write_file(
+          os.path.join(ws_dir, ".git", "info", "exclude"),
+          ".workflow/\n",
+      )
+      _run_git(ws_dir, "add", "-A")
+      _run_git(ws_dir, "commit", "-m", "chore: initial fixture")
+
+      # Stage two files and leave two files unstaged
+      for rel in target_relpaths[:2]:
+        _write_file(os.path.join(ws_dir, rel), f"# staged change {rel}\n")
+        _run_git(ws_dir, "add", rel)
+      for rel in target_relpaths[2:]:
+        _write_file(os.path.join(ws_dir, rel), f"# unstaged change {rel}\n")
+
+      for rel in target_relpaths:
+        with self.subTest(case="git_diff_allow", rel=rel):
+          ok, reason = evaluate_harness_read_boundary(
+              _read_payload(ws_dir, os.path.join(ws_dir, rel)),
+              state_dir,
+              [ws_dir],
+          )
+          self.assertTrue(
+              ok, f"Expected Git diff allow for {rel}, got {reason}"
+          )
+
+      # 4. Child subagent reads are allowed when clean and absent from 20_plan.md
+      _run_git(ws_dir, "reset", "--hard", "HEAD")
+      _write_file(
+          os.path.join(state_dir, "active_subagent.json"),
+          json.dumps({
+              "supervisorConversationId": "sup-1",
+              "typeName": "tdd-worker",
+          })
+          + "\n",
+      )
+      for rel in target_relpaths:
+        with self.subTest(case="child_subagent_allow", rel=rel):
+          ok, reason = evaluate_harness_read_boundary(
+              _read_payload(
+                  ws_dir,
+                  os.path.join(ws_dir, rel),
+                  conversation_id="worker-2",
+              ),
+              state_dir,
+              [ws_dir],
+          )
+          self.assertTrue(
+              ok, f"Expected child subagent allow for {rel}, got {reason}"
+          )
+          ok_sup, reason_sup = evaluate_harness_read_boundary(
+              _read_payload(
+                  ws_dir,
+                  os.path.join(ws_dir, rel),
+                  conversation_id="sup-1",
+              ),
+              state_dir,
+              [ws_dir],
+          )
+          self.assertFalse(
+              ok_sup, f"Expected supervisor deny for clean {rel}"
+          )
+          self.assertIn("[SCAR-ID: PROC-124]", reason_sup)
+
 
 if __name__ == "__main__":
   unittest.main()
