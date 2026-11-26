@@ -10,7 +10,8 @@ import json
 import math
 import os
 import re
-from typing import Dict, List, Mapping, Optional
+import tempfile
+from typing import Any, Dict, List, Mapping, Optional
 
 from lib.active_state import ActiveStateStore, list_state_card_files
 from lib.agent_paths import AgentPathRegistry
@@ -26,6 +27,8 @@ DEFAULT_SCAR_DATABASES = [
     "{agent_data}/scars_registry.db",
     DEFAULT_BUNDLED_SCAR_DB_TOKEN,
 ]
+PLANNING_BDD_MODE_ENV_VAR = "MAKEFILE_WORKFLOW_PLANNING_BDD_MODE"
+VALID_PLANNING_BDD_MODES = ("adaptive", "full_gherkin", "planning_only", "ask")
 
 DEFAULT_WORKFLOW_CONFIG = {
     "models": {
@@ -39,6 +42,9 @@ DEFAULT_WORKFLOW_CONFIG = {
         "maxReviewRounds": 3,
         "strictSixPillars": True,
         "allowCriticHermeticTests": False,
+    },
+    "planning": {
+        "bddMode": "",
     },
     "testing": {
         "regressionCommand": "",
@@ -561,6 +567,148 @@ def insert_scar_databases_before_bundled(
   return cleaned_base + to_insert
 
 
+def _normalize_planning_config(raw_planning):
+  """Normalizes ``planning`` configuration block to a validated ``bddMode``.
+
+  Args:
+    raw_planning: Raw ``planning`` configuration mapping or invalid value.
+
+  Returns:
+    Dictionary with validated ``bddMode`` (one of ``VALID_PLANNING_BDD_MODES``
+    or ``""`` when unset or invalid).
+  """
+  planning_dict = raw_planning if isinstance(raw_planning, dict) else {}
+  raw_mode = planning_dict.get("bddMode")
+  cleaned = raw_mode.strip().lower() if isinstance(raw_mode, str) else ""
+  return {
+      "bddMode": cleaned if cleaned in VALID_PLANNING_BDD_MODES else "",
+  }
+
+
+def _write_planning_mode_to_file(config_path: str, mode: str) -> str:
+  """Updates ``planning.bddMode`` in one JSON config file atomically.
+
+  Args:
+    config_path: Destination JSON configuration file path.
+    mode: Validated normalized BDD mode string.
+
+  Returns:
+    Absolute path to the updated configuration file.
+
+  Raises:
+    ValueError: If an existing file contains non-object JSON.
+  """
+  abs_cfg = os.path.abspath(os.path.expanduser(config_path))
+  data: Dict[str, Any] = {}
+  if os.path.isfile(abs_cfg):
+    with open(abs_cfg, "r", encoding="utf-8") as fh:
+      raw_content = fh.read().strip()
+    if raw_content:
+      loaded = json.loads(raw_content)
+      if not isinstance(loaded, dict):
+        raise ValueError(
+            f"Configuration file '{abs_cfg}' must contain a JSON object."
+        )
+      data = loaded
+
+  planning_section = data.get("planning")
+  if not isinstance(planning_section, dict):
+    planning_section = {}
+    data["planning"] = planning_section
+  planning_section["bddMode"] = mode
+
+  parent_dir = os.path.dirname(abs_cfg)
+  os.makedirs(parent_dir, exist_ok=True)
+  tmp_path: Optional[str] = None
+  try:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=parent_dir,
+        prefix=".tmp_makeflow_cfg_",
+        suffix=".json",
+        delete=False,
+    ) as tmp_file:
+      tmp_path = tmp_file.name
+      json.dump(data, tmp_file, indent=2)
+      tmp_file.write("\n")
+      tmp_file.flush()
+      os.fsync(tmp_file.fileno())
+    os.replace(tmp_path, abs_cfg)
+    tmp_path = None
+  finally:
+    if tmp_path is not None and os.path.exists(tmp_path):
+      try:
+        os.unlink(tmp_path)
+      except OSError:
+        pass
+  return abs_cfg
+
+
+def save_planning_bdd_mode(
+    mode: str,
+    scope: str,
+    workspace_dir: Optional[str] = None,
+    agent: Optional[str] = None,
+    home_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+  """Persists ``planning.bddMode`` to ``user-global``, ``project-local``, or ``both``.
+
+  Args:
+    mode: BDD mode string (``adaptive``, ``full_gherkin``, ``planning_only``,
+      or ``ask``).
+    scope: Storage scope (``user-global``, ``project-local``, or ``both``).
+    workspace_dir: Project root path (required for ``project-local`` and
+      ``both`` scopes).
+    agent: Optional agent name override for user-global config lookup.
+    home_dir: Optional home directory override for isolated testing.
+
+  Returns:
+    Dictionary with ``bddMode``, ``scope``, and ``updatedFiles``.
+
+  Raises:
+    ValueError: If ``mode``, ``scope``, or required ``workspace_dir`` is invalid.
+  """
+  clean_mode = str(mode or "").strip().lower()
+  if clean_mode not in VALID_PLANNING_BDD_MODES:
+    valid = ", ".join(VALID_PLANNING_BDD_MODES)
+    raise ValueError(
+        f"Unsupported planning.bddMode '{mode}'. Expected one of: {valid}."
+    )
+  clean_scope = str(scope or "").strip().lower()
+  if clean_scope not in ("user-global", "project-local", "both"):
+    raise ValueError(
+        f"Unsupported config scope '{scope}'. Expected user-global, project-local, or both."
+    )
+  if clean_scope in ("project-local", "both") and not (
+      workspace_dir and isinstance(workspace_dir, str) and workspace_dir.strip()
+  ):
+    raise ValueError(
+        "workspace_dir is required for project-local or both scope."
+    )
+
+  targets: List[str] = []
+  if clean_scope in ("user-global", "both"):
+    profile = AgentPathRegistry(home_dir=home_dir).get_profile(agent)
+    targets.append(profile.global_config_path)
+  if clean_scope in ("project-local", "both"):
+    assert workspace_dir is not None
+    ws_abs = os.path.abspath(
+        expand_user_path(workspace_dir.strip(), home_dir=home_dir)
+    )
+    targets.append(os.path.join(ws_abs, ".workflow", "config.json"))
+
+  updated_files = [
+      _write_planning_mode_to_file(cfg_path, clean_mode)
+      for cfg_path in targets
+  ]
+  return {
+      "bddMode": clean_mode,
+      "scope": clean_scope,
+      "updatedFiles": updated_files,
+  }
+
+
 def _iter_cascaded_config_candidates(
     workspace_paths, agent=None, home_dir=None, allow_cwd_fallback=True
 ):
@@ -791,6 +939,7 @@ def get_workflow_config(
   scars_cfg = _normalize_scars_config(merged_cfg.get("scars"), home_dir=home_dir)
 
   ci_cfg = _normalize_ci_config(merged_cfg.get("ci"))
+  planning_cfg = _normalize_planning_config(merged_cfg.get("planning"))
 
   env_applied = []
   for env_var, agent_key in ENV_MAPPINGS.items():
@@ -835,12 +984,20 @@ def get_workflow_config(
     state_cfg["completedCardAction"] = env_card_action.strip()
     env_applied.append("MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION")
 
+  env_bdd_mode = os.getenv(PLANNING_BDD_MODE_ENV_VAR)
+  if env_bdd_mode is not None:
+    cleaned_bdd = env_bdd_mode.strip().lower()
+    if cleaned_bdd in VALID_PLANNING_BDD_MODES:
+      planning_cfg["bddMode"] = cleaned_bdd
+      env_applied.append(PLANNING_BDD_MODE_ENV_VAR)
+
   if env_applied:
     env_label = "env (" + ", ".join(env_applied) + ")"
     source = (source + " + " + env_label) if source else env_label
 
   return {
       "models": models,
+      "planning": planning_cfg,
       "ci": ci_cfg,
       "database": db_cfg,
       "state": state_cfg,
@@ -1048,6 +1205,7 @@ def resolve_workflow_config(
 
   config["ci"] = _normalize_ci_config(config.get("ci"))
   config["review"] = _normalize_review_config(config.get("review"))
+  config["planning"] = _normalize_planning_config(config.get("planning"))
   config["testing"] = _normalize_testing_config(config.get("testing"))
 
   for env_var, agent_key in ENV_MAPPINGS.items():
@@ -1095,6 +1253,15 @@ def resolve_workflow_config(
     config["envOverrides"].append(
         f"MAKEFILE_WORKFLOW_COMPLETED_CARD_ACTION={env_card_action.strip()}"
     )
+
+  env_bdd_mode = os.getenv(PLANNING_BDD_MODE_ENV_VAR)
+  if env_bdd_mode is not None:
+    cleaned_bdd = env_bdd_mode.strip().lower()
+    if cleaned_bdd in VALID_PLANNING_BDD_MODES:
+      config["planning"]["bddMode"] = cleaned_bdd
+      config["envOverrides"].append(
+          f"{PLANNING_BDD_MODE_ENV_VAR}={cleaned_bdd}"
+      )
 
   config["agyModelTiers"] = {
       role: map_to_agy_tier(val) for role, val in config["models"].items()

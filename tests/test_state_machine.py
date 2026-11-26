@@ -19,6 +19,47 @@ SESSION_START_SCRIPT = os.path.join(REPO_ROOT, "scripts", "session_start.py")
 PRE_TOOL_SCRIPT = os.path.join(REPO_ROOT, "scripts", "pre_tool_guard.py")
 WORKFLOW_GATES_SCRIPT = os.path.join(REPO_ROOT, "scripts", "workflow_gates.py")
 
+_VALID_CANONICAL_PLAN = """# Target 20 Implementation Plan: Test Fixture
+
+## 1. Problem Statement and Root Cause Summary
+Deterministic workflow fixture satisfying the canonical eight-section plan contract.
+
+## 2. BDD Discovery and Acceptance Criteria
+- **Given** a repository with valid Target 15 archaeology state
+- **When** the workflow runs `approved-plan`
+- **Then** the gate validates the plan and enters Target 20.
+
+## 3. Target Subprojects, Planned File Edits, and Layer Posture
+Root Python 3 workspace adapting to the clean existing `lib/`, `scripts/`, and `tests/` layout.
+
+### Specific Edits to Existing Files
+- `lib/example.py`: Apply minimal scoped change.
+
+### New Files to Create
+- None required for this test fixture.
+
+### Untouched Files and Scope Quarantine
+- All unrelated workspace modules remain untouched.
+
+## 4. OO Design Patterns, Module Cohesion, and Documentation Standard
+Favor object composition, Google-style PEP 257 docstrings, and Simple English prose.
+
+## 5. Testing Strategy, Commands, and Burden-Balance Analysis
+Run targeted fail-fast unit tests in ephemeral temporary directories before full regression.
+
+## 6. Red-Green-Refactor TDD Plan
+Write failing Red tests first, implement minimal Green production code, and refactor cleanly.
+
+## 7. Socratic Invariant Audit Table
+
+| Invariant | Probing Socratic Inquiry | Pre-Implementation Verification |
+| :--- | :--- | :--- |
+| **Hermetic Isolation** | Do tests run inside temporary directories? | Yes, via `tempfile.TemporaryDirectory()`. |
+
+## 8. Consulted Reference Manuals and Target 30 Scar Carry-Forward
+Consulted `02_archaeology_and_planning.md`, `03_tdd_and_code_quality.md`, and `SCAR-PROC-160`.
+"""
+
 
 def _load_script_module(name: str, path: str):
   """Loads a script file as an isolated Python module."""
@@ -371,7 +412,7 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
           "# Receipt\nHOSTING_MODE: GITHUB\n",
       )
       _assert_make_rc(self, _run_make(repo, "archaeology-verified"), 0)
-      _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
       _assert_make_rc(
           self,
           _run_make(repo, "approved-plan", f"TRANSCRIPT={transcript}"),
@@ -702,7 +743,7 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
       _write_file(
           os.path.join(state_dir, "15_archaeology_receipt.md"), "# Receipt\n"
       )
-      _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
       ok2, msg2 = advance_workflow_target(
           "T15",
           "T20",
@@ -1533,7 +1574,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       self.assertIn("INVALID_COMMIT_MESSAGE_CONTRACT", no_msg_generic.stderr)
 
       _write_file(os.path.join(state_dir, "15_archaeology_receipt.md"), "OK\n")
-      _write_file(os.path.join(state_dir, "20_plan.md"), "Plan\n")
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
       _assert_make_rc(self, _run_make(tmp, "approved-plan", "FROM=T15"), 0)
       same_turn = _assert_make_rc(
           self,
@@ -1953,7 +1994,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       _write_file(
           os.path.join(state_dir, "15_archaeology_receipt.md"), "# Receipt\n"
       )
-      _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
       _write_file(os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n")
 
       pwned = os.path.join(tmp, "pwned_marker")
@@ -2189,7 +2230,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       _write_file(
           os.path.join(state_dir, "15_archaeology_receipt.md"), "# Receipt\n"
       )
-      _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
       self.assertEqual(infer_current_target(state_dir), "T20")
       _assert_make_rc(self, _run_make(repo, "approved-plan", "NO_FETCH=1"), 0)
       self.assertEqual(read_active_target(state_dir)["target"], "T20")
@@ -2476,7 +2517,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           transcript,
           {"step_index": 1, "type": "USER_INPUT", "content": "Plan"},
       )
-      _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
       _assert_make_rc(
           self,
           _run_make(
@@ -3040,7 +3081,7 @@ class TestPureGitModeStateMachineAndCleanup(unittest.TestCase):
     _assert_make_rc(
         self, _run_make(repo, "archaeology-verified", "NO_FETCH=1"), 0
     )
-    _write_file(os.path.join(state_dir, "20_plan.md"), "# Plan\n")
+    _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
     _assert_make_rc(
         self,
         _run_make(
@@ -3875,6 +3916,56 @@ class TestParkedSessionStateMachine(unittest.TestCase):
       self.assertTrue(ok_adv, msg_adv)
       self.assertFalse(store.exists())
       self.assertFalse(read_active_target(state_dir).get("parked", False))
+
+  def test_approved_plan_and_t20_transition_reject_stub_or_invalid_plan(
+      self,
+  ) -> None:
+    """GH-270 / SCAR-PROC-160: stub or non-canonical plans fail closed on T15->T20."""
+    from lib.state_machine import advance_workflow_target
+    from lib.workflow_gates import WorkflowGatesScript
+
+    with tempfile.TemporaryDirectory() as tmp:
+      _init_git_repo(tmp, branch="feat/270-invalid-plan")
+      rc = WorkflowGatesScript().execute(
+          args=["--repo-root", tmp, "init-makefile"],
+          stdout=io.StringIO(),
+          stderr=io.StringIO(),
+      )
+      self.assertEqual(rc, 0)
+      state_dir = os.path.join(tmp, ".workflow", "state")
+      _write_file(os.path.join(state_dir, "15_archaeology_receipt.md"), "# Receipt\n")
+
+      for bad_plan in ("# Plan\n", "Plan\n", "## 1. Only One Heading\nText\n"):
+        _write_file(os.path.join(state_dir, "20_plan.md"), bad_plan)
+        ok, err = advance_workflow_target(
+            "T15",
+            "T20",
+            evidence={"skipMainFetch": True},
+            state_dir=state_dir,
+            workspace_dir=tmp,
+        )
+        self.assertFalse(ok)
+        self.assertIn("SCAR-PROC-160", err)
+        self.assertIn("INVALID_PLAN_SPEC", err)
+
+        proc = _assert_make_rc(
+            self, _run_make(tmp, "approved-plan", "FROM=T15", "NO_FETCH=1"), 2
+        )
+        self.assertIn("[SCAR-ID: PROC-160]", proc.stderr)
+        self.assertIn("INVALID_PLAN_SPEC", proc.stderr)
+
+      _write_file(os.path.join(state_dir, "20_plan.md"), _VALID_CANONICAL_PLAN)
+      ok_valid, err_valid = advance_workflow_target(
+          "T15",
+          "T20",
+          evidence={"skipMainFetch": True},
+          state_dir=state_dir,
+          workspace_dir=tmp,
+      )
+      self.assertTrue(ok_valid, err_valid)
+      _assert_make_rc(
+          self, _run_make(tmp, "approved-plan", "FROM=T15", "NO_FETCH=1"), 0
+      )
 
 
 if __name__ == "__main__":

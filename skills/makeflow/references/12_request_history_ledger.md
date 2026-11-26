@@ -121,7 +121,7 @@ Run these steps during Target 90 after a pull request merges:
 8. Run the full repository test suite (`make test` or project equivalent) and confirm zero failures before committing.
 9. Commit the ledger and changelog updates when tracked in Git: `git commit -m "docs(history): record <id>"` or `git commit -m "docs(changelog): add <id>"`.
 10. If direct push to `main` is permitted, push the updates with `git push origin main`.
-11. If the ticket is a GitHub issue, post the "Target 90: Workflow Complete" summary with `gh issue comment <number> --body-file <file>`. Use the same "Target 90: Workflow Complete" chat message to give a brief, high-level overview of delivered changes.
+11. If the ticket is a GitHub issue, post the "Target 90: Workflow Complete" summary with `gh issue comment <number> --body-file <file>`. If `planning.bddMode` is `full_gherkin`, include the executed BDD/Gherkin scenario names in the resolution comment. Use the same "Target 90: Workflow Complete" chat message to give a brief, high-level overview of delivered changes.
 12. Release the ticket lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
 13. Ask the user via `ask_question` whether to stay on `[Unreleased]` or cut a `patch`, `minor`, or `major` release. If they stay unreleased, skip to step 18.
 14. Move `## [Unreleased]` entries into `## [X.Y.Z] - YYYY-MM-DD` inside `CHANGELOG.md`. Keep an empty `## [Unreleased]` heading at the top.

@@ -1,6 +1,6 @@
 """Deterministic workflow gate facade emitting Vector 4 Reflexes (GH-57, GH-274, SCAR-ARCH-06).
 
-Coordinates all 19 workflow gate subcommands via ``WorkflowGatesScript`` while
+Coordinates all 20 workflow gate subcommands via ``WorkflowGatesScript`` while
 delegating domain logic to cohesive modules under ``lib/`` and preserving
 canonical backward-compatible re-exports and monkeypatch targets (SCAR-API-02).
 """
@@ -46,6 +46,7 @@ from lib.parking_gates import (
     run_park_session_gate,
     run_resume_parked_gate,
 )
+from lib.plan_validation import build_plan_spec_failure, validate_plan_file
 from lib.plugin_gates import (
     DEFAULT_SKILL_MAX_BYTES as DEFAULT_SKILL_MAX_BYTES,
     REQUIRED_PLUGIN_FILES as REQUIRED_PLUGIN_FILES,
@@ -392,6 +393,8 @@ class WorkflowGatesScript(BaseScript):
           rejected="Advancing past Target 50 when HEAD commit message violates Conventional Commits 1.0.0 or trailer rules.",
           reflex="Fix .workflow/state/50_commit_msg.txt per 05_pre_commit_hygiene.md, amend HEAD with -F, and retry.",
       )
+    if "INVALID_PLAN_SPEC" in msg or "SCAR-PROC-160" in msg:
+      return self._fail_from(build_plan_spec_failure(msg))
     if "Required state card" in msg:
       return self._fail(
           scar_id="ARCH-06",
@@ -750,6 +753,18 @@ class WorkflowGatesScript(BaseScript):
     req = self.resume_request or ResumeParkedRequest(repo_root=self.repo_root)
     return self._emit_parking_outcome(run_resume_parked_gate(req))
 
+  def _check_plan(self) -> int:
+    """Validates .workflow/state/20_plan.md against the canonical 8-section spec."""
+    plan_path = os.path.join(self.repo_root, ".workflow", "state", "20_plan.md")
+    result = validate_plan_file(plan_path)
+    if not result.valid:
+      return self._fail_from(build_plan_spec_failure("; ".join(result.errors)))
+    if self.as_json:
+      self.stdout.write(json.dumps(result.to_dict()) + "\n")
+    else:
+      self.stdout.write(f"Plan validated: {plan_path}\n")
+    return 0
+
   def run(self) -> int:
     """Dispatches the parsed workflow gate subcommand and returns exit code."""
     handlers = {
@@ -767,6 +782,7 @@ class WorkflowGatesScript(BaseScript):
         "promote-review": self._promote_review,
         "park-session": self._park_session,
         "resume-parked": self._resume_parked,
+        "check-plan": self._check_plan,
         "terminal-title": self._gate_terminal_title,
         "release-intake": self._release_intake,
         "release-lock": self._release_intake,

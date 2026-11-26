@@ -1163,8 +1163,144 @@ def evaluate_command_turn_boundary(cmd_gate, transcript_path, state_dir=None):
   return True, ""
 
 
-def evaluate_ask_question_turn_boundary(transcript_path):
-  """Verifies that non-empty assistant content exists in the current turn before ask_question."""
+def _active_pause_gate_for_state_dir(state_dir):
+  """Returns active pause gate ID from active_target.json or fallback gate_entry.json.
+
+  Follows the canonical workflow-state precedence order used by
+  ``infer_current_target`` and ``detect_latest_target``: consults
+  ``active_target.json`` first, and only falls back to ``gate_entry.json``
+  when ``active_target.json`` is missing, unreadable, or lacks a valid
+  canonical ``"target"`` string.
+
+  Args:
+    state_dir: Path to ``.workflow/state`` directory, or None.
+
+  Returns:
+    Canonical pause-gate ID (for example ``"T20"``) when sitting at a pause
+    gate, or empty string otherwise.
+  """
+  if not state_dir or not isinstance(state_dir, str) or not os.path.isdir(state_dir):
+    return ""
+  active = None
+  try:
+    from lib.state_machine import read_active_target
+
+    active = read_active_target(state_dir)
+  except ImportError:
+    active = None
+  if isinstance(active, dict):
+    raw_target = active.get("target")
+    active_id = raw_target.strip() if isinstance(raw_target, str) else ""
+    if active_id and active_id in TARGETS_CONFIG:
+      return active_id if active_id in PAUSE_GATE_TARGETS else ""
+  entry = read_gate_entry(state_dir)
+  if entry:
+    gate_id = str(entry.get("gate") or "").strip()
+    if gate_id in PAUSE_GATE_TARGETS:
+      return gate_id
+  return ""
+
+
+def _pause_gate_entered_in_turn(turn_steps, default_state_dir=""):
+  """Returns the pause gate ID entered during the current autonomous turn, if any.
+
+  Scans ``turn_steps`` and each step's tool calls chronologically so writing a
+  pause-gate entry card (such as ``20_plan.md``) or advancing into a pause gate
+  records that gate, while a subsequent recovery advance to a non-pause target
+  (such as ``T20 -> T15``) clears it.
+
+  Args:
+    turn_steps: Transcript steps emitted since the latest human USER_INPUT step.
+    default_state_dir: Optional fallback ``.workflow/state`` directory path.
+
+  Returns:
+    Canonical pause-gate ID entered in this turn, or empty string.
+  """
+  entered = ""
+  for st in turn_steps:
+    if not isinstance(st, dict) or st.get("type") != "PLANNER_RESPONSE":
+      continue
+    for tc in st.get("tool_calls") or []:
+      if not isinstance(tc, dict):
+        continue
+      adv_calls = extract_advance_target_calls(
+          [tc], default_state_dir=default_state_dir
+      )
+      if adv_calls:
+        for adv in adv_calls:
+          nxt = adv.get("nextTarget") or ""
+          if nxt in PAUSE_GATE_TARGETS:
+            entered = nxt
+          elif nxt:
+            entered = ""
+        continue
+      single_step = {"type": "PLANNER_RESPONSE", "tool_calls": [tc]}
+      for gate_id in sorted(PAUSE_GATE_TARGETS):
+        if step_enters_gate(single_step, gate_id):
+          entered = gate_id
+          break
+  return entered
+
+
+def _format_ask_question_pause_gate_reflex(violation_code, trigger):
+  """Formats a SCAR-PROC-161 Vector 4 Reflex denying ask_question at a pause gate.
+
+  Args:
+    violation_code: Machine-readable reflex violation code.
+    trigger: Concrete trigger message naming the active or entered pause gate.
+
+  Returns:
+    Formatted Vector 4 Reflex string.
+  """
+  buf = io.StringIO()
+  emit_reflex(
+      stream=buf,
+      scar_id="SCAR-PROC-161",
+      violation_code=violation_code,
+      trigger=trigger,
+      rejected=(
+          "Calling ask_question at a human pause gate captures CLI/UI focus,"
+          " blocks artifact inspection, and risks misinterpreting answers as"
+          " gate approval (SCAR-PROC-161)."
+      ),
+      reflex=(
+          "Do not call ask_question at pause gates (T20, T42, T45, T50, T60,"
+          " T75). Present the proposal with file:// links in plain chat and"
+          " stop tool calls (`tool_calls: []`). Complete pre-plan discovery"
+          " questions in Target 15 (or recover T20 -> T15) before writing"
+          " .workflow/state/20_plan.md."
+      ),
+  )
+  return buf.getvalue().strip()
+
+
+def evaluate_ask_question_turn_boundary(transcript_path, state_dir=None):
+  """Verifies ask_question is not called at pause gates and has chat context.
+
+  Enforces SCAR-PROC-161 (prohibiting ``ask_question`` at pause gates
+  ``T20``, ``T42``, ``T45``, ``T50``, ``T60``, ``T75`` or after writing a
+  pause-gate entry card in the same turn) and SCAR-HCI-08 (requiring non-empty
+  assistant content since the latest ``USER_INPUT`` step). Preserves optional
+  ``state_dir=None`` default for backward compatibility (SCAR-API-0002).
+
+  Args:
+    transcript_path: Path to the session JSONL transcript file.
+    state_dir: Optional path to ``.workflow/state`` directory.
+
+  Returns:
+    Tuple ``(allowed, deny_reason)`` where ``deny_reason`` is empty when
+    allowed and contains a formatted Vector 4 Reflex when denied.
+  """
+  active_gate = _active_pause_gate_for_state_dir(state_dir)
+  if active_gate:
+    return (
+        False,
+        _format_ask_question_pause_gate_reflex(
+            "ASK_QUESTION_AT_PAUSE_GATE",
+            f"ask_question was invoked while workflow state is at pause gate {active_gate}.",
+        ),
+    )
+
   if not transcript_path or not isinstance(transcript_path, str):
     return True, ""
   if not os.path.isfile(transcript_path):
@@ -1182,6 +1318,19 @@ def evaluate_ask_question_turn_boundary(transcript_path):
       last_user_idx = idx
 
   turn_steps = steps[last_user_idx + 1 :] if last_user_idx != -1 else steps
+  entered_gate = _pause_gate_entered_in_turn(
+      turn_steps, default_state_dir=state_dir or ""
+  )
+  if entered_gate:
+    return (
+        False,
+        _format_ask_question_pause_gate_reflex(
+            "ASK_QUESTION_BUNDLED_WITH_PAUSE_GATE",
+            f"ask_question was invoked in the same turn after entering pause gate"
+            f" {entered_gate} or writing its entry card.",
+        ),
+    )
+
   for st in turn_steps:
     if not isinstance(st, dict):
       continue

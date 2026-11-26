@@ -541,6 +541,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/workflow_gates.py",
     "lib/main_sync.py",
     "lib/state_makefile.py",
+    "lib/plan_validation.py",
     "lib/plugin_gates.py",
     "lib/intake_gates.py",
     "lib/commit_gates.py",
@@ -1070,7 +1071,9 @@ def evaluate_tool_call(payload):
 
   if tool_name not in ("run_command", "Bash", "bash", "shell"):
     if tool_name == "ask_question":
-      ok, reason = evaluate_ask_question_turn_boundary(transcript_path)
+      ok, reason = evaluate_ask_question_turn_boundary(
+          transcript_path, state_dir=state_dir
+      )
       if not ok:
         return {"decision": "deny", "reason": reason}
       return {"decision": "allow"}

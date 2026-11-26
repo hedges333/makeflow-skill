@@ -24,6 +24,7 @@ if _REPO_ROOT not in sys.path:
 NEW_EXTRACTED_MODULES = (
     "lib/main_sync.py",
     "lib/state_makefile.py",
+    "lib/plan_validation.py",
     "lib/plugin_gates.py",
     "lib/intake_gates.py",
     "lib/commit_gates.py",
@@ -241,6 +242,8 @@ class TestStateMakefileModule(unittest.TestCase):
       mk_text = generate_state_makefile(tmpdir)
       self.assertIn(".PHONY:", mk_text)
       self.assertIn("check-intake:", mk_text)
+      self.assertIn("check-plan:", mk_text)
+      self.assertIn("approved-plan: check-plan", mk_text)
       self.assertIn("check-approved-tree:", mk_text)
       self.assertIn("park-session:", mk_text)
       self.assertIn("resume-parked:", mk_text)
@@ -683,8 +686,8 @@ class TestParkingGatesModule(unittest.TestCase):
 class TestWorkflowGatesCliModule(unittest.TestCase):
   """Direct unit tests for lib/workflow_gates_cli.py."""
 
-  def test_parser_supports_all_19_subcommands_and_env_hydration(self):
-    """Verifies all 19 subcommands parse and Make/parking env hydration validates env."""
+  def test_parser_supports_all_20_subcommands_and_env_hydration(self):
+    """Verifies all 20 subcommands parse and Make/parking env hydration validates env."""
     from lib.base_script import ReflexArgumentError
     from lib.workflow_gates_cli import (
         _env_truthy,
@@ -705,6 +708,7 @@ class TestWorkflowGatesCliModule(unittest.TestCase):
         "intake",
         "release-intake",
         "release-lock",
+        "check-plan",
         "approved-tree",
         "commit-msg",
         "post-commit",

@@ -27,6 +27,8 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 | `SCAR-PROC-152` | Graphviz Attributed Graph IR for Mealy Automaton Completeness | State Machine Graph Completeness |
 | `SCAR-PROC-158` | Persistent Memento Readerboard Truncation Trap | Persistent Memento State Integrity |
 | `SCAR-PROC-159` | Project-Adaptive Code Documentation Standards and Tree Verification | Code Documentation & Tree Assembly |
+| `SCAR-PROC-160` | Canonical Eight-Section Plan Contract and Full Worker Ingestion | Target 20 Plan & Target 30 Dispatch |
+| `SCAR-PROC-161` | Pause-Gate `ask_question` Focus Capture and Plan Approval Separation | Target 20 & Pause Gate HCI |
 
 ---
 
@@ -187,3 +189,19 @@ This reference manual documents core process and workflow scars (`SCAR-PROC-*`).
 - **Circuit Breaker**: If public interfaces or module behaviors change, never advance to Target 40 with undocumented symbols or broken documentation trees.
 - **Permanent Reflex**: Discover existing project doc conventions at Target 15, or apply `skills/makeflow/references/polyglot/<lang>.md` defaults. Record the standard in `15_archaeology_receipt.md` and `20_plan.md`, and verify clean tree builds at Target 40.
 - **Socratic Probe**: Did you discover the active documentation standard at Target 15 and verify that the documentation tree builds without warnings?
+
+### SCAR-PROC-160: Canonical Eight-Section Plan Contract and Full Worker Ingestion
+
+- **Wound**: Smaller models wrote minimal three-section plans without exact file edits or root causes. Supervisors then sent paraphrased plan summaries to `tdd-worker`, causing missed edits and failed builds.
+- **Trap**: Relying on flat prose checklists for `20_plan.md` and summarizing approved plans inside `tdd-worker` dispatch prompts instead of requiring full disk reads.
+- **Circuit Breaker**: If `.workflow/state/20_plan.md` omits any canonical section or required subsection, stop and fix the plan before entering Target 20.
+- **Permanent Reflex**: Author all eight canonical headings in `.workflow/state/20_plan.md` and validate them with `make -f .workflow/state/Makefile check-plan`. Instruct `tdd-worker` to read `.workflow/state/20_plan.md` in full from disk with pagination instead of a supervisor summary.
+- **Socratic Probe**: Does `.workflow/state/20_plan.md` pass `check-plan` with all eight sections, and did `tdd-worker` read the full plan directly from disk?
+
+### SCAR-PROC-161: Pause-Gate `ask_question` Focus Capture and Plan Approval Separation
+
+- **Wound**: Calling `ask_question` during Target 20 captured terminal focus and blocked `/artifact` plan inspection. The supervisor then treated the `ask_question` answer as plan approval and demoted the plan artifact prematurely.
+- **Trap**: Bundling planning discovery questions with Target 20 approval or treating a multi-choice answer as explicit human gate declaration.
+- **Circuit Breaker**: If the workflow sits at or enters a pause gate (`T20`, `T42`, `T45`, `T50`, `T60`, `T75`), never invoke `ask_question`.
+- **Permanent Reflex**: Complete all `ask_question` discovery during Target 15 before writing `.workflow/state/20_plan.md`, or recover `T20 -> T15` first. At every pause gate, print links in plain chat and halt with `tool_calls: []`.
+- **Socratic Probe**: Did you finish all `ask_question` discovery in Target 15 before writing `20_plan.md` and pause with `tool_calls: []` at Target 20?

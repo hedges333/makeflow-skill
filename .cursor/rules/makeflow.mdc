@@ -27,6 +27,8 @@ Follow these steps in order for every coding task:
 17. After Target 40 review, write `.workflow/state/40_critic_review_round<N>.md` once. Run `make -f .workflow/state/Makefile promote-review ROUND=<N>` to promote `.workflow/state/40_critic_review.md`. At Target 45, write 1 to 2 concise sentences per pillar heading with a `file://` link to `.workflow/state/40_critic_review.md`. Present Target 42 and Target 45 proposals and NBO options in plain chat. Stop tool calls (`tool_calls: []`), and never call `ask_question`.
 18. Treat the Makeflow harness as a black box during Target 30 through Target 90 (`SCAR-PROC-124`). Do not read out-of-scope guard scripts or `.workflow/state/gate_entry.json`. Run `make -f .workflow/state/Makefile` targets directly and follow any Vector 4 Reflex on exit code `2`.
 19. Persist structured subagent reports as canonical `.json` with rendered `.md` views via MCP `workflow_submit_report` (`SCAR-ARCH-10`, `SCAR-TOOL-13`).
+20. Author `.workflow/state/20_plan.md` with all eight canonical sections and validate it with `check-plan` (`SCAR-PROC-160`). Read `.workflow/state/20_plan.md` in full from disk at Target 30 instead of using a summary.
+21. Complete `ask_question` discovery in Target 15 before writing `20_plan.md` (`SCAR-PROC-161`). Never call `ask_question` at any pause gate (`T20`, `T42`, `T45`, `T50`, `T60`, `T75`).
 
 ## Model Switch Reminder
 

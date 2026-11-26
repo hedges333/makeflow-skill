@@ -47,7 +47,7 @@ approved-review: check-approved-tree
 triaged-blockers:
 adversarial-review: check-approved-tree check-regression
 implementation-diff:
-approved-plan:
+approved-plan: check-plan
 archaeology-verified:
 ticket-assigned:
 read-init-d:
@@ -111,23 +111,23 @@ Read `references/02`, `references/08`, `references/09`, `references/11`, and `re
 6. Discover hosting mode (`SCAR-GIT-30`) via remote URL, `gh auth status`, and `gh repo view`.
 7. If the repository is non-GitHub or unauthenticated, set `HOSTING_MODE: PURE_GIT`.
 8. Classify failure mechanisms and evaluate testing feasibility and burden balance (`SCAR-TEST-11`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 15: archaeology"`, `limit: 5`): one for detected languages and frameworks, and one for `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
-9. On worker wakeup, verify `15_archaeology_receipt.json` and `15_archaeology_receipt.md` submitted via MCP `workflow_submit_report`. In non-MCP runtimes, write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files.
+9. On worker wakeup, verify `15_archaeology_receipt.json` and `15_archaeology_receipt.md` submitted via MCP `workflow_submit_report` (or write `.workflow/state/15_archaeology_receipt.md` directly in non-MCP runtimes without re-reading scanned files). Complete all `ask_question` discovery and `planning.bddMode` confirmation in Target 15 before writing `20_plan.md` (`SCAR-PROC-161`).
 
 ### Target 20: `approved-plan`
 
-Read `references/02`, `references/03`, `references/04_testing_isolation.md`, `references/09`, `references/14`, and `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md` for Socratic planning, complexity-scaled TDD, OO patterns, cohesion, and scars.
+Read `references/02`, `references/03`, `references/04_testing_isolation.md`, `references/09`, `references/14`, `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`, and `references/resources/bdd/00_bdd_discovery_and_scenarios.md`.
 
 1. Evaluate Socratic deliberation questions on fail-fast loops, complexity-scaled Red-Green-Refactor TDD, OO design patterns, and module cohesion. Also verify hermetic isolation, existing test edits, available reference manuals, and scoped boundaries.
 2. Run two `workflow_query_scars` calls (`workflowPhase: "Target 20: plan"`, `limit: 5`): one for active languages and frameworks, and one for `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
-3. Write `.workflow/state/20_plan.md` with the Socratic Invariant Audit table, file paths, OO patterns, and cohesion choices. Declare complexity tier, worker rounds, public seams, and TDD slice budget. Run `1` slice without padding for trivial fixes, or vertical slices for multi-behavior tasks. Disclose test commands, isolation facts, burden balance (`SCAR-TEST-11`), consulted reference paths, scar IDs, and Socratic probes for `tdd-worker`.
-4. Run `make -f .workflow/state/Makefile approved-plan`, print the plan summary with a `file://` link, and stop tool calls (`tool_calls: []`) for `human-plan-approval`.
+3. Write `.workflow/state/20_plan.md` using the canonical eight-section schema (`SCAR-PROC-160`). Include root cause, Given-When-Then (`planning.bddMode`), existing/new/untouched files, OO/cohesion, and testing burden balance (`SCAR-TEST-11`). Declare complexity tier, worker rounds, public seams, and `1` slice for trivial fixes or vertical slices. Add the Section 7 Socratic Invariant Audit Table and Section 8 consulted paths, scar IDs, and Socratic probes.
+4. Run `make -f .workflow/state/Makefile approved-plan` (runs `check-plan`). Print the plan summary with a `file://` link in plain chat without calling `ask_question` (`SCAR-PROC-161`). Stop tool calls (`tool_calls: []`) for `human-plan-approval`.
 5. After human approval, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1`.
 
 ### Target 30: `implementation-diff`
 
 Read `references/03`, `references/04_testing_isolation.md`, `references/08`, `references/09`, `references/10`, `references/14`, and `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md` for TDD, isolation, dispatch, scars, security, and design patterns.
 
-1. Anchor explicit workspace manual paths (`20_plan.md`, `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`, `polyglot/<lang>.md`) in the prompt (`SCAR-PROC-105`). Also pass planned slice counts, worker rounds, active plan scar IDs, and Socratic probes to `tdd-worker`.
+1. Anchor explicit workspace manual paths (`20_plan.md`, `03_tdd_and_code_quality.md`, `04_testing_isolation.md`, `14_design_patterns_and_architecture.md`, `09_synthetic_scars_catalog.md`, `skills/makeflow/references/resources/tdd/00_index_and_tdd_synthesis.md`, `polyglot/<lang>.md`) in the prompt (`SCAR-PROC-105`, `SCAR-PROC-160`). Instruct `tdd-worker` to read `.workflow/state/20_plan.md` in full from disk rather than a summary. Pass planned slice counts, worker rounds, scar IDs, and Socratic probes.
 2. Fork `tdd-worker` using `agyModelTiers["tdd-worker"]` (default `inherit`), then enforce Immediate Supervisory Halt (`tool_calls: []`) until wakeup (`SCAR-PROC-95`). Have the worker run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`). Query target languages, frameworks, and diagnostic codes first, then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
 3. Red phase: Honor the planned slice count (`1` for trivial fixes, ordered vertical slices for multi-behavior tasks). Write failing seam tests first and witness a meaningful non-zero exit (`red_exit != 0`). For dedicated test directories, seal `30_tdd_receipt.json` via `make -f .workflow/state/Makefile witness-red` (`SCAR-TEST-12`).
 4. Green phase: Write minimal production code following planned OO patterns and cohesion rules so targeted subproject tests pass (`green_exit == 0`). If `30_tdd_receipt.json` exists, replay the sealed receipt via `make -f .workflow/state/Makefile verify-green`.

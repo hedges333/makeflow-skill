@@ -21,13 +21,14 @@ Do not plan code edits from guesswork. Inspect the repository first to gather fa
     - `UNKNOWN`: Not yet checked against source files.
     - `RETRACTED`: Accepted earlier, then disproved by new facts.
 11. If a project uses databases and live versus test database names remain `UNKNOWN`, ask the user and offer to save them in `.workflow/config.json`.
-12. Convert user requirements into Given-When-Then scenarios that become unit tests in Target 30.
-13. If the target subproject has no test runner or test directory, prepare a smoke test template.
-14. Classify the underlying failure mechanism and evaluate testing feasibility and execution burden balance (< 100 ms execution budget, hermetic fixtures) (`SCAR-TEST-11`).
-15. Discover repository-scoped hosting mode (`SCAR-GIT-30`). Check `git remote get-url origin`, `gh` binary, `gh auth status`, and `gh repo view`. If origin does not point to GitHub or CLI checks fail, record `HOSTING_MODE: PURE_GIT`.
-16. Inventory applicable manuals in `skills/makeflow/references/` (`04_testing_isolation.md`, `09_synthetic_scars_catalog.md`, `10_security_and_data_isolation.md`, `11_polyglot_monorepos.md`, and `14_design_patterns_and_architecture.md`). Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/`. Run two `workflow_query_scars` calls (`workflowPhase: "Target 15: archaeology"`, `limit: 5`) across `.workflow/scars/scars_registry.db` and configured `scars.databases` tiers. Query detected languages and frameworks first. Then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
-17. Inspect the subproject for existing doc comment styles and documentation generator configs (`docs/conf.py`, `mkdocs.yml`, `typedoc.json`, `Doxyfile`, `Cargo.toml`) (`SCAR-PROC-159`). Adapt to existing conventions, or fall back to `skills/makeflow/references/polyglot/<lang>.md` defaults.
-18. `archaeology-worker` submits structured JSON via MCP `workflow_submit_report` (`reportType: "archaeology"`). The server writes `15_archaeology_receipt.json` and renders `15_archaeology_receipt.md` atomically. In non-MCP runtimes, write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files. If a concrete contradiction appears, re-read only that source file before drafting `.workflow/state/20_plan.md`.
+12. Apply complexity-scaled BDD discovery (`skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md`). Read `planning.bddMode` from `workflow_get_config` (`""`, `adaptive`, `full_gherkin`, `planning_only`, `ask`). If `planning.bddMode` is unset (`""`), ask once via `ask_question` in Target 15. Offer to save the choice (`user-global`, `project-local`, or `both`) using `save_planning_bdd_mode` in `lib/config.py`. If editing configs directly, update `planning.bddMode` in `.workflow/config.json` or user-global `config.json`. Convert requirements into Given-When-Then scenarios that become unit tests in Target 30.
+13. Complete all planning-stage `ask_question` discovery during Target 15 before writing `.workflow/state/20_plan.md` (`SCAR-PROC-161`). Never invoke `ask_question` at Target 20 or in the same turn after writing `20_plan.md`. If further clarification is needed after entering Target 20, recover `T20 -> T15` first.
+14. If the target subproject has no test runner or test directory, prepare a smoke test template.
+15. Classify the underlying failure mechanism and evaluate testing feasibility and execution burden balance (< 100 ms execution budget, hermetic fixtures) (`SCAR-TEST-11`).
+16. Discover repository-scoped hosting mode (`SCAR-GIT-30`). Check `git remote get-url origin`, `gh` binary, `gh auth status`, and `gh repo view`. If origin does not point to GitHub or CLI checks fail, record `HOSTING_MODE: PURE_GIT`.
+17. Inventory applicable manuals in `skills/makeflow/references/` (`04_testing_isolation.md`, `09_synthetic_scars_catalog.md`, `10_security_and_data_isolation.md`, `11_polyglot_monorepos.md`, `14_design_patterns_and_architecture.md`, and `resources/bdd/00_bdd_discovery_and_scenarios.md`). Discover applicable Tier 1 core scars in `skills/makeflow/references/scars/`. Run two `workflow_query_scars` calls (`workflowPhase: "Target 15: archaeology"`, `limit: 5`) across `.workflow/scars/scars_registry.db` and configured `scars.databases` tiers. Query detected languages and frameworks first. Then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
+18. Inspect the subproject for existing doc comment styles and documentation generator configs (`docs/conf.py`, `mkdocs.yml`, `typedoc.json`, `Doxyfile`, `Cargo.toml`) (`SCAR-PROC-159`). Adapt to existing conventions, or fall back to `skills/makeflow/references/polyglot/<lang>.md` defaults.
+19. `archaeology-worker` submits structured JSON via MCP `workflow_submit_report` (`reportType: "archaeology"`). The server writes `15_archaeology_receipt.json` and renders `15_archaeology_receipt.md` atomically. In non-MCP runtimes, write `.workflow/state/15_archaeology_receipt.md` directly from the worker receipt without re-reading scanned files. If a concrete contradiction appears, re-read only that source file before drafting `.workflow/state/20_plan.md`.
 
 ### 1.1 Post-Archaeology Dependency Coupling Evaluation
 
@@ -41,7 +42,49 @@ Determine whether active code paths intersect the upstream blocker:
 
 ## 2. Target 20: Plan File Creation (`20_plan.md`)
 
-Write the implementation plan to `.workflow/state/20_plan.md`.
+Write the implementation plan to `.workflow/state/20_plan.md` using the canonical eight-section schema (`SCAR-PROC-160`).
+Run `make -f .workflow/state/Makefile check-plan` (automatically enforced by `approved-plan`) to verify every required heading, subsection, Given-When-Then block, and audit table before pausing for approval.
+
+### 2.0 Canonical Eight-Section `20_plan.md` Schema (`SCAR-PROC-160`)
+
+Every `.workflow/state/20_plan.md` file must include these eight top-level `## ` headings in exact order, with non-empty body prose under each heading:
+
+```markdown
+# Target 20 Implementation Plan: <TICKET-ID>
+
+## 1. Problem Statement and Root Cause Summary
+- State verified defects and the upstream root cause fix (`SCAR-ARCH-09`) so `tdd-worker` understands why each change exists.
+
+## 2. BDD Discovery and Acceptance Criteria
+- Record active `planning.bddMode` and unfenced Given-When-Then scenarios (`skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md`).
+
+## 3. Target Subprojects, Planned File Edits, and Layer Posture
+- State target subprojects, languages, and three-tier layer posture (`SCAR-ARCH-08`).
+
+### Specific Edits to Existing Files
+- List exact file paths, layer roles, symbols, and concrete edits.
+
+### New Files to Create
+- List exact new file paths, layer roles, and purposes (or `None` if no new files).
+
+### Untouched Files and Scope Quarantine
+- List untouched files and quarantined unrelated defects.
+
+## 4. OO Design Patterns, Module Cohesion, and Documentation Standard
+- State planned OO patterns (`14_design_patterns_and_architecture.md`), module cohesion choices, doc comment standard, and doc tree command (`SCAR-PROC-159`).
+
+## 5. Testing Strategy, Commands, and Burden-Balance Analysis
+- State targeted fail-fast commands, full regression commands, smoke tests, existing test changes, DB/temp isolation, and burden-balance analysis (`SCAR-TEST-11`).
+
+## 6. Red-Green-Refactor TDD Plan
+- Sequence failing Red tests, minimal Green code edits, and Refactor verification (`03_tdd_and_code_quality.md`, `04_testing_isolation.md`).
+
+## 7. Socratic Invariant Audit Table
+- Include the unfenced Markdown Socratic Invariant Audit Table with header, separator, and verified rows.
+
+## 8. Consulted Reference Manuals and Target 30 Scar Carry-Forward
+- List consulted `skills/makeflow/references/` manuals, carried-forward scar IDs, and Socratic probes for `tdd-worker`.
+```
 
 ### 2.1 Socratic Pre-Planning Deliberation
 
@@ -97,10 +140,12 @@ Include these eleven items in every plan:
 
 ## 3. Human Plan Approval Gate
 
-Target 20 is a mandatory human pause gate.
+Target 20 is a mandatory human pause gate (`SCAR-PROC-102`, `SCAR-PROC-161`).
 
-1. Run `make -f .workflow/state/Makefile approved-plan` to record Target 20 and render `AWAITING_DECLARATION (human-plan-approval)` in `.workflow/state/99_next_action.md`.
-2. Print the plan summary in chat with a `file://` link to `.workflow/state/20_plan.md`.
-3. Stop execution with empty tool calls (`tool_calls: []`).
-4. Wait for explicit human approval in chat before editing any source files.
-5. After the user approves the plan, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1` (or `humanPlanApproved: true`).
+1. Run `make -f .workflow/state/Makefile approved-plan` to execute `check-plan` (`SCAR-PROC-160`), record Target 20, and render `AWAITING_DECLARATION` in `.workflow/state/99_next_action.md`.
+2. Print the plan summary in plain chat with a `file://` link to `.workflow/state/20_plan.md`.
+3. Never call `ask_question` at Target 20 or in the same turn after writing `20_plan.md` (`SCAR-PROC-161`).
+4. Stop execution with empty tool calls (`tool_calls: []`).
+5. Never interpret an `ask_question` reply as plan approval or demote the plan artifact before explicit human approval.
+6. Wait for explicit human approval in chat or via `/artifact` before editing any source files.
+7. After the user approves the plan, write `.workflow/state/20_plan_approved.md` and run `make -f .workflow/state/Makefile implementation-diff APPROVED=1` (or `humanPlanApproved: true`).

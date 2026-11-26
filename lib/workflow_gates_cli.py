@@ -1,6 +1,6 @@
 """CLI parser builder and GNU Make environment hydration for workflow_gates (GH-274).
 
-Constructs the 19-subcommand ``SilentArgumentParser`` for ``WorkflowGatesScript``
+Constructs the 20-subcommand ``SilentArgumentParser`` for ``WorkflowGatesScript``
 and hydrates unset gate options from exported GNU Make and parking environment
 variables.
 """
@@ -367,16 +367,33 @@ def _register_advance_subparser(subparsers: Any) -> None:
   )
 
 
+def _register_check_plan_subparser(subparsers: Any) -> None:
+  """Registers the check-plan subparser for Target 20 canonical plan validation."""
+  p_plan = subparsers.add_parser(
+      "check-plan",
+      help="Validate .workflow/state/20_plan.md against the canonical 8-section spec.",
+      description="Verify all 8 canonical headings, Section 3 subheadings, Section 2 Given-When-Then, and Section 7 table.",
+      epilog="Example:\n  python3 scripts/workflow_gates.py --repo-root . check-plan",
+      formatter_class=argparse.RawDescriptionHelpFormatter,
+  )
+  p_plan.add_argument(
+      "--json",
+      action="store_true",
+      dest="sub_json",
+      help="Emit output or Vector 4 Reflex errors as JSON.",
+  )
+
+
 def build_workflow_gates_parser(
     default_repo_root: str,
 ) -> SilentArgumentParser:
-  """Builds the 19-subcommand SilentArgumentParser for WorkflowGatesScript.
+  """Builds the 20-subcommand SilentArgumentParser for WorkflowGatesScript.
 
   Args:
     default_repo_root: Default value for the ``--repo-root`` CLI flag.
 
   Returns:
-    Configured ``SilentArgumentParser`` covering all 19 workflow gate
+    Configured ``SilentArgumentParser`` covering all 20 workflow gate
     subcommands.
   """
   parser = SilentArgumentParser(
@@ -711,6 +728,7 @@ def build_workflow_gates_parser(
   _register_repo_tree_subparser(subparsers)
   _register_promote_review_subparser(subparsers)
   _register_parking_subparsers(subparsers)
+  _register_check_plan_subparser(subparsers)
   return parser
 
 
@@ -838,7 +856,7 @@ def parse_workflow_gates_args(
   if not ns.gate:
     parser.error(
         "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
-        "intake, approved-tree, commit-msg, post-commit, main-sync, "
+        "intake, check-plan, approved-tree, commit-msg, post-commit, main-sync, "
         "verify-regression, check-regression, repo-tree, promote-review, "
         "park-session, resume-parked, terminal-title, release-intake, "
         "release-lock, read-init-d, or advance."
