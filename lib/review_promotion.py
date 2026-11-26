@@ -1,10 +1,15 @@
-"""Critic review validation and byte-for-byte promotion library (GH-221).
+"""Critic review validation and promotion library (GH-221, GH-281).
 
-Validates canonical Six-Pillar headings, non-empty pillar prose (allowing nested
-level 4-6 subheadings), and binary verdict headers (unfenced or inside trailing
-verdict-only code fences after Pillar 6), then promotes validated round
-artifacts to ``.workflow/state/40_critic_review.md`` via ``safe_copy_file``
-(SCAR-SYS-05, SCAR-ARCH-05, SCAR-ARCH-07).
+Prefers canonical JSON round reports (``40_critic_review_round<N>.json``),
+validating via ``lib.state_reports``, promoting to
+``.workflow/state/40_critic_review.json`` via ``safe_copy_file``, and
+atomically rendering ``.workflow/state/40_critic_review.md``. When JSON is
+absent, falls back to legacy Markdown validation (canonical Six-Pillar
+headings, non-empty pillar prose allowing nested level 4-6 subheadings, and
+binary verdict headers unfenced or inside trailing verdict-only code fences
+after Pillar 6), promoting ``40_critic_review_round<N>.md`` to
+``.workflow/state/40_critic_review.md`` via ``safe_copy_file`` and clearing
+any stale canonical JSON (SCAR-SYS-05, SCAR-ARCH-05, SCAR-ARCH-07).
 """
 
 from dataclasses import dataclass
@@ -12,15 +17,16 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.active_state import atomic_write_text
+from lib.report_renderers import (
+    CANONICAL_SIX_PILLAR_HEADINGS,
+    render_critic_review_markdown,
+)
 from lib.safe_copy import safe_copy_file
-
-CANONICAL_SIX_PILLAR_HEADINGS: Tuple[str, ...] = (
-    "### 1. Intent",
-    "### 2. Verification",
-    "### 3. Architecture",
-    "### 4. Blast Radius",
-    "### 5. Reviewer Defense",
-    "### 6. Immune Defenses & Crash Antibodies",
+from lib.state_reports import (
+    CRITIC_REVIEW_JSON_FILENAME,
+    CRITIC_REVIEW_MD_FILENAME,
+    load_critic_review_validation,
 )
 
 _ROUND_ASCII_RE = re.compile(r"^[1-9][0-9]*$")
@@ -82,11 +88,13 @@ class ReviewPromotionOutcome:
   """Immutable outcome of validating and promoting a critic review round.
 
   Attributes:
-    promoted: True when the source round file passed validation and was copied
-      to ``40_critic_review.md``.
+    promoted: True when the source round file passed validation and was promoted
+      to canonical ``40_critic_review.json`` / ``40_critic_review.md``.
     round_number: Validated positive integer round number.
-    source_path: Absolute path to ``40_critic_review_round<N>.md``.
-    destination_path: Absolute path to ``40_critic_review.md``.
+    source_path: Absolute path to ``40_critic_review_round<N>.json`` (canonical)
+      or ``40_critic_review_round<N>.md`` (legacy fallback).
+    destination_path: Absolute path to promoted ``40_critic_review.json``
+      (canonical) or ``40_critic_review.md`` (legacy fallback).
     validation: Structured ``ReviewValidationResult`` for the round document.
   """
 
@@ -452,11 +460,14 @@ def promote_review_round(
     repo_root: str,
     raw_round: Any,
 ) -> ReviewPromotionOutcome:
-  """Validates ``40_critic_review_round<N>.md`` and promotes it to ``40_critic_review.md``.
+  """Validates round ``<N>`` critic review and promotes it to canonical state files.
 
-  Uses ``safe_copy_file`` (SCAR-SYS-05) so byte promotion succeeds without
-  invoking ``os.chmod`` or ``os.utime``. If validation fails, any existing
-  ``40_critic_review.md`` file is preserved untouched.
+  Prefers canonical ``40_critic_review_round<N>.json`` when present: validates
+  the JSON schema via ``lib.state_reports``, promotes ``.json`` to
+  ``40_critic_review.json`` via ``safe_copy_file`` (SCAR-SYS-05), and
+  atomically renders ``40_critic_review.md`` (SCAR-TOOL-13). Falls back to
+  legacy ``40_critic_review_round<N>.md`` promotion when ``.json`` is absent.
+  If validation fails, any existing canonical review files stay untouched.
 
   Args:
     repo_root: Workspace repository root directory.
@@ -467,14 +478,60 @@ def promote_review_round(
 
   Raises:
     ValueError: If ``raw_round`` is not a valid positive ASCII integer.
-    FileNotFoundError: If ``.workflow/state/40_critic_review_round<N>.md``
-      does not exist.
+    FileNotFoundError: If neither ``40_critic_review_round<N>.json`` nor
+      ``40_critic_review_round<N>.md`` exists in ``.workflow/state/``.
     OSError: If reading the source file or promoting bytes fails.
   """
   round_num = parse_round_number(raw_round)
   state_dir = os.path.join(os.path.abspath(repo_root), ".workflow", "state")
+  src_json = os.path.join(state_dir, f"40_critic_review_round{round_num}.json")
+  dst_json = os.path.join(state_dir, CRITIC_REVIEW_JSON_FILENAME)
   src_path = os.path.join(state_dir, f"40_critic_review_round{round_num}.md")
-  dst_path = os.path.join(state_dir, "40_critic_review.md")
+  dst_path = os.path.join(state_dir, CRITIC_REVIEW_MD_FILENAME)
+
+  if os.path.isfile(src_json):
+    json_val = load_critic_review_validation(state_dir, round_number=round_num)
+    if (
+        json_val is None
+        or not json_val.valid
+        or json_val.normalized_payload is None
+    ):
+      validation = ReviewValidationResult(
+          valid=False,
+          verdict="",
+          blocker_count=None,
+          errors=(
+              json_val.errors
+              if json_val is not None and json_val.errors
+              else ("Invalid critic review JSON payload.",)
+          ),
+      )
+      return ReviewPromotionOutcome(
+          promoted=False,
+          round_number=round_num,
+          source_path=src_json,
+          destination_path=dst_json,
+          validation=validation,
+      )
+    normalized = json_val.normalized_payload
+    rendered_md = render_critic_review_markdown(normalized)
+    safe_copy_file(src_json, dst_json)
+    atomic_write_text(
+        dst_path, rendered_md, prefix=".tmp_critic_review_", suffix=".md"
+    )
+    validation = ReviewValidationResult(
+        valid=True,
+        verdict=str(normalized["verdict"]),
+        blocker_count=len(normalized["blockers"]),
+        errors=(),
+    )
+    return ReviewPromotionOutcome(
+        promoted=True,
+        round_number=round_num,
+        source_path=src_json,
+        destination_path=dst_json,
+        validation=validation,
+    )
 
   if not os.path.isfile(src_path):
     raise FileNotFoundError(
@@ -495,6 +552,10 @@ def promote_review_round(
     )
 
   safe_copy_file(src_path, dst_path)
+  try:
+    os.unlink(dst_json)
+  except FileNotFoundError:
+    pass
   return ReviewPromotionOutcome(
       promoted=True,
       round_number=round_num,

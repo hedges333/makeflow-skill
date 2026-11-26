@@ -40,6 +40,7 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 - `scripts/tdd_guard.py`
 - `scripts/workflow_gates.py`
 - `scripts/emit_reflex.py`
+- `lib/active_state.py`
 - `lib/agent_paths.py`
 - `lib/base_script.py`
 - `lib/commit_gates.py`
@@ -53,8 +54,10 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 - `lib/reflex.py`
 - `lib/regression_gate.py`
 - `lib/repo_tree.py`
+- `lib/report_renderers.py`
 - `lib/shell_safety.py`
 - `lib/state_makefile.py`
+- `lib/state_reports.py`
 - `lib/tdd_guard.py`
 - `lib/ticket_state.py`
 - `lib/workflow_gates.py`

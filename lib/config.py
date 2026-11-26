@@ -12,6 +12,7 @@ import os
 import re
 from typing import Dict, Mapping, Optional
 
+from lib.active_state import ActiveStateStore, list_state_card_files
 from lib.agent_paths import AgentPathRegistry
 from lib.ticket_state import TICKET_JSON_FILENAME
 
@@ -669,14 +670,31 @@ def load_database_config(payload, agent=None):
 
 
 def is_ticket_active(state_dir):
-  """Checks whether an active in-progress ticket exists in state_dir."""
+  """Checks whether an active in-progress ticket exists in state_dir.
+
+  Reads canonical ``active_target.json`` via ``ActiveStateStore`` first
+  (SCAR-ARCH-10). Explicit ``ACTIVE``/``PARKED``/``COMPLETE`` lifecycle states
+  are authoritative over ``99_next_action.md``. Falls back to minimal legacy
+  Markdown checks only when ``active_target.json`` is absent or lacks explicit
+  status fields (SCAR-ARCH-07).
+
+  Args:
+    state_dir: Path to the ``.workflow/state`` directory.
+
+  Returns:
+    True when an active ticket workflow is in progress, otherwise False.
+  """
   if not state_dir or not os.path.isdir(state_dir):
     return False
-  state_files = [
-      f
-      for f in os.listdir(state_dir)
-      if f.endswith(".md") or f == TICKET_JSON_FILENAME
-  ]
+
+  active_state = ActiveStateStore(state_dir).load()
+  if active_state is not None:
+    if active_state.is_complete():
+      return False
+    if active_state.has_explicit_status():
+      return active_state.is_active()
+
+  state_files = list_state_card_files(state_dir)
   if not state_files:
     return False
 

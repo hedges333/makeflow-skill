@@ -9,6 +9,7 @@ import os
 import re
 from typing import List, Optional, Tuple
 
+from lib.active_state import ActiveStateStore
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.commit_msg import (
     detect_commit_context,
@@ -67,6 +68,7 @@ from lib.shell_safety import (
     evaluate_database_safety,
     is_database_command,
 )
+from lib.state_machine import infer_current_target
 from lib.target90_guard import (
     is_target_90_commit_command,
     is_target_90_state_dir,
@@ -149,11 +151,6 @@ _HOOK_DENY_REASONS = {
 }
 
 
-_TARGET_80_NEXT_ACTION_RE = re.compile(
-    r"(?im)^-\s*Active Target:\s*(?:Target\s*80|T80)\b"
-)
-
-
 def _derive_workspace_root(state_dir: str) -> str:
   """Derives the workspace root directory from a ``.workflow/state`` path.
 
@@ -173,6 +170,10 @@ def _derive_workspace_root(state_dir: str) -> str:
 def _is_post_landing_target(state_dir: str, transcript_path: str = "") -> bool:
   """Returns True when the active workflow target is T80 (land) or T90 (finish).
 
+  Reads canonical ``active_target.json`` via ``ActiveStateStore`` first so
+  stale or tampered ``99_next_action.md`` files cannot bypass Target 50 commit
+  message validation (SCAR-ARCH-10).
+
   Args:
     state_dir: Active ``.workflow/state`` directory path.
     transcript_path: Optional path to the session transcript JSONL.
@@ -181,27 +182,13 @@ def _is_post_landing_target(state_dir: str, transcript_path: str = "") -> bool:
     True when Target 80 or Target 90 is active so landing/history commits are
     not validated against Target 50 feature commit rules.
   """
-  active_path = os.path.join(state_dir, "active_target.json")
-  if os.path.isfile(active_path):
-    try:
-      with open(active_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-      if isinstance(data, dict):
-        raw_target = data.get("target")
-        if isinstance(raw_target, str) and raw_target.strip():
-          return raw_target.strip() in ("T80", "T90")
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
-      pass
+  active_state = ActiveStateStore(state_dir).load()
+  if active_state is not None and active_state.target:
+    return active_state.is_post_landing()
 
   next_action = os.path.join(state_dir, "99_next_action.md")
   if os.path.isfile(next_action):
-    try:
-      with open(next_action, "r", encoding="utf-8") as f:
-        if _TARGET_80_NEXT_ACTION_RE.search(f.read()):
-          return True
-    except (OSError, UnicodeDecodeError):
-      pass
-    return False
+    return infer_current_target(state_dir) in ("T80", "T90")
 
   if transcript_path:
     steps = load_transcript_steps(transcript_path)
@@ -542,6 +529,7 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "scripts/workflow_gates.py",
     "scripts/emit_reflex.py",
     "scripts/session_start.py",
+    "lib/active_state.py",
     "lib/agent_paths.py",
     "lib/base_script.py",
     "lib/commit_msg.py",
@@ -569,8 +557,10 @@ GOVERNANCE_FILE_RELPATHS = frozenset({
     "lib/ticket_state.py",
     "lib/workspace_mutex.py",
     "lib/repo_tree.py",
+    "lib/report_renderers.py",
     "lib/safe_copy.py",
     "lib/signal_trap.py",
+    "lib/state_reports.py",
     "lib/parking_state.py",
     "hooks.json",
     *STATE_GOVERNANCE_RELPATHS,

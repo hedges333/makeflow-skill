@@ -21,6 +21,7 @@ Follow the Makefile Workflow lifecycle when assisting in this repository:
 17. At Target 15, capture the Git file tree index with `make -f .workflow/state/Makefile repo-tree` under `SCAR-TOOL-16` triage before dispatching archaeology. Attach that index in the prompt, or call `workflow_repo_tree` as the read-only MCP fallback.
 18. After Target 40 review, write `.workflow/state/40_critic_review_round<N>.md` once. Run `make -f .workflow/state/Makefile promote-review ROUND=<N>` to promote `.workflow/state/40_critic_review.md`. At Target 45, write 1 to 2 concise sentences per pillar heading with a `file://` link to `.workflow/state/40_critic_review.md`. Present Target 42 and Target 45 proposals and NBO options in plain chat. Stop tool calls (`tool_calls: []`), and never call `ask_question`.
 19. Treat the Makeflow harness as a black box during Target 30 through Target 90 (`SCAR-PROC-124`). Do not read out-of-scope guard scripts or `.workflow/state/gate_entry.json`. Run `make -f .workflow/state/Makefile` targets directly and follow any Vector 4 Reflex on exit code `2`.
+20. Persist structured subagent reports as canonical `.json` with rendered `.md` views via MCP `workflow_submit_report` (`SCAR-ARCH-10`, `SCAR-TOOL-13`).
 
 ## Interactive Model Switch Reminder
 

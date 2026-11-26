@@ -17,6 +17,7 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional
 
+from lib.active_state import ActiveStateStore
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.signal_trap import SignalTrap
 from lib.ticket_state import TicketStateStore
@@ -175,6 +176,13 @@ class WorkspaceMutex:
     active_id = meta.ticket_id.strip()
     if not self._ticket_ids_match(ticket_id, active_id):
       return False
+
+    active_state = ActiveStateStore(state_dir).load()
+    if active_state is not None:
+      if active_state.is_complete():
+        return False
+      if active_state.has_explicit_status():
+        return active_state.is_active()
 
     try:
       next_action = os.path.join(state_dir, "99_next_action.md")

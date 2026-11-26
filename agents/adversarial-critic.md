@@ -69,3 +69,4 @@ Did this change touch sensitive runtime boundaries such as asynchronous streams,
          DIAGNOSTIC_INVARIANT: <Invariant that must be satisfied>
      ```
    - List non-blocking observations in a separate table evaluating scope relationship (very related -> blocker candidate, somewhat related -> rollup candidate, totally unrelated -> ticket candidate) with recommended dispositions (`Apply` / `Skip` / `Defer to issue`) per SCAR-PROC-108.
+5. Submit your review JSON via MCP `workflow_submit_report` (`reportType: "critic_review"`) to write round `.json` and `.md` files atomically. Then notify the supervisor via `send_message` with the round, verdict, and blocker count.

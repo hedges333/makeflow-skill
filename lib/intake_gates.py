@@ -13,6 +13,7 @@ import re
 import subprocess
 from typing import Callable, Optional, TextIO
 
+from lib.active_state import ActiveStateStore
 from lib.main_sync import _run_repo_git
 from lib.reflex import GateFailure
 from lib.ticket_state import canonicalize_ticket_id
@@ -339,18 +340,19 @@ def cleanup_tdd_receipt(
   from lib.config import is_ticket_active
 
   state_dir = os.path.join(repo_root, ".workflow", "state")
-  transients = (
-      ("gate_entry.json", "active_subagent.json")
-      if is_ticket_active(state_dir)
-      else ("gate_entry.json", "active_target.json", "active_subagent.json")
-  )
-  for transient in transients:
+  ticket_active = is_ticket_active(state_dir)
+  for transient in ("gate_entry.json", "active_subagent.json"):
     transient_path = os.path.join(state_dir, transient)
     if os.path.isfile(transient_path):
       try:
         os.unlink(transient_path)
       except OSError:
         pass
+  if not ticket_active:
+    try:
+      ActiveStateStore(state_dir).clear()
+    except OSError:
+      pass
 
   json_artifacts = (
       "30_tdd_receipt.json",

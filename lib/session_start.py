@@ -8,6 +8,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Sequence, TextIO
 
+from lib.active_state import list_state_card_files
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.config import (
     find_state_dir,
@@ -16,7 +17,6 @@ from lib.config import (
     is_ticket_active,
 )
 from lib.parking_state import ParkingStateStore, format_parking_status_label
-from lib.ticket_state import TICKET_JSON_FILENAME
 from lib.workflow_gates import refresh_state_makefile_if_ignored
 
 
@@ -97,11 +97,7 @@ class SessionStartScript(BaseScript):
 
     notes: List[str] = []
     if is_ticket_active(state_dir):
-      state_files = sorted(
-          f
-          for f in os.listdir(state_dir)
-          if f.endswith(".md") or f == TICKET_JSON_FILENAME
-      )
+      state_files = list_state_card_files(state_dir)
       notes.append(
           f"Makefile Workflow found {len(state_files)} state card(s) in "
           f"{state_dir}. Read all state cards at Target 00 (read-init-d) "

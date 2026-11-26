@@ -15,6 +15,11 @@ import subprocess
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.active_state import (
+    ACTIVE_TARGET_FILENAME,
+    ActiveStateStore,
+    ActiveTargetState,
+)
 from lib.commit_msg import validate_head_commit
 from lib.config import (
     is_ticket_active,
@@ -26,6 +31,13 @@ from lib.parking_state import (
     ParkingState,
     ParkingStateStore,
     format_parking_status_label,
+)
+from lib.state_reports import (
+    ARCHAEOLOGY_JSON_FILENAME,
+    BOT_TRIAGE_JSON_FILENAME,
+    CRITIC_REVIEW_JSON_FILENAME,
+    load_archaeology_hosting_mode,
+    load_critic_review_validation,
 )
 from lib.ticket_state import TICKET_JSON_FILENAME, TicketStateStore
 from lib.turn_boundary import (
@@ -46,7 +58,6 @@ from lib.main_sync import (
 )
 from lib.workspace_mutex import WorkspaceMutex
 
-ACTIVE_TARGET_FILENAME = "active_target.json"
 NEXT_ACTION_FILENAME = "99_next_action.md"
 
 ALL_TARGETS = set(TARGETS_CONFIG.keys())
@@ -86,8 +97,14 @@ REQUIRED_STATE_CARDS = {
 
 ALT_STATE_CARDS = {
     ("T10", "T15"): (TICKET_JSON_FILENAME,),
-    ("T15", "T20"): ("20_plan.md", "20_plan_approved.md"),
-    ("T40", "T45"): ("45_review_approved.md",),
+    ("T15", "T20"): (
+        ARCHAEOLOGY_JSON_FILENAME,
+        "20_plan.md",
+        "20_plan_approved.md",
+    ),
+    ("T40", "T45"): (CRITIC_REVIEW_JSON_FILENAME, "45_review_approved.md"),
+    ("T40", "T42"): (CRITIC_REVIEW_JSON_FILENAME,),
+    ("T70", "T75"): (BOT_TRIAGE_JSON_FILENAME,),
 }
 
 _MILESTONE_ORDER: Tuple[Tuple[str, str, str], ...] = (
@@ -197,26 +214,37 @@ def _resolve_effective_workspace(
   return ""
 
 
-def _receipt_declares_github_mode(state_dir: str) -> bool:
-  """Returns True when 15_archaeology_receipt.md explicitly declares GITHUB mode.
+def _github_mode_receipt_source(state_dir: str) -> Optional[str]:
+  """Returns the archaeology receipt filename declaring GITHUB mode, or None.
+
+  Reads canonical ``15_archaeology_receipt.json`` first via
+  ``load_archaeology_hosting_mode`` (SCAR-ARCH-10), falling back to legacy
+  ``15_archaeology_receipt.md`` only when canonical JSON does not supply a
+  valid hosting mode.
 
   Args:
     state_dir: Path to .workflow/state directory.
 
   Returns:
-    True when 15_archaeology_receipt.md declares HOSTING_MODE: GITHUB.
+    ``"15_archaeology_receipt.json"`` or ``"15_archaeology_receipt.md"`` when
+    the resolved receipt declares ``GITHUB`` hosting mode, otherwise ``None``.
   """
   if not state_dir or not os.path.isdir(state_dir):
-    return False
+    return None
+  json_mode = load_archaeology_hosting_mode(state_dir)
+  if json_mode is not None:
+    return ARCHAEOLOGY_JSON_FILENAME if json_mode == "GITHUB" else None
   receipt_path = os.path.join(state_dir, "15_archaeology_receipt.md")
   if not os.path.isfile(receipt_path):
-    return False
+    return None
   try:
     with open(receipt_path, "r", encoding="utf-8", errors="replace") as f:
       content = f.read()
   except OSError:
-    return False
-  return bool(_HOSTING_MODE_GITHUB_RE.search(content))
+    return None
+  if _HOSTING_MODE_GITHUB_RE.search(content):
+    return "15_archaeology_receipt.md"
+  return None
 
 
 @dataclass(frozen=True)
@@ -264,19 +292,11 @@ def read_active_target(state_dir: str) -> Optional[Dict[str, Any]]:
   """
   if not state_dir or not isinstance(state_dir, str):
     return None
-  path = os.path.join(state_dir, ACTIVE_TARGET_FILENAME)
-  if not os.path.isfile(path):
-    return None
-  try:
-    with open(path, "r", encoding="utf-8") as f:
-      data = json.load(f)
-    return data if isinstance(data, dict) else None
-  except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
-    return None
+  return ActiveStateStore(state_dir).load_raw()
 
 
 def write_active_target(state_dir: str, payload: Dict[str, Any]) -> None:
-  """Writes .workflow/state/active_target.json deterministically.
+  """Writes .workflow/state/active_target.json atomically via ActiveStateStore.
 
   Args:
     state_dir: Path to the workflow state directory.
@@ -284,37 +304,38 @@ def write_active_target(state_dir: str, payload: Dict[str, Any]) -> None:
   """
   if not state_dir or not isinstance(state_dir, str):
     return
-  os.makedirs(state_dir, exist_ok=True)
-  path = os.path.join(state_dir, ACTIVE_TARGET_FILENAME)
-  with open(path, "w", encoding="utf-8") as f:
-    json.dump(payload, f, indent=2, sort_keys=True)
-    f.write("\n")
+  ActiveStateStore(state_dir).save(payload)
 
 
 _PREREQ_CARDS_FOR_TARGET: Dict[str, Tuple[str, ...]] = {
     "T10": ("10_ticket.md", TICKET_JSON_FILENAME),
-    "T15": ("15_archaeology_receipt.md",),
+    "T15": ("15_archaeology_receipt.md", ARCHAEOLOGY_JSON_FILENAME),
     "T20": ("20_plan.md",),
-    "T40": ("40_critic_review.md",),
+    "T40": ("40_critic_review.md", CRITIC_REVIEW_JSON_FILENAME),
     "T45": ("45_review_approved.md",),
     "T50": ("50_commit_msg.txt",),
-    "T70": ("70_bot_triage.md",),
+    "T70": ("70_bot_triage.md", BOT_TRIAGE_JSON_FILENAME),
 }
 
 
 def _infer_t30_source_from_cards(filtered: set) -> str:
   """Infers the source target preceding T30 from remaining state cards."""
   for card_name, target_id in (
+      (BOT_TRIAGE_JSON_FILENAME, "T70"),
       ("70_bot_triage.md", "T70"),
       ("50_commit_msg.txt", "T50"),
       ("45_review_approved.md", "T45"),
+      (CRITIC_REVIEW_JSON_FILENAME, "T42"),
       ("40_critic_review.md", "T42"),
   ):
     if card_name in filtered:
       return target_id
   if "20_plan_approved.md" in filtered or "20_plan.md" in filtered:
     return "T20"
-  if "15_archaeology_receipt.md" in filtered:
+  if (
+      ARCHAEOLOGY_JSON_FILENAME in filtered
+      or "15_archaeology_receipt.md" in filtered
+  ):
     return "T15"
   return (
       "T10"
@@ -344,17 +365,22 @@ def _infer_target_from_cards(state_dir: str, next_target: str = "") -> str:
   if next_target == "T30":
     return _infer_t30_source_from_cards(filtered)
   if next_target == "T45" and (
-      "40_critic_review.md" in names or "45_review_approved.md" in names
+      CRITIC_REVIEW_JSON_FILENAME in names
+      or "40_critic_review.md" in names
+      or "45_review_approved.md" in names
   ):
     return "T40"
 
   for card_name, target_id in (
+      (BOT_TRIAGE_JSON_FILENAME, "T70"),
       ("70_bot_triage.md", "T70"),
       ("50_commit_msg.txt", "T50"),
       ("45_review_approved.md", "T45"),
+      (CRITIC_REVIEW_JSON_FILENAME, "T40"),
       ("40_critic_review.md", "T40"),
       ("20_plan_approved.md", "T30"),
       ("20_plan.md", "T20"),
+      (ARCHAEOLOGY_JSON_FILENAME, "T15"),
       ("15_archaeology_receipt.md", "T15"),
       ("10_ticket.md", "T10"),
       (TICKET_JSON_FILENAME, "T10"),
@@ -376,11 +402,12 @@ def infer_current_target(state_dir: str, next_target: str = "") -> str:
   """
   if not state_dir or not os.path.isdir(state_dir):
     return "T00"
-  active_data = read_active_target(state_dir)
-  if active_data:
-    recorded = str(active_data.get("target") or "").strip()
-    if recorded in ALL_TARGETS:
-      return recorded
+  active_state = ActiveStateStore(state_dir).load()
+  if active_state is not None:
+    if active_state.is_complete():
+      return "T00"
+    if active_state.target in ALL_TARGETS:
+      return active_state.target
 
   na_path = os.path.join(state_dir, NEXT_ACTION_FILENAME)
   if os.path.isfile(na_path):
@@ -544,13 +571,19 @@ def _resolve_skipped_targets(
   if 0 <= active_idx <= t60_idx:
     return ()
 
-  existing = read_active_target(state_dir)
-  if existing and isinstance(existing.get("skippedTargets"), list):
+  existing_state = ActiveStateStore(state_dir).load() if state_dir else None
+  if (
+      existing_state is not None
+      and not existing_state.is_complete()
+      and existing_state.skipped_targets
+  ):
     seen: List[str] = []
-    for item in existing["skippedTargets"]:
-      if isinstance(item, str) and item in ALL_TARGETS and item not in seen:
+    for item in existing_state.skipped_targets:
+      if item in ALL_TARGETS and item not in seen:
         seen.append(item)
     return tuple(seen)
+  if existing_state is not None and existing_state.is_complete():
+    return ()
 
   na_path = (
       os.path.join(state_dir, NEXT_ACTION_FILENAME) if state_dir else ""
@@ -850,9 +883,9 @@ def _check_required_card(
 
 
 def _validate_blockers_count(
-    current: str, next_t: str, ev: Dict[str, Any]
+    current: str, next_t: str, ev: Dict[str, Any], state_dir: str = ""
 ) -> Optional[str]:
-  """Validates blockersCount type, range, and T40 -> T42/T45 routing rules."""
+  """Validates blockersCount type, range, T40 routing, and 40_critic_review.json parity."""
   needs_check = (current, next_t) in (
       ("T40", "T45"),
       ("T40", "T42"),
@@ -865,6 +898,39 @@ def _validate_blockers_count(
         f"BLOCKED: Invalid blockersCount '{raw}'. Must be a non-negative"
         " integer."
     )
+  if (current, next_t) in (("T40", "T45"), ("T40", "T42")) and state_dir:
+    review_val = load_critic_review_validation(state_dir)
+    if review_val is not None:
+      if not review_val.valid or review_val.normalized_payload is None:
+        return (
+            "BLOCKED: Canonical 40_critic_review.json failed schema validation: "
+            + "; ".join(review_val.errors)
+        )
+      review_data = review_val.normalized_payload
+      actual_blockers = len(review_data["blockers"])
+      actual_verdict = str(review_data["verdict"])
+      if raw != actual_blockers:
+        return (
+            f"BLOCKED: Claimed blockersCount ({raw}) does not match canonical"
+            f" 40_critic_review.json ({actual_blockers} blocker(s),"
+            f" verdict={actual_verdict})."
+        )
+      if (current, next_t) == ("T40", "T45") and (
+          actual_verdict != "APPROVED" or actual_blockers > 0
+      ):
+        return (
+            f"BLOCKED: Canonical 40_critic_review.json verdict is"
+            f" {actual_verdict} ({actual_blockers} blocker(s)). Route to T42"
+            " (triaged-blockers) before T45."
+        )
+      if (current, next_t) == ("T40", "T42") and (
+          actual_verdict != "REJECTED" or actual_blockers == 0
+      ):
+        return (
+            f"BLOCKED: Canonical 40_critic_review.json verdict is"
+            f" {actual_verdict} ({actual_blockers} blocker(s)). Route to T45"
+            " (approved-review) instead of T42."
+        )
   if (current, next_t) == ("T40", "T45") and raw > 0:
     return (
         f"BLOCKED: Critic reported {raw} blocker(s). Route to T42"
@@ -928,17 +994,20 @@ def _validate_transition_inputs(
             f" remote-less Pure Git Mode. Repository has configured Git"
             f" remote(s) [{remotes_str}]; advance T50 -> T60 (push) instead."
         )
-    if _receipt_declares_github_mode(eff_state):
+    receipt_source = _github_mode_receipt_source(eff_state)
+    if receipt_source is not None:
       return (
-          "BLOCKED: [SCAR-GIT-30] Transition T50 -> T70 is blocked because"
-          " 15_archaeology_receipt.md declares HOSTING_MODE: GITHUB. Advance"
-          " T50 -> T60 (push) instead."
+          f"BLOCKED: [SCAR-GIT-30] Transition T50 -> T70 is blocked because"
+          f" {receipt_source} declares HOSTING_MODE: GITHUB. Advance"
+          f" T50 -> T60 (push) instead."
       )
 
   gate_key = GATE_EVIDENCE_KEYS.get((current, next_t))
   if gate_key and not ev.get(gate_key):
     return f"BLOCKED: Cannot move {current} -> {next_t} without {gate_key} = true."
-  blockers_err = _validate_blockers_count(current, next_t, ev)
+  blockers_err = _validate_blockers_count(
+      current, next_t, ev, state_dir=state_dir
+  )
   if blockers_err is not None:
     return blockers_err
   return _check_required_card(current, next_t, state_dir)
@@ -993,7 +1062,6 @@ def _finalize_completed_ticket(
 
   for transient in (
       "gate_entry.json",
-      ACTIVE_TARGET_FILENAME,
       ACTIVE_SUBAGENT_FILENAME,
   ):
     t_path = os.path.join(state_dir, transient)
@@ -1002,6 +1070,21 @@ def _finalize_completed_ticket(
         os.unlink(t_path)
       except OSError:
         pass
+
+  git_branch = _detect_git_branch(ws)
+  branch = _sanitize_active_text(git_branch or meta.get("branch") or "HEAD")
+  ActiveStateStore(state_dir).save(
+      ActiveTargetState(
+          target="T90",
+          target_name="finish",
+          previous_target=previous_target,
+          status="COMPLETE",
+          complete=True,
+          ticket_id=ticket_id,
+          branch=branch,
+          skipped_targets=skipped_targets,
+      )
+  )
 
   if os.path.isdir(ws):
     try:
@@ -1048,6 +1131,8 @@ def _build_active_target_payload(
     active_target: str,
     skipped_targets: Tuple[str, ...] = (),
     parking_state: Optional[ParkingState] = None,
+    ticket_id: str = "",
+    branch: str = "",
 ) -> Dict[str, Any]:
   """Builds the serialized payload written to active_target.json.
 
@@ -1056,27 +1141,35 @@ def _build_active_target_payload(
     active_target: Current canonical target ID.
     skipped_targets: Optional tuple of skipped canonical target IDs.
     parking_state: Optional ParkingState when active_target is T70.
+    ticket_id: Optional canonical ticket identifier.
+    branch: Optional active Git branch name.
 
   Returns:
     Dictionary ready for write_active_target.
   """
-  payload: Dict[str, Any] = {
-      "previousTarget": previous_target,
-      "target": active_target,
-      "targetName": TARGET_ID_TO_NAME[active_target],
-  }
-  if skipped_targets:
-    payload["skippedTargets"] = list(skipped_targets)
-  if (
+  is_parked = (
       active_target == "T70"
       and parking_state is not None
       and parking_state.parked
-  ):
-    payload["parked"] = True
-    payload["parkingReason"] = _sanitize_active_text(
-        format_parking_status_label(parking_state)
-    )
-  return payload
+  )
+  parking_reason = (
+      _sanitize_active_text(format_parking_status_label(parking_state))
+      if is_parked and parking_state is not None
+      else ""
+  )
+  state = ActiveTargetState(
+      target=active_target,
+      target_name=TARGET_ID_TO_NAME[active_target],
+      previous_target=previous_target,
+      status="PARKED" if is_parked else "ACTIVE",
+      complete=False,
+      ticket_id=ticket_id,
+      branch=branch,
+      skipped_targets=skipped_targets,
+      parked=is_parked,
+      parking_reason=parking_reason,
+  )
+  return state.to_dict()
 
 
 def _persist_active_transition(
@@ -1101,6 +1194,11 @@ def _persist_active_transition(
       if spec.active_target == "T70" and spec.state_dir
       else None
   )
+  meta = _parse_metadata_from_files(
+      spec.state_dir, workspace_dir=spec.workspace_dir
+  )
+  git_branch = _detect_git_branch(spec.workspace_dir)
+  branch = _sanitize_active_text(git_branch or meta.get("branch") or "")
   write_active_target(
       spec.state_dir,
       _build_active_target_payload(
@@ -1108,9 +1206,11 @@ def _persist_active_transition(
           spec.active_target,
           spec.skipped_targets,
           parking_state=parking_state,
+          ticket_id=meta.get("ticket_id", ""),
+          branch=branch,
       ),
   )
-  render_next_action_card(spec)
+  render_next_action_card(spec, ticket_meta=meta)
   if (
       spec.active_target == "T10"
       and spec.workspace_dir
@@ -1163,10 +1263,18 @@ def _restore_active_session_state(
   parking_state = (
       ParkingStateStore(state_dir).load() if current == "T70" else None
   )
+  meta = _parse_metadata_from_files(state_dir, workspace_dir=workspace_dir)
+  git_branch = _detect_git_branch(workspace_dir)
+  branch = _sanitize_active_text(git_branch or meta.get("branch") or "")
   write_active_target(
       state_dir,
       _build_active_target_payload(
-          prev_t, current, skipped_targets, parking_state=parking_state
+          prev_t,
+          current,
+          skipped_targets,
+          parking_state=parking_state,
+          ticket_id=meta.get("ticket_id", ""),
+          branch=branch,
       ),
   )
   render_next_action_card(
@@ -1177,7 +1285,8 @@ def _restore_active_session_state(
           workspace_dir=workspace_dir,
           complete=False,
           skipped_targets=skipped_targets,
-      )
+      ),
+      ticket_meta=meta,
   )
 
 
@@ -1201,10 +1310,13 @@ def restore_session_state(
       state_dir
   ):
     if state_dir and os.path.isdir(state_dir):
-      stale_active = os.path.join(state_dir, ACTIVE_TARGET_FILENAME)
-      if os.path.isfile(stale_active):
+      store = ActiveStateStore(state_dir)
+      existing_state = store.load()
+      if store.exists() and (
+          existing_state is None or not existing_state.is_complete()
+      ):
         try:
-          os.unlink(stale_active)
+          store.clear()
         except OSError:
           pass
     return True, "SUCCESS: State directory is clean and ready for Target 10 intake."

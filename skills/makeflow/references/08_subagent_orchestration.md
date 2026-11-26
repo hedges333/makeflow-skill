@@ -8,7 +8,7 @@ The main orchestrator agent runs at Depth 0 as a `make` supervisor:
 
 1. Do not run large directory scans, long test suites, or full builds directly in the supervisor context.
 2. Delegate heavy commands to child subagents so the supervisor stays below 30,000 tokens and avoids chat compression.
-3. Only the supervisor writes `.workflow/state/*.md` cards (`SCAR-TOOL-13`). Subagents return concise markdown summaries in their completion messages.
+3. Only the supervisor writes `.workflow/state/` files directly (`SCAR-TOOL-13`). Subagents submit validated JSON reports via MCP `workflow_submit_report`. The server writes canonical `.json` and rendered `.md` files atomically while the supervisor halts (`SCAR-PROC-95`). In non-MCP runtimes, subagents return concise markdown summaries in their completion messages.
 
 ## 2. Subagent Roles
 

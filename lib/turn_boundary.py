@@ -13,6 +13,7 @@ import json
 import os
 import time
 
+from lib.active_state import ActiveStateStore
 from lib.reflex import emit_reflex
 from lib.shell_safety import (
     ENV_ASSIGN_RE,
@@ -851,7 +852,20 @@ def step_enters_or_presents_gate(step, gate, check_content_prompt=False):
 
 
 def detect_latest_target(steps, state_dir=None):
-  """Returns the latest target reached in transcript steps, active_target.json, or gate_entry.json."""
+  """Returns the latest active target reached in transcript steps, active_target.json, or gate_entry.json.
+
+  Ignores ``COMPLETE`` records persisted in ``active_target.json`` by
+  ``make finish`` so completed workspaces never trigger ``T80``/``T90``
+  post-landing pause-gate exemptions (SCAR-PROC-102).
+
+  Args:
+    steps: Iterable of parsed transcript step dictionaries.
+    state_dir: Optional path to ``.workflow/state``.
+
+  Returns:
+    Canonical active target ID string (for example ``"T50"`` or ``"T90"``),
+    or ``""`` when no active target is found.
+  """
   latest = ""
   for st in steps or ():
     if not isinstance(st, dict):
@@ -861,15 +875,14 @@ def detect_latest_target(steps, state_dir=None):
     ):
       if adv["nextTarget"]:
         latest = adv["nextTarget"]
-  if not latest and state_dir:
-    try:
-      from lib.state_machine import read_active_target
-
-      active = read_active_target(state_dir)
-      if active and active.get("target"):
-        latest = str(active["target"])
-    except ImportError:
-      pass
+  if not latest and state_dir and isinstance(state_dir, str):
+    active_state = ActiveStateStore(state_dir).load()
+    if (
+        active_state is not None
+        and active_state.target
+        and not active_state.is_complete()
+    ):
+      latest = active_state.target
   if not latest and state_dir:
     entry = read_gate_entry(state_dir)
     if entry and entry.get("gate"):

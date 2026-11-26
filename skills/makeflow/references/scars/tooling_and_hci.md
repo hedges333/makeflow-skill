@@ -26,9 +26,9 @@ This reference manual documents developer tooling, interaction patterns, prompt 
 ### SCAR-TOOL-13: Single State Writer Isolation
 
 - **Wound**: Child subagents modify `.workflow/state/*.md` files concurrently with the orchestrator, corrupting state and causing race conditions.
-- **Trap**: Allowing child subagents write access to workflow state directory cards.
-- **Permanent Reflex**: Only the Depth-0 supervisor writes `.workflow/state/*.md` cards. Subagents return concise Markdown summaries in their completion messages for the supervisor to record.
-- **Socratic Probe**: If child subagents directly edit state files while the supervisor is running, will concurrent writes corrupt workflow state? Should only the supervisor write state cards while subagents return markdown summaries?
+- **Trap**: Allowing child subagents direct filesystem writes to workflow state cards instead of one atomic boundary.
+- **Permanent Reflex**: Only the Depth-0 supervisor writes `.workflow/state/` files directly. Child subagents submit validated JSON reports via MCP `workflow_submit_report`. The server writes canonical `.json` and rendered `.md` files atomically while the supervisor halts (`SCAR-PROC-95`).
+- **Socratic Probe**: If child subagents edit state files directly, will concurrent writes corrupt workflow state? Do subagents submit reports through atomic MCP `workflow_submit_report` calls while the supervisor halts?
 
 ### SCAR-HCI-08: Multi-Choice Prompt Rule
 
