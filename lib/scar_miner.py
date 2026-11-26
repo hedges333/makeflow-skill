@@ -1,9 +1,10 @@
-"""Target 90 Rapid-Regret Miner engine for multi-tier scars and upstreaming (GH-117).
+"""Target 90 Rapid-Regret Miner engine for ordered SQLite scar tiers and upstreaming (GH-117, GH-304).
 
-Provides validated scar modeling, 68-code ontology-to-filename mapping,
-collision-free tier-scoped Markdown persistence and parsing, scoped JSON
-configuration updates, human-gated GitHub issue upstreaming, and a BaseScript
-CLI controller with explicit subcommands (SCAR-API-0001, SCAR-ARCH-05).
+Provides validated scar modeling, collision-free tier-scoped SQLite persistence
+and explicit ``--id`` overrides composing directly with ``lib/scars_db.py``,
+scoped JSON configuration updates (``scars.databases``), human-gated GitHub
+issue upstreaming, and a BaseScript CLI controller with explicit subcommands
+(SCAR-API-0001, SCAR-ARCH-05).
 """
 
 from dataclasses import dataclass
@@ -17,8 +18,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from lib.agent_paths import AgentPathRegistry
 from lib.base_script import BaseScript, ScriptArgumentParser
+from lib.config import (
+    DEFAULT_SCAR_DATABASES,
+    expand_user_path,
+    insert_scar_databases_before_bundled,
+)
 from lib.scar_candidate import ScarCandidateValidator, validate_socratic_probe
-from lib.scar_ontology import DOMAIN_CATEGORY_ONTOLOGY, normalize_domain_category
+from lib.scar_locations import resolve_scar_locations
+from lib.scar_ontology import normalize_domain_category
+from lib.scars_db import next_tier_scar_id, upsert_scar
 
 UPSTREAM_REPO = "hedges333/makeflow-skill"
 
@@ -29,171 +37,35 @@ TIER_ID_PREFIXES: Dict[str, str] = {
     "custom": "CUSTOM",
 }
 
-_SPOKE_GROUP_CODES: Dict[str, Tuple[str, ...]] = {
-    "architecture.md": (
-        "ARCH",
-        "DIR",
-        "API",
-        "DEP",
-        "PUB",
-        "REFACTOR",
-        "INTEROP",
-        "MIXIN",
-        "INV",
-        "TYPE",
-        "REGEX",
-        "SYNTAX",
-        "TMPL",
-        "ASYNC",
-        "CONC",
-        "STATE",
-        "BLOC",
-        "RIV",
-        "ERR",
-        "FAIL",
-        "PERF",
-        "MATH",
-        "GEOM",
-    ),
-    "data.md": (
-        "DATA",
-        "SCHEMA",
-        "DB",
-        "STORAGE",
-        "WIRE",
-        "NET",
-    ),
-    "ui.md": (
-        "UI",
-        "FLUTTER",
-        "NAV",
-        "GENUI",
-        "A2UI",
-        "A11Y",
-        "I18N",
-        "WEB",
-        "SSR",
-    ),
-    "testing.md": (
-        "TEST",
-        "VERIF",
-        "AST",
-    ),
-    "security.md": (
-        "SEC",
-        "AUTH",
-    ),
-    "system.md": (
-        "SYS",
-        "ENV",
-        "TIME",
-        "BUILD",
-        "OBS",
-        "OTEL",
-        "DIAG",
-    ),
-    "git_and_shell.md": (
-        "GIT",
-        "SH",
-        "SCRIPT",
-        "CI",
-        "HOOK",
-    ),
-    "tooling.md": (
-        "TOOL",
-        "HCI",
-        "DOC",
-        "SKILL",
-    ),
-    "process.md": (
-        "PROC",
-        "METRIC",
-        "GOV",
-        "REVIEW",
-        "DIFF",
-        "COLLAB",
-        "META",
-        "CRAFT",
-        "PEDAGOGY",
-    ),
+_TIER_SOURCE_LABELS: Dict[str, str] = {
+    "project": "local",
+    "local": "local",
+    "user": "user",
+    "custom": "custom",
 }
 
-CATEGORY_SPOKE_FILES: Dict[str, str] = {
-    code: filename
-    for filename, codes in _SPOKE_GROUP_CODES.items()
-    for code in codes
-}
-
-_SAFE_FILENAME_RE = re.compile(r"^[a-z0-9_]+\.md$")
 _TRAVERSAL_RE = re.compile(r"[/\\]|\.\.|\x00")
-_SCAR_HEADING_RE = re.compile(
-    r"^###\s+(SCAR-[A-Z0-9]+(?:-[A-Z0-9]+)*):\s*(.+?)\s*$"
-)
-_FIELD_BULLET_RE = re.compile(
-    r"^(?:-\s*)?\*\*(Category|Applies When|Wound|Trap|Circuit Breaker|Permanent Reflex|Reflex|Socratic Probe)\*\*:\s*(.*)$",
-    re.IGNORECASE,
-)
+_SCAR_ID_RE = re.compile(r"^SCAR-(?:[A-Z0-9]+-)+\d+$")
 _LEADING_SCAR_ID_RE = re.compile(r"^\s*SCAR-(?:[A-Z0-9]+-)+\d+\s*[:\-–—]*\s*")
 _TIER_SCOPED_SCAR_ID_RE = re.compile(
     r"\bSCAR-(?:LOCAL|USER|CUSTOM)-(?:[A-Z0-9]+-)*\d+\b:?\s*"
 )
-_FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+_SQLITE_CANONICAL_SCAR_ID_RE = re.compile(
+    r"\bSCAR-(?:LANG-[A-Z0-9]+-)?[A-Z0-9]+-\d{4,}\b:?\s*"
+)
 _GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _GH_SUBPROCESS_TIMEOUT_SECONDS = 30
-_FILENAME_DEFAULT_DOMAIN: Dict[str, str] = {
-    "architecture": "ARCH",
-    "data": "DATA",
-    "data_and_database": "DATA",
-    "ui": "UI",
-    "testing": "TEST",
-    "security": "SEC",
-    "security_and_auth": "SEC",
-    "system": "SYS",
-    "system_and_os": "SYS",
-    "git_and_shell": "GIT",
-    "tooling": "TOOL",
-    "tooling_and_hci": "TOOL",
-    "process": "PROC",
-    "local": "ARCH",
-}
 
 
-def category_to_filename(category: str) -> str:
-  """Map a domain category code or prose alias to a safe categorized Markdown filename.
+def _validate_path_string(path: Any, label: str) -> str:
+  """Validate that a filesystem path is a non-empty string without null bytes.
 
   Args:
-    category: Canonical domain code (e.g. ``DB``, ``PROC``) or prose alias
-      (e.g. ``Database``, ``Testing``).
-
-  Returns:
-    Safe basename ending in ``.md`` (for example ``data.md`` or ``process.md``).
-
-  Raises:
-    ValueError: If ``category`` is empty or contains path traversal characters.
-  """
-  if not isinstance(category, str) or not category.strip():
-    raise ValueError("Category must be a non-empty string.")
-  cleaned = category.strip()
-  if _TRAVERSAL_RE.search(cleaned):
-    raise ValueError(
-        f"Category '{category}' contains forbidden path traversal characters."
-    )
-  domain = normalize_domain_category(cleaned)
-  filename = CATEGORY_SPOKE_FILES.get(domain, "architecture.md")
-  if not _SAFE_FILENAME_RE.match(filename):
-    raise ValueError(f"Resolved unsafe scar filename '{filename}'.")
-  return filename
-
-
-def _validate_directory_path(path: Any, label: str) -> str:
-  """Validate that a directory path is a non-empty string without null bytes.
-
-  Args:
-    path: Candidate directory path value.
+    path: Candidate filesystem path value.
     label: Parameter label used in diagnostic error messages.
 
   Returns:
-    Trimmed directory path string.
+    Trimmed filesystem path string.
 
   Raises:
     ValueError: If ``path`` is not a non-empty string or contains null bytes.
@@ -205,52 +77,32 @@ def _validate_directory_path(path: Any, label: str) -> str:
   return path.strip()
 
 
-def _update_fence_state(
-    line: str,
-    in_fence: bool,
-    fence_char: str,
-    fence_len: int,
-) -> Tuple[bool, str, int]:
-  """Advance Markdown fenced code block state across backtick and tilde fences."""
-  stripped = line.strip()
-  if in_fence:
-    if (
-        stripped
-        and len(stripped) >= fence_len
-        and set(stripped) == {fence_char}
-    ):
-      return False, "", 0
-    return True, fence_char, fence_len
-  match = _FENCE_OPEN_RE.match(line)
-  if match:
-    delimiter = match.group(1)
-    info_string = match.group(2)
-    ch = delimiter[0]
-    if ch == "`" and "`" in info_string:
-      return False, "", 0
-    return True, ch, len(delimiter)
-  return False, "", 0
+def validate_scar_id(scar_id: Any) -> str:
+  """Validate and normalize an explicit scar identifier for override/upsert.
 
+  Accepts canonical patterns such as ``SCAR-ARCH-0001``,
+  ``SCAR-LOCAL-DATA-0001``, ``SCAR-LANG-PYTHON-ARCH-0005``, and ``SCAR-TEST-45``.
 
-def _strip_edge_blank_lines(text: str) -> str:
-  """Normalize line endings and strip leading/trailing blank lines without altering indentation."""
-  raw_lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-  while raw_lines and not raw_lines[0].strip():
-    raw_lines.pop(0)
-  while raw_lines and not raw_lines[-1].strip():
-    raw_lines.pop()
-  if len(raw_lines) == 1:
-    return raw_lines[0].strip()
-  return "\n".join(raw_lines)
+  Args:
+    scar_id: Candidate scar identifier string.
 
+  Returns:
+    Normalized uppercase scar identifier string.
 
-def _format_markdown_field(label: str, value: str) -> str:
-  """Format one scar Markdown bullet preserving multi-line indentation and fenced blocks."""
-  cleaned = _strip_edge_blank_lines(value)
-  first_line = cleaned.split("\n", 1)[0]
-  if _FENCE_OPEN_RE.match(first_line):
-    return f"- **{label}**:\n{cleaned}"
-  return f"- **{label}**: {cleaned}"
+  Raises:
+    ValueError: If ``scar_id`` is empty, multi-line, or malformed.
+  """
+  if not isinstance(scar_id, str) or not scar_id.strip():
+    raise ValueError("Scar ID must be a non-empty string.")
+  if "\n" in scar_id or "\r" in scar_id or "\x00" in scar_id:
+    raise ValueError("Scar ID must be a single line without control characters.")
+  normalized = scar_id.strip().upper()
+  if not _SCAR_ID_RE.match(normalized):
+    raise ValueError(
+        f"Invalid scar ID '{scar_id}'. Expected format like 'SCAR-ARCH-0001' "
+        "or 'SCAR-LOCAL-DATA-0001'."
+    )
+  return normalized
 
 
 @dataclass(frozen=True)
@@ -302,10 +154,14 @@ def validate_mined_scar(record: MinedScarRecord) -> List[str]:
     elif "\n" in record.applies_when or "\r" in record.applies_when:
       errors.append("Scar field 'applies_when' must be a single line.")
 
-  try:
-    category_to_filename(record.category)
-  except ValueError as exc:
-    errors.append(str(exc))
+  if not isinstance(record.category, str) or not record.category.strip():
+    errors.append("Category must be a non-empty string.")
+  elif _TRAVERSAL_RE.search(record.category.strip()):
+    errors.append(
+        f"Category '{record.category}' contains forbidden path traversal characters."
+    )
+  else:
+    normalize_domain_category(record.category.strip())
 
   candidate = {
       "id": "SCAR-DRAFT",
@@ -349,382 +205,91 @@ def _atomic_write_text(file_path: str, content: str) -> None:
     raise
 
 
-class MarkdownScarStore:
-  """Persists and parses categorized Markdown scar files without binary DB side effects."""
+class SqliteScarStore:
+  """Persists and upserts validated mined scars into tiered SQLite registries."""
 
   def _normalize_tier(self, tier: str) -> Tuple[str, str]:
-    """Normalize storage tier name to ``(canonical_tier, id_scope_prefix)``."""
+    """Normalize storage tier name to ``(canonical_tier, source_label)``."""
     cleaned = str(tier or "project").strip().lower()
     if cleaned not in TIER_ID_PREFIXES:
       valid = ", ".join(sorted(TIER_ID_PREFIXES.keys()))
-      raise ValueError(f"Unsupported scar tier '{tier}'. Expected one of: {valid}.")
+      raise ValueError(
+          f"Unsupported scar tier '{tier}'. Expected one of: {valid}."
+      )
     canonical = "project" if cleaned == "local" else cleaned
-    return canonical, TIER_ID_PREFIXES[cleaned]
-
-  def _resolve_safe_file_path(self, target_dir: str, filename: str) -> str:
-    """Resolve and verify that ``filename`` stays strictly inside ``target_dir``."""
-    abs_dir = os.path.abspath(os.path.expanduser(target_dir))
-    real_dir = os.path.realpath(abs_dir)
-    candidate_path = os.path.realpath(os.path.join(real_dir, filename))
-    if os.path.commonpath([real_dir, candidate_path]) != real_dir:
-      raise ValueError(f"Resolved scar path '{candidate_path}' escapes '{real_dir}'.")
-    return os.path.join(abs_dir, filename)
-
-  def _collect_existing_ids(self, target_dir: str) -> set:
-    """Scan existing ``*.md`` files in ``target_dir`` for allocated scar IDs."""
-    existing: set = set()
-    if not target_dir or not os.path.isdir(target_dir):
-      return existing
-    for entry in sorted(os.listdir(target_dir)):
-      if not entry.endswith(".md"):
-        continue
-      full_path = os.path.join(target_dir, entry)
-      if not os.path.isfile(full_path):
-        continue
-      try:
-        in_fence = False
-        fence_char = ""
-        fence_len = 0
-        with open(full_path, "r", encoding="utf-8") as fh:
-          for raw_line in fh:
-            line = raw_line.rstrip("\r\n")
-            if not in_fence:
-              match = _SCAR_HEADING_RE.match(line.strip())
-              if match:
-                existing.add(match.group(1))
-                continue
-            in_fence, fence_char, fence_len = _update_fence_state(
-                line, in_fence, fence_char, fence_len
-            )
-      except (OSError, UnicodeDecodeError):
-        continue
-    return existing
-
-  def allocate_scar_id(
-      self,
-      target_dir: str,
-      category: str,
-      tier: str = "project",
-  ) -> str:
-    """Allocate a collision-free tier-scoped 4-digit scar ID.
-
-    Args:
-      target_dir: Directory containing Markdown scar files.
-      category: Domain category code or prose alias.
-      tier: Storage tier (``project``, ``user``, or ``custom``).
-
-    Returns:
-      Unique scar identifier such as ``SCAR-LOCAL-DB-0001``.
-    """
-    _, scope_prefix = self._normalize_tier(tier)
-    domain = normalize_domain_category(category)
-    prefix = f"SCAR-{scope_prefix}-{domain}"
-    existing = self._collect_existing_ids(target_dir)
-    seq = 1
-    while True:
-      candidate = f"{prefix}-{seq:04d}"
-      if candidate not in existing:
-        return candidate
-      seq += 1
-
-  def format_markdown_entry(
-      self,
-      scar_id: str,
-      record: MinedScarRecord,
-  ) -> str:
-    """Format a validated scar record in canonical four-part plus optional Circuit Breaker Markdown.
-
-    Args:
-      scar_id: Allocated tier-scoped scar identifier.
-      record: Validated ``MinedScarRecord`` instance.
-
-    Returns:
-      Canonical Markdown section ending with a trailing newline.
-    """
-    domain = normalize_domain_category(record.category)
-    lines = [
-        f"### {scar_id}: {record.title.strip()}",
-        "",
-        f"- **Category**: `{domain}`",
-    ]
-    if record.applies_when and record.applies_when.strip():
-      lines.append(f"- **Applies When**: {record.applies_when.strip()}")
-    lines.append(_format_markdown_field("Wound", record.wound))
-    lines.append(_format_markdown_field("Trap", record.trap))
-    if record.circuit_breaker and record.circuit_breaker.strip():
-      lines.append(_format_markdown_field("Circuit Breaker", record.circuit_breaker))
-    lines.append(_format_markdown_field("Permanent Reflex", record.reflex))
-    lines.append(_format_markdown_field("Socratic Probe", record.socratic_probe))
-    return "\n".join(lines) + "\n"
+    return canonical, _TIER_SOURCE_LABELS[cleaned]
 
   def save_scar(
       self,
-      target_dir: str,
+      db_path: str,
       record: MinedScarRecord,
       tier: str = "project",
+      scar_id: Optional[str] = None,
   ) -> Dict[str, Any]:
-    """Validate and atomically append a scar to its categorized Markdown file.
+    """Validate and upsert a mined scar into the target SQLite scars database.
 
     Args:
-      target_dir: Destination directory for categorized ``*.md`` files.
-      record: Candidate scar record to validate and persist.
+      db_path: Destination SQLite database file path.
+      record: Candidate ``MinedScarRecord`` to validate and persist.
       tier: Storage tier (``project``, ``user``, or ``custom``).
+      scar_id: Optional explicit scar ID for overriding/upserting an existing ID.
 
     Returns:
-      Structured receipt with ``scarId``, ``category``, ``filePath``, ``tier``,
-      and ``targetDir``.
+      Structured receipt with ``scarId``, ``category``, ``dbPath``, ``tier``,
+      ``source``, and ``updated``.
 
     Raises:
-      ValueError: If validation fails, ``target_dir`` is invalid or an existing
-        non-directory file, or path resolution escapes ``target_dir``.
+      ValueError: If validation fails, ``scar_id`` is malformed, or ``db_path``
+        is invalid or points to an existing directory.
     """
-    clean_target_dir = _validate_directory_path(target_dir, "target_dir")
+    clean_db_path = _validate_path_string(db_path, "db_path")
+    abs_db_path = os.path.abspath(os.path.expanduser(clean_db_path))
+    if os.path.isdir(abs_db_path):
+      raise ValueError(
+          f"Target scar database path '{abs_db_path}' exists and is a directory."
+      )
+
+    canonical_tier, source_label = self._normalize_tier(tier)
+    validated_id = validate_scar_id(scar_id) if scar_id is not None else None
+
     errors = validate_mined_scar(record)
     if errors:
       raise ValueError("Invalid scar candidate: " + "; ".join(errors))
 
-    canonical_tier, _ = self._normalize_tier(tier)
-    domain = normalize_domain_category(record.category)
-    filename = category_to_filename(record.category)
-    abs_dir = os.path.abspath(os.path.expanduser(clean_target_dir))
-    if (os.path.exists(abs_dir) or os.path.islink(abs_dir)) and not os.path.isdir(
-        abs_dir
-    ):
-      raise ValueError(
-          f"Target scar directory '{abs_dir}' exists and is not a directory."
-      )
-    os.makedirs(abs_dir, exist_ok=True)
-    file_path = self._resolve_safe_file_path(abs_dir, filename)
-    scar_id = self.allocate_scar_id(abs_dir, domain, tier=canonical_tier)
-    entry = self.format_markdown_entry(scar_id, record)
-
-    if os.path.isfile(file_path):
-      with open(file_path, "r", encoding="utf-8") as fh:
-        existing_content = fh.read()
-      separator = "\n\n" if existing_content.strip() else ""
-      updated = existing_content.rstrip() + separator + entry
-    else:
-      heading_title = os.path.splitext(filename)[0].replace("_", " ").title()
-      updated = f"# Synthetic Scars: {heading_title}\n\n{entry}"
-
-    _atomic_write_text(file_path, updated)
+    domain = normalize_domain_category(record.category.strip())
+    final_id = validated_id or next_tier_scar_id(
+        abs_db_path, domain, tier=canonical_tier
+    )
+    upsert_receipt = upsert_scar(
+        abs_db_path,
+        {
+            "id": final_id,
+            "title": record.title.strip(),
+            "category": domain,
+            "category_slug": domain.lower(),
+            "visibility": source_label,
+            "applies_when": record.applies_when.strip(),
+            "graduation_status": source_label,
+            "wound": record.wound.strip(),
+            "trap": record.trap.strip(),
+            "circuit_breaker": record.circuit_breaker.strip(),
+            "reflex": record.reflex.strip(),
+            "socratic_probe": record.socratic_probe.strip(),
+            "source": source_label,
+        },
+    )
     return {
-        "scarId": scar_id,
+        "scarId": final_id,
         "category": domain,
-        "filePath": file_path,
+        "dbPath": upsert_receipt["db_path"],
         "tier": canonical_tier,
-        "targetDir": abs_dir,
+        "source": source_label,
+        "updated": bool(upsert_receipt["updated"]),
     }
-
-  def _infer_category_from_id_or_file(
-      self,
-      scar_id: str,
-      explicit_category: str,
-      file_path: str,
-      title: str,
-      wound: str,
-      trap: str,
-      reflex: str,
-  ) -> str:
-    """Resolve canonical domain category from explicit tag, tier scar ID, or filename."""
-    cleaned_explicit = explicit_category.strip().strip("`")
-    if cleaned_explicit:
-      return normalize_domain_category(
-          cleaned_explicit,
-          scar_id=scar_id,
-          title=title,
-          wound=wound,
-          trap=trap,
-          reflex=reflex,
-      )
-    tier_match = re.match(
-        r"^SCAR-(?:LOCAL|USER|CUSTOM)-([A-Z0-9]+)-\d+$",
-        scar_id.strip().upper(),
-    )
-    if tier_match and tier_match.group(1) in DOMAIN_CATEGORY_ONTOLOGY:
-      return tier_match.group(1)
-    stem = os.path.splitext(os.path.basename(file_path))[0].lower()
-    fallback = _FILENAME_DEFAULT_DOMAIN.get(stem, "")
-    return normalize_domain_category(
-        fallback,
-        scar_id=scar_id,
-        title=title,
-        wound=wound,
-        trap=trap,
-        reflex=reflex,
-    )
-
-  def parse_markdown_file(
-      self,
-      file_path: str,
-      source_tier: str = "local",
-  ) -> List[Dict[str, Any]]:
-    """Parse structured synthetic scar dictionaries from one Markdown file.
-
-    Args:
-      file_path: Path to a categorized or local Markdown scar file.
-      source_tier: Source tier label assigned to parsed rows (e.g. ``local``,
-        ``user``, or ``custom``).
-
-    Returns:
-      List of structured scar dictionaries ready for SQLite FTS5 indexing.
-    """
-    if not file_path or not os.path.isfile(file_path):
-      return []
-    try:
-      with open(file_path, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
-    except (OSError, UnicodeDecodeError):
-      return []
-
-    records: List[Dict[str, Any]] = []
-    current_id: Optional[str] = None
-    current_title = ""
-    fields: Dict[str, List[str]] = {}
-    active_field: Optional[str] = None
-
-    def _join_field(key: str) -> str:
-      raw_lines = list(fields.get(key, []))
-      while raw_lines and not raw_lines[0].strip():
-        raw_lines.pop(0)
-      while raw_lines and not raw_lines[-1].strip():
-        raw_lines.pop()
-      return "\n".join(raw_lines)
-
-    def _flush() -> None:
-      if not current_id:
-        return
-      wound = _join_field("wound")
-      trap = _join_field("trap")
-      cb = _join_field("circuit_breaker")
-      reflex = _join_field("reflex")
-      probe = _join_field("socratic_probe")
-      applies_when = _join_field("applies_when").strip()
-      explicit_cat = _join_field("category").strip()
-      if not (wound and trap and reflex and probe):
-        return
-      domain = self._infer_category_from_id_or_file(
-          scar_id=current_id,
-          explicit_category=explicit_cat,
-          file_path=file_path,
-          title=current_title,
-          wound=wound,
-          trap=trap,
-          reflex=reflex,
-      )
-      records.append(
-          {
-              "id": current_id,
-              "title": current_title,
-              "category": domain,
-              "category_slug": domain.lower(),
-              "applies_when": applies_when,
-              "wound": wound,
-              "trap": trap,
-              "circuit_breaker": cb,
-              "reflex": reflex,
-              "socratic_probe": probe,
-              "source": source_tier,
-              "file_path": os.path.abspath(file_path),
-          }
-      )
-
-    field_name_map = {
-        "category": "category",
-        "applies when": "applies_when",
-        "wound": "wound",
-        "trap": "trap",
-        "circuit breaker": "circuit_breaker",
-        "permanent reflex": "reflex",
-        "reflex": "reflex",
-        "socratic probe": "socratic_probe",
-    }
-
-    in_fence = False
-    fence_char = ""
-    fence_len = 0
-
-    for raw_line in lines:
-      line = raw_line.rstrip("\r\n")
-      if in_fence:
-        if active_field:
-          fields[active_field].append(line)
-        in_fence, fence_char, fence_len = _update_fence_state(
-            line, in_fence, fence_char, fence_len
-        )
-        continue
-
-      stripped = line.strip()
-      heading_match = _SCAR_HEADING_RE.match(stripped)
-      if heading_match:
-        _flush()
-        current_id = heading_match.group(1).strip()
-        current_title = heading_match.group(2).strip()
-        fields = {}
-        active_field = None
-        continue
-      if not current_id:
-        in_fence, fence_char, fence_len = _update_fence_state(
-            line, in_fence, fence_char, fence_len
-        )
-        continue
-      if stripped.startswith("## ") or stripped == "---":
-        _flush()
-        current_id = None
-        current_title = ""
-        fields = {}
-        active_field = None
-        continue
-      bullet_match = _FIELD_BULLET_RE.match(stripped)
-      if bullet_match:
-        canonical_key = field_name_map[bullet_match.group(1).lower()]
-        active_field = canonical_key
-        fields.setdefault(canonical_key, [])
-        first_text = bullet_match.group(2).strip()
-        if first_text:
-          fields[canonical_key].append(first_text)
-          in_fence, fence_char, fence_len = _update_fence_state(
-              first_text, in_fence, fence_char, fence_len
-          )
-      elif active_field:
-        fields[active_field].append(line if stripped else "")
-        in_fence, fence_char, fence_len = _update_fence_state(
-            line, in_fence, fence_char, fence_len
-        )
-
-    _flush()
-    return records
-
-  def parse_directory(
-      self,
-      directory: str,
-      source_tier: str = "local",
-  ) -> List[Dict[str, Any]]:
-    """Parse all ``*.md`` scar files inside one directory in lexical filename order.
-
-    Args:
-      directory: Path to a directory containing Markdown scar files.
-      source_tier: Source tier label assigned to parsed rows.
-
-    Returns:
-      Aggregated list of parsed scar dictionaries.
-    """
-    if not directory or not os.path.isdir(directory):
-      return []
-    parsed: List[Dict[str, Any]] = []
-    for entry in sorted(os.listdir(directory)):
-      if not entry.endswith(".md"):
-        continue
-      full_path = os.path.join(directory, entry)
-      if os.path.isfile(full_path):
-        parsed.extend(
-            self.parse_markdown_file(full_path, source_tier=source_tier)
-        )
-    return parsed
 
 
 class ScarConfigStore:
-  """Persists custom scar directories into user-global and project-local JSON configs."""
+  """Persists SQLite scar database paths into ``scars.databases`` in JSON configs."""
 
   def __init__(self, registry: Optional[AgentPathRegistry] = None) -> None:
     """Initialize ScarConfigStore with an AgentPathRegistry collaborator.
@@ -734,9 +299,17 @@ class ScarConfigStore:
     """
     self.registry = registry or AgentPathRegistry()
 
-  def _append_directory_to_file(self, config_path: str, directory: str) -> str:
-    """Read, update ``scars.directories`` idempotently, and atomically write one JSON config."""
-    abs_cfg = os.path.abspath(os.path.expanduser(config_path))
+  def _append_database_to_file(
+      self,
+      config_path: str,
+      db_path: str,
+      workspace_dir: Optional[str] = None,
+      agent: Optional[str] = None,
+  ) -> str:
+    """Read, update ``scars.databases`` idempotently, and atomically write one JSON config."""
+    abs_cfg = os.path.abspath(
+        expand_user_path(config_path, home_dir=self.registry.home_dir)
+    )
     data: Dict[str, Any] = {}
     if os.path.isfile(abs_cfg):
       with open(abs_cfg, "r", encoding="utf-8") as fh:
@@ -754,47 +327,47 @@ class ScarConfigStore:
       scars_section = {}
       data["scars"] = scars_section
 
-    existing_dirs = scars_section.get("directories")
-    if not isinstance(existing_dirs, list):
-      existing_dirs = []
-    cleaned_existing = [
-        item.strip()
-        for item in existing_dirs
-        if isinstance(item, str) and item.strip()
-    ]
-    seen_norm = {
-        os.path.normpath(os.path.expanduser(item)) for item in cleaned_existing
-    }
-    target_norm = os.path.normpath(os.path.expanduser(directory))
-    if target_norm not in seen_norm:
-      cleaned_existing.append(directory)
-    scars_section["directories"] = cleaned_existing
+    existing_dbs = scars_section.get("databases")
+    if not isinstance(existing_dbs, list):
+      existing_dbs = list(DEFAULT_SCAR_DATABASES)
+
+    scars_section["databases"] = insert_scar_databases_before_bundled(
+        existing_dbs,
+        [db_path],
+        workspace_dir=workspace_dir,
+        agent=agent,
+        home_dir=self.registry.home_dir,
+    )
 
     _atomic_write_text(abs_cfg, json.dumps(data, indent=2) + "\n")
     return abs_cfg
 
-  def add_scar_directory(
+  def add_scar_database(
       self,
-      directory: str,
+      db_path: str,
       scope: str,
       workspace_dir: Optional[str] = None,
       agent: Optional[str] = None,
   ) -> Dict[str, Any]:
-    """Persist a custom scar directory into ``user-global``, ``project-local``, or ``both``.
+    """Persist a custom SQLite scar database into ``user-global``, ``project-local``, or ``both``.
+
+    Inserts ``db_path`` into ``scars.databases`` immediately before the bundled
+    registry entry (seeding defaults if ``scars.databases`` was absent) or
+    appends it when the bundled entry was explicitly omitted.
 
     Args:
-      directory: Custom scar directory path to persist.
+      db_path: Custom SQLite scar database path to persist.
       scope: Target scope (``user-global``, ``project-local``, or ``both``).
       workspace_dir: Project root path (required for ``project-local`` and ``both``).
       agent: Optional agent name override for user-global config path lookup.
 
     Returns:
-      Dictionary with ``directory``, ``scope``, and ``updatedFiles``.
+      Dictionary with ``database``, ``scope``, and ``updatedFiles``.
 
     Raises:
-      ValueError: If ``directory``, ``scope``, or required ``workspace_dir`` is invalid.
+      ValueError: If ``db_path``, ``scope``, or required ``workspace_dir`` is invalid.
     """
-    clean_dir = _validate_directory_path(directory, "directory")
+    clean_db = _validate_path_string(db_path, "db_path")
     clean_scope = str(scope or "").strip().lower()
     if clean_scope not in ("user-global", "project-local", "both"):
       raise ValueError(
@@ -802,20 +375,25 @@ class ScarConfigStore:
       )
 
     targets: List[str] = []
+    ws_abs: Optional[str] = None
     if clean_scope in ("user-global", "both"):
       profile = self.registry.get_profile(agent)
       targets.append(profile.global_config_path)
     if clean_scope in ("project-local", "both"):
-      clean_ws = _validate_directory_path(workspace_dir, "workspace_dir")
-      ws_abs = os.path.abspath(os.path.expanduser(clean_ws))
+      clean_ws = _validate_path_string(workspace_dir, "workspace_dir")
+      ws_abs = os.path.abspath(
+          expand_user_path(clean_ws, home_dir=self.registry.home_dir)
+      )
       targets.append(os.path.join(ws_abs, ".workflow", "config.json"))
 
     updated = [
-        self._append_directory_to_file(cfg_path, clean_dir)
+        self._append_database_to_file(
+            cfg_path, clean_db, workspace_dir=ws_abs, agent=agent
+        )
         for cfg_path in targets
     ]
     return {
-        "directory": clean_dir,
+        "database": clean_db,
         "scope": clean_scope,
         "updatedFiles": updated,
     }
@@ -843,7 +421,7 @@ class UpstreamIssuePublisher:
     self.repo = cleaned_repo
 
   def _clean_title(self, title: str) -> str:
-    """Strip any leading scar ID prefix and tier-scoped scar IDs from a title.
+    """Strip any leading scar ID prefix, tier-scoped IDs, and canonical 4-digit IDs from a title.
 
     Args:
       title: Raw candidate scar title.
@@ -860,16 +438,19 @@ class UpstreamIssuePublisher:
       if updated == cleaned:
         break
       cleaned = updated
-    cleaned = _TIER_SCOPED_SCAR_ID_RE.sub("", cleaned).strip()
+    cleaned = _TIER_SCOPED_SCAR_ID_RE.sub("", cleaned)
+    cleaned = _SQLITE_CANONICAL_SCAR_ID_RE.sub("", cleaned).strip()
     if not cleaned:
       raise ValueError(
           "Scar title must contain descriptive text beyond an assigned scar ID."
       )
     return cleaned
 
-  def _strip_local_ids(self, text: str) -> str:
-    """Strip tier-scoped local/user/custom scar IDs while preserving Tier 1 references."""
-    return _TIER_SCOPED_SCAR_ID_RE.sub("", text or "").strip()
+  def _strip_assigned_ids(self, text: str) -> str:
+    """Strip tier-scoped and 4-digit canonical SQLite scar IDs while keeping short Tier 1 refs."""
+    cleaned = _TIER_SCOPED_SCAR_ID_RE.sub("", text or "")
+    cleaned = _SQLITE_CANONICAL_SCAR_ID_RE.sub("", cleaned)
+    return cleaned.strip()
 
   def format_issue_payload(self, record: MinedScarRecord) -> Dict[str, Any]:
     """Build an integer-ID-free GitHub issue title and Markdown body for a scar.
@@ -893,18 +474,18 @@ class UpstreamIssuePublisher:
         f"- **Category**: `{domain}`",
         f"- **Title**: {clean_title}",
         "",
-        f"- **Wound**: {self._strip_local_ids(record.wound)}",
-        f"- **Trap**: {self._strip_local_ids(record.trap)}",
+        f"- **Wound**: {self._strip_assigned_ids(record.wound)}",
+        f"- **Trap**: {self._strip_assigned_ids(record.trap)}",
     ]
     if record.circuit_breaker and record.circuit_breaker.strip():
       body_lines.append(
-          f"- **Circuit Breaker**: {self._strip_local_ids(record.circuit_breaker)}"
+          f"- **Circuit Breaker**: {self._strip_assigned_ids(record.circuit_breaker)}"
       )
     body_lines.append(
-        f"- **Permanent Reflex**: {self._strip_local_ids(record.reflex)}"
+        f"- **Permanent Reflex**: {self._strip_assigned_ids(record.reflex)}"
     )
     body_lines.append(
-        f"- **Socratic Probe**: {self._strip_local_ids(record.socratic_probe)}"
+        f"- **Socratic Probe**: {self._strip_assigned_ids(record.socratic_probe)}"
     )
     body_lines.extend(
         [
@@ -1119,21 +700,26 @@ class ScarMinerScript(BaseScript):
     """Construct the subcommand CLI parser without boolean mode flags (SCAR-API-0001)."""
     parser = ScriptArgumentParser(
         prog="scar_miner.py",
-        description="Target 90 Rapid-Regret Miner CLI for multi-tier scars and upstreaming.",
+        description="Target 90 Rapid-Regret Miner CLI for tiered SQLite scars and upstreaming.",
     )
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     paths_p = subparsers.add_parser(
         "paths",
-        help="Resolve project, user-wide agent, and legacy Makeflow paths.",
+        help="Resolve project, user-wide agent, bundled, and configured SQLite scar DB paths.",
     )
     paths_p.add_argument("--workspace", default=None, help="Project root directory.")
     paths_p.add_argument("--agent", default=None, help="Agent name override.")
     paths_p.add_argument("--home", default=None, help="Home directory override.")
+    paths_p.add_argument(
+        "--plugin-root",
+        default=None,
+        help="Optional Makeflow plugin root override.",
+    )
 
     save_p = subparsers.add_parser(
         "save",
-        help="Validate and save a scar to a categorized Markdown file.",
+        help="Validate and upsert a scar into a tiered SQLite scars database.",
     )
     save_p.add_argument(
         "--tier",
@@ -1142,16 +728,31 @@ class ScarMinerScript(BaseScript):
         help="Target storage tier.",
     )
     save_p.add_argument("--workspace", default=None, help="Project root directory.")
-    save_p.add_argument("--custom-dir", default=None, help="Custom directory for custom tier.")
+    save_p.add_argument(
+        "--custom-db",
+        default=None,
+        help="Custom SQLite database path for custom tier.",
+    )
+    save_p.add_argument(
+        "--id",
+        dest="scar_id",
+        default=None,
+        help="Optional explicit scar ID for overriding or upserting an existing ID.",
+    )
     save_p.add_argument("--agent", default=None, help="Agent name override.")
     save_p.add_argument("--home", default=None, help="Home directory override.")
     _add_scar_record_args(save_p)
 
     cfg_p = subparsers.add_parser(
         "save-config",
-        help="Persist a custom scar directory into user-global and/or project-local config.",
+        help="Persist a custom SQLite scar database into scars.databases in user-global and/or project-local config.",
     )
-    cfg_p.add_argument("--dir", required=True, dest="directory", help="Custom scar directory path.")
+    cfg_p.add_argument(
+        "--db",
+        required=True,
+        dest="database",
+        help="Custom SQLite scar database path.",
+    )
     cfg_p.add_argument(
         "--scope",
         required=True,
@@ -1239,26 +840,43 @@ class ScarMinerScript(BaseScript):
   def _run_paths(self) -> int:
     ns = self.parsed_args
     registry = AgentPathRegistry(home_dir=ns.home)
-    self._emit_json(registry.to_dict(agent=ns.agent, workspace_dir=ns.workspace))
+    ws_abs = (
+        os.path.abspath(expand_user_path(ns.workspace, home_dir=ns.home))
+        if ns.workspace
+        else None
+    )
+    locations = resolve_scar_locations(
+        workspace_dir=ws_abs,
+        agent=ns.agent,
+        home_dir=ns.home,
+        plugin_root=ns.plugin_root,
+    )
+    payload = registry.to_dict(agent=ns.agent, workspace_dir=ws_abs)
+    payload.update(locations.to_dict())
+    self._emit_json(payload)
     return 0
 
   def _run_save(self) -> int:
     ns = self.parsed_args
-    registry = AgentPathRegistry(home_dir=ns.home)
     if ns.tier == "project":
       ws = ns.workspace or os.getcwd()
-      target_dir = os.path.join(
-          os.path.abspath(os.path.expanduser(ws)), ".workflow", "scars"
+      locations = resolve_scar_locations(
+          workspace_dir=ws, agent=ns.agent, home_dir=ns.home
       )
+      assert locations.project_db is not None
+      target_db = locations.project_db
     elif ns.tier == "user":
-      target_dir = registry.get_profile(ns.agent).scars_dir
+      locations = resolve_scar_locations(agent=ns.agent, home_dir=ns.home)
+      target_db = locations.user_db
     else:
-      if not ns.custom_dir or not ns.custom_dir.strip():
-        raise ValueError("--custom-dir is required when --tier is 'custom'.")
-      target_dir = ns.custom_dir.strip()
+      if not ns.custom_db or not ns.custom_db.strip():
+        raise ValueError("--custom-db is required when --tier is 'custom'.")
+      target_db = expand_user_path(ns.custom_db.strip(), home_dir=ns.home)
 
     record = self._load_record_from_args()
-    receipt = MarkdownScarStore().save_scar(target_dir, record, tier=ns.tier)
+    receipt = SqliteScarStore().save_scar(
+        target_db, record, tier=ns.tier, scar_id=ns.scar_id
+    )
     self._emit_json(receipt)
     return 0
 
@@ -1268,8 +886,8 @@ class ScarMinerScript(BaseScript):
     ws = ns.workspace
     if ns.scope in ("project-local", "both") and not ws:
       ws = os.getcwd()
-    receipt = ScarConfigStore(registry=registry).add_scar_directory(
-        ns.directory,
+    receipt = ScarConfigStore(registry=registry).add_scar_database(
+        ns.database,
         scope=ns.scope,
         workspace_dir=ws,
         agent=ns.agent,

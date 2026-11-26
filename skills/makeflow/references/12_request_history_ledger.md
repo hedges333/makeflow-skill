@@ -8,7 +8,7 @@ Chat sessions end, but the repository remains. The Request History Ledger record
 
 1. Every ticket completed through the Makefile Workflow.
 2. Branch names, commit hashes, pull request links, and added test counts.
-3. Synthetic Scars (process rules learned from past failures) earned during each task. The `scars_earned` list records merged core scar IDs and project-local `.workflow/scars/` entries. Never make unreviewed core catalog edits on `main` at Target 90.
+3. Synthetic Scars (process rules learned from past failures) earned during each task. The `scars_earned` list records merged core scar IDs and project-local `.workflow/scars/scars_registry.db` entries. Never make unreviewed core catalog edits on `main` at Target 90.
 4. Completed local task numbers alongside `.workflow/tickets/LOCAL-<N>.json` for collision-free ID allocation.
 
 ## 2. File Locations and Formats
@@ -109,9 +109,9 @@ Run these steps during Target 90 after a pull request merges:
 1. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90 (`finish`) while keeping the session active. Create `.workflow/` if the directory does not exist.
 2. Run the Rapid-Regret Miner for each operational lesson learned during the ticket:
    - Display the full scar draft (Title, Category, Wound, Trap, optional Circuit Breaker, Permanent Reflex, and Socratic Probe).
-   - Inspect resolved paths with `python3 scripts/scar_miner.py paths --workspace .`. Ask the user to pick a tier: `./.workflow/scars/`, agent `plugin_data/makeflow/scars/`, or a custom directory.
-   - If the user enters a custom directory, offer to save it into `scars.directories`. Run `python3 scripts/scar_miner.py save-config` for user-global, project-local, or both configs.
-   - Persist the scar to its categorized Markdown file via `python3 scripts/scar_miner.py save`. Never edit Tier 1 core catalog files on `main`.
+   - Inspect resolved paths with `python3 scripts/scar_miner.py paths --workspace .`. Ask the user to pick a tier: `.workflow/scars/scars_registry.db`, user-wide `<agent_plugin_data>/scars_registry.db`, or a custom SQLite database (`--custom-db`).
+   - If the user enters a custom database, offer to save it into `scars.databases`. Run `python3 scripts/scar_miner.py save-config --db <path>` for `user-global`, `project-local`, or `both` configs.
+   - Persist or override the scar in SQLite via `python3 scripts/scar_miner.py save` (with optional `--id <SCAR-ID>`). Never edit Tier 1 core catalog files on `main`.
    - Offer to open a community enhancement issue on `hedges333/makeflow-skill`. Verify `gh` CLI authentication via `python3 scripts/scar_miner.py upstream-check`. Wait for explicit human approval (`SCAR-PROC-108`), then run `python3 scripts/scar_miner.py upstream-submit --approved` without integer scar IDs.
 3. Read `.workflow/history.json`, or start with `[]` when the file is new.
 4. Append the completed ticket object (including earned scar IDs in `scars_earned`) to `.workflow/history.json`.

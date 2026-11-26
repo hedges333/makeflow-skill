@@ -899,15 +899,15 @@ class TestMcpServer(unittest.TestCase):
     self.assertEqual(len(lim_data["scars"]), 1)
 
     # Case d: Query when dbPath is omitted -> resolves stacked databases including workspace and bundled
-    ws_cache_dir = os.path.join(non_git_cwd, ".workflow", "cache")
+    ws_scars_dir = os.path.join(non_git_cwd, ".workflow", "scars")
     ws_state_dir = os.path.join(non_git_cwd, ".workflow", "state")
-    os.makedirs(ws_cache_dir, exist_ok=True)
+    os.makedirs(ws_scars_dir, exist_ok=True)
     os.makedirs(ws_state_dir, exist_ok=True)
     with open(
         os.path.join(ws_state_dir, "10_ticket.md"), "w", encoding="utf-8"
     ) as tf:
       tf.write("# Ticket: GH-192\n")
-    ws_scars_db = os.path.join(ws_cache_dir, "scars_registry.db")
+    ws_scars_db = os.path.join(ws_scars_dir, "scars_registry.db")
     shutil.copyfile(test_scars_db, ws_scars_db)
 
     default_resp = send_rpc(
@@ -4765,6 +4765,195 @@ class TestMcpServerMultiContributorParking(unittest.TestCase):
         self.assertIn("SESSION_STATUS: PARKED", text)
         self.assertIn("PR #47", text)
         self.assertIn("approvals=1/2", text)
+
+  def test_ordered_sqlite_tier_overrides_shadowing_and_session_dedup(self):
+    """Verifies workflow_query_scars ordered SQLite overrides, non-matching shadowing, and session dedup (GH-304)."""
+    from lib.scars_db import upsert_scar
+
+    mcp_server = _load_mcp_server_module()
+
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fake_home = os.path.join(tmp_root, "home")
+      ws_dir = os.path.join(tmp_root, "workspace")
+      plugin_root = os.path.join(tmp_root, "plugin_root")
+      shared_dir = os.path.join(tmp_root, "shared_team")
+      for d in (fake_home, ws_dir, plugin_root, shared_dir):
+        os.makedirs(d, exist_ok=True)
+
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      with open(
+          os.path.join(state_dir, "10_ticket.json"), "w", encoding="utf-8"
+      ) as fh:
+        json.dump({"ticketId": "GH-304"}, fh)
+
+      proj_db = os.path.join(ws_dir, ".workflow", "scars", "scars_registry.db")
+      user_db = os.path.join(
+          fake_home,
+          ".gemini",
+          "antigravity-cli",
+          "plugin_data",
+          "makeflow",
+          "scars_registry.db",
+      )
+      custom_db = os.path.join(shared_dir, "team_extra.db")
+      bundled_db = os.path.join(
+          plugin_root, "skills", "makeflow", "data", "scars_registry.db"
+      )
+
+      upsert_scar(
+          bundled_db,
+          {
+              "id": "SCAR-ARCH-0001",
+              "ss_id": "SCAR-ARCH-01",
+              "title": "Bundled Legacy Architecture Rule",
+              "category": "ARCH",
+              "wound": "Bundled legacy_shadow_token architecture failure.",
+              "trap": "Bundled trap.",
+              "reflex": "Bundled legacy_shadow_token reflex.",
+              "socratic_probe": "Did you check legacy_shadow_token?",
+              "source": "upstream",
+          },
+      )
+      upsert_scar(
+          custom_db,
+          {
+              "id": "SCAR-ARCH-0001",
+              "title": "Custom Architecture Override",
+              "category": "ARCH",
+              "wound": "Custom architecture failure.",
+              "trap": "Custom trap.",
+              "reflex": "Custom architecture reflex.",
+              "socratic_probe": "Did you apply custom override?",
+              "source": "custom",
+          },
+      )
+      upsert_scar(
+          user_db,
+          {
+              "id": "SCAR-USER-API-0001",
+              "title": "User API Guard",
+              "category": "API",
+              "wound": "User replacement_shadow_token API failure.",
+              "trap": "User API trap.",
+              "reflex": "Apply replacement_shadow_token in user APIs.",
+              "socratic_probe": "Did you apply user API guard?",
+              "source": "user",
+          },
+      )
+      upsert_scar(
+          proj_db,
+          {
+              "id": "SCAR-ARCH-0001",
+              "title": "Project Architecture Override",
+              "category": "ARCH",
+              "wound": "Project replacement_shadow_token architecture failure.",
+              "trap": "Project trap.",
+              "reflex": "Apply replacement_shadow_token in project modules.",
+              "socratic_probe": "Did you apply project architecture override?",
+              "source": "local",
+          },
+      )
+
+      proj_cfg = os.path.join(ws_dir, ".workflow", "config.json")
+      os.makedirs(os.path.dirname(proj_cfg), exist_ok=True)
+      with open(proj_cfg, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "scars": {
+                    "databases": [
+                        ".workflow/scars/scars_registry.db",
+                        "{agent_data}/scars_registry.db",
+                        custom_db,
+                        "{plugin_root}/skills/makeflow/data/scars_registry.db",
+                    ]
+                }
+            },
+            fh,
+        )
+
+      env = {"HOME": fake_home, "PATH": os.environ.get("PATH", "")}
+      with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+          mcp_server, "_REPO_ROOT", plugin_root
+      ):
+        # 1. Ordered multi-tier query returns searchedDatabases only and winning project override
+        resp1 = mcp_server.handle_tools_call(
+            301,
+            "workflow_query_scars",
+            {
+                "query": "replacement_shadow_token",
+                "workspaceDir": ws_dir,
+                "limit": 5,
+            },
+        )
+        data1 = json.loads(resp1["result"]["content"][0]["text"])
+        self.assertEqual(data1["status"], "OK")
+        self.assertNotIn("searchedDirectories", data1)
+        self.assertEqual(
+            data1["searchedDatabases"],
+            [proj_db, user_db, custom_db, bundled_db],
+        )
+        self.assertEqual(
+            [s["id"] for s in data1["scars"]],
+            ["SCAR-ARCH-0001", "SCAR-USER-API-0001"],
+        )
+        self.assertEqual(data1["scars"][0]["title"], "Project Architecture Override")
+        self.assertEqual(data1["scars"][0]["source"], "local")
+
+        # 2. Non-matching shadowing via MCP: legacy bundled keyword never leaks through
+        resp_shadow = mcp_server.handle_tools_call(
+            302,
+            "workflow_query_scars",
+            {
+                "query": "legacy_shadow_token",
+                "workspaceDir": ws_dir,
+                "limit": 5,
+                "refreshLoaded": True,
+            },
+        )
+        data_shadow = json.loads(resp_shadow["result"]["content"][0]["text"])
+        self.assertEqual(data_shadow["status"], "OK")
+        self.assertEqual(data_shadow["totalResults"], 0)
+        self.assertEqual(data_shadow["scars"], [])
+
+        # 3. Session dedup returns alreadyLoaded reminder for overridden ID
+        resp_dedup = mcp_server.handle_tools_call(
+            303,
+            "workflow_query_scars",
+            {
+                "query": "SCAR-ARCH-0001",
+                "workspaceDir": ws_dir,
+                "limit": 1,
+            },
+        )
+        data_dedup = json.loads(resp_dedup["result"]["content"][0]["text"])
+        self.assertEqual(data_dedup["status"], "OK")
+        self.assertEqual(len(data_dedup["alreadyLoaded"]), 1)
+        self.assertEqual(data_dedup["alreadyLoaded"][0]["id"], "SCAR-ARCH-0001")
+        self.assertEqual(
+            data_dedup["alreadyLoaded"][0]["title"],
+            "Project Architecture Override",
+        )
+        self.assertNotIn("wound", data_dedup["alreadyLoaded"][0])
+
+        # 4. refreshLoaded=True re-emits full overridden body
+        resp_refresh = mcp_server.handle_tools_call(
+            304,
+            "workflow_query_scars",
+            {
+                "query": "SCAR-ARCH-0001",
+                "workspaceDir": ws_dir,
+                "limit": 1,
+                "refreshLoaded": True,
+            },
+        )
+        data_refresh = json.loads(resp_refresh["result"]["content"][0]["text"])
+        self.assertEqual(data_refresh["status"], "OK")
+        self.assertEqual(len(data_refresh["scars"]), 1)
+        self.assertEqual(
+            data_refresh["scars"][0]["title"], "Project Architecture Override"
+        )
+        self.assertIn("replacement_shadow_token", data_refresh["scars"][0]["wound"])
 
 
 if __name__ == "__main__":

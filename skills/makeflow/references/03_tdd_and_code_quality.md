@@ -9,7 +9,7 @@ Follow six rules before you modify any source file:
 1. Read the file, its imports, its type signatures, and its comments first (`SCAR-PROC-104`).
 2. Make minimal, confident edits that solve the ticket. Do not rewrite an entire module when a three-line fix works.
 3. Leave unrelated defects or style issues untouched, and note them for a separate ticket.
-4. Read applicable Tier 1 core scars (`09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`) and Tier 2 project-local scars (`.workflow/scars/`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`). Query active languages, frameworks, and diagnostic codes first, then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
+4. Read applicable Tier 1 core scars (`09_synthetic_scars_catalog.md`, `skills/makeflow/references/scars/`). Run two `workflow_query_scars` calls (`workflowPhase: "Target 30: tdd"`, `limit: 5`, `refreshLoaded: true`) across `.workflow/scars/scars_registry.db` and configured `scars.databases` tiers. Query active languages, frameworks, and diagnostic codes first. Then query `language: "universal"` with `excludeCategories: ["WORKFLOW"]`.
 5. Enforce idiomatic layer separation from `skills/makeflow/references/polyglot/<lang>.md` and one-way dependencies (`entrypoints -> library`) under `SCAR-ARCH-08` and `SCAR-ARCH-05`.
 6. Read `.workflow/state/20_plan.md`, `04_testing_isolation.md`, `10_security_and_data_isolation.md`, and `14_design_patterns_and_architecture.md` before writing Red tests. Follow planned OO design patterns, module cohesion boundaries, and carried-forward scar guardrails.
 
@@ -55,6 +55,7 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 - `lib/regression_gate.py`
 - `lib/repo_tree.py`
 - `lib/report_renderers.py`
+- `lib/scar_locations.py`
 - `lib/shell_safety.py`
 - `lib/state_makefile.py`
 - `lib/state_reports.py`

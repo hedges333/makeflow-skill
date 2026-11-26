@@ -23,7 +23,7 @@ When a session starts or `workflow_get_config` runs, Makeflow cascades configura
    - `MAKEFILE_WORKFLOW_PROD_DBS` for comma-separated live database names to block.
    - `MAKEFILE_WORKFLOW_TEST_DBS` for comma-separated safe test database names to allow.
    - `MAKEFILE_WORKFLOW_PROD_HOSTS` for comma-separated live database hosts to block.
-   - `MAKEFILE_WORKFLOW_SCAR_DIRS` for comma-separated custom synthetic scar directories.
+   - `MAKEFILE_WORKFLOW_SCAR_DBS` for comma-separated SQLite synthetic scar database paths inserted before the bundled database.
    - `MAKEFILE_WORKFLOW_CI_QUIESCENCE_SECONDS` for continuous integration quiet window in seconds (default 180). Set this variable to `0` to disable the post-CI quiescence wait.
    - `MAKEFILE_WORKFLOW_CI_POLL_INTERVAL` for continuous integration polling interval in seconds (default 30). Use an integer of `1` or higher.
    - `MAKEFILE_WORKFLOW_CI_ENABLE_PEER_REVIEWS` set to `true` or `1` to enforce PR peer review approvals, CODEOWNERS, and unresolved review threads at Target 70 (default `false`).
@@ -35,7 +35,7 @@ When a session starts or `workflow_get_config` runs, Makeflow cascades configura
    - `MAKEFLOW_AGENT` for selecting the active agent path profile (`gemini`, `claude`, `cursor`, `copilot`, `codex`, `chatgpt`).
    - `MAKEFLOW_DISABLE_TERMINAL_TITLE` set to `1` or `true` to disable automatic terminal tab title updates.
 
-Scalar and nested dictionary keys override earlier layers recursively. List settings merge as deduplicated unions across layers. For `scars.directories`, order runs `project-local`, `user-global`, `legacy`, then `MAKEFILE_WORKFLOW_SCAR_DIRS`. Database protection lists combine all layers safely. `workflow_get_config` returns `configSource` (highest-precedence loaded file) and `configSources` (full loaded cascade).
+Scalar and nested dictionary keys override earlier layers recursively. Setting `scars.databases` overrides the ordered SQLite scar database list verbatim. `MAKEFILE_WORKFLOW_SCAR_DBS` inserts environment paths before the bundled database, or appends them if the bundled database is omitted. Database protection lists combine all layers safely. `workflow_get_config` returns `configSource` (highest-precedence loaded file) and `configSources` (full loaded cascade).
 
 Canonical defaults in `./default_config.json`:
    - `adversarial-critic`: `inherit`
@@ -54,19 +54,19 @@ Canonical defaults in `./default_config.json`:
    - `ci.enableSessionParking`: `false`. Set to `true` to park Target 70 sessions cleanly while waiting on peer reviews or long-running CI.
    - `ci.parkingCronExpression`: `""`. Optional background polling cron schedule while parked (for example `"*/30 * * * *"`).
    - `state.completedCardAction`: `unlink` (removes intermediate cards `10_` through `80_` and `approved_tree.txt` at Target 90; set to `archive` to preserve them in `.workflow/archive/<ticket-id>/`).
-   - `scars.directories`: `[]` (optional custom directories containing categorized Markdown scar files or `scars_registry.db`).
+   - `scars.databases`: `[".workflow/scars/scars_registry.db", "{agent_data}/scars_registry.db", "{plugin_root}/skills/makeflow/data/scars_registry.db"]`. Ordered SQLite scar database cascade supporting `{workspace}`, `{agent_data}`, `{plugin_root}`, and `~` tokens. Higher-precedence databases override matching scar IDs in lower tiers.
    - Database guard: blocks standalone `prod` and `production` names automatically.
 
 ### Cross-Agent User-Global Paths
 
-| Agent | User-Global Config | User-Wide Scars Directory | User-Wide SQLite Registry |
-| :--- | :--- | :--- | :--- |
-| `gemini` | `~/.gemini/antigravity-cli/plugin_data/makeflow/config.json` | `~/.gemini/antigravity-cli/plugin_data/makeflow/scars/` | `~/.gemini/antigravity-cli/plugin_data/makeflow/scars_registry.db` |
-| `claude` | `~/.claude/plugin_data/makeflow/config.json` | `~/.claude/plugin_data/makeflow/scars/` | `~/.claude/plugin_data/makeflow/scars_registry.db` |
-| `cursor` | `~/.cursor/plugin_data/makeflow/config.json` | `~/.cursor/plugin_data/makeflow/scars/` | `~/.cursor/plugin_data/makeflow/scars_registry.db` |
-| `copilot` | `~/.copilot/plugin_data/makeflow/config.json` | `~/.copilot/plugin_data/makeflow/scars/` | `~/.copilot/plugin_data/makeflow/scars_registry.db` |
-| `codex` | `~/.codex/plugin_data/makeflow/config.json` | `~/.codex/plugin_data/makeflow/scars/` | `~/.codex/plugin_data/makeflow/scars_registry.db` |
-| `chatgpt` | `~/.chatgpt/plugin_data/makeflow/config.json` | `~/.chatgpt/plugin_data/makeflow/scars/` | `~/.chatgpt/plugin_data/makeflow/scars_registry.db` |
+| Agent | User-Global Config | User-Wide SQLite Registry |
+| :--- | :--- | :--- |
+| `gemini` | `~/.gemini/antigravity-cli/plugin_data/makeflow/config.json` | `~/.gemini/antigravity-cli/plugin_data/makeflow/scars_registry.db` |
+| `claude` | `~/.claude/plugin_data/makeflow/config.json` | `~/.claude/plugin_data/makeflow/scars_registry.db` |
+| `cursor` | `~/.cursor/plugin_data/makeflow/config.json` | `~/.cursor/plugin_data/makeflow/scars_registry.db` |
+| `copilot` | `~/.copilot/plugin_data/makeflow/config.json` | `~/.copilot/plugin_data/makeflow/scars_registry.db` |
+| `codex` | `~/.codex/plugin_data/makeflow/config.json` | `~/.codex/plugin_data/makeflow/scars_registry.db` |
+| `chatgpt` | `~/.chatgpt/plugin_data/makeflow/config.json` | `~/.chatgpt/plugin_data/makeflow/scars_registry.db` |
 
 ## 3. Configuration File Schema
 
@@ -108,7 +108,11 @@ Copy [`.workflow/config.json.example`](../../../.workflow/config.json.example) t
     "completedCardAction": "unlink"
   },
   "scars": {
-    "directories": []
+    "databases": [
+      ".workflow/scars/scars_registry.db",
+      "{agent_data}/scars_registry.db",
+      "{plugin_root}/skills/makeflow/data/scars_registry.db"
+    ]
   }
 }
 ```

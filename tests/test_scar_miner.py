@@ -1,10 +1,11 @@
-"""Behavioral tests for Rapid-Regret Miner library and thin CLI wrapper (GH-117)."""
+"""Behavioral tests for SQLite Rapid-Regret Miner library and thin CLI wrapper (GH-117, GH-304)."""
 
 import ast
 import importlib.util
 import io
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -17,47 +18,65 @@ if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
 from lib.agent_paths import AgentPathRegistry
+from lib.config import DEFAULT_BUNDLED_SCAR_DB_TOKEN, DEFAULT_SCAR_DATABASES
 from lib.scar_miner import (
-    CATEGORY_SPOKE_FILES,
     TIER_ID_PREFIXES,
     UPSTREAM_REPO,
-    MarkdownScarStore,
     MinedScarRecord,
     ScarConfigStore,
     ScarMinerScript,
+    SqliteScarStore,
     UpstreamIssuePublisher,
-    category_to_filename,
     validate_mined_scar,
+    validate_scar_id,
 )
-from lib.scar_ontology import DOMAIN_CATEGORY_ONTOLOGY
+from lib.scars_db import next_tier_scar_id, query_scars
 
 
 def _sample_record(
     title="Guard Empty Database URLs",
     category="DB",
     circuit_breaker="If URL is empty, halt before opening a connection.",
+    wound="An empty database URL opened an unintended local file.",
+    trap="Callers assumed configuration loading always returned a valid connection string.",
+    reflex="Validate the connection URL before opening a database handle.",
+    socratic_probe="Did you validate the database URL before opening a connection?",
+    applies_when="",
 ):
   """Construct a valid Simple English MinedScarRecord fixture."""
   return MinedScarRecord(
       title=title,
       category=category,
-      wound="An empty database URL opened an unintended local file.",
-      trap="Callers assumed configuration loading always returned a valid connection string.",
+      wound=wound,
+      trap=trap,
       circuit_breaker=circuit_breaker,
-      reflex="Validate the connection URL before opening a database handle.",
-      socratic_probe="Did you validate the database URL before opening a connection?",
+      reflex=reflex,
+      socratic_probe=socratic_probe,
+      applies_when=applies_when,
   )
 
 
-class TestScarMinerLayerSeparation(unittest.TestCase):
-  """Tests SCAR-ARCH-05 and SCAR-GENUI-0008 layer separation invariants."""
+def _isolated_env(home_dir, extra=None):
+  """Build a minimal isolated environment pointing HOME to a temporary directory."""
+  env = {
+      "HOME": home_dir,
+      "PATH": os.environ.get("PATH", ""),
+  }
+  if extra:
+    env.update(extra)
+  return env
 
-  def test_lib_scar_miner_has_no_shebang(self):
-    """Verifies lib/scar_miner.py has no executable shebang header."""
+
+class TestScarMinerLayerSeparation(unittest.TestCase):
+  """Tests SCAR-ARCH-05, SCAR-ARCH-08, and SCAR-ARCH-0002 invariants."""
+
+  def test_lib_scar_miner_has_no_shebang_and_no_dead_passthrough_shim(self):
+    """Verifies lib/scar_miner.py has no shebang and SqliteScarStore omits pass-through allocate_scar_id."""
     lib_path = os.path.join(REPO_ROOT, "lib", "scar_miner.py")
     with open(lib_path, "r", encoding="utf-8") as fh:
       first_line = fh.readline()
     self.assertFalse(first_line.startswith("#!"))
+    self.assertFalse(hasattr(SqliteScarStore, "allocate_scar_id"))
 
   def test_scripts_scar_miner_is_thin_executable_wrapper(self):
     """Verifies scripts/scar_miner.py is executable with zero local defs/classes."""
@@ -85,357 +104,313 @@ class TestScarMinerLayerSeparation(unittest.TestCase):
     assert spec is not None and spec.loader is not None
     spec.loader.exec_module(module)
     self.assertIn("ScarMinerScript", module.__all__)
+    self.assertIn("SqliteScarStore", module.__all__)
     self.assertIs(module.ScarMinerScript, ScarMinerScript)
+    self.assertIs(module.SqliteScarStore, SqliteScarStore)
 
 
-class TestCategoryMappingAndValidation(unittest.TestCase):
-  """Tests 68-code ontology filename mapping, traversal guards, and scar validation."""
-
-  def test_all_68_ontology_codes_map_to_safe_markdown_filenames(self):
-    """Verifies every canonical domain code maps to a safe categorized .md file."""
-    self.assertEqual(set(CATEGORY_SPOKE_FILES.keys()), set(DOMAIN_CATEGORY_ONTOLOGY.keys()))
-    for code in DOMAIN_CATEGORY_ONTOLOGY:
-      with self.subTest(code=code):
-        fname = category_to_filename(code)
-        self.assertTrue(fname.endswith(".md"))
-        self.assertNotIn("/", fname)
-        self.assertNotIn("\\", fname)
-        self.assertNotIn("..", fname)
-
-    self.assertEqual(category_to_filename("DATA"), "data.md")
-    self.assertEqual(category_to_filename("Database"), "data.md")
-    self.assertEqual(category_to_filename("PROC"), "process.md")
-    self.assertEqual(category_to_filename("Testing"), "testing.md")
-    self.assertEqual(category_to_filename("ARCH"), "architecture.md")
-    self.assertEqual(category_to_filename("SEC"), "security.md")
-    self.assertEqual(category_to_filename("GIT"), "git_and_shell.md")
-    self.assertEqual(category_to_filename("SYS"), "system.md")
-    self.assertEqual(category_to_filename("TOOL"), "tooling.md")
-
-  def test_category_rejects_path_traversal_inputs(self):
-    """Verifies path traversal payloads in category raise ValueError."""
-    for bad in ("../evil", "../../etc/passwd", "foo/bar", "a\\b", "proc\x00.md"):
-      with self.subTest(bad=bad):
-        with self.assertRaises(ValueError):
-          category_to_filename(bad)
+class TestValidationAndScarIdRules(unittest.TestCase):
+  """Tests scar record validation, category guards, and explicit --id validation."""
 
   def test_validate_mined_scar_accepts_valid_and_rejects_invalid(self):
     """Verifies validation enforces four-part anatomy, Simple English, and Socratic probe rules."""
-    valid = _sample_record()
-    self.assertEqual(validate_mined_scar(valid), [])
+    self.assertEqual(validate_mined_scar(_sample_record()), [])
+    self.assertEqual(validate_mined_scar(_sample_record(circuit_breaker="")), [])
 
-    valid_no_cb = _sample_record(circuit_breaker="")
-    self.assertEqual(validate_mined_scar(valid_no_cb), [])
+    bad_probe = _sample_record(socratic_probe="This probe has no question mark.")
+    self.assertTrue(any("?" in err for err in validate_mined_scar(bad_probe)))
 
-    bad_probe = MinedScarRecord(
-        title="Bad Probe",
-        category="TEST",
-        wound="A test leaked state.",
-        trap="The test skipped cleanup.",
-        reflex="Clean up temp files after each test.",
-        socratic_probe="This probe has no question mark.",
+    bad_contraction = _sample_record(
+        wound="It's broken because tests don't isolate state."
     )
-    probe_errors = validate_mined_scar(bad_probe)
-    self.assertTrue(any("?" in err for err in probe_errors))
-
-    bad_contraction = MinedScarRecord(
-        title="Contraction Violation",
-        category="PROC",
-        wound="It's broken because tests don't isolate state.",
-        trap="Agents skip temp directories.",
-        reflex="Use isolated temporary directories.",
-        socratic_probe="Did you isolate temporary directories?",
+    self.assertTrue(
+        any("contraction" in err.lower() for err in validate_mined_scar(bad_contraction))
     )
-    contraction_errors = validate_mined_scar(bad_contraction)
-    self.assertTrue(any("contraction" in err.lower() for err in contraction_errors))
 
-    missing_title = MinedScarRecord(
-        title="   ",
-        category="ARCH",
-        wound="A module leaked internals.",
-        trap="Callers imported private helpers.",
-        reflex="Export a narrow public API.",
-        socratic_probe="Does the module expose only public symbols?",
+    missing_title = _sample_record(title="   ")
+    self.assertTrue(
+        any("title" in err.lower() for err in validate_mined_scar(missing_title))
     )
-    title_errors = validate_mined_scar(missing_title)
-    self.assertTrue(any("title" in err.lower() for err in title_errors))
 
-  def test_mined_scar_record_omits_unused_workflow_phases_field(self):
-    """Verifies unused workflow_phases attribute is removed from MinedScarRecord (NBO #1)."""
-    self.assertNotIn("workflow_phases", MinedScarRecord.__dataclass_fields__)
+    for bad_cat in ("", "../evil", "foo/bar", "a\\b", "proc\x00"):
+      with self.subTest(bad_cat=bad_cat):
+        self.assertTrue(validate_mined_scar(_sample_record(category=bad_cat)))
 
-  def test_validate_mined_scar_rejects_multiline_applies_when(self):
-    """Verifies applies_when rejects newline and carriage-return characters (BLOCKER-3)."""
-    for bad_applies in (
-        "Target 30\n### SCAR-LOCAL-DB-9999: Injected",
-        "Target 30\rSingle line broken",
-    ):
+    for bad_applies in ("Target 30\nExtra", "Target 30\rExtra"):
       with self.subTest(bad_applies=bad_applies):
-        rec = MinedScarRecord(
-            title="Guard Applies When",
-            category="DB",
-            wound="An empty database URL opened an unintended local file.",
-            trap="Callers assumed configuration loading always returned a valid connection string.",
-            reflex="Validate the connection URL before opening a database handle.",
-            socratic_probe="Did you validate the database URL before opening a connection?",
-            applies_when=bad_applies,
-        )
-        errors = validate_mined_scar(rec)
-        self.assertTrue(
-            any("applies_when" in err for err in errors),
-            msg=f"Expected applies_when error, got: {errors}",
-        )
+        errors = validate_mined_scar(_sample_record(applies_when=bad_applies))
+        self.assertTrue(any("applies_when" in err for err in errors))
+
+  def test_validate_scar_id_accepts_canonical_and_rejects_malformed(self):
+    """Verifies explicit scar ID validation accepts canonical forms and rejects malformed values."""
+    self.assertEqual(validate_scar_id("SCAR-ARCH-0001"), "SCAR-ARCH-0001")
+    self.assertEqual(validate_scar_id("scar-local-data-0001"), "SCAR-LOCAL-DATA-0001")
+    self.assertEqual(
+        validate_scar_id("SCAR-LANG-PYTHON-ARCH-0005"),
+        "SCAR-LANG-PYTHON-ARCH-0005",
+    )
+    self.assertEqual(validate_scar_id("SCAR-TEST-45"), "SCAR-TEST-45")
+
+    for bad_id in (
+        "",
+        "   ",
+        "NOT-A-SCAR",
+        "SCAR-ARCH",
+        "SCAR-123",
+        "SCAR-ARCH-01 extra",
+        "../SCAR-ARCH-01",
+        "SCAR-ARCH-0001\n",
+    ):
+      with self.subTest(bad_id=bad_id):
+        with self.assertRaises(ValueError):
+          validate_scar_id(bad_id)
 
 
-class TestMarkdownScarStoreAndConfigStore(unittest.TestCase):
-  """Tests categorized Markdown persistence, collision-free IDs, parsing, and config saving."""
+class TestSqliteScarStoreAndConfigStore(unittest.TestCase):
+  """Tests SQLite tier saves, explicit --id upserts, FTS5 refresh, and save-config persistence."""
 
-  def test_save_and_parse_round_trip_with_tier_scoped_ids(self):
-    """Verifies categorized file writes, optional Circuit Breaker, sequential IDs, and zero binary DBs."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      store = MarkdownScarStore()
+  def test_sqlite_tier_saves_enrichment_and_fts5_searchability(self):
+    """Verifies project, user, and custom SQLite saves allocate IDs, populate raw_hash/metadata, and update FTS5."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      store = SqliteScarStore()
       self.assertEqual(TIER_ID_PREFIXES["project"], "LOCAL")
       self.assertEqual(TIER_ID_PREFIXES["user"], "USER")
       self.assertEqual(TIER_ID_PREFIXES["custom"], "CUSTOM")
 
-      first = store.save_scar(tmpdir, _sample_record(title="First DB Guard"), tier="project")
+      proj_db = os.path.join(tmp_root, "workspace", ".workflow", "scars", "scars_registry.db")
+      first = store.save_scar(
+          proj_db,
+          _sample_record(
+              title="First Python SQLite Guard",
+              category="DB",
+              wound="Python sqlite3 connection leaked temporary handles.",
+              reflex="Close Python sqlite3 handles inside a finally block.",
+              socratic_probe="Did you close sqlite3 handles in a finally block?",
+          ),
+          tier="project",
+      )
       second = store.save_scar(
-          tmpdir,
-          _sample_record(title="Second DB Guard", circuit_breaker=""),
+          proj_db,
+          _sample_record(title="Second DB Guard", category="DB", circuit_breaker=""),
           tier="project",
       )
       self.assertEqual(first["scarId"], "SCAR-LOCAL-DB-0001")
       self.assertEqual(second["scarId"], "SCAR-LOCAL-DB-0002")
-      self.assertEqual(os.path.basename(first["filePath"]), "data.md")
-      self.assertEqual(first["filePath"], second["filePath"])
+      self.assertEqual(first["dbPath"], proj_db)
+      self.assertEqual(first["source"], "local")
+      self.assertFalse(first["updated"])
+      self.assertTrue(os.path.isfile(proj_db))
 
-      # Verify zero SQLite files created in markdown scar directory
-      created_files = os.listdir(tmpdir)
-      self.assertEqual(created_files, ["data.md"])
+      # next_tier_scar_id expands tilde paths safely (NBO-1)
+      with mock.patch.dict(os.environ, _isolated_env(tmp_root), clear=True):
+        self.assertEqual(
+            next_tier_scar_id(
+                "~/workspace/.workflow/scars/scars_registry.db", "DB", tier="project"
+            ),
+            "SCAR-LOCAL-DB-0003",
+        )
 
-      # Parse back and verify both records preserve Circuit Breaker presence/absence
-      parsed = store.parse_directory(tmpdir, source_tier="local")
-      self.assertEqual(len(parsed), 2)
-      self.assertEqual(parsed[0]["id"], "SCAR-LOCAL-DB-0001")
-      self.assertEqual(parsed[0]["title"], "First DB Guard")
-      self.assertEqual(
-          parsed[0]["circuit_breaker"],
-          "If URL is empty, halt before opening a connection.",
+      conn = sqlite3.connect(proj_db)
+      try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in cur.fetchall()}
+        self.assertTrue({"scars", "scars_fts", "meta"}.issubset(tables))
+
+        cur.execute(
+            "SELECT raw_wound, raw_hash, keywords, languages, workflow_phases, source "
+            "FROM scars WHERE id = 'SCAR-LOCAL-DB-0001'"
+        )
+        row = cur.fetchone()
+        self.assertIsNotNone(row)
+        self.assertIn("sqlite3", row[0])
+        self.assertEqual(len(row[1]), 64)
+        self.assertTrue(json.loads(row[2]))
+        self.assertIn("python", json.loads(row[3]))
+        self.assertTrue(json.loads(row[4]))
+        self.assertEqual(row[5], "local")
+      finally:
+        conn.close()
+
+      hits = query_scars(proj_db, query="sqlite3", language="python", limit=5)
+      self.assertEqual([h["id"] for h in hits], ["SCAR-LOCAL-DB-0001"])
+
+      user_db = os.path.join(tmp_root, "home", ".claude", "plugin_data", "makeflow", "scars_registry.db")
+      custom_db = os.path.join(tmp_root, "shared_team", "team.db")
+      user_res = store.save_scar(user_db, _sample_record(category="PROC"), tier="user")
+      custom_res = store.save_scar(custom_db, _sample_record(category="TEST"), tier="custom")
+      self.assertEqual(user_res["scarId"], "SCAR-USER-PROC-0001")
+      self.assertEqual(user_res["source"], "user")
+      self.assertEqual(custom_res["scarId"], "SCAR-CUSTOM-TEST-0001")
+      self.assertEqual(custom_res["source"], "custom")
+
+  def test_explicit_id_override_idempotent_upsert_and_fts5_refresh(self):
+    """Verifies --id override inserts exact ID, updates in place on re-save, and purges stale FTS5 tokens."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      store = SqliteScarStore()
+      proj_db = os.path.join(tmp_root, "workspace", ".workflow", "scars", "scars_registry.db")
+
+      ins = store.save_scar(
+          proj_db,
+          _sample_record(
+              title="Initial Override TokenAlpha",
+              category="ARCH",
+              wound="Initial failure mentioning tokenalpha_only.",
+              reflex="Handle tokenalpha_only safely.",
+              socratic_probe="Did you handle tokenalpha_only safely?",
+          ),
+          tier="project",
+          scar_id="SCAR-ARCH-0001",
       )
-      self.assertEqual(parsed[1]["id"], "SCAR-LOCAL-DB-0002")
-      self.assertEqual(parsed[1]["circuit_breaker"], "")
-      self.assertEqual(parsed[1]["source"], "local")
+      self.assertEqual(ins["scarId"], "SCAR-ARCH-0001")
+      self.assertFalse(ins["updated"])
+      self.assertEqual(
+          [r["id"] for r in query_scars(proj_db, query="tokenalpha_only", limit=5)],
+          ["SCAR-ARCH-0001"],
+      )
 
-      # User and custom tier IDs use their own prefixes
-      with tempfile.TemporaryDirectory() as user_dir, tempfile.TemporaryDirectory() as custom_dir:
-        user_receipt = store.save_scar(user_dir, _sample_record(category="PROC"), tier="user")
-        custom_receipt = store.save_scar(custom_dir, _sample_record(category="TEST"), tier="custom")
-        self.assertEqual(user_receipt["scarId"], "SCAR-USER-PROC-0001")
-        self.assertEqual(os.path.basename(user_receipt["filePath"]), "process.md")
-        self.assertEqual(custom_receipt["scarId"], "SCAR-CUSTOM-TEST-0001")
-        self.assertEqual(os.path.basename(custom_receipt["filePath"]), "testing.md")
+      upd = store.save_scar(
+          proj_db,
+          _sample_record(
+              title="Updated Override TokenBeta",
+              category="ARCH",
+              wound="Updated failure mentioning tokenbeta_only.",
+              reflex="Handle tokenbeta_only safely.",
+              socratic_probe="Did you handle tokenbeta_only safely?",
+          ),
+          tier="project",
+          scar_id="SCAR-ARCH-0001",
+      )
+      self.assertEqual(upd["scarId"], "SCAR-ARCH-0001")
+      self.assertTrue(upd["updated"])
 
-  def test_scar_config_store_updates_scopes_without_clobbering_keys(self):
-    """Verifies user-global, project-local, and both config persistence preserve unrelated keys."""
-    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
+      conn = sqlite3.connect(proj_db)
+      try:
+        count = conn.execute("SELECT COUNT(*) FROM scars").fetchone()[0]
+      finally:
+        conn.close()
+      self.assertEqual(count, 1)
+
+      self.assertEqual(query_scars(proj_db, query="tokenalpha_only", limit=5), [])
+      beta_hits = query_scars(proj_db, query="tokenbeta_only", limit=5)
+      self.assertEqual(len(beta_hits), 1)
+      self.assertEqual(beta_hits[0]["title"], "Updated Override TokenBeta")
+
+  def test_validation_rejects_malformed_id_or_payload_before_mutating_sqlite(self):
+    """Verifies invalid --id, invalid record, or invalid db_path never creates or mutates SQLite files."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      store = SqliteScarStore()
+      db_path = os.path.join(tmp_root, "never_created.db")
+
+      with self.assertRaises(ValueError):
+        store.save_scar(db_path, _sample_record(), tier="project", scar_id="BAD-ID")
+      self.assertFalse(os.path.exists(db_path))
+
+      bad_rec = _sample_record(socratic_probe="Missing question mark.")
+      with self.assertRaises(ValueError):
+        store.save_scar(db_path, bad_rec, tier="project", scar_id="SCAR-ARCH-0001")
+      self.assertFalse(os.path.exists(db_path))
+
+      for bad_db in ("", "   ", None, os.path.join(tmp_root, "bad\x00.db"), tmp_root):
+        with self.subTest(bad_db=bad_db):
+          with self.assertRaises(ValueError):
+            store.save_scar(bad_db, _sample_record(), tier="project")  # type: ignore[arg-type]
+
+  def test_scar_config_store_persists_scars_databases_without_clobbering_keys(self):
+    """Verifies save-config updates scars.databases before bundled DB or appends if bundled omitted."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fake_home = os.path.join(tmp_root, "home")
+      ws_dir = os.path.join(fake_home, "my_workspace")
+      os.makedirs(ws_dir, exist_ok=True)
+
       registry = AgentPathRegistry(home_dir=fake_home)
       cfg_store = ScarConfigStore(registry=registry)
 
+      # Local config omits bundled DB -> new DB appends at end
       local_cfg_path = os.path.join(ws_dir, ".workflow", "config.json")
       os.makedirs(os.path.dirname(local_cfg_path), exist_ok=True)
       with open(local_cfg_path, "w", encoding="utf-8") as fh:
-        json.dump({"models": {"tdd-worker": "pro"}, "ci": {"quiescenceSeconds": 0}}, fh)
+        json.dump(
+            {
+                "models": {"tdd-worker": "pro"},
+                "ci": {"quiescenceSeconds": 0},
+                "scars": {"databases": [".workflow/scars/scars_registry.db"]},
+            },
+            fh,
+        )
 
+      # Global config lacks scars.databases -> seeds from DEFAULT_SCAR_DATABASES and inserts before bundled
       global_cfg_path = registry.get_profile("cursor").global_config_path
       os.makedirs(os.path.dirname(global_cfg_path), exist_ok=True)
       with open(global_cfg_path, "w", encoding="utf-8") as fh:
         json.dump({"state": {"completedCardAction": "archive"}}, fh)
 
-      custom_dir_a = os.path.join(fake_home, "team_scars_a")
-      custom_dir_b = os.path.join(fake_home, "team_scars_b")
+      team_db_a = os.path.join(tmp_root, "shared_team", "team_a.db")
+      team_db_b = os.path.join(tmp_root, "shared_team", "team_b.db")
 
-      res_both = cfg_store.add_scar_directory(
-          custom_dir_a,
+      # Tilde workspace_dir resolves against registry.home_dir (NBO-1)
+      res_both = cfg_store.add_scar_database(
+          team_db_a,
           scope="both",
-          workspace_dir=ws_dir,
+          workspace_dir="~/my_workspace",
           agent="cursor",
       )
       self.assertEqual(set(res_both["updatedFiles"]), {global_cfg_path, local_cfg_path})
 
-      # Re-adding the same directory is idempotent (no duplicate entry)
-      cfg_store.add_scar_directory(
-          custom_dir_a,
-          scope="project-local",
-          workspace_dir=ws_dir,
-          agent="cursor",
+      # Re-adding is idempotent
+      cfg_store.add_scar_database(
+          team_db_a, scope="project-local", workspace_dir=ws_dir, agent="cursor"
       )
-      cfg_store.add_scar_directory(
-          custom_dir_b,
-          scope="user-global",
-          workspace_dir=ws_dir,
-          agent="cursor",
+      cfg_store.add_scar_database(
+          team_db_b, scope="user-global", workspace_dir=ws_dir, agent="cursor"
       )
 
       with open(local_cfg_path, "r", encoding="utf-8") as fh:
         local_data = json.load(fh)
       self.assertEqual(local_data["models"]["tdd-worker"], "pro")
-      self.assertEqual(local_data["ci"]["quiescenceSeconds"], 0)
-      self.assertEqual(local_data["scars"]["directories"], [custom_dir_a])
+      self.assertEqual(
+          local_data["scars"]["databases"],
+          [".workflow/scars/scars_registry.db", team_db_a],
+      )
+      self.assertNotIn("extraDatabases", local_data["scars"])
 
       with open(global_cfg_path, "r", encoding="utf-8") as fh:
         global_data = json.load(fh)
       self.assertEqual(global_data["state"]["completedCardAction"], "archive")
-      self.assertEqual(global_data["scars"]["directories"], [custom_dir_a, custom_dir_b])
+      self.assertEqual(
+          global_data["scars"]["databases"],
+          [
+              DEFAULT_SCAR_DATABASES[0],
+              DEFAULT_SCAR_DATABASES[1],
+              team_db_a,
+              team_db_b,
+              DEFAULT_BUNDLED_SCAR_DB_TOKEN,
+          ],
+      )
 
       with self.assertRaises(ValueError):
-        cfg_store.add_scar_directory(custom_dir_a, scope="invalid-scope", workspace_dir=ws_dir)
-
-  def test_multiline_paragraphs_and_fenced_code_blocks_round_trip_losslessly(self):
-    """Verifies multi-line prose and fenced code blocks with --- and ## round-trip losslessly (BLOCKER-1)."""
-    wound_text = (
-        "Parser dropped scars containing YAML frontmatter examples.\n\n"
-        "```yaml\n"
-        "---\n"
-        "## Not a Section Heading\n"
-        "### SCAR-LOCAL-DB-9999: Fake Heading Inside Fence\n"
-        "- **Trap**: Fake bullet inside fence.\n"
-        "nested:\n"
-        "  child:\n"
-        "    value: 42\n"
-        "```\n\n"
-        "Second paragraph explains the failure impact."
-    )
-    reflex_text = (
-        "Track fenced code block state before matching headings.\n\n"
-        "```python\n"
-        "def keep_indent(lines):\n"
-        "    result = []\n"
-        "\n"
-        "    for line in lines:\n"
-        "        result.append(line)\n"
-        "    return result\n"
-        "```"
-    )
-    rec1 = MinedScarRecord(
-        title="Preserve Fenced Code Blocks",
-        category="DB",
-        wound=wound_text,
-        trap="The parser stripped indentation and flushed on horizontal rules inside fences.",
-        circuit_breaker="If inside a fenced code block, ignore heading markers.",
-        reflex=reflex_text,
-        socratic_probe="Does your parser track fenced code blocks before splitting sections?",
-    )
-    rec2 = _sample_record(title="Follow Up Record", category="DB")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-      store = MarkdownScarStore()
-      r1 = store.save_scar(tmpdir, rec1, tier="project")
-      r2 = store.save_scar(tmpdir, rec2, tier="project")
-      self.assertEqual(r1["scarId"], "SCAR-LOCAL-DB-0001")
-      self.assertEqual(r2["scarId"], "SCAR-LOCAL-DB-0002")
-
-      parsed = store.parse_directory(tmpdir, source_tier="local")
-      self.assertEqual(len(parsed), 2)
-      self.assertEqual(parsed[0]["id"], "SCAR-LOCAL-DB-0001")
-      self.assertEqual(parsed[0]["wound"], wound_text)
-      self.assertEqual(parsed[0]["reflex"], reflex_text)
-      self.assertEqual(parsed[1]["id"], "SCAR-LOCAL-DB-0002")
-      self.assertEqual(parsed[1]["title"], "Follow Up Record")
-
-      # Tilde fences (~~~) also shield --- and ## lines and preserve exact indentation
-      tilde_path = os.path.join(tmpdir, "tilde_case.md")
-      tilde_wound = (
-          "Tilde fenced example.\n\n"
-          "~~~yaml\n"
-          "---\n"
-          "## Still Inside Tilde Fence\n"
-          "root:\n"
-          "  indent: true\n"
-          "~~~"
-      )
-      with open(tilde_path, "w", encoding="utf-8") as fh:
-        fh.write(
-            "# Synthetic Scars: Tilde\n\n"
-            "### SCAR-LOCAL-ARCH-0001: Tilde Fence Guard\n\n"
-            "- **Category**: `ARCH`\n"
-            f"- **Wound**: {tilde_wound}\n"
-            "- **Trap**: Ignored tilde fences.\n"
-            "- **Permanent Reflex**: Track both backtick and tilde fences.\n"
-            "- **Socratic Probe**: Does the parser handle tilde fences?\n"
-        )
-      tilde_parsed = store.parse_markdown_file(tilde_path, source_tier="local")
-      self.assertEqual(len(tilde_parsed), 1)
-      self.assertEqual(tilde_parsed[0]["wound"], tilde_wound)
-
-  def test_parse_directory_skips_malformed_and_incomplete_markdown_safely(self):
-    """Verifies malformed, incomplete, and non-UTF8 files are skipped without dropping valid scars."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-      mixed_path = os.path.join(tmpdir, "architecture.md")
-      with open(mixed_path, "w", encoding="utf-8") as fh:
-        fh.write(
-            "# Random Preamble\n\nSome notes outside any scar.\n\n"
-            "### SCAR-LOCAL-ARCH-0001: Incomplete Missing Trap\n\n"
-            "- **Wound**: Only a wound is present.\n\n"
-            "### SCAR-LOCAL-ARCH-0002: Valid Complete Scar\n\n"
-            "- **Category**: `ARCH`\n"
-            "- **Wound**: Missing validation broke startup.\n"
-            "- **Trap**: Assumed file format was always valid.\n"
-            "- **Permanent Reflex**: Skip incomplete records safely.\n"
-            "- **Socratic Probe**: Does parsing skip incomplete records safely?\n\n"
-            "### SCAR-LOCAL-ARCH-0003: Missing Probe\n\n"
-            "- **Wound**: Wound present.\n"
-            "- **Trap**: Trap present.\n"
-            "- **Permanent Reflex**: Reflex present.\n"
-        )
-      binary_path = os.path.join(tmpdir, "zz_corrupt.md")
-      with open(binary_path, "wb") as fh:
-        fh.write(b"\xff\xfe\x00\x80invalid-utf8")
-
-      parsed = MarkdownScarStore().parse_directory(tmpdir, source_tier="local")
-      self.assertEqual([row["id"] for row in parsed], ["SCAR-LOCAL-ARCH-0002"])
-
-  def test_save_scar_rejects_invalid_target_dir_without_filesystem_mutation(self):
-    """Verifies save_scar rejects empty, whitespace, null-byte, non-string, and file target_dir (BLOCKER-3)."""
-    store = MarkdownScarStore()
-    rec = _sample_record()
-    with tempfile.TemporaryDirectory() as sandbox:
-      orig_cwd = os.getcwd()
-      os.chdir(sandbox)
-      try:
-        for bad_dir in ("", "   ", "\t\n", None, 123, os.path.join(sandbox, "bad\x00dir")):
-          with self.subTest(bad_dir=bad_dir):
-            with self.assertRaises(ValueError):
-              store.save_scar(bad_dir, rec, tier="project")  # type: ignore[arg-type]
-        self.assertEqual(os.listdir(sandbox), [])
-
-        existing_file = os.path.join(sandbox, "not_a_directory")
-        with open(existing_file, "w", encoding="utf-8") as fh:
-          fh.write("sentinel")
-        with self.assertRaises(ValueError):
-          store.save_scar(existing_file, rec, tier="project")
-        with open(existing_file, "r", encoding="utf-8") as fh:
-          self.assertEqual(fh.read(), "sentinel")
-      finally:
-        os.chdir(orig_cwd)
+        cfg_store.add_scar_database(team_db_a, scope="invalid-scope", workspace_dir=ws_dir)
 
   def test_scar_config_store_error_paths(self):
-    """Verifies ScarConfigStore rejects invalid paths, missing workspace_dir, and corrupt/non-dict JSON."""
+    """Verifies ScarConfigStore rejects invalid paths, missing workspace_dir, and corrupt/non-dict JSON (BLOCKER-2)."""
     with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
       registry = AgentPathRegistry(home_dir=fake_home)
       cfg_store = ScarConfigStore(registry=registry)
 
-      for bad_dir in ("", "   ", None, "/tmp/bad\x00dir"):
-        with self.subTest(bad_dir=bad_dir):
+      for bad_db in ("", "   ", None, os.path.join(ws_dir, "bad\x00.db")):
+        with self.subTest(bad_db=bad_db):
           with self.assertRaises(ValueError):
-            cfg_store.add_scar_directory(
-                bad_dir, scope="user-global", workspace_dir=ws_dir  # type: ignore[arg-type]
+            cfg_store.add_scar_database(
+                bad_db, scope="user-global", workspace_dir=ws_dir  # type: ignore[arg-type]
             )
 
       for bad_ws in (None, "", "   ", os.path.join(ws_dir, "bad\x00ws")):
         with self.subTest(bad_ws=bad_ws):
           with self.assertRaises(ValueError):
-            cfg_store.add_scar_directory(
-                "/valid/custom", scope="project-local", workspace_dir=bad_ws  # type: ignore[arg-type]
+            cfg_store.add_scar_database(
+                os.path.join(fake_home, "team.db"),
+                scope="project-local",
+                workspace_dir=bad_ws,  # type: ignore[arg-type]
             )
 
       local_cfg_path = os.path.join(ws_dir, ".workflow", "config.json")
@@ -443,41 +418,58 @@ class TestMarkdownScarStoreAndConfigStore(unittest.TestCase):
       with open(local_cfg_path, "w", encoding="utf-8") as fh:
         fh.write("{corrupt json")
       with self.assertRaises(json.JSONDecodeError):
-        cfg_store.add_scar_directory(
-            "/valid/custom", scope="project-local", workspace_dir=ws_dir
+        cfg_store.add_scar_database(
+            os.path.join(fake_home, "team.db"),
+            scope="project-local",
+            workspace_dir=ws_dir,
         )
 
       with open(local_cfg_path, "w", encoding="utf-8") as fh:
         json.dump(["not", "a", "dict"], fh)
       with self.assertRaises(ValueError):
-        cfg_store.add_scar_directory(
-            "/valid/custom", scope="project-local", workspace_dir=ws_dir
+        cfg_store.add_scar_database(
+            os.path.join(fake_home, "team.db"),
+            scope="project-local",
+            workspace_dir=ws_dir,
         )
 
 
 class TestUpstreamIssuePublisher(unittest.TestCase):
-  """Tests gh auth preflight, integer-ID stripping, --approved gate, and --body-file submission."""
+  """Tests gh auth preflight, tier+built-in integer-ID stripping, --approved gate, and failure paths."""
 
-  def test_format_issue_payload_strips_assigned_integer_ids(self):
-    """Verifies formatted upstream issue omits any assigned integer scar ID."""
+  def test_format_issue_payload_strips_tier_builtin_and_lang_integer_ids(self):
+    """Verifies upstream payload strips SCAR-LOCAL-*, SCAR-ARCH-0001, and SCAR-LANG-PYTHON-ARCH-0001 IDs."""
     publisher = UpstreamIssuePublisher()
     self.assertEqual(publisher.repo, UPSTREAM_REPO)
-    rec = _sample_record(
-        title="SCAR-LOCAL-DB-0042: Guard Empty Database URLs",
-        category="DB",
-    )
-    payload = publisher.format_issue_payload(rec)
-    self.assertNotIn("SCAR-LOCAL-DB-0042", payload["title"])
-    self.assertNotIn("SCAR-LOCAL-DB-0042", payload["body"])
-    self.assertNotRegex(payload["title"], r"SCAR-(?:[A-Z0-9]+-)+\d+")
-    self.assertNotRegex(payload["body"], r"SCAR-(?:[A-Z0-9]+-)+\d+")
-    self.assertIn("Guard Empty Database URLs", payload["title"])
-    self.assertIn("**Wound**:", payload["body"])
-    self.assertIn("**Circuit Breaker**:", payload["body"])
-    self.assertIn("**Socratic Probe**:", payload["body"])
+
+    cases = [
+        ("SCAR-LOCAL-DATA-0001: Track Fenced Code Blocks", "SCAR-LOCAL-DATA-0001"),
+        ("SCAR-ARCH-0001: Premature Abstraction Guard", "SCAR-ARCH-0001"),
+        ("SCAR-LANG-PYTHON-ARCH-0001: Python Layer Separation", "SCAR-LANG-PYTHON-ARCH-0001"),
+    ]
+    for raw_title, forbidden_id in cases:
+      with self.subTest(raw_title=raw_title):
+        rec = _sample_record(
+            title=raw_title,
+            category="ARCH",
+            wound=f"Failure recorded under {forbidden_id} in local registry.",
+            trap=f"Overrides referencing {forbidden_id} leaked assigned integer IDs.",
+            circuit_breaker=f"If {forbidden_id} appears in draft text, strip it first.",
+            reflex=f"Always strip {forbidden_id} while keeping SCAR-TEST-45 references.",
+            socratic_probe=f"Did you strip {forbidden_id} before opening an upstream issue?",
+        )
+        payload = publisher.format_issue_payload(rec)
+        self.assertNotIn(forbidden_id, payload["title"])
+        self.assertNotIn(forbidden_id, payload["body"])
+        self.assertIn("SCAR-TEST-45", payload["body"])
+
+    for id_only in ("SCAR-LOCAL-DB-0042", "SCAR-ARCH-0001:", "SCAR-LANG-PYTHON-ARCH-0001 - "):
+      with self.subTest(id_only=id_only):
+        with self.assertRaises(ValueError):
+          publisher.format_issue_payload(_sample_record(title=id_only))
 
   def test_check_access_handles_missing_gh_unauth_and_ready(self):
-    """Verifies preflight handles missing gh binary, unauthenticated state, and full access."""
+    """Verifies preflight handles missing gh binary, unauthenticated state, and full access (BLOCKER-2)."""
     publisher = UpstreamIssuePublisher()
     with mock.patch("shutil.which", return_value=None):
       res_missing = publisher.check_access()
@@ -515,7 +507,7 @@ class TestUpstreamIssuePublisher(unittest.TestCase):
   def test_submit_issue_requires_approval_and_uses_body_file(self):
     """Verifies unapproved submit is blocked and approved submit passes --body-file via temp dir."""
     publisher = UpstreamIssuePublisher()
-    rec = _sample_record(title="SCAR-USER-DB-0009: Guard Empty URLs")
+    rec = _sample_record(title="SCAR-ARCH-0001: Guard Empty URLs")
 
     with mock.patch("subprocess.run") as run_mock:
       with self.assertRaises(PermissionError):
@@ -528,11 +520,12 @@ class TestUpstreamIssuePublisher(unittest.TestCase):
       if cmd[:3] == ["gh", "auth", "status"]:
         return mock.MagicMock(returncode=0, stdout="Logged in", stderr="")
       if cmd[:3] == ["gh", "repo", "view"]:
-        return mock.MagicMock(returncode=0, stdout='{"nameWithOwner":"hedges333/makeflow-skill"}', stderr="")
+        return mock.MagicMock(
+            returncode=0, stdout='{"nameWithOwner":"hedges333/makeflow-skill"}', stderr=""
+        )
       if cmd[:3] == ["gh", "issue", "create"]:
         self.assertIn("--body-file", cmd)
-        body_idx = cmd.index("--body-file") + 1
-        body_path = cmd[body_idx]
+        body_path = cmd[cmd.index("--body-file") + 1]
         captured_body["path"] = body_path
         with open(body_path, "r", encoding="utf-8") as fh:
           captured_body["text"] = fh.read()
@@ -549,48 +542,12 @@ class TestUpstreamIssuePublisher(unittest.TestCase):
       result = publisher.submit_issue(rec, approved=True)
 
     self.assertTrue(result["submitted"])
-    self.assertEqual(
-        result["issueUrl"],
-        "https://github.com/hedges333/makeflow-skill/issues/999",
-    )
-    self.assertNotIn("SCAR-USER-DB-0009", captured_body["text"])
-    # Temp directory cleaned up automatically after submission (SCAR-TEST-45)
+    self.assertNotIn("SCAR-ARCH-0001", result["title"])
+    self.assertNotIn("SCAR-ARCH-0001", captured_body["text"])
     self.assertFalse(os.path.exists(captured_body["path"]))
 
-  def test_format_issue_payload_preserves_tier1_refs_and_rejects_id_only_title(self):
-    """Verifies Tier 1 catalog references survive prose scrubbing while local IDs and ID-only titles fail/strip (BLOCKER-2)."""
-    publisher = UpstreamIssuePublisher()
-    rec = MinedScarRecord(
-        title="SCAR-LOCAL-TEST-0042: Isolate Ephemeral Directories",
-        category="TEST",
-        wound="Tests leaked files under SCAR-LOCAL-TEST-0042: violating SCAR-TEST-45 and SCAR-ARCH-05.",
-        trap="Callers ignored SCAR-SH-01 and SCAR-USER-TEST-0007: wrote to hardcoded paths.",
-        circuit_breaker="If SCAR-CUSTOM-TEST-0003: path targets /tmp, halt per SCAR-TEST-45.",
-        reflex="Use TemporaryDirectory under SCAR-TEST-45 and SCAR-ARCH-05.",
-        socratic_probe="Did you follow SCAR-TEST-45 and SCAR-PROC-108?",
-    )
-    payload = publisher.format_issue_payload(rec)
-    self.assertEqual(payload["title"], "[SCAR] [TEST] Isolate Ephemeral Directories")
-    self.assertNotIn("SCAR-LOCAL-TEST-0042", payload["title"])
-    self.assertNotIn("SCAR-LOCAL-TEST-0042", payload["body"])
-    self.assertNotIn("SCAR-USER-TEST-0007", payload["body"])
-    self.assertNotIn("SCAR-CUSTOM-TEST-0003", payload["body"])
-    for tier1_ref in ("SCAR-TEST-45", "SCAR-ARCH-05", "SCAR-SH-01", "SCAR-PROC-108"):
-      self.assertIn(tier1_ref, payload["body"])
-
-    # Also strips a leading Tier 1 ID prefix on title
-    prefixed_title_rec = _sample_record(title="SCAR-DB-0099 - Guard Empty URLs")
-    prefixed_payload = publisher.format_issue_payload(prefixed_title_rec)
-    self.assertEqual(prefixed_payload["title"], "[SCAR] [DB] Guard Empty URLs")
-
-    # Rejects titles that become empty once assigned IDs are stripped
-    for id_only in ("SCAR-LOCAL-DB-0042", "SCAR-DB-0001:", "SCAR-USER-ARCH-0003 - "):
-      with self.subTest(id_only=id_only):
-        with self.assertRaises(ValueError):
-          publisher.format_issue_payload(_sample_record(title=id_only))
-
   def test_repo_validation_failure_paths_and_subprocess_timeouts(self):
-    """Verifies owner/repo validation, timeout=30, TimeoutExpired/OSError handling, and gh failure paths (NBO #3)."""
+    """Verifies owner/repo validation, timeout=30, TimeoutExpired/OSError handling, and gh failure paths (BLOCKER-2)."""
     for bad_repo in ("-flag", "-owner/repo", "noslash", "a/b/c", "", "owner/bad repo"):
       with self.subTest(bad_repo=bad_repo):
         with self.assertRaises(ValueError):
@@ -689,32 +646,78 @@ class TestUpstreamIssuePublisher(unittest.TestCase):
 
 
 class TestScarMinerScriptSubcommands(unittest.TestCase):
-  """Tests all five explicit BaseScript CLI subcommands (SCAR-API-0001)."""
+  """Tests all five explicit BaseScript CLI subcommands for SQLite storage (GH-304)."""
 
   def test_all_five_subcommands_via_execute(self):
-    """Verifies paths, save, save-config, upstream-check, and upstream-submit subcommands."""
-    with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
-      custom_dir = os.path.join(fake_home, "my_custom_scars")
+    """Verifies paths, save (with --id/--custom-db), save-config (--db), upstream-check, upstream-submit."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fake_home = os.path.join(tmp_root, "home")
+      ws_dir = os.path.join(tmp_root, "workspace")
+      plugin_root = os.path.join(tmp_root, "plugin_root")
+      custom_db = os.path.join(tmp_root, "shared_team", "team.db")
+      for d in (fake_home, ws_dir, plugin_root):
+        os.makedirs(d, exist_ok=True)
+      spokes_dir = os.path.join(plugin_root, "skills", "makeflow", "references", "scars")
+      os.makedirs(spokes_dir, exist_ok=True)
+      spoke_file = os.path.join(spokes_dir, "process.md")
+      with open(spoke_file, "w", encoding="utf-8") as fh:
+        fh.write("# Process\n")
 
-      # 1. paths subcommand
-      out, err = io.StringIO(), io.StringIO()
-      rc = ScarMinerScript().execute(
-          args=["paths", "--workspace", ws_dir, "--agent", "claude", "--home", fake_home],
-          stdout=out,
-          stderr=err,
-      )
+      # 1. paths subcommand emits process_scars_dir, process_scar_files, project_db, user_db, bundled_db, configured_databases, existing_databases
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        out, err = io.StringIO(), io.StringIO()
+        rc = ScarMinerScript().execute(
+            args=[
+                "paths",
+                "--workspace",
+                ws_dir,
+                "--agent",
+                "claude",
+                "--home",
+                fake_home,
+                "--plugin-root",
+                plugin_root,
+            ],
+            stdout=out,
+            stderr=err,
+        )
       self.assertEqual(rc, 0, msg=err.getvalue())
       paths_data = json.loads(out.getvalue())
-      self.assertEqual(paths_data["activeAgent"], "claude")
-      self.assertEqual(
-          paths_data["projectScarsDir"], os.path.join(ws_dir, ".workflow", "scars")
+      expected_proj_db = os.path.join(ws_dir, ".workflow", "scars", "scars_registry.db")
+      expected_user_db = os.path.join(
+          fake_home, ".claude", "plugin_data", "makeflow", "scars_registry.db"
       )
-      self.assertEqual(
-          paths_data["userScarsDir"],
-          os.path.join(fake_home, ".claude", "plugin_data", "makeflow", "scars"),
+      expected_bundled_db = os.path.join(
+          plugin_root, "skills", "makeflow", "data", "scars_registry.db"
       )
+      self.assertEqual(paths_data["process_scars_dir"], spokes_dir)
+      self.assertEqual(paths_data["process_scar_files"], [spoke_file])
+      self.assertEqual(paths_data["project_db"], expected_proj_db)
+      self.assertEqual(paths_data["user_db"], expected_user_db)
+      self.assertEqual(paths_data["bundled_db"], expected_bundled_db)
+      self.assertEqual(
+          paths_data["configured_databases"],
+          [expected_proj_db, expected_user_db, expected_bundled_db],
+      )
+      self.assertEqual(paths_data["existing_databases"], [])
 
-      # 2. save subcommand (project tier)
+      # 2a. save --tier project with explicit --id override
+      common_flags = [
+          "--title",
+          "Guard Empty URLs",
+          "--category",
+          "DB",
+          "--wound",
+          "An empty database URL opened an unintended local file.",
+          "--trap",
+          "Callers assumed configuration always returned a connection string.",
+          "--circuit-breaker",
+          "If URL is empty, stop before opening a handle.",
+          "--reflex",
+          "Validate the connection URL before opening a handle.",
+          "--socratic-probe",
+          "Did you validate the database URL before opening a handle?",
+      ]
       out, err = io.StringIO(), io.StringIO()
       rc = ScarMinerScript().execute(
           args=[
@@ -725,36 +728,60 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
               ws_dir,
               "--home",
               fake_home,
-              "--title",
-              "Guard Empty URLs",
-              "--category",
-              "DB",
-              "--wound",
-              "An empty database URL opened an unintended local file.",
-              "--trap",
-              "Callers assumed configuration always returned a connection string.",
-              "--circuit-breaker",
-              "If URL is empty, stop before opening a handle.",
-              "--reflex",
-              "Validate the connection URL before opening a handle.",
-              "--socratic-probe",
-              "Did you validate the database URL before opening a handle?",
-          ],
+              "--id",
+              "SCAR-ARCH-0001",
+          ]
+          + common_flags,
           stdout=out,
           stderr=err,
       )
       self.assertEqual(rc, 0, msg=err.getvalue())
       save_data = json.loads(out.getvalue())
-      self.assertEqual(save_data["scarId"], "SCAR-LOCAL-DB-0001")
-      self.assertTrue(os.path.isfile(save_data["filePath"]))
+      self.assertEqual(save_data["scarId"], "SCAR-ARCH-0001")
+      self.assertEqual(save_data["dbPath"], expected_proj_db)
+      self.assertTrue(os.path.isfile(expected_proj_db))
 
-      # 3. save-config subcommand
+      # 2b. save --tier user
+      out, err = io.StringIO(), io.StringIO()
+      rc = ScarMinerScript().execute(
+          args=["save", "--tier", "user", "--agent", "claude", "--home", fake_home]
+          + common_flags,
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(rc, 0, msg=err.getvalue())
+      user_save = json.loads(out.getvalue())
+      self.assertEqual(user_save["scarId"], "SCAR-USER-DB-0001")
+      self.assertEqual(user_save["dbPath"], expected_user_db)
+
+      # 2c. save --tier custom with --custom-db (and failure when missing --custom-db)
+      out, err = io.StringIO(), io.StringIO()
+      rc = ScarMinerScript().execute(
+          args=["save", "--tier", "custom", "--custom-db", custom_db] + common_flags,
+          stdout=out,
+          stderr=err,
+      )
+      self.assertEqual(rc, 0, msg=err.getvalue())
+      custom_save = json.loads(out.getvalue())
+      self.assertEqual(custom_save["scarId"], "SCAR-CUSTOM-DB-0001")
+      self.assertEqual(custom_save["dbPath"], custom_db)
+
+      out_bad, err_bad = io.StringIO(), io.StringIO()
+      rc_bad = ScarMinerScript().execute(
+          args=["save", "--tier", "custom"] + common_flags,
+          stdout=out_bad,
+          stderr=err_bad,
+      )
+      self.assertNotEqual(rc_bad, 0)
+      self.assertIn("--custom-db", err_bad.getvalue())
+
+      # 3. save-config --db --scope both
       out, err = io.StringIO(), io.StringIO()
       rc = ScarMinerScript().execute(
           args=[
               "save-config",
-              "--dir",
-              custom_dir,
+              "--db",
+              custom_db,
               "--scope",
               "both",
               "--workspace",
@@ -770,9 +797,10 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
       self.assertEqual(rc, 0, msg=err.getvalue())
       cfg_res = json.loads(out.getvalue())
       self.assertEqual(cfg_res["scope"], "both")
+      self.assertEqual(cfg_res["database"], custom_db)
       self.assertEqual(len(cfg_res["updatedFiles"]), 2)
 
-      # 4. upstream-check subcommand (mocked ready)
+      # 4 & 5. upstream-check and upstream-submit
       def _ok_gh(cmd, **kwargs):
         if cmd[:3] == ["gh", "issue", "create"]:
           return mock.MagicMock(
@@ -790,38 +818,20 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
         self.assertEqual(rc, 0, msg=err.getvalue())
         self.assertTrue(json.loads(out.getvalue())["ready"])
 
-        # 5a. upstream-submit WITHOUT --approved fails with non-zero exit
         out_un, err_un = io.StringIO(), io.StringIO()
         rc_un = ScarMinerScript().execute(
-            args=[
-                "upstream-submit",
-                "--title",
-                "Guard Empty URLs",
-                "--category",
-                "DB",
-                "--wound",
-                "An empty database URL opened an unintended local file.",
-                "--trap",
-                "Callers assumed configuration always returned a connection string.",
-                "--reflex",
-                "Validate the connection URL before opening a handle.",
-                "--socratic-probe",
-                "Did you validate the database URL before opening a handle?",
-            ],
-            stdout=out_un,
-            stderr=err_un,
+            args=["upstream-submit"] + common_flags, stdout=out_un, stderr=err_un
         )
         self.assertNotEqual(rc_un, 0)
         self.assertIn("--approved", err_un.getvalue())
 
-        # 5b. upstream-submit WITH --approved succeeds
         out_ok, err_ok = io.StringIO(), io.StringIO()
         rc_ok = ScarMinerScript().execute(
             args=[
                 "upstream-submit",
                 "--approved",
                 "--title",
-                "SCAR-LOCAL-DB-0001: Guard Empty URLs",
+                "SCAR-LANG-PYTHON-DB-0001: Guard Empty URLs",
                 "--category",
                 "DB",
                 "--wound",
@@ -839,10 +849,10 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
         self.assertEqual(rc_ok, 0, msg=err_ok.getvalue())
         sub_res = json.loads(out_ok.getvalue())
         self.assertTrue(sub_res["submitted"])
-        self.assertNotIn("SCAR-LOCAL-DB-0001", sub_res["title"])
+        self.assertNotIn("SCAR-LANG-PYTHON-DB-0001", sub_res["title"])
 
   def test_cli_json_file_snake_camel_overrides_and_non_object_rejection(self):
-    """Verifies --json-file supports snake_case and camelCase, CLI overrides, and rejects non-objects."""
+    """Verifies --json-file supports snake_case and camelCase, CLI overrides, and rejects non-objects (BLOCKER-2)."""
     with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as fake_home:
       snake_path = os.path.join(fake_home, "snake.json")
       with open(snake_path, "w", encoding="utf-8") as fh:
@@ -862,7 +872,17 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
 
       out, err = io.StringIO(), io.StringIO()
       rc = ScarMinerScript().execute(
-          args=["save", "--tier", "project", "--workspace", ws_dir, "--json-file", snake_path],
+          args=[
+              "save",
+              "--tier",
+              "project",
+              "--workspace",
+              ws_dir,
+              "--home",
+              fake_home,
+              "--json-file",
+              snake_path,
+          ],
           stdout=out,
           stderr=err,
       )
@@ -893,6 +913,8 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
               "project",
               "--workspace",
               ws_dir,
+              "--home",
+              fake_home,
               "--json-file",
               camel_path,
               "--title",
@@ -903,80 +925,35 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
       )
       self.assertEqual(rc, 0, msg=err.getvalue())
       camel_res = json.loads(out.getvalue())
-      parsed = MarkdownScarStore().parse_markdown_file(camel_res["filePath"])
-      self.assertEqual(parsed[0]["title"], "CLI Override Title")
-      self.assertEqual(parsed[0]["applies_when"], "Target 30: tdd")
+      saved_rows = query_scars(camel_res["dbPath"], query=camel_res["scarId"], limit=5)
+      self.assertEqual(len(saved_rows), 1)
+      self.assertEqual(saved_rows[0]["title"], "CLI Override Title")
+      self.assertEqual(saved_rows[0]["appliesWhen"], "Target 30: tdd")
 
       bad_json_path = os.path.join(fake_home, "array.json")
       with open(bad_json_path, "w", encoding="utf-8") as fh:
         json.dump(["not", "an", "object"], fh)
       out, err = io.StringIO(), io.StringIO()
       rc = ScarMinerScript().execute(
-          args=["save", "--tier", "project", "--workspace", ws_dir, "--json-file", bad_json_path],
+          args=[
+              "save",
+              "--tier",
+              "project",
+              "--workspace",
+              ws_dir,
+              "--home",
+              fake_home,
+              "--json-file",
+              bad_json_path,
+          ],
           stdout=out,
           stderr=err,
       )
       self.assertNotEqual(rc, 0)
       self.assertIn("JSON object", err.getvalue())
 
-  def test_cli_save_user_tier_custom_tier_and_missing_custom_dir(self):
-    """Verifies --tier user, --tier custom, and missing --custom-dir error handling."""
-    with tempfile.TemporaryDirectory() as fake_home:
-      custom_dir = os.path.join(fake_home, "team_scars")
-      common_flags = [
-          "--title",
-          "Guard Empty URLs",
-          "--category",
-          "PROC",
-          "--wound",
-          "An empty database URL opened an unintended local file.",
-          "--trap",
-          "Callers assumed configuration always returned a connection string.",
-          "--reflex",
-          "Validate the connection URL before opening a handle.",
-          "--socratic-probe",
-          "Did you validate the database URL before opening a handle?",
-      ]
-
-      # --tier user saves into active agent scars_dir
-      out, err = io.StringIO(), io.StringIO()
-      rc = ScarMinerScript().execute(
-          args=["save", "--tier", "user", "--agent", "codex", "--home", fake_home] + common_flags,
-          stdout=out,
-          stderr=err,
-      )
-      self.assertEqual(rc, 0, msg=err.getvalue())
-      user_res = json.loads(out.getvalue())
-      self.assertEqual(user_res["scarId"], "SCAR-USER-PROC-0001")
-      self.assertEqual(
-          user_res["targetDir"],
-          os.path.join(fake_home, ".codex", "plugin_data", "makeflow", "scars"),
-      )
-
-      # --tier custom with --custom-dir saves into custom_dir
-      out, err = io.StringIO(), io.StringIO()
-      rc = ScarMinerScript().execute(
-          args=["save", "--tier", "custom", "--custom-dir", custom_dir] + common_flags,
-          stdout=out,
-          stderr=err,
-      )
-      self.assertEqual(rc, 0, msg=err.getvalue())
-      custom_res = json.loads(out.getvalue())
-      self.assertEqual(custom_res["scarId"], "SCAR-CUSTOM-PROC-0001")
-      self.assertEqual(custom_res["targetDir"], custom_dir)
-
-      # --tier custom without --custom-dir fails cleanly
-      out, err = io.StringIO(), io.StringIO()
-      rc = ScarMinerScript().execute(
-          args=["save", "--tier", "custom"] + common_flags,
-          stdout=out,
-          stderr=err,
-      )
-      self.assertNotEqual(rc, 0)
-      self.assertIn("--custom-dir", err.getvalue())
-
   def test_cli_upstream_check_returns_exit_code_1_when_not_ready(self):
-    """Verifies upstream-check CLI returns exit code 1 when gh access is not ready."""
+    """Verifies upstream-check CLI returns exit code 1 when gh access is not ready (BLOCKER-2)."""
     with mock.patch("shutil.which", return_value=None):
       out, err = io.StringIO(), io.StringIO()
       rc = ScarMinerScript().execute(args=["upstream-check"], stdout=out, stderr=err)
@@ -984,6 +961,31 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
     payload = json.loads(out.getvalue())
     self.assertFalse(payload["ready"])
     self.assertFalse(payload["ghInstalled"])
+
+
+class TestRepositoryMigrationVerification(unittest.TestCase):
+  """Verifies SCAR-LOCAL-DATA-0001 migration into .workflow/scars/scars_registry.db (GH-304)."""
+
+  def test_scar_local_data_0001_migrated_to_project_sqlite_db_and_markdown_removed(self):
+    """Verifies real workspace .workflow/scars/scars_registry.db holds SCAR-LOCAL-DATA-0001 and data.md is gone."""
+    legacy_md = os.path.join(REPO_ROOT, ".workflow", "scars", "data.md")
+    project_db = os.path.join(REPO_ROOT, ".workflow", "scars", "scars_registry.db")
+    self.assertFalse(
+        os.path.exists(legacy_md),
+        "Obsolete .workflow/scars/data.md must be deleted after migration.",
+    )
+    self.assertTrue(
+        os.path.isfile(project_db),
+        "Migrated .workflow/scars/scars_registry.db must exist.",
+    )
+    hits = query_scars(project_db, query="fenced", limit=5)
+    self.assertEqual(len(hits), 1)
+    self.assertEqual(hits[0]["id"], "SCAR-LOCAL-DATA-0001")
+    self.assertEqual(hits[0]["category"], "DATA")
+    self.assertEqual(hits[0]["source"], "local")
+    self.assertTrue(hits[0]["keywords"])
+    self.assertTrue(hits[0]["workflowPhases"])
+    self.assertIn("fenced", hits[0]["circuitBreaker"].lower())
 
 
 if __name__ == "__main__":

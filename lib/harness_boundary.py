@@ -108,6 +108,7 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "lib/ticket_state.py",
     "lib/repo_tree.py",
     "lib/report_renderers.py",
+    "lib/scar_locations.py",
     "lib/safe_copy.py",
     "lib/signal_trap.py",
     "lib/state_reports.py",

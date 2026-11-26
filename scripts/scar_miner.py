@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin CLI entrypoint for Target 90 Rapid-Regret Miner workflows (GH-117)."""
+"""Thin CLI entrypoint for Target 90 Rapid-Regret Miner SQLite workflows (GH-117, GH-304)."""
 
 import os
 import sys
@@ -9,29 +9,27 @@ if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
 from lib.scar_miner import (  # noqa: E402
-    CATEGORY_SPOKE_FILES,
     TIER_ID_PREFIXES,
     UPSTREAM_REPO,
-    MarkdownScarStore,
     MinedScarRecord,
     ScarConfigStore,
     ScarMinerScript,
+    SqliteScarStore,
     UpstreamIssuePublisher,
-    category_to_filename,
     validate_mined_scar,
+    validate_scar_id,
 )
 
 __all__ = [
-    "CATEGORY_SPOKE_FILES",
     "TIER_ID_PREFIXES",
     "UPSTREAM_REPO",
-    "MarkdownScarStore",
     "MinedScarRecord",
     "ScarConfigStore",
     "ScarMinerScript",
+    "SqliteScarStore",
     "UpstreamIssuePublisher",
-    "category_to_filename",
     "validate_mined_scar",
+    "validate_scar_id",
 ]
 
 if __name__ == "__main__":

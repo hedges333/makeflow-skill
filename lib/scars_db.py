@@ -9,12 +9,12 @@ queries, protected-span extraction, and per-ticket session scar tracking.
 import hashlib
 import json
 import os
-from pathlib import PurePath
 import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
-from lib.agent_paths import AgentPathRegistry
+from lib.config import expand_user_path
+from lib.scar_locations import resolve_scar_locations
 from lib.scar_metadata import (
     _normalize_workflow_phases,
     extract_scar_metadata,
@@ -22,6 +22,7 @@ from lib.scar_metadata import (
 )
 from lib.scar_ontology import (
     TARGET_INT_TO_PHASE_LABEL,
+    normalize_domain_category,
     resolve_category_filter_tokens,
     resolve_excluded_category_tokens,
 )
@@ -125,48 +126,59 @@ def resolve_scars_db_path(
     agent: Optional[str] = None,
     workspace_dir: Optional[str] = None,
     package_root: Optional[str] = None,
+    home_dir: Optional[str] = None,
 ) -> str:
   """Resolve the primary SQLite scars database path by priority cascade.
 
   Args:
     db_path: Optional explicit filesystem path override.
     agent: Optional agent flavor name (gemini, claude, cursor, copilot, codex, chatgpt).
-    workspace_dir: Optional workspace directory to check for a local cache DB.
+    workspace_dir: Optional workspace directory to check for a project-local DB.
     package_root: Optional plugin root directory override.
+    home_dir: Optional home directory override for isolated testing.
 
   Returns:
     Normalized absolute path to the selected SQLite database file.
   """
   if db_path:
-    return os.path.abspath(os.path.expanduser(db_path))
+    return os.path.abspath(expand_user_path(db_path, home_dir=home_dir))
 
   env_path = os.getenv("MAKEFLOW_SCARS_DB")
   if env_path:
-    return os.path.abspath(os.path.expanduser(env_path))
+    return os.path.abspath(expand_user_path(env_path, home_dir=home_dir))
 
   pkg_root = package_root or _REPO_ROOT
-  bundled_path = os.path.join(
-      pkg_root, "skills", "makeflow", "data", "scars_registry.db"
-  )
-  if os.path.exists(bundled_path):
-    return os.path.abspath(bundled_path)
-
-  if workspace_dir:
-    ws_db = os.path.join(
-        workspace_dir, ".workflow", "cache", "scars_registry.db"
+  try:
+    locations = resolve_scar_locations(
+        workspace_dir=workspace_dir,
+        agent=agent,
+        home_dir=home_dir,
+        plugin_root=pkg_root,
     )
-    if os.path.exists(ws_db):
-      return os.path.abspath(ws_db)
+    resolved_agent_db = locations.user_db if (agent or "").strip() else None
+  except ValueError:
+    locations = resolve_scar_locations(
+        workspace_dir=workspace_dir,
+        agent=None,
+        home_dir=home_dir,
+        plugin_root=pkg_root,
+    )
+    resolved_agent_db = None
 
-  home = os.path.expanduser("~")
-  agent_key = (agent or "").strip().lower()
-  if agent_key:
-    registry = AgentPathRegistry(home_dir=home)
-    try:
-      return registry.get_profile(agent_key).scars_db_path
-    except ValueError:
-      pass
+  if os.path.exists(locations.bundled_db):
+    return locations.bundled_db
 
+  if locations.project_db and os.path.exists(locations.project_db):
+    return locations.project_db
+
+  if resolved_agent_db:
+    return resolved_agent_db
+
+  home = (
+      os.path.abspath(os.path.expanduser(home_dir))
+      if home_dir
+      else os.path.expanduser("~")
+  )
   xdg_cache = os.getenv("XDG_CACHE_HOME")
   if xdg_cache:
     xdg_db = os.path.join(xdg_cache, "makeflow", "scars_registry.db")
@@ -177,15 +189,7 @@ def resolve_scars_db_path(
   if os.path.exists(user_default):
     return user_default
 
-  return os.path.abspath(bundled_path)
-
-
-def _resolve_custom_path(raw_path: str, workspace_dir: Optional[str]) -> str:
-  """Expand user tilde and resolve relative custom scar paths against workspace_dir."""
-  expanded = os.path.expanduser(raw_path.strip())
-  if not os.path.isabs(expanded) and workspace_dir:
-    expanded = os.path.join(workspace_dir, expanded)
-  return os.path.abspath(expanded)
+  return locations.bundled_db
 
 
 def resolve_scars_db_paths(
@@ -193,136 +197,301 @@ def resolve_scars_db_paths(
     agent: Optional[str] = None,
     workspace_dir: Optional[str] = None,
     package_root: Optional[str] = None,
-    custom_dirs: Optional[Sequence[str]] = None,
-) -> List[str]:
-  """Resolve all existing SQLite scars databases in multi-tier precedence order.
-
-  Precedence order:
-    1. Explicit ``db_path``.
-    2. Environment override ``MAKEFLOW_SCARS_DB``.
-    3. Workspace database under ``<workspace_dir>/.workflow/``.
-    4. User database under agent plugin_data or cache directories.
-    5. Custom configured scar directories (``<dir>/scars_registry.db``).
-    6. Bundled database under ``<package_root>/skills/makeflow/data/``.
-
-  Args:
-    db_path: Optional explicit database file path.
-    agent: Optional agent flavor name.
-    workspace_dir: Optional workspace directory path.
-    package_root: Optional plugin root directory override.
-    custom_dirs: Optional sequence of custom configured scar directories.
-
-  Returns:
-    Deduplicated list of existing absolute database file paths.
-  """
-  candidates: List[str] = []
-
-  if db_path:
-    candidates.append(db_path)
-
-  env_path = os.getenv("MAKEFLOW_SCARS_DB")
-  if env_path:
-    candidates.append(env_path)
-
-  if workspace_dir:
-    candidates.append(
-        os.path.join(workspace_dir, ".workflow", "cache", "scars_registry.db")
-    )
-    candidates.append(
-        os.path.join(workspace_dir, ".workflow", "scars_registry.db")
-    )
-
-  home = os.path.expanduser("~")
-  registry = AgentPathRegistry(home_dir=home)
-  try:
-    candidates.extend(registry.scars_db_paths(active_agent=agent))
-  except ValueError:
-    candidates.extend(registry.scars_db_paths(active_agent=None))
-
-  xdg_cache = os.getenv("XDG_CACHE_HOME")
-  if xdg_cache:
-    candidates.append(os.path.join(xdg_cache, "makeflow", "scars_registry.db"))
-  candidates.append(
-      os.path.join(home, ".cache", "makeflow", "scars_registry.db")
-  )
-
-  for raw_dir in custom_dirs or ():
-    if not isinstance(raw_dir, str) or not raw_dir.strip():
-      continue
-    resolved_dir = _resolve_custom_path(raw_dir, workspace_dir)
-    if resolved_dir.endswith(".db"):
-      candidates.append(resolved_dir)
-    else:
-      candidates.append(os.path.join(resolved_dir, "scars_registry.db"))
-
-  pkg_root = package_root or _REPO_ROOT
-  candidates.append(
-      os.path.join(pkg_root, "skills", "makeflow", "data", "scars_registry.db")
-  )
-
-  resolved: List[str] = []
-  seen: Set[str] = set()
-  for raw_p in candidates:
-    if not raw_p:
-      continue
-    norm_p = os.path.abspath(os.path.expanduser(raw_p))
-    if norm_p not in seen and os.path.isfile(norm_p):
-      seen.add(norm_p)
-      resolved.append(norm_p)
-  return resolved
-
-
-def resolve_scar_markdown_dirs(
-    workspace_dir: Optional[str] = None,
-    agent: Optional[str] = None,
-    custom_dirs: Optional[Sequence[str]] = None,
     home_dir: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-  """Resolve existing Markdown scar directories in 3-tier precedence order.
+  """Resolve existing SQLite scars databases in configured precedence order.
 
-  Precedence order:
-    1. Project-local ``<workspace_dir>/.workflow/scars``.
-    2. User-wide agent ``plugin_data/makeflow/scars`` (active agent first).
-    3. Custom configured scar directories from cascaded ``scars.directories``.
+  When ``db_path`` is explicitly supplied, isolates resolution to that single
+  file without cascading into workspace, user, custom, or bundled tiers.
+  Otherwise delegates to ``resolve_scar_locations()`` to return existing
+  ordered SQLite scar databases without creating empty files on disk.
 
   Args:
-    workspace_dir: Optional project root directory.
-    agent: Optional active agent override.
-    custom_dirs: Optional sequence of configured custom scar directories.
+    db_path: Optional explicit single database file path.
+    agent: Optional active agent name override.
+    workspace_dir: Optional project root directory path.
+    package_root: Optional Makeflow plugin root directory override.
     home_dir: Optional home directory override for isolated testing.
+    config: Optional pre-resolved workflow configuration dictionary.
 
   Returns:
-    Deduplicated list of existing absolute Markdown scar directory paths.
+    Deduplicated list of existing absolute SQLite database paths in exact
+    precedence order (highest first).
   """
-  candidates: List[str] = []
-  if workspace_dir:
-    candidates.append(
-        os.path.join(
-            os.path.abspath(os.path.expanduser(workspace_dir)),
-            ".workflow",
-            "scars",
-        )
+  if db_path:
+    norm_explicit = os.path.abspath(
+        expand_user_path(db_path, home_dir=home_dir)
     )
+    return [norm_explicit] if os.path.isfile(norm_explicit) else []
 
-  registry = AgentPathRegistry(home_dir=home_dir)
+  locations = resolve_scar_locations(
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      plugin_root=package_root or _REPO_ROOT,
+      config=config,
+  )
+  return list(locations.existing_databases)
+
+
+_TIER_SCOPE_PREFIXES: Dict[str, str] = {
+    "project": "LOCAL",
+    "local": "LOCAL",
+    "user": "USER",
+    "custom": "CUSTOM",
+}
+
+
+def next_tier_scar_id(
+    db_path: str,
+    category: str,
+    tier: str = "project",
+) -> str:
+  """Allocate the next unused tier-scoped 4-digit scar ID in ``db_path``.
+
+  Reads existing ``scars.id`` values when ``db_path`` exists without creating
+  an empty database file on disk.
+
+  Args:
+    db_path: Filesystem path to the target SQLite scars database.
+    category: Canonical domain category code or prose alias.
+    tier: Storage tier name (``project``, ``local``, ``user``, or ``custom``).
+
+  Returns:
+    Unique scar identifier such as ``SCAR-LOCAL-DATA-0001``.
+
+  Raises:
+    ValueError: If ``tier`` is unrecognized.
+  """
+  cleaned_tier = str(tier or "project").strip().lower()
+  if cleaned_tier not in _TIER_SCOPE_PREFIXES:
+    valid = ", ".join(sorted(_TIER_SCOPE_PREFIXES.keys()))
+    raise ValueError(
+        f"Unsupported scar tier '{tier}'. Expected one of: {valid}."
+    )
+  scope_prefix = _TIER_SCOPE_PREFIXES[cleaned_tier]
+  domain = normalize_domain_category(category)
+  prefix = f"SCAR-{scope_prefix}-{domain}"
+
+  existing: Set[str] = set()
+  norm_db_path = (
+      os.path.abspath(expand_user_path(db_path)) if db_path and db_path.strip() else ""
+  )
+  if norm_db_path and os.path.isfile(norm_db_path):
+    conn = None
+    try:
+      conn = sqlite3.connect(norm_db_path)
+      cur = conn.cursor()
+      cur.execute(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='scars'"
+      )
+      if cur.fetchone():
+        cur.execute("SELECT id FROM scars WHERE id IS NOT NULL")
+        existing = {
+            str(r[0]).strip().upper()
+            for r in cur.fetchall()
+            if r and str(r[0]).strip()
+        }
+    except sqlite3.Error:
+      existing = set()
+    finally:
+      if conn:
+        conn.close()
+
+  seq = 1
+  while True:
+    candidate = f"{prefix}-{seq:04d}"
+    if candidate.upper() not in existing:
+      return candidate
+    seq += 1
+
+
+def _serialize_json_list_field(raw_value: Any, default_none: bool = False) -> Optional[str]:
+  """Serialize a list or JSON string field for SQLite storage."""
+  if raw_value is None:
+    return None if default_none else "[]"
+  if isinstance(raw_value, str):
+    stripped = raw_value.strip()
+    if not stripped:
+      return None if default_none else "[]"
+    try:
+      parsed = json.loads(stripped)
+      if isinstance(parsed, list):
+        return json.dumps(parsed)
+    except (json.JSONDecodeError, ValueError, TypeError):
+      pass
+    return json.dumps([stripped])
+  if isinstance(raw_value, (list, tuple)):
+    return json.dumps(list(raw_value))
+  return None if default_none else "[]"
+
+
+def upsert_scar(db_path: str, record: Dict[str, Any]) -> Dict[str, Any]:
+  """Initialize schema, upsert one scar row, enrich metadata, and rebuild FTS5.
+
+  Acts as the single schema writer for all SQLite scar tiers so stored rows,
+  ``raw_hash`` digests, metadata columns, and ``scars_fts`` stay synchronized.
+
+  Args:
+    db_path: Filesystem path to the target SQLite scars database.
+    record: Dictionary containing ``id``, ``title``, ``category``, ``wound``,
+      ``trap``, ``reflex``, ``socratic_probe``, and optional metadata fields.
+
+  Returns:
+    Dictionary with ``id``, ``db_path``, ``category``, ``source``,
+    ``raw_hash``, and ``updated`` (True when an existing row was overwritten).
+
+  Raises:
+    ValueError: If ``db_path``, ``id``, or ``title`` is invalid or ``db_path``
+      points to an existing directory.
+  """
+  if not isinstance(db_path, str) or not db_path.strip() or "\x00" in db_path:
+    raise ValueError("db_path must be a non-empty filesystem path.")
+  abs_db_path = os.path.abspath(os.path.expanduser(db_path.strip()))
+  if os.path.isdir(abs_db_path):
+    raise ValueError(f"Target scar database path '{abs_db_path}' is a directory.")
+
+  scar_id = str(record.get("id") or "").strip()
+  if not scar_id:
+    raise ValueError("Scar record must include a non-empty 'id'.")
+  title = str(record.get("title") or "").strip()
+  if not title:
+    raise ValueError("Scar record must include a non-empty 'title'.")
+
+  wound = str(record.get("wound") or "").strip()
+  trap = str(record.get("trap") or "").strip()
+  circuit_breaker = str(record.get("circuit_breaker") or "").strip()
+  reflex = str(record.get("reflex") or "").strip()
+  socratic_probe = str(record.get("socratic_probe") or "").strip()
+  applies_when = str(record.get("applies_when") or "").strip()
+
+  domain = normalize_domain_category(
+      str(record.get("category") or ""),
+      scar_id=scar_id,
+      title=title,
+      wound=wound,
+      trap=trap,
+      reflex=reflex,
+  )
+  category_slug = str(record.get("category_slug") or domain.lower()).strip().lower()
+  source = str(record.get("source") or "local").strip().lower()
+  visibility = str(record.get("visibility") or source).strip()
+  graduation_status = str(record.get("graduation_status") or source).strip()
+
+  raw_ss_id = record.get("ss_id") if "ss_id" in record else record.get("ssId")
+  ss_id = str(raw_ss_id).strip() if raw_ss_id is not None and str(raw_ss_id).strip() else None
+  raw_orig = (
+      record.get("original_id")
+      if "original_id" in record
+      else record.get("originalId")
+  )
+  original_id = str(raw_orig).strip() if raw_orig is not None and str(raw_orig).strip() else None
+
+  workflow_phases_json = _serialize_json_list_field(
+      record.get("workflow_phases"), default_none=False
+  )
+  ss_targets_json = _serialize_json_list_field(
+      record.get("ss_targets"), default_none=True
+  )
+
+  raw_wound = str(record.get("raw_wound") if record.get("raw_wound") is not None else wound)
+  raw_trap = str(record.get("raw_trap") if record.get("raw_trap") is not None else trap)
+  raw_cb = str(
+      record.get("raw_circuit_breaker")
+      if record.get("raw_circuit_breaker") is not None
+      else circuit_breaker
+  )
+  raw_reflex = str(record.get("raw_reflex") if record.get("raw_reflex") is not None else reflex)
+  raw_hash = compute_raw_fields_hash(raw_wound, raw_trap, raw_cb, raw_reflex)
+
+  parent_dir = os.path.dirname(abs_db_path)
+  if parent_dir:
+    os.makedirs(parent_dir, exist_ok=True)
+
+  conn = sqlite3.connect(abs_db_path)
   try:
-    candidates.extend(registry.scars_dirs(active_agent=agent))
-  except ValueError:
-    candidates.extend(registry.scars_dirs(active_agent=None))
+    has_fts5 = init_scars_db_schema(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM scars WHERE id = ?", (scar_id,))
+    existed = cur.fetchone() is not None
 
-  for raw_dir in custom_dirs or ():
-    if not isinstance(raw_dir, str) or not raw_dir.strip():
-      continue
-    candidates.append(_resolve_custom_path(raw_dir, workspace_dir))
-
-  resolved: List[str] = []
-  seen: Set[str] = set()
-  for raw_dir in candidates:
-    norm_dir = os.path.abspath(os.path.expanduser(raw_dir))
-    if norm_dir not in seen and os.path.isdir(norm_dir):
-      seen.add(norm_dir)
-      resolved.append(norm_dir)
-  return resolved
+    cur.execute(
+        """
+        INSERT INTO scars (
+            id, ss_id, title, category, category_slug, visibility,
+            workflow_phases, ss_targets, applies_when, graduation_status,
+            raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+            wound, trap, circuit_breaker, reflex, socratic_probe,
+            source, original_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            ss_id = excluded.ss_id,
+            title = excluded.title,
+            category = excluded.category,
+            category_slug = excluded.category_slug,
+            visibility = excluded.visibility,
+            workflow_phases = excluded.workflow_phases,
+            ss_targets = excluded.ss_targets,
+            applies_when = excluded.applies_when,
+            graduation_status = excluded.graduation_status,
+            raw_wound = excluded.raw_wound,
+            raw_trap = excluded.raw_trap,
+            raw_circuit_breaker = excluded.raw_circuit_breaker,
+            raw_reflex = excluded.raw_reflex,
+            raw_hash = excluded.raw_hash,
+            wound = excluded.wound,
+            trap = excluded.trap,
+            circuit_breaker = excluded.circuit_breaker,
+            reflex = excluded.reflex,
+            socratic_probe = excluded.socratic_probe,
+            source = excluded.source,
+            original_id = excluded.original_id
+        """,
+        (
+            scar_id,
+            ss_id,
+            title,
+            domain,
+            category_slug,
+            visibility,
+            workflow_phases_json,
+            ss_targets_json,
+            applies_when,
+            graduation_status,
+            raw_wound,
+            raw_trap,
+            raw_cb,
+            raw_reflex,
+            raw_hash,
+            wound,
+            trap,
+            circuit_breaker,
+            reflex,
+            socratic_probe,
+            source,
+            original_id,
+        ),
+    )
+    enrich_scars_cursor(cur, scar_ids=[scar_id])
+    if has_fts5:
+      populate_scars_fts(cur)
+    cur.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('raw_hash_version', ?)",
+        (RAW_HASH_VERSION,),
+    )
+    conn.commit()
+    update_db_size_meta(conn, abs_db_path)
+    return {
+        "id": scar_id,
+        "db_path": abs_db_path,
+        "category": domain,
+        "source": source,
+        "raw_hash": raw_hash,
+        "updated": existed,
+    }
+  finally:
+    conn.close()
 
 
 _IN_MEMORY_LOADED_SCARS: Dict[str, Set[str]] = {}
@@ -1007,6 +1176,41 @@ def _format_scar_row(row: Any) -> Dict[str, Any]:
   }
 
 
+def _is_row_shadowed(
+    row: Dict[str, Any],
+    shadowed_primary_ids: Set[str],
+    shadowed_ss_ids: Set[str],
+    shadowed_original_ids: Set[str],
+) -> bool:
+  """Return True when a lower-precedence row is shadowed by higher-precedence tier IDs.
+
+  Unifies primary ``id`` shadowing across all sources while keeping upstream
+  ``ss_id`` and Makeflow legacy ``original_id`` namespaces strictly distinct
+  (higher ``original_id`` never suppresses lower ``ss_id`` and vice versa).
+  """
+  row_id = str(row.get("id") or "").strip().upper()
+  raw_ss = row.get("ssId") if "ssId" in row else row.get("ss_id")
+  row_ss_id = str(raw_ss or "").strip().upper()
+  raw_orig = row.get("originalId") if "originalId" in row else row.get("original_id")
+  row_orig_id = str(raw_orig or "").strip().upper()
+
+  if row_id and (
+      row_id in shadowed_primary_ids
+      or row_id in shadowed_ss_ids
+      or row_id in shadowed_original_ids
+  ):
+    return True
+  if row_ss_id and (
+      row_ss_id in shadowed_primary_ids or row_ss_id in shadowed_ss_ids
+  ):
+    return True
+  if row_orig_id and (
+      row_orig_id in shadowed_primary_ids or row_orig_id in shadowed_original_ids
+  ):
+    return True
+  return False
+
+
 def _query_scars_connection(
     conn: sqlite3.Connection,
     query: str = "",
@@ -1019,9 +1223,16 @@ def _query_scars_connection(
     workflow_phase: Optional[str] = None,
     mf_target: Optional[int] = None,
     exclude_categories: Optional[Iterable[str]] = None,
+    shadowed_sets: Optional[Tuple[Set[str], Set[str], Set[str]]] = None,
 ) -> List[Dict[str, Any]]:
   """Execute multi-dimensional FTS5/LIKE scar query on an open SQLite connection."""
   excluded_tokens = resolve_excluded_category_tokens(exclude_categories)
+  eff_limit = max(1, limit)
+  if shadowed_sets is not None:
+    shadowed_primary, shadowed_ss, shadowed_orig = shadowed_sets
+  else:
+    shadowed_primary, shadowed_ss, shadowed_orig = set(), set(), set()
+  has_shadow = bool(shadowed_primary or shadowed_ss or shadowed_orig)
   try:
     cur = conn.cursor()
 
@@ -1256,14 +1467,23 @@ def _query_scars_connection(
         filtered_sql = _append_filters(sql, params)
         if filtered_sql is None:
           return []
-        filtered_sql += "ORDER BY rank LIMIT ?"
-        params.append(max(1, limit))
+        if has_shadow:
+          filtered_sql += "ORDER BY rank"
+        else:
+          filtered_sql += "ORDER BY rank LIMIT ?"
+          params.append(eff_limit)
 
         try:
           cur.execute(filtered_sql, params)
-          rows = cur.fetchall()
-          for r in rows:
-            results.append(_format_scar_row(r))
+          for r in cur:
+            formatted = _format_scar_row(r)
+            if has_shadow and _is_row_shadowed(
+                formatted, shadowed_primary, shadowed_ss, shadowed_orig
+            ):
+              continue
+            results.append(formatted)
+            if len(results) >= eff_limit:
+              break
           if results:
             return results
         except sqlite3.OperationalError:
@@ -1338,13 +1558,22 @@ def _query_scars_connection(
     if filtered_sql is None:
       return []
 
-    filtered_sql += "ORDER BY s.id ASC LIMIT ?"
-    params.append(max(1, limit))
+    if has_shadow:
+      filtered_sql += "ORDER BY s.id ASC"
+    else:
+      filtered_sql += "ORDER BY s.id ASC LIMIT ?"
+      params.append(eff_limit)
 
     cur.execute(filtered_sql, params)
-    rows = cur.fetchall()
-    for r in rows:
-      results.append(_format_scar_row(r))
+    for r in cur:
+      formatted = _format_scar_row(r)
+      if has_shadow and _is_row_shadowed(
+          formatted, shadowed_primary, shadowed_ss, shadowed_orig
+      ):
+        continue
+      results.append(formatted)
+      if len(results) >= eff_limit:
+        break
 
     return results
   except (sqlite3.Error, OSError, ValueError):
@@ -1363,6 +1592,7 @@ def _query_single_scars_db(
     workflow_phase: Optional[str] = None,
     mf_target: Optional[int] = None,
     exclude_categories: Optional[Iterable[str]] = None,
+    shadowed_sets: Optional[Tuple[Set[str], Set[str], Set[str]]] = None,
 ) -> List[Dict[str, Any]]:
   """Query a single file-backed SQLite scars database for complete processed scars only."""
   if not db_path or not os.path.isfile(db_path):
@@ -1383,6 +1613,7 @@ def _query_single_scars_db(
         workflow_phase=workflow_phase,
         mf_target=mf_target,
         exclude_categories=exclude_categories,
+        shadowed_sets=shadowed_sets,
     )
   except (sqlite3.Error, OSError, ValueError):
     return []
@@ -1391,112 +1622,53 @@ def _query_single_scars_db(
       conn.close()
 
 
-def _infer_markdown_dir_tier(md_dir: str) -> str:
-  """Infer source tier label (``local``, ``user``, or ``custom``) for a Markdown scar directory."""
-  norm = os.path.normpath(os.path.abspath(os.path.expanduser(md_dir)))
-  parts = PurePath(norm).parts
-  if len(parts) >= 2 and parts[-2:] == (".workflow", "scars"):
-    return "local"
-  if len(parts) >= 3 and parts[-3:] == ("plugin_data", "makeflow", "scars"):
-    return "user"
-  return "custom"
-
-
-def _query_markdown_scars_dir(
-    md_dir: str,
-    query: str = "",
-    category: Optional[str] = None,
-    language: Optional[str] = None,
-    limit: int = 3,
-    source: Optional[str] = None,
-    framework: Optional[str] = None,
-    diagnostic_code: Optional[str] = None,
-    workflow_phase: Optional[str] = None,
-    mf_target: Optional[int] = None,
-    exclude_categories: Optional[Iterable[str]] = None,
-) -> List[Dict[str, Any]]:
-  """Parse a Markdown scar directory into an ephemeral in-memory FTS5 SQLite DB and query it."""
-  if not md_dir or not os.path.isdir(md_dir):
-    return []
-  # Scoped import avoids circular dependency (scar_miner -> scar_candidate -> scars_db).
-  from lib.scar_miner import MarkdownScarStore
-
-  source_tier = _infer_markdown_dir_tier(md_dir)
-  parsed_rows = MarkdownScarStore().parse_directory(
-      md_dir, source_tier=source_tier
-  )
-  if not parsed_rows:
-    return []
-
+def _collect_db_scar_keys(
+    db_path: str,
+) -> Tuple[Set[str], Set[str], Set[str]]:
+  """Collect normalized uppercase ``(primary_ids, ss_ids, original_ids)`` from one DB."""
+  if not db_path or not os.path.isfile(db_path):
+    return set(), set(), set()
   conn = None
   try:
-    conn = sqlite3.connect(":memory:")
-    has_fts5 = init_scars_db_schema(conn)
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    for row in parsed_rows:
-      cur.execute(
-          """
-          INSERT OR REPLACE INTO scars (
-              id, title, category, category_slug, visibility, applies_when,
-              graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
-              raw_reflex, wound, trap, circuit_breaker, reflex,
-              socratic_probe, source
-          ) VALUES (?, ?, ?, ?, 'local', ?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          """,
-          (
-              row["id"],
-              row["title"],
-              row["category"],
-              row["category_slug"],
-              row.get("applies_when", ""),
-              row["wound"],
-              row["trap"],
-              row.get("circuit_breaker", ""),
-              row["reflex"],
-              row["wound"],
-              row["trap"],
-              row.get("circuit_breaker", ""),
-              row["reflex"],
-              row["socratic_probe"],
-              row["source"],
-          ),
-      )
-    enrich_scars_cursor(cur)
-    if has_fts5:
-      populate_scars_fts(cur)
-    conn.commit()
-    return _query_scars_connection(
-        conn=conn,
-        query=query,
-        category=category,
-        language=language,
-        limit=limit,
-        source=source,
-        framework=framework,
-        diagnostic_code=diagnostic_code,
-        workflow_phase=workflow_phase,
-        mf_target=mf_target,
-        exclude_categories=exclude_categories,
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='scars'"
     )
+    if not cur.fetchone():
+      return set(), set(), set()
+    cur.execute("PRAGMA table_info(scars)")
+    cols = {r[1] for r in cur.fetchall()}
+    if "id" not in cols:
+      return set(), set(), set()
+    has_ss = "ss_id" in cols
+    has_orig = "original_id" in cols
+    select_cols = ["id"]
+    if has_ss:
+      select_cols.append("ss_id")
+    if has_orig:
+      select_cols.append("original_id")
+    cur.execute(f"SELECT {', '.join(select_cols)} FROM scars")
+    primary_ids: Set[str] = set()
+    ss_ids: Set[str] = set()
+    original_ids: Set[str] = set()
+    for row in cur.fetchall():
+      if row[0] is not None and str(row[0]).strip():
+        primary_ids.add(str(row[0]).strip().upper())
+      col_idx = 1
+      if has_ss:
+        if row[col_idx] is not None and str(row[col_idx]).strip():
+          ss_ids.add(str(row[col_idx]).strip().upper())
+        col_idx += 1
+      if has_orig:
+        if row[col_idx] is not None and str(row[col_idx]).strip():
+          original_ids.add(str(row[col_idx]).strip().upper())
+    return primary_ids, ss_ids, original_ids
   except (sqlite3.Error, OSError, ValueError):
-    return []
+    return set(), set(), set()
   finally:
     if conn:
       conn.close()
-
-
-def count_markdown_dir_scars(markdown_dirs: Sequence[str]) -> int:
-  """Count total valid parsed scars across a sequence of Markdown scar directories."""
-  if not markdown_dirs:
-    return 0
-  from lib.scar_miner import MarkdownScarStore
-
-  store = MarkdownScarStore()
-  total = 0
-  for md_dir in markdown_dirs:
-    if md_dir and os.path.isdir(md_dir):
-      total += len(store.parse_directory(md_dir))
-  return total
 
 
 def query_scars(
@@ -1511,17 +1683,18 @@ def query_scars(
     workflow_phase: Optional[str] = None,
     mf_target: Optional[int] = None,
     exclude_categories: Optional[Iterable[str]] = None,
-    markdown_dirs: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
-  """Query stacked Markdown scar directories and SQLite scars databases in precedence order.
+  """Query ordered SQLite scars databases in precedence order with namespace-safe ID shadowing.
 
   Returns only complete processed scars (non-empty ``wound``, ``trap``,
   ``reflex``, ``socratic_probe``, plus non-empty ``circuit_breaker`` whenever
-  ``raw_circuit_breaker`` is non-empty) and deduplicates across tiers by
-  ``id``, ``ss_id``, and ``original_id``.
+  ``raw_circuit_breaker`` is non-empty). Sibling rows inside the same SQLite
+  database never shadow one another. Between tiers, higher-precedence primary
+  IDs shadow matching lower-precedence rows across all sources while upstream
+  ``ss_id`` and Makeflow legacy ``original_id`` namespaces stay distinct.
 
   Args:
-    db_path: Single database file path or sequence of stacked paths.
+    db_path: Single SQLite database file path or ordered sequence of paths.
     query: Optional keyword or scar ID search string.
     category: Optional category code or prose alias filter.
     language: Optional normalized language tag filter.
@@ -1534,99 +1707,60 @@ def query_scars(
     mf_target: Optional Makeflow integer target filter.
     exclude_categories: Optional iterable of category codes, prose aliases, or
       ``WORKFLOW`` to exclude from results.
-    markdown_dirs: Optional ordered sequence of Markdown scar directories to
-      index ephemerally via in-memory FTS5 ahead of SQLite databases.
 
   Returns:
     List of structured scar dictionaries up to ``limit``.
   """
-  if not db_path and not markdown_dirs:
-    return []
   if not db_path:
-    paths: List[str] = []
-  elif isinstance(db_path, str):
-    paths = [db_path]
+    return []
+  if isinstance(db_path, str):
+    raw_paths = [db_path]
   else:
-    paths = [str(p) for p in db_path if p]
+    raw_paths = [str(p) for p in db_path if p]
 
-  md_dir_list = [str(d) for d in (markdown_dirs or ()) if d]
+  existing_paths = [p for p in raw_paths if os.path.isfile(p)]
+  if not existing_paths:
+    return []
 
   resolved_excluded = resolve_excluded_category_tokens(exclude_categories)
   eff_limit = max(1, limit)
   combined: List[Dict[str, Any]] = []
-  seen_makeflow_keys: Set[str] = set()
-  seen_upstream_keys: Set[str] = set()
-  seen_legacy_upstream_ids: Set[str] = set()
+  shadowed_primary_ids: Set[str] = set()
+  shadowed_ss_ids: Set[str] = set()
+  shadowed_original_ids: Set[str] = set()
 
-  def _merge_batch(batch_rows: List[Dict[str, Any]]) -> bool:
-    current_makeflow_ids: Set[str] = set()
-    current_upstream_ids: Set[str] = set()
-    current_legacy_upstream_ids: Set[str] = set()
-    for row in batch_rows:
-      scar_id = str(row.get("id") or "")
-      ss_id = str(row.get("ssId") or row.get("ss_id") or "")
-      orig_id = str(row.get("originalId") or row.get("original_id") or "")
-      row_source = str(row.get("source") or "upstream").strip().lower()
-      if row_source == "makeflow":
-        candidate_keys = [k for k in (scar_id, orig_id) if k]
-        blocked_keys = seen_makeflow_keys | seen_legacy_upstream_ids
-        if any(k in blocked_keys for k in candidate_keys):
-          continue
-        current_makeflow_ids.update(candidate_keys)
-      else:
-        candidate_keys = [k for k in (scar_id, ss_id, orig_id) if k]
-        if any(k in seen_upstream_keys for k in candidate_keys):
-          continue
-        current_upstream_ids.update(candidate_keys)
-        if not ss_id and scar_id:
-          current_legacy_upstream_ids.add(scar_id)
-      combined.append(row)
-      if len(combined) >= eff_limit:
-        return True
-    seen_makeflow_keys.update(current_makeflow_ids)
-    seen_upstream_keys.update(current_upstream_ids)
-    seen_legacy_upstream_ids.update(current_legacy_upstream_ids)
-    return False
-
-  for md_dir in md_dir_list:
-    if not os.path.isdir(md_dir):
-      continue
-    prior_seen_count = len(seen_makeflow_keys) + len(seen_upstream_keys)
-    md_matches = _query_markdown_scars_dir(
-        md_dir=md_dir,
-        query=query,
-        category=category,
-        language=language,
-        limit=eff_limit + prior_seen_count + 5,
-        source=source,
-        framework=framework,
-        diagnostic_code=diagnostic_code,
-        workflow_phase=workflow_phase,
-        mf_target=mf_target,
-        exclude_categories=resolved_excluded,
-    )
-    if _merge_batch(md_matches):
-      return combined
-
-  for single_path in paths:
-    if not os.path.isfile(single_path):
-      continue
-    prior_seen_count = len(seen_makeflow_keys) + len(seen_upstream_keys)
+  for idx, single_path in enumerate(existing_paths):
+    remaining = eff_limit - len(combined)
+    if remaining <= 0:
+      break
     db_matches = _query_single_scars_db(
         db_path=single_path,
         query=query,
         category=category,
         language=language,
-        limit=eff_limit + prior_seen_count + 5,
+        limit=remaining,
         source=source,
         framework=framework,
         diagnostic_code=diagnostic_code,
         workflow_phase=workflow_phase,
         mf_target=mf_target,
         exclude_categories=resolved_excluded,
+        shadowed_sets=(
+            shadowed_primary_ids,
+            shadowed_ss_ids,
+            shadowed_original_ids,
+        ),
     )
-    if _merge_batch(db_matches):
-      return combined
+    for row in db_matches:
+      combined.append(row)
+      if len(combined) >= eff_limit:
+        return combined
+
+    if idx < len(existing_paths) - 1:
+      tier_primary, tier_ss, tier_orig = _collect_db_scar_keys(single_path)
+      shadowed_primary_ids.update(tier_primary)
+      shadowed_ss_ids.update(tier_ss)
+      shadowed_original_ids.update(tier_orig)
 
   return combined
 

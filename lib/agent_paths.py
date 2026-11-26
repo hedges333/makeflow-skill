@@ -1,9 +1,9 @@
-"""Canonical cross-agent plugin data, configuration, and scar path registry (GH-117).
+"""Canonical cross-agent plugin data, configuration, and scar path registry (GH-117, GH-304).
 
 Maps all six supported Makeflow agent platforms (gemini, claude, cursor,
 copilot, codex, chatgpt) to immutable AgentPathProfile value objects covering
-user-global JSON config files, legacy config fallbacks, user-wide Markdown scar
-directories, and user-wide SQLite scar registries.
+user-global JSON config files, legacy config fallbacks, and user-wide SQLite
+scar registries.
 """
 
 from dataclasses import dataclass
@@ -77,7 +77,6 @@ class AgentPathProfile:
     plugin_data_dir: Absolute path to agent-specific Makeflow plugin data root.
     global_config_path: Absolute path to user-global JSON configuration file.
     legacy_config_paths: Ordered tuple of backward-compatible legacy config paths.
-    scars_dir: Absolute path to user-wide Markdown synthetic scars directory.
     scars_db_path: Absolute path to user-wide SQLite synthetic scars registry.
   """
 
@@ -85,7 +84,6 @@ class AgentPathProfile:
   plugin_data_dir: str
   global_config_path: str
   legacy_config_paths: Tuple[str, ...]
-  scars_dir: str
   scars_db_path: str
 
 
@@ -112,7 +110,6 @@ class AgentPathRegistry:
           plugin_data_dir=plugin_data_dir,
           global_config_path=os.path.join(plugin_data_dir, "config.json"),
           legacy_config_paths=(legacy_path,),
-          scars_dir=os.path.join(plugin_data_dir, "scars"),
           scars_db_path=os.path.join(plugin_data_dir, "scars_registry.db"),
       )
 
@@ -174,17 +171,6 @@ class AgentPathRegistry:
         ordered.append(self._profiles[name])
     return ordered
 
-  def scars_dirs(self, active_agent: Optional[str] = None) -> List[str]:
-    """Return all six user-wide Markdown scar directories, active agent first.
-
-    Args:
-      active_agent: Optional active agent override.
-
-    Returns:
-      Ordered list of absolute ``scars/`` directory paths.
-    """
-    return [p.scars_dir for p in self.all_profiles(active_agent)]
-
   def scars_db_paths(self, active_agent: Optional[str] = None) -> List[str]:
     """Return all six user-wide SQLite scar DB paths, active agent first.
 
@@ -221,19 +207,19 @@ class AgentPathRegistry:
         "pluginDataDir": profile.plugin_data_dir,
         "userConfigPath": profile.global_config_path,
         "legacyConfigPaths": list(profile.legacy_config_paths),
-        "userScarsDir": profile.scars_dir,
         "userScarsDbPath": profile.scars_db_path,
         "projectConfigPath": (
             os.path.join(ws_abs, ".workflow", "config.json") if ws_abs else None
         ),
-        "projectScarsDir": (
-            os.path.join(ws_abs, ".workflow", "scars") if ws_abs else None
+        "projectScarsDbPath": (
+            os.path.join(ws_abs, ".workflow", "scars", "scars_registry.db")
+            if ws_abs
+            else None
         ),
         "allAgents": {
             p.name: {
                 "pluginDataDir": p.plugin_data_dir,
                 "globalConfigPath": p.global_config_path,
-                "scarsDir": p.scars_dir,
                 "scarsDbPath": p.scars_db_path,
             }
             for p in self.all_profiles(profile.name)
