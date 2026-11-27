@@ -1711,7 +1711,7 @@
     "id": "GH-160",
     "issue_url": "https://github.com/hedges333/makeflow-skill/issues/160",
     "title": "[DOCS] Encapsulate full Google Developer Documentation Style Guide in 04_google_developer_style_guide.md from upstream sources",
-    "request": "Download the upstream Google Developer Documentation Style Guide into a scratch directory and convert 100% of its language, grammar, formatting, code-in-text, CLI/API, UI, error-message, link, inclusive-language, and A\u2013Z word-list rules into skills/makeflow/references/resources/language/english/04_google_developer_style_guide.md across Parts I through VII with test regression validation.",
+    "request": "Download the upstream Google Developer Documentation Style Guide into a scratch directory and convert 100% of its language, grammar, formatting, code-in-text, CLI/API, UI, error-message, link, inclusive-language, and A–Z word-list rules into skills/makeflow/references/resources/language/english/04_google_developer_style_guide.md across Parts I through VII with test regression validation.",
     "branch": "feat/160-encapsulate-google-style-guide",
     "subprojects": [
       "skills/makeflow",
@@ -3386,6 +3386,25 @@
     "pr_url": "https://github.com/hedges333/makeflow-skill/pull/347",
     "closes_issue": true,
     "tests_added": 2,
+    "scars_earned": []
+  },
+  {
+    "id": "GH-341",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/341",
+    "title": "[REFACTOR] Treat all FROM-omitted T30/T70 calls as forward pause-gate exits and require explicit FROM= for loop-backs",
+    "request": "Classify FROM-omitted calls into T30, T50, T60, T70, and T80 structurally as forward pause-gate exits, independent of mutable on-disk state, and require explicit FROM= only on the nine overloaded recovery edges into T30, T60, and T70 (GH-316 follow-up, with replay coverage from closed GH-339).",
+    "branch": "feat/341-structural-pause-gate-exits",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-27T18:19:57Z",
+    "completed_at": "2026-11-27T22:20:16Z",
+    "commit_sha": "7ec6be64bfebf9adabd53720b83333740b00070c",
+    "pr_number": 348,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/348",
+    "closes_issue": true,
+    "tests_added": 8,
     "scars_earned": []
   }
 ]
