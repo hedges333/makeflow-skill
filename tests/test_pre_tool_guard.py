@@ -3429,13 +3429,44 @@ class TestPreToolGuardScriptExecution(unittest.TestCase):
             f"Expected deny for {tool_name} on lib/pre_tool_guard.py without active ticket, got {res}",
         )
 
-      # With an active ticket in the plugin checkout, direct file tools are allowed
+      # With only 10_ticket.md (no approved 20_plan.md), direct edits remain denied (GH-331)
       state_dir = os.path.join(plugin_ws, ".workflow", "state")
       os.makedirs(state_dir)
       with open(
           os.path.join(state_dir, "10_ticket.md"), "w", encoding="utf-8"
       ) as f:
         f.write("# 10_ticket: GH-204\n")
+      ticket_only_res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "edit_file",
+              "args": {"Path": target_file},
+          },
+      })
+      self.assertEqual(ticket_only_res["decision"], "deny")
+
+      # With an unapproved 20_plan.md, direct edits remain denied
+      with open(
+          os.path.join(state_dir, "20_plan.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write(
+            "### Specific Edits to Existing Files\n\n"
+            "- `lib/pre_tool_guard.py`: Update write guard.\n"
+        )
+      unapproved_res = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {
+              "name": "edit_file",
+              "args": {"Path": target_file},
+          },
+      })
+      self.assertEqual(unapproved_res["decision"], "deny")
+
+      # With 20_plan.md + 20_plan_approved.md explicitly listing lib/pre_tool_guard.py, allow
+      with open(
+          os.path.join(state_dir, "20_plan_approved.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("APPROVED\n")
       active_res = evaluate_tool_call({
           "workspacePaths": [plugin_ws],
           "toolCall": {
@@ -4536,6 +4567,240 @@ class TestPreToolGuardCommitMessageEnforcement(unittest.TestCase):
       )
       ok, reason = evaluate_ask_question_turn_boundary(tr)
       self.assertTrue(ok, reason)
+
+  def test_direct_file_write_guard_plan_scope_symlinks_and_cross_workspace_hardening(
+      self,
+  ):
+    """GH-331 Scenario 4: Enforces plan scope, symlink realpath, expanded caches, cross-workspace, and arg keys."""
+    with (
+        _isolated_guard_env() as (_hook_cwd, fake_home, _clean_env),
+        tempfile.TemporaryDirectory() as plugin_ws,
+        tempfile.TemporaryDirectory() as consumer_ws,
+    ):
+      os.makedirs(os.path.join(plugin_ws, ".git"))
+      os.makedirs(os.path.join(plugin_ws, "lib"))
+      state_dir = os.path.join(plugin_ws, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+
+      plan_text = (
+          "# Plan\n\n"
+          "### Specific Edits to Existing Files\n\n"
+          "- `lib/intake_gates.py`: Planned edit.\n"
+          "```markdown\n"
+          "- `lib/tdd_guard.py`: Fenced example only.\n"
+          "```\n\n"
+          "### New Files to Create\n\n"
+          "- None.\n\n"
+          "### Untouched Files and Scope Quarantine\n\n"
+          "- `lib/commit_gates.py`: Untouched.\n"
+      )
+      with open(
+          os.path.join(state_dir, "20_plan.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write(plan_text)
+      with open(
+          os.path.join(state_dir, "20_plan_approved.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("APPROVED\n")
+
+      planned_file = os.path.join(plugin_ws, "lib", "intake_gates.py")
+      quarantined_file = os.path.join(plugin_ws, "lib", "commit_gates.py")
+      fenced_file = os.path.join(plugin_ws, "lib", "tdd_guard.py")
+      unplanned_file = os.path.join(plugin_ws, "lib", "config.py")
+      for fp in (planned_file, quarantined_file, fenced_file, unplanned_file):
+        with open(fp, "w", encoding="utf-8") as f:
+          f.write("# stub\n")
+
+      # 1. Planned file allowed across all 4 write tools and all 4 path arg keys
+      for tool_name, arg_key in (
+          ("write_file", "Path"),
+          ("edit_file", "TargetFile"),
+          ("ReplaceFileContent", "file_path"),
+          ("MultiReplaceFileContent", "path"),
+      ):
+        with self.subTest(case="planned_allow", tool=tool_name, key=arg_key):
+          res = evaluate_tool_call({
+              "workspacePaths": [plugin_ws],
+              "toolCall": {
+                  "name": tool_name,
+                  "args": {arg_key: planned_file},
+              },
+          })
+          self.assertEqual(res["decision"], "allow", res)
+
+      # 2. Quarantined, fenced-only, and unplanned files denied across path arg keys
+      for denied_path, arg_key in (
+          (quarantined_file, "Path"),
+          (fenced_file, "file_path"),
+          (unplanned_file, "path"),
+      ):
+        with self.subTest(case="unplanned_deny", path=denied_path, key=arg_key):
+          res = evaluate_tool_call({
+              "workspacePaths": [plugin_ws],
+              "toolCall": {
+                  "name": "edit_file",
+                  "args": {arg_key: denied_path},
+              },
+          })
+          self.assertEqual(res["decision"], "deny", res)
+
+      # 3. Symlink to .workflow/state/30_tdd_receipt.json denied
+      receipt_target = os.path.join(state_dir, "30_tdd_receipt.json")
+      with open(receipt_target, "w", encoding="utf-8") as f:
+        f.write("{}\n")
+      receipt_link = os.path.join(plugin_ws, "innocent_receipt_alias.json")
+      os.symlink(receipt_target, receipt_link)
+      res_state_link = evaluate_tool_call({
+          "workspacePaths": [plugin_ws],
+          "toolCall": {"name": "write_file", "args": {"file_path": receipt_link}},
+      })
+      self.assertEqual(res_state_link["decision"], "deny", res_state_link)
+
+      # 4. Expanded plugin caches and symlinks into plugin caches denied
+      for rel_cache in (
+          os.path.join(".gemini", "config", "plugins", "makeflow", "lib", "intake_gates.py"),
+          os.path.join(".codex", "plugins", "makeflow", "lib", "intake_gates.py"),
+          os.path.join(".cursor", "plugins", "makeflow", "lib", "intake_gates.py"),
+          os.path.join(".copilot", "plugins", "makeflow", "lib", "intake_gates.py"),
+      ):
+        cache_file = os.path.join(fake_home, rel_cache)
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with open(cache_file, "w", encoding="utf-8") as f:
+          f.write("# installed\n")
+        res_cache = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {"name": "write_file", "args": {"path": cache_file}},
+        })
+        self.assertEqual(res_cache["decision"], "deny", f"Expected deny for {cache_file}")
+
+        cache_link = os.path.join(
+            plugin_ws, f"cache_link_{rel_cache.split(os.sep)[0].lstrip('.')}.py"
+        )
+        os.symlink(cache_file, cache_link)
+        res_link = evaluate_tool_call({
+            "workspacePaths": [plugin_ws],
+            "toolCall": {"name": "edit_file", "args": {"Path": cache_link}},
+        })
+        self.assertEqual(
+            res_link["decision"],
+            "deny",
+            f"Expected deny for symlink {cache_link} -> {cache_file}",
+        )
+
+      # 5. Cross-workspace edit into Makeflow checkout outside workspacePaths denied
+      res_cross = evaluate_tool_call({
+          "workspacePaths": [consumer_ws],
+          "toolCall": {"name": "edit_file", "args": {"Path": planned_file}},
+      })
+      self.assertEqual(res_cross["decision"], "deny", res_cross)
+
+      # 6. Write resolving under _MAKEFLOW_REPO_ROOT_REAL outside workspacePaths denied
+      real_repo_target = os.path.join(REPO_ROOT, "lib", "intake_gates.py")
+      res_real_repo = evaluate_tool_call({
+          "workspacePaths": [consumer_ws],
+          "toolCall": {
+              "name": "write_file",
+              "args": {"file_path": real_repo_target},
+          },
+      })
+      self.assertEqual(res_real_repo["decision"], "deny", res_real_repo)
+
+      # Symlink inside consumer workspace pointing into _MAKEFLOW_REPO_ROOT_REAL denied
+      repo_link = os.path.join(consumer_ws, "local_alias.py")
+      os.symlink(real_repo_target, repo_link)
+      res_repo_link = evaluate_tool_call({
+          "workspacePaths": [consumer_ws],
+          "toolCall": {"name": "edit_file", "args": {"Path": repo_link}},
+      })
+      self.assertEqual(res_repo_link["decision"], "deny", res_repo_link)
+
+  def test_direct_file_write_guard_blank_and_non_string_workspace_paths_fallback(
+      self,
+  ):
+    """GH-331 NBO-1: Blank and non-string workspacePaths fall back cleanly instead of returning [] or crashing."""
+    import lib.pre_tool_guard as guard_lib
+
+    with (
+        _isolated_guard_env() as (hook_cwd, _fake_home, _clean_env),
+        tempfile.TemporaryDirectory() as plugin_ws,
+    ):
+      # Make hook_cwd a Makeflow checkout without an approved plan
+      os.makedirs(os.path.join(hook_cwd, ".git"))
+      os.makedirs(os.path.join(hook_cwd, "lib"))
+      with open(
+          os.path.join(hook_cwd, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      with open(
+          os.path.join(hook_cwd, "lib", "intake_gates.py"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# stub\n")
+
+      expected_cwd_target = os.path.abspath("lib/intake_gates.py")
+      for bad_ws in ([""], ["   "], [None], [123, "   ", None]):
+        with self.subTest(case="fallback", workspacePaths=bad_ws):
+          resolved = guard_lib._resolve_direct_target_paths(
+              "lib/intake_gates.py", bad_ws
+          )
+          self.assertEqual(resolved, [expected_cwd_target])
+
+          res = evaluate_tool_call({
+              "workspacePaths": bad_ws,
+              "toolCall": {
+                  "name": "edit_file",
+                  "args": {"Path": "lib/intake_gates.py"},
+              },
+          })
+          self.assertEqual(res["decision"], "deny", res)
+
+      # Mixed valid + blank/non-string workspacePaths filters junk and resolves valid root
+      os.makedirs(os.path.join(plugin_ws, ".git"))
+      os.makedirs(os.path.join(plugin_ws, "lib"))
+      state_dir = os.path.join(plugin_ws, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(plugin_ws, "plugin.json"), "w", encoding="utf-8"
+      ) as f:
+        json.dump({"name": "makeflow", "version": "1.0.0"}, f)
+      with open(
+          os.path.join(plugin_ws, "lib", "intake_gates.py"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("# stub\n")
+      with open(
+          os.path.join(state_dir, "20_plan.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write(
+            "### Specific Edits to Existing Files\n\n"
+            "- `lib/intake_gates.py`: Planned edit.\n"
+        )
+      with open(
+          os.path.join(state_dir, "20_plan_approved.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("APPROVED\n")
+
+      mixed_ws = ["", "   ", None, 42, f"  {plugin_ws}  "]
+      self.assertEqual(
+          guard_lib._resolve_direct_target_paths(
+              "lib/intake_gates.py", mixed_ws
+          ),
+          [os.path.abspath(os.path.join(plugin_ws, "lib", "intake_gates.py"))],
+      )
+      res_mixed = evaluate_tool_call({
+          "workspacePaths": mixed_ws,
+          "toolCall": {
+              "name": "edit_file",
+              "args": {"Path": "lib/intake_gates.py"},
+          },
+      })
+      self.assertEqual(res_mixed["decision"], "allow", res_mixed)
 
 
 if __name__ == "__main__":

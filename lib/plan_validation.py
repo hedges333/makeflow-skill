@@ -36,6 +36,10 @@ _H3_OR_HIGHER_HEADING_RE = re.compile(r"^#{1,3}\s+\S")
 _ANY_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
 _HORIZONTAL_RULE_RE = re.compile(r"^(?:[-*_]\s*){3,}$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
+_TRAILING_BOUNDARY_PATTERN = r"(?![A-Za-z0-9_/\-]|\.[A-Za-z0-9_])"
+_LEADING_REL_BOUNDARY_PATTERN = r"(?:^|(?<=[^A-Za-z0-9_./\-]))(?:\./)?"
+_PLANNED_EDIT_SUBHEADINGS = frozenset(REQUIRED_SECTION3_SUBHEADINGS[:2])
+_QUARANTINE_SUBHEADING = REQUIRED_SECTION3_SUBHEADINGS[2]
 _GWT_PATTERNS: Tuple[Tuple[str, re.Pattern], ...] = (
     ("Given", re.compile(r"(?i)^\s*(?:[-*+]\s+)?(?:\*\*|__)?Given(?:\*\*|__)?\b")),
     ("When", re.compile(r"(?i)^\s*(?:[-*+]\s+)?(?:\*\*|__)?When(?:\*\*|__)?\b")),
@@ -378,3 +382,183 @@ def build_plan_spec_failure(trigger: str) -> GateFailure:
           "02_archaeology_and_planning.md, then re-run check-plan."
       ),
   )
+
+
+def plan_mentions_relpath(
+    plan_text: str, rel_path: str, plugin_root: Optional[str] = None
+) -> bool:
+  """Checks whether ``plan_text`` explicitly references ``rel_path`` at path boundaries.
+
+  Matches backticked paths, ``./`` prefixed paths, Markdown table cells, and
+  ``file://`` or absolute repository paths while rejecting substring traps such
+  as ``other/lib/config.py`` or ``lib/config.py.bak``.
+
+  Args:
+    plan_text: Raw UTF-8 text of ``.workflow/state/20_plan.md`` or an extracted
+      section body.
+    rel_path: POSIX repository-relative path to search for.
+    plugin_root: Optional Makeflow repository root for exact absolute and
+      ``file://`` URL matching.
+
+  Returns:
+    True when ``plan_text`` explicitly references ``rel_path``, else False.
+  """
+  if not plan_text or not rel_path:
+    return False
+  norm_rel = rel_path.replace("\\", "/")
+  while norm_rel.startswith("./"):
+    norm_rel = norm_rel[2:]
+  norm_rel = norm_rel.lstrip("/")
+  if not norm_rel:
+    return False
+  escaped_rel = re.escape(norm_rel)
+
+  rel_pattern = re.compile(
+      _LEADING_REL_BOUNDARY_PATTERN + escaped_rel + _TRAILING_BOUNDARY_PATTERN
+  )
+  if rel_pattern.search(plan_text):
+    return True
+
+  if plugin_root:
+    roots = {
+        os.path.abspath(plugin_root).replace("\\", "/").rstrip("/"),
+        os.path.realpath(plugin_root).replace("\\", "/").rstrip("/"),
+    }
+    for root in roots:
+      abs_posix = f"{root}/{norm_rel}"
+      abs_pat = re.compile(
+          r"(?:^|(?<=[^A-Za-z0-9_./\-]))(?:file://)?"
+          + re.escape(abs_posix)
+          + _TRAILING_BOUNDARY_PATTERN
+      )
+      if abs_pat.search(plan_text):
+        return True
+  else:
+    file_url_pat = re.compile(
+        r"file://[^\s`'\"<>|)]+/" + escaped_rel + _TRAILING_BOUNDARY_PATTERN
+    )
+    if file_url_pat.search(plan_text):
+      return True
+
+  return False
+
+
+def extract_planned_edit_text(plan_text: str) -> str:
+  """Extracts unfenced planned-edit Markdown text while excluding quarantine sections.
+
+  Tracks CommonMark fenced code blocks via ``_extract_unfenced_lines``
+  (SCAR-LOCAL-DATA-0001). When canonical Section 3 edit subheadings
+  (``### Specific Edits to Existing Files`` or ``### New Files to Create``)
+  appear outside code fences, returns only the unfenced lines beneath those
+  subheadings (including nested ``####`` subsections) and stops at the next
+  H1-H3 heading. For compact plans lacking canonical edit subheadings, falls
+  back to all unfenced lines outside ``### Untouched Files and Scope Quarantine``.
+
+  Args:
+    plan_text: Raw UTF-8 contents of ``.workflow/state/20_plan.md``.
+
+  Returns:
+    Newline-joined unfenced planned-edit text, or ``""`` when empty.
+  """
+  if not isinstance(plan_text, str) or not plan_text:
+    return ""
+
+  unfenced = _extract_unfenced_lines(plan_text)
+  has_canonical_edit_header = any(
+      raw_line.strip() in _PLANNED_EDIT_SUBHEADINGS
+      for _idx, raw_line in unfenced
+  )
+
+  collected: List[str] = []
+  if has_canonical_edit_header:
+    in_planned_section = False
+    for _idx, raw_line in unfenced:
+      stripped = raw_line.strip()
+      if stripped in _PLANNED_EDIT_SUBHEADINGS:
+        in_planned_section = True
+        continue
+      if _H3_OR_HIGHER_HEADING_RE.match(stripped):
+        in_planned_section = False
+        continue
+      if in_planned_section:
+        collected.append(raw_line)
+    return "\n".join(collected)
+
+  in_quarantine = False
+  for _idx, raw_line in unfenced:
+    stripped = raw_line.strip()
+    if stripped == _QUARANTINE_SUBHEADING:
+      in_quarantine = True
+      continue
+    if in_quarantine and _H3_OR_HIGHER_HEADING_RE.match(stripped):
+      in_quarantine = False
+    if not in_quarantine:
+      collected.append(raw_line)
+  return "\n".join(collected)
+
+
+def plan_allows_edit_relpath(
+    plan_text: str, rel_path: str, plugin_root: Optional[str] = None
+) -> bool:
+  """Checks whether ``plan_text`` authorizes editing ``rel_path``.
+
+  Evaluates only unfenced planned-edit text extracted by
+  ``extract_planned_edit_text`` so fenced code examples and
+  ``### Untouched Files and Scope Quarantine`` entries never authorize edits.
+
+  Args:
+    plan_text: Raw UTF-8 contents of ``.workflow/state/20_plan.md``.
+    rel_path: POSIX repository-relative path to check.
+    plugin_root: Optional Makeflow repository root for exact absolute and
+      ``file://`` URL matching.
+
+  Returns:
+    True when ``rel_path`` is referenced in the plan's unfenced planned-edit
+    text, otherwise False.
+  """
+  edit_text = extract_planned_edit_text(plan_text)
+  if not edit_text:
+    return False
+  return plan_mentions_relpath(edit_text, rel_path, plugin_root=plugin_root)
+
+
+def resolve_approved_planned_governance_files(
+    repo_root: str, candidate_relpaths: Sequence[str]
+) -> Tuple[str, ...]:
+  """Resolves sorted governance file paths authorized by an approved Target 20 plan.
+
+  Requires a Git-backed repository (``.git`` file or directory) containing both
+  ``.workflow/state/20_plan.md`` and ``.workflow/state/20_plan_approved.md``.
+
+  Args:
+    repo_root: Repository root directory to inspect.
+    candidate_relpaths: Candidate POSIX relative paths (for example
+      ``CORE_GOVERNANCE_FILES``) to match against the approved plan.
+
+  Returns:
+    Deterministically sorted tuple of matched POSIX relative paths, or an empty
+    tuple when any git, plan, or approval prerequisite is absent.
+  """
+  if not repo_root or not isinstance(repo_root, str):
+    return ()
+  abs_repo = os.path.abspath(repo_root)
+  if not os.path.exists(os.path.join(abs_repo, ".git")):
+    return ()
+  state_dir = os.path.join(abs_repo, ".workflow", "state")
+  plan_path = os.path.join(state_dir, "20_plan.md")
+  approved_path = os.path.join(state_dir, "20_plan_approved.md")
+  if not (os.path.isfile(plan_path) and os.path.isfile(approved_path)):
+    return ()
+  try:
+    with open(plan_path, "r", encoding="utf-8", errors="replace") as fh:
+      plan_text = fh.read()
+  except OSError:
+    return ()
+
+  matched = sorted({
+      rel.replace("\\", "/")
+      for rel in candidate_relpaths
+      if isinstance(rel, str)
+      and plan_allows_edit_relpath(plan_text, rel, plugin_root=abs_repo)
+  })
+  return tuple(matched)

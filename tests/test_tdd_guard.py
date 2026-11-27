@@ -4181,5 +4181,460 @@ class TestTddGuardCompletedCycles(unittest.TestCase):
       self.assertEqual(after_rewit["completed_cycles"][0]["test_cmd"], cmd_slice1)
 
 
+class TestDualAnchorAndPlanScopedSelfHosting(unittest.TestCase):
+  """Hermetic boundary tests for dual-anchor and plan-scoped toolchain hashing (GH-331)."""
+
+  def _seed_plugin_checkout(self, repo_dir: str) -> str:
+    """Seeds a complete Git-backed Makeflow plugin checkout with core files."""
+    _init_fixture_repo(repo_dir)
+    _seed_required_plugin_files(repo_dir)
+    for rel_path in CORE_GOVERNANCE_FILES:
+      src = os.path.join(_REPO_ROOT, *rel_path.split("/"))
+      dst = os.path.join(repo_dir, *rel_path.split("/"))
+      os.makedirs(os.path.dirname(dst), exist_ok=True)
+      shutil.copyfile(src, dst)
+    with open(os.path.join(repo_dir, "spec.txt"), "w", encoding="utf-8") as f:
+      f.write("def add(a: int, b: int) -> int:\n  return a + b\n")
+    subprocess.run(
+        ["git", "add", "-A"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "chore: seed makeflow checkout"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return head.stdout.strip()
+
+  def _seed_installed_plugin(self, plugin_dir: str) -> None:
+    """Seeds an immutable installed Makeflow plugin directory (no .git)."""
+    _seed_required_plugin_files(plugin_dir)
+    for rel_path in CORE_GOVERNANCE_FILES:
+      src = os.path.join(_REPO_ROOT, *rel_path.split("/"))
+      dst = os.path.join(plugin_dir, *rel_path.split("/"))
+      os.makedirs(os.path.dirname(dst), exist_ok=True)
+      shutil.copyfile(src, dst)
+
+  def _write_approved_plan(
+      self, repo_dir: str, plan_text: str, approved: bool = True
+  ) -> None:
+    state_dir = os.path.join(repo_dir, ".workflow", "state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(os.path.join(state_dir, "20_plan.md"), "w", encoding="utf-8") as f:
+      f.write(plan_text)
+    if approved:
+      with open(
+          os.path.join(state_dir, "20_plan_approved.md"), "w", encoding="utf-8"
+      ) as f:
+        f.write("APPROVED\n")
+
+  def _sample_plan(self) -> str:
+    return (
+        "# Target 20 Implementation Plan: GH-331\n\n"
+        "## 3. Target Subprojects, Planned File Edits, and Layer Posture\n\n"
+        "### Specific Edits to Existing Files\n\n"
+        "- `lib/intake_gates.py`: Planned self-hosting edit.\n"
+        "```markdown\n"
+        "- `lib/tdd_guard.py`: Fenced example must not be exempted.\n"
+        "```\n\n"
+        "### New Files to Create\n\n"
+        "- None.\n\n"
+        "### Untouched Files and Scope Quarantine\n\n"
+        "- `lib/commit_gates.py`: Strictly untouched.\n"
+    )
+
+  def test_installed_plugin_self_hosting_planned_edit_passes_green_and_citation(
+      self,
+  ):
+    """Scenario 1: Planned edit to lib/intake_gates.py passes under distinct installed plugin."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      installed_plugin = os.path.join(tmpdir, "installed_plugin")
+      workspace_repo = os.path.join(tmpdir, "makeflow_workspace")
+      os.makedirs(installed_plugin)
+      os.makedirs(workspace_repo)
+      self._seed_installed_plugin(installed_plugin)
+      self._seed_plugin_checkout(workspace_repo)
+      self._write_approved_plan(workspace_repo, self._sample_plan())
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", installed_plugin):
+        err_red = io.StringIO()
+        rc_red = TddGuardScript().execute(
+            args=[
+                "--repo-root",
+                workspace_repo,
+                "witness-red",
+                "--test-dir",
+                "tests",
+                "--cmd",
+                _unit_test_cmd(),
+            ],
+            stdout=io.StringIO(),
+            stderr=err_red,
+        )
+        self.assertEqual(rc_red, 0, err_red.getvalue())
+
+        with open(_receipt_path(workspace_repo), "r", encoding="utf-8") as f:
+          red_rec = json.load(f)
+        self.assertEqual(
+            red_rec.get("planned_governance_files"), ["lib/intake_gates.py"]
+        )
+
+        # Modify planned governance file and fix test defect
+        with open(
+            os.path.join(workspace_repo, "lib", "intake_gates.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# PLANNED_SELF_HOST_EDIT = True\n")
+        _fix_calc_bug(workspace_repo)
+
+        err_green = io.StringIO()
+        rc_green = TddGuardScript().execute(
+            args=["--repo-root", workspace_repo, "verify-green"],
+            stdout=io.StringIO(),
+            stderr=err_green,
+        )
+        self.assertEqual(rc_green, 0, err_green.getvalue())
+        self.assertEqual(err_green.getvalue(), "")
+
+        err_cite = io.StringIO()
+        rc_cite = TddGuardScript().execute(
+            args=[
+                "--repo-root",
+                workspace_repo,
+                "verify-citation",
+                "--cite",
+                "spec.txt:1",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_cite,
+        )
+        self.assertEqual(rc_cite, 0, err_cite.getvalue())
+        self.assertEqual(err_cite.getvalue(), "")
+
+        with open(_receipt_path(workspace_repo), "r", encoding="utf-8") as f:
+          final_rec = json.load(f)
+        self.assertTrue(final_rec["verified_green"])
+        self.assertEqual(final_rec["forensic_log"], [])
+
+  def test_executing_installed_plugin_tampering_fails_even_when_relpath_is_planned(
+      self,
+  ):
+    """Scenario 2: Mutating executing installed plugin fails unconditionally even if relpath is in 20_plan.md."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      installed_plugin = os.path.join(tmpdir, "installed_plugin")
+      workspace_repo = os.path.join(tmpdir, "makeflow_workspace")
+      os.makedirs(installed_plugin)
+      os.makedirs(workspace_repo)
+      self._seed_installed_plugin(installed_plugin)
+      self._seed_plugin_checkout(workspace_repo)
+      self._write_approved_plan(workspace_repo, self._sample_plan())
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", installed_plugin):
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=[
+                    "--repo-root",
+                    workspace_repo,
+                    "witness-red",
+                    "--test-dir",
+                    "tests",
+                    "--cmd",
+                    _unit_test_cmd(),
+                ],
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            ),
+            0,
+        )
+        _fix_calc_bug(workspace_repo)
+
+        # Tamper with executing plugin's lib/intake_gates.py (same relpath as planned edit!)
+        with open(
+            os.path.join(installed_plugin, "lib", "intake_gates.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# INSTALLED_PLUGIN_TAMPER = True\n")
+
+        for sub_args in (
+            ["--repo-root", workspace_repo, "verify-green"],
+            [
+                "--repo-root",
+                workspace_repo,
+                "verify-citation",
+                "--cite",
+                "spec.txt:1",
+            ],
+        ):
+          err_buf = io.StringIO()
+          rc = TddGuardScript().execute(
+              args=sub_args, stdout=io.StringIO(), stderr=err_buf
+          )
+          self.assertEqual(rc, 2)
+          self.assertIn(
+              "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+              err_buf.getvalue(),
+          )
+
+  def test_unplanned_quarantined_fenced_and_post_witness_plan_edits_fail(self):
+    """Scenario 3: Quarantined, fenced, unplanned, and post-witness plan-added files all fail verify-green."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      installed_plugin = os.path.join(tmpdir, "installed_plugin")
+      workspace_repo = os.path.join(tmpdir, "makeflow_workspace")
+      os.makedirs(installed_plugin)
+      os.makedirs(workspace_repo)
+      self._seed_installed_plugin(installed_plugin)
+      self._seed_plugin_checkout(workspace_repo)
+      self._write_approved_plan(workspace_repo, self._sample_plan())
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", installed_plugin):
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=[
+                    "--repo-root",
+                    workspace_repo,
+                    "witness-red",
+                    "--test-dir",
+                    "tests",
+                    "--cmd",
+                    _unit_test_cmd(),
+                ],
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            ),
+            0,
+        )
+        _fix_calc_bug(workspace_repo)
+
+        # 1. Quarantined lib/commit_gates.py modified -> fail
+        commit_path = os.path.join(workspace_repo, "lib", "commit_gates.py")
+        with open(commit_path, "r", encoding="utf-8") as f:
+          orig_commit = f.read()
+        with open(commit_path, "a", encoding="utf-8") as f:
+          f.write("\n# QUARANTINED_EDIT = True\n")
+
+        err_q = io.StringIO()
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=["--repo-root", workspace_repo, "verify-green"],
+                stdout=io.StringIO(),
+                stderr=err_q,
+            ),
+            2,
+        )
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_q.getvalue(),
+        )
+
+        # 2. Mutating 20_plan.md post-witness to add lib/commit_gates.py STILL fails
+        expanded_plan = self._sample_plan().replace(
+            "- `lib/intake_gates.py`: Planned self-hosting edit.",
+            "- `lib/intake_gates.py`: Planned self-hosting edit.\n"
+            "- `lib/commit_gates.py`: Smuggled post-witness.",
+        )
+        self._write_approved_plan(workspace_repo, expanded_plan)
+        err_post = io.StringIO()
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=["--repo-root", workspace_repo, "verify-green"],
+                stdout=io.StringIO(),
+                stderr=err_post,
+            ),
+            2,
+        )
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_post.getvalue(),
+        )
+
+        # Restore lib/commit_gates.py, tamper fenced lib/tdd_guard.py -> fail
+        with open(commit_path, "w", encoding="utf-8") as f:
+          f.write(orig_commit)
+        with open(
+            os.path.join(workspace_repo, "lib", "tdd_guard.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# FENCED_ONLY_TAMPER = True\n")
+        err_fence = io.StringIO()
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=["--repo-root", workspace_repo, "verify-green"],
+                stdout=io.StringIO(),
+                stderr=err_fence,
+            ),
+            2,
+        )
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_fence.getvalue(),
+        )
+
+  def test_same_root_checkout_honors_sealed_planned_exemptions(self):
+    """Same-root checkout allows sealed planned edits and rejects unplanned edits."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      self._seed_plugin_checkout(tmpdir)
+      self._write_approved_plan(tmpdir, self._sample_plan())
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", tmpdir):
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=[
+                    "--repo-root",
+                    tmpdir,
+                    "witness-red",
+                    "--test-dir",
+                    "tests",
+                    "--cmd",
+                    _unit_test_cmd(),
+                ],
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            ),
+            0,
+        )
+
+        with open(
+            os.path.join(tmpdir, "lib", "intake_gates.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# SAME_ROOT_PLANNED_EDIT = True\n")
+        _fix_calc_bug(tmpdir)
+
+        err_ok = io.StringIO()
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=["--repo-root", tmpdir, "verify-green"],
+                stdout=io.StringIO(),
+                stderr=err_ok,
+            ),
+            0,
+            err_ok.getvalue(),
+        )
+
+        # Unplanned file edit still fails in same-root mode
+        with open(
+            os.path.join(tmpdir, "lib", "commit_gates.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# SAME_ROOT_UNPLANNED_EDIT = True\n")
+        err_fail = io.StringIO()
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=["--repo-root", tmpdir, "verify-green"],
+                stdout=io.StringIO(),
+                stderr=err_fail,
+            ),
+            2,
+        )
+        self.assertIn(
+            "[SCAR-ID: TEST-12] GOVERNANCE_TOOLCHAIN_TAMPERED",
+            err_fail.getvalue(),
+        )
+
+  def test_receipt_planned_governance_files_seal_tampering_and_compat(self):
+    """Tampering planned_governance_files in 30_tdd_receipt.json fails seal validation; 7-arg seal stays compatible."""
+    from lib.tdd_guard import _compute_receipt_seal
+
+    # Backward-compatible 7-arg signature (SCAR-API-0002)
+    seal_7 = _compute_receipt_seal("abc", "tests", "h1", {}, "true", 1, "th1")
+    seal_empty = _compute_receipt_seal(
+        "abc", "tests", "h1", {}, "true", 1, "th1", planned_governance_files=()
+    )
+    seal_nonempty = _compute_receipt_seal(
+        "abc",
+        "tests",
+        "h1",
+        {},
+        "true",
+        1,
+        "th1",
+        planned_governance_files=("lib/intake_gates.py",),
+    )
+    self.assertEqual(seal_7, seal_empty)
+    self.assertNotEqual(seal_7, seal_nonempty)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      installed_plugin = os.path.join(tmpdir, "installed_plugin")
+      workspace_repo = os.path.join(tmpdir, "makeflow_workspace")
+      os.makedirs(installed_plugin)
+      os.makedirs(workspace_repo)
+      self._seed_installed_plugin(installed_plugin)
+      self._seed_plugin_checkout(workspace_repo)
+      self._write_approved_plan(workspace_repo, self._sample_plan())
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", installed_plugin):
+        self.assertEqual(
+            TddGuardScript().execute(
+                args=[
+                    "--repo-root",
+                    workspace_repo,
+                    "witness-red",
+                    "--test-dir",
+                    "tests",
+                    "--cmd",
+                    _unit_test_cmd(),
+                ],
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+            ),
+            0,
+        )
+        rpath = _receipt_path(workspace_repo)
+        with open(rpath, "r", encoding="utf-8") as f:
+          orig_receipt = json.load(f)
+
+        tampered_variants = [
+            {
+                **orig_receipt,
+                "planned_governance_files": [
+                    "lib/intake_gates.py",
+                    "lib/commit_gates.py",
+                ],
+            },
+            {**orig_receipt, "planned_governance_files": []},
+            {
+                **orig_receipt,
+                "planned_governance_files": ["not_a_core_file.py"],
+            },
+            {**orig_receipt, "planned_governance_files": "lib/intake_gates.py"},
+            {
+                k: v
+                for k, v in orig_receipt.items()
+                if k != "planned_governance_files"
+            },
+        ]
+        for variant in tampered_variants:
+          with self.subTest(planned=variant.get("planned_governance_files")):
+            with open(rpath, "w", encoding="utf-8") as f:
+              json.dump(variant, f)
+            err_buf = io.StringIO()
+            rc = TddGuardScript().execute(
+                args=["--repo-root", workspace_repo, "verify-green"],
+                stdout=io.StringIO(),
+                stderr=err_buf,
+            )
+            self.assertEqual(rc, 2)
+            self.assertIn(
+                "[SCAR-ID: TEST-12] CORRUPT_RED_RECEIPT", err_buf.getvalue()
+            )
+
+
 if __name__ == "__main__":
   unittest.main()

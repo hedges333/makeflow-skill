@@ -9,11 +9,14 @@ via `.workflow/state/20_plan.md` or the active Git diff.
 import io
 import json
 import os
-import re
 import subprocess
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Set, Tuple
 
 from lib.config import is_ticket_active
+from lib.plan_validation import (
+    plan_allows_edit_relpath,
+    plan_mentions_relpath,
+)
 from lib.reflex import emit_reflex
 from lib.state_machine import infer_current_target
 from lib.turn_boundary import read_active_subagent
@@ -30,6 +33,9 @@ PLUGIN_CACHE_RAW_PREFIXES: Tuple[str, ...] = (
     "~/.gemini/config/plugins",
     "~/.gemini/plugins",
     "~/.claude/plugins",
+    "~/.codex/plugins",
+    "~/.cursor/plugins",
+    "~/.copilot/plugins",
 )
 KNOWN_PLUGIN_CACHE_PREFIXES: Tuple[str, ...] = tuple(
     os.path.abspath(os.path.expanduser(p)) for p in PLUGIN_CACHE_RAW_PREFIXES
@@ -120,8 +126,6 @@ HARNESS_INTERNAL_RELPATHS: FrozenSet[str] = frozenset({
     "lib/scars_db.py",
 })
 
-_TRAILING_BOUNDARY_PATTERN = r"(?![A-Za-z0-9_/\-]|\.[A-Za-z0-9_])"
-_LEADING_REL_BOUNDARY_PATTERN = r"(?:^|(?<=[^A-Za-z0-9_./\-]))(?:\./)?"
 _BASE_BRANCH_REFS: Tuple[str, ...] = (
     "main",
     "origin/main",
@@ -347,64 +351,6 @@ def _match_runtime_lock_relpath(
       if base in _RUNTIME_LOCK_BASENAMES:
         return f".workflow/state/{base}"
   return None
-
-
-def plan_mentions_relpath(
-    plan_text: str, rel_path: str, plugin_root: Optional[str] = None
-) -> bool:
-  """Checks whether plan_text explicitly references rel_path at path boundaries.
-
-  Matches backticked paths, ``./`` prefixed paths, markdown table cells, and
-  ``file://`` or absolute repository paths while rejecting substring traps such
-  as ``other/lib/config.py`` or ``lib/config.py.bak``.
-
-  Args:
-    plan_text: Raw UTF-8 text of ``.workflow/state/20_plan.md``.
-    rel_path: POSIX repository-relative path to search for.
-    plugin_root: Optional Makeflow repository root for exact absolute and
-      ``file://`` URL matching.
-
-  Returns:
-    True when ``plan_text`` explicitly references ``rel_path``, else False.
-  """
-  if not plan_text or not rel_path:
-    return False
-  norm_rel = rel_path.replace("\\", "/")
-  while norm_rel.startswith("./"):
-    norm_rel = norm_rel[2:]
-  norm_rel = norm_rel.lstrip("/")
-  if not norm_rel:
-    return False
-  escaped_rel = re.escape(norm_rel)
-
-  rel_pattern = re.compile(
-      _LEADING_REL_BOUNDARY_PATTERN + escaped_rel + _TRAILING_BOUNDARY_PATTERN
-  )
-  if rel_pattern.search(plan_text):
-    return True
-
-  if plugin_root:
-    roots = {
-        os.path.abspath(plugin_root).replace("\\", "/").rstrip("/"),
-        os.path.realpath(plugin_root).replace("\\", "/").rstrip("/"),
-    }
-    for root in roots:
-      abs_posix = f"{root}/{norm_rel}"
-      abs_pat = re.compile(
-          r"(?:^|(?<=[^A-Za-z0-9_./\-]))(?:file://)?"
-          + re.escape(abs_posix)
-          + _TRAILING_BOUNDARY_PATTERN
-      )
-      if abs_pat.search(plan_text):
-        return True
-  else:
-    file_url_pat = re.compile(
-        r"file://[^\s`'\"<>|)]+/" + escaped_rel + _TRAILING_BOUNDARY_PATTERN
-    )
-    if file_url_pat.search(plan_text):
-      return True
-
-  return False
 
 
 def _is_listed_in_plan(

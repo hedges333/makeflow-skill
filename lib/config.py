@@ -862,33 +862,63 @@ def load_default_config(plugin_root=None):
 
 
 def is_plugin_dir(path):
-  """Checks whether a directory is inside a makeflow plugin installation root."""
+  """Checks whether a directory is inside a Makeflow plugin installation root.
+
+  Checks both the expanded path and its resolved realpath against known agent
+  plugin cache roots (Gemini, Claude, Codex, Cursor, Copilot) so symlinks into
+  installed plugin caches are recognized, then walks upward on both the
+  expanded path and resolved realpath for a non-Git Makeflow ``plugin.json``
+  manifest (treating both ``.git`` directories and worktree ``.git`` files as
+  Git checkouts).
+
+  Args:
+    path: Directory path string to inspect.
+
+  Returns:
+    True when ``path`` lies inside a known plugin cache directory or non-Git
+    Makeflow plugin installation root, otherwise False.
+  """
   if not path or not isinstance(path, str):
     return False
   norm_path = os.path.abspath(os.path.expanduser(path))
-  known_plugin_prefixes = (
-      os.path.abspath(os.path.expanduser("~/.gemini/config/plugins")),
-      os.path.abspath(os.path.expanduser("~/.gemini/plugins")),
-      os.path.abspath(os.path.expanduser("~/.claude/plugins")),
+  real_path = os.path.realpath(norm_path)
+  raw_plugin_prefixes = (
+      "~/.gemini/config/plugins",
+      "~/.gemini/plugins",
+      "~/.claude/plugins",
+      "~/.codex/plugins",
+      "~/.cursor/plugins",
+      "~/.copilot/plugins",
   )
-  for prefix in known_plugin_prefixes:
-    if norm_path == prefix or norm_path.startswith(prefix + os.sep):
-      return True
+  expanded_prefixes = {
+      os.path.abspath(os.path.expanduser(p)) for p in raw_plugin_prefixes
+  }
+  known_plugin_prefixes = expanded_prefixes | {
+      os.path.realpath(p) for p in expanded_prefixes
+  }
+  for cand in (norm_path, real_path):
+    for prefix in known_plugin_prefixes:
+      if cand == prefix or cand.startswith(prefix + os.sep):
+        return True
 
-  curr = norm_path
-  while curr and curr != os.path.dirname(curr):
-    if os.path.isdir(os.path.join(curr, ".git")):
-      return False
-    plugin_json_path = os.path.join(curr, "plugin.json")
-    if os.path.isfile(plugin_json_path):
-      try:
-        with open(plugin_json_path, "r", encoding="utf-8") as f:
-          data = json.load(f)
-        if isinstance(data, dict) and data.get("name") == "makeflow":
-          return True
-      except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        pass
-    curr = os.path.dirname(curr)
+  walk_roots = [norm_path]
+  if real_path != norm_path:
+    walk_roots.append(real_path)
+  for start_path in walk_roots:
+    curr = start_path
+    while curr and curr != os.path.dirname(curr):
+      if os.path.exists(os.path.join(curr, ".git")):
+        break
+      plugin_json_path = os.path.join(curr, "plugin.json")
+      if os.path.isfile(plugin_json_path):
+        try:
+          with open(plugin_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+          if isinstance(data, dict) and data.get("name") == "makeflow":
+            return True
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+          pass
+      curr = os.path.dirname(curr)
   return False
 
 
@@ -1102,16 +1132,31 @@ def find_state_dir(workspace_paths, artifact_dir):
 
 
 def resolve_state_dir(payload):
-  """Finds the active state directory from workspacePaths or artifactDirectoryPath."""
-  workspace_paths = payload.get("workspacePaths") or []
+  """Finds the active state directory from workspacePaths or artifactDirectoryPath.
+
+  Filters blank, whitespace-only, and non-string entries from
+  ``workspacePaths`` before probing for ``.workflow/state``.
+
+  Args:
+    payload: Hook payload dictionary with optional ``workspacePaths`` and
+      ``artifactDirectoryPath`` keys.
+
+  Returns:
+    Resolved state directory path string, or ``""`` when none applies.
+  """
+  workspace_paths = [
+      ws.strip()
+      for ws in (payload.get("workspacePaths") or [])
+      if isinstance(ws, str) and ws.strip()
+  ]
   for ws in workspace_paths:
     candidate = os.path.join(ws, ".workflow", "state")
     if os.path.isdir(candidate):
       return candidate
 
   artifact_dir = payload.get("artifactDirectoryPath", "")
-  if artifact_dir:
-    brain_state = os.path.join(artifact_dir, "state")
+  if isinstance(artifact_dir, str) and artifact_dir.strip():
+    brain_state = os.path.join(artifact_dir.strip(), "state")
     if os.path.isdir(brain_state):
       return brain_state
 

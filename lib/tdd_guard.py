@@ -18,10 +18,11 @@ import re
 import signal
 import subprocess
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.config import sanitize_make_subprocess_env
+from lib.plan_validation import resolve_approved_planned_governance_files
 from lib.reflex import emit_reflex
 from lib.workflow_gates import REQUIRED_PLUGIN_FILES, generate_state_makefile
 
@@ -299,17 +300,31 @@ def _is_makeflow_plugin_repo_at_commit(repo_root: str, commit_sha: str) -> bool:
   return all(rel_path in present for rel_path in REQUIRED_PLUGIN_FILES)
 
 
-def _hash_toolchain_from_root(toolchain_root: str) -> str:
+_CORE_GOVERNANCE_SET = frozenset(CORE_GOVERNANCE_FILES)
+
+
+def _hash_toolchain_from_root(
+    toolchain_root: str, exempt_relpaths: Sequence[str] = ()
+) -> str:
   """Computes a deterministic SHA-256 digest of CORE_GOVERNANCE_FILES from one root.
 
   Args:
     toolchain_root: Root directory to hash governance files from.
+    exempt_relpaths: Optional sequence of POSIX relative paths in
+      ``CORE_GOVERNANCE_FILES`` authorized by an approved Target 20 plan to
+      emit a deterministic ``planned_exempt`` marker instead of live bytes.
 
   Returns:
     Hex-encoded SHA-256 digest over sorted CORE_GOVERNANCE_FILES.
   """
+  exempt_set = {
+      rel.replace("\\", "/") for rel in exempt_relpaths if isinstance(rel, str)
+  }
   hasher = hashlib.sha256()
   for rel_path in sorted(CORE_GOVERNANCE_FILES):
+    if rel_path in exempt_set:
+      hasher.update(f"{rel_path}\0planned_exempt\n".encode("utf-8"))
+      continue
     target = os.path.join(toolchain_root, rel_path)
     if os.path.isfile(target):
       hasher.update(f"{rel_path}\0{_hash_file_sha256(target)}\n".encode("utf-8"))
@@ -318,25 +333,72 @@ def _hash_toolchain_from_root(toolchain_root: str) -> str:
   return hasher.hexdigest()
 
 
-def compute_toolchain_hash(repo_root: str) -> str:
-  """Computes a deterministic SHA-256 digest over core makeflow governance scripts.
+def _compute_dual_toolchain_hash(
+    repo_root: str,
+    *,
+    is_plugin_repo: bool,
+    exempt_relpaths: Sequence[str] = (),
+) -> str:
+  """Computes a dual-anchor SHA-256 digest protecting both executing plugin and workspace.
 
-  Hashes governance files from repo_root when repo_root is a Makeflow plugin
-  repository, or strictly from _DEFAULT_REPO_ROOT when running inside an
-  external consumer repository. Never falls back across roots for individual
-  missing files.
+  Unconditionally hashes the executing plugin root (``_DEFAULT_REPO_ROOT``)
+  with zero exemptions. For external consumer repositories, returns that digest
+  directly. For distinct Makeflow plugin checkouts, combines the unconditional
+  executing-plugin digest with the plan-scoped workspace digest. For same-root
+  checkouts (``realpath(repo_root) == realpath(_DEFAULT_REPO_ROOT)``), hashes
+  the checkout with ``exempt_relpaths`` (preserving exact single-root parity
+  when ``exempt_relpaths`` is empty).
 
   Args:
     repo_root: Target repository root directory.
+    is_plugin_repo: True when ``repo_root`` is a Makeflow plugin repository.
+    exempt_relpaths: Optional sequence of sealed planned governance relative
+      paths exempted in the workspace checkout.
 
   Returns:
-    Hex-encoded SHA-256 digest over sorted CORE_GOVERNANCE_FILES.
+    Hex-encoded SHA-256 toolchain digest.
   """
   abs_repo = os.path.abspath(repo_root)
-  toolchain_root = (
-      abs_repo if _is_makeflow_plugin_repo(abs_repo) else _DEFAULT_REPO_ROOT
+  exec_root = os.path.abspath(_DEFAULT_REPO_ROOT)
+  if not is_plugin_repo:
+    return _hash_toolchain_from_root(exec_root)
+
+  if os.path.realpath(abs_repo) == os.path.realpath(exec_root):
+    return _hash_toolchain_from_root(abs_repo, exempt_relpaths=exempt_relpaths)
+
+  exec_digest = _hash_toolchain_from_root(exec_root)
+  workspace_digest = _hash_toolchain_from_root(
+      abs_repo, exempt_relpaths=exempt_relpaths
   )
-  return _hash_toolchain_from_root(toolchain_root)
+  combined = hashlib.sha256()
+  combined.update(f"exec\0{exec_digest}\n".encode("utf-8"))
+  combined.update(f"workspace\0{workspace_digest}\n".encode("utf-8"))
+  return combined.hexdigest()
+
+
+def compute_toolchain_hash(
+    repo_root: str, exempt_relpaths: Sequence[str] = ()
+) -> str:
+  """Computes a deterministic SHA-256 digest over core Makeflow governance scripts.
+
+  Protects the executing plugin root unconditionally and, for Makeflow plugin
+  checkouts, also anchors unplanned workspace governance files using
+  ``exempt_relpaths``.
+
+  Args:
+    repo_root: Target repository root directory.
+    exempt_relpaths: Optional sequence of planned governance relative paths
+      exempted in a Makeflow workspace checkout.
+
+  Returns:
+    Hex-encoded SHA-256 digest over core governance files.
+  """
+  abs_repo = os.path.abspath(repo_root)
+  return _compute_dual_toolchain_hash(
+      abs_repo,
+      is_plugin_repo=_is_makeflow_plugin_repo(abs_repo),
+      exempt_relpaths=exempt_relpaths,
+  )
 
 
 def _compute_receipt_seal(
@@ -347,18 +409,41 @@ def _compute_receipt_seal(
     test_cmd: str,
     red_exit_code: int,
     toolchain_hash: str,
+    planned_governance_files: Sequence[str] = (),
 ) -> str:
-  """Computes canonical SHA-256 seal over core Red-phase receipt fields."""
+  """Computes canonical SHA-256 seal over core Red-phase receipt fields.
+
+  Preserves the exact 7-key canonical seal format when
+  ``planned_governance_files`` is empty for backward compatibility
+  (SCAR-API-0002), and includes ``planned_governance_files`` whenever non-empty.
+
+  Args:
+    witnessed_head_sha: Git HEAD commit SHA witnessed during Red phase.
+    test_dir: Relative test directory path.
+    test_tree_hash: Deterministic SHA-256 digest of ``test_dir``.
+    test_manifest: File-level digest map for ``test_dir``.
+    test_cmd: Exact targeted test command string.
+    red_exit_code: Non-zero Red-phase exit code.
+    toolchain_hash: Anchored governance toolchain SHA-256 digest.
+    planned_governance_files: Optional sequence of sealed planned governance
+      relative paths authorized by an approved Target 20 plan.
+
+  Returns:
+    Hex-encoded SHA-256 receipt seal string.
+  """
+  payload: Dict[str, Any] = {
+      "red_exit_code": red_exit_code,
+      "test_cmd": test_cmd,
+      "test_dir": test_dir,
+      "test_manifest": test_manifest,
+      "test_tree_hash": test_tree_hash,
+      "toolchain_hash": toolchain_hash,
+      "witnessed_head_sha": witnessed_head_sha,
+  }
+  if planned_governance_files:
+    payload["planned_governance_files"] = list(planned_governance_files)
   canonical = json.dumps(
-      {
-          "red_exit_code": red_exit_code,
-          "test_cmd": test_cmd,
-          "test_dir": test_dir,
-          "test_manifest": test_manifest,
-          "test_tree_hash": test_tree_hash,
-          "toolchain_hash": toolchain_hash,
-          "witnessed_head_sha": witnessed_head_sha,
-      },
+      payload,
       sort_keys=True,
       separators=(",", ":"),
   )
@@ -913,7 +998,19 @@ class TddGuardScript(BaseScript):
         else []
     )
     completed_cycles = _archive_verified_cycle(prior_receipt)
-    toolchain_hash = compute_toolchain_hash(self.repo_root)
+    is_plugin_repo = _is_makeflow_plugin_repo(self.repo_root)
+    planned_governance_files = (
+        resolve_approved_planned_governance_files(
+            self.repo_root, CORE_GOVERNANCE_FILES
+        )
+        if is_plugin_repo
+        else ()
+    )
+    toolchain_hash = _compute_dual_toolchain_hash(
+        self.repo_root,
+        is_plugin_repo=is_plugin_repo,
+        exempt_relpaths=planned_governance_files,
+    )
     seal = _compute_receipt_seal(
         witnessed_head_sha=head_sha,
         test_dir=rel_test_dir,
@@ -922,6 +1019,7 @@ class TddGuardScript(BaseScript):
         test_cmd=cleaned_cmd,
         red_exit_code=proc.returncode,
         toolchain_hash=toolchain_hash,
+        planned_governance_files=planned_governance_files,
     )
     receipt: Dict[str, Any] = {
         "completed_cycles": completed_cycles,
@@ -929,6 +1027,7 @@ class TddGuardScript(BaseScript):
         "green_exit_code": None,
         "green_verified_at": None,
         "head_move_allowed": False,
+        "planned_governance_files": list(planned_governance_files),
         "receipt_seal": seal,
         "red_exit_code": proc.returncode,
         "test_cmd": cleaned_cmd,
@@ -999,6 +1098,22 @@ class TddGuardScript(BaseScript):
         and isinstance(red_code, int)
         and red_code != 0
     )
+    if "planned_governance_files" in receipt:
+      raw_planned = receipt.get("planned_governance_files")
+      valid_planned = (
+          isinstance(raw_planned, list)
+          and all(
+              isinstance(item, str) and item in _CORE_GOVERNANCE_SET
+              for item in raw_planned
+          )
+          and len(set(raw_planned)) == len(raw_planned)
+      )
+      planned_files: Tuple[str, ...] = (
+          tuple(raw_planned) if valid_planned else ()
+      )
+    else:
+      valid_planned = True
+      planned_files = ()
     if not (
         isinstance(head_sha, str)
         and head_sha.strip()
@@ -1010,6 +1125,7 @@ class TddGuardScript(BaseScript):
         and isinstance(test_cmd, str)
         and test_cmd.strip()
         and valid_red_code
+        and valid_planned
         and isinstance(toolchain_hash, str)
         and toolchain_hash.strip()
         and isinstance(actual_seal, str)
@@ -1031,6 +1147,7 @@ class TddGuardScript(BaseScript):
         test_cmd=test_cmd,
         red_exit_code=red_code,
         toolchain_hash=toolchain_hash,
+        planned_governance_files=planned_files,
     )
     if not hmac.compare_digest(actual_seal, expected_seal):
       return None, self._fail(
@@ -1242,11 +1359,12 @@ class TddGuardScript(BaseScript):
   ) -> Optional[int]:
     """Verifies core governance files match the witnessed Red-phase digest.
 
-    Hashes ``CORE_GOVERNANCE_FILES`` from the repository root for Makeflow
-    plugin checkouts (including checkouts where plugin markers existed at
-    ``sealed_head``) or from ``_DEFAULT_REPO_ROOT`` for external consumer
-    repositories. Fails closed when the sealed digest is missing, invalid, or
-    mismatched.
+    Unconditionally hashes ``CORE_GOVERNANCE_FILES`` from the executing plugin
+    root (``_DEFAULT_REPO_ROOT``) and, for Makeflow plugin checkouts (including
+    checkouts where plugin markers existed at ``sealed_head``), also verifies
+    all unplanned workspace governance files using only the sealed
+    ``planned_governance_files`` list from ``receipt``. Never re-reads
+    ``20_plan.md`` from disk after ``witness-red``.
 
     Args:
       receipt: Loaded and seal-verified Red-phase receipt dictionary.
@@ -1258,16 +1376,25 @@ class TddGuardScript(BaseScript):
       collision entry, and emitting a Vector 4 Reflex.
     """
     sealed_hash = receipt.get("toolchain_hash")
+    raw_planned = receipt.get("planned_governance_files", [])
+    valid_planned = isinstance(raw_planned, list) and all(
+        isinstance(item, str) and item in _CORE_GOVERNANCE_SET
+        for item in raw_planned
+    )
     is_plugin_repo = _is_makeflow_plugin_repo(
         self.repo_root
     ) or _is_makeflow_plugin_repo_at_commit(self.repo_root, sealed_head)
-    current_hash = (
-        _hash_toolchain_from_root(os.path.abspath(self.repo_root))
-        if is_plugin_repo
-        else _hash_toolchain_from_root(_DEFAULT_REPO_ROOT)
-    )
+    if valid_planned:
+      current_hash = _compute_dual_toolchain_hash(
+          self.repo_root,
+          is_plugin_repo=is_plugin_repo,
+          exempt_relpaths=tuple(raw_planned) if is_plugin_repo else (),
+      )
+    else:
+      current_hash = ""
     hasher_mismatch = not (
-        isinstance(sealed_hash, str)
+        valid_planned
+        and isinstance(sealed_hash, str)
         and bool(sealed_hash)
         and hmac.compare_digest(current_hash, sealed_hash)
     )

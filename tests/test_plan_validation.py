@@ -405,6 +405,214 @@ class TestPlanValidationModule(unittest.TestCase):
       res_valid = validate_plan_file(missing_path)
       self.assertTrue(res_valid.valid, res_valid.errors)
 
+  def test_extract_planned_edit_text_and_plan_allows_edit_relpath_canonical(
+      self,
+  ) -> None:
+    """GH-331: Extracts canonical Section 3 edits while excluding quarantine, other sections, and fences."""
+    from lib.plan_validation import (
+        extract_planned_edit_text,
+        plan_allows_edit_relpath,
+        plan_mentions_relpath,
+    )
+
+    plan_text = (
+        "# Target 20 Implementation Plan: GH-331\n\n"
+        "## 1. Problem Statement and Root Cause Summary\n\n"
+        "Investigated `lib/config.py` and `lib/reflex.py` in problem background.\n\n"
+        "## 3. Target Subprojects, Planned File Edits, and Layer Posture\n\n"
+        "### Specific Edits to Existing Files\n\n"
+        "#### Library Layer\n\n"
+        "- `lib/intake_gates.py`: Update intake rule.\n"
+        "- `./lib/plan_validation.py`: Add edit resolver.\n"
+        "```markdown\n"
+        "- `lib/tdd_guard.py`: Fenced example must not count.\n"
+        "### Specific Edits to Existing Files\n"
+        "- `lib/workflow_gates.py`: Also fenced.\n"
+        "```\n\n"
+        "### New Files to Create\n\n"
+        "- `lib/new_helper.py`: New helper module.\n"
+        "~~~python\n"
+        "# lib/shell_safety.py inside tilde fence\n"
+        "~~~\n\n"
+        "### Untouched Files and Scope Quarantine\n\n"
+        "- `lib/commit_gates.py`: Strictly untouched.\n"
+        "- `scripts/tdd_guard.py`: Thin wrapper untouched.\n\n"
+        "## 6. Red-Green-Refactor TDD Plan\n\n"
+        "- Verify `lib/state_makefile.py` indirectly.\n"
+    )
+
+    edit_text = extract_planned_edit_text(plan_text)
+    self.assertIn("lib/intake_gates.py", edit_text)
+    self.assertIn("lib/plan_validation.py", edit_text)
+    self.assertIn("lib/new_helper.py", edit_text)
+    self.assertNotIn("lib/tdd_guard.py", edit_text)
+    self.assertNotIn("lib/workflow_gates.py", edit_text)
+    self.assertNotIn("lib/shell_safety.py", edit_text)
+    self.assertNotIn("lib/commit_gates.py", edit_text)
+    self.assertNotIn("lib/config.py", edit_text)
+    self.assertNotIn("lib/state_makefile.py", edit_text)
+
+    # Allowed planned edits
+    self.assertTrue(plan_allows_edit_relpath(plan_text, "lib/intake_gates.py"))
+    self.assertTrue(
+        plan_allows_edit_relpath(plan_text, "./lib/plan_validation.py")
+    )
+    self.assertTrue(plan_allows_edit_relpath(plan_text, "lib/new_helper.py"))
+
+    # Denied: quarantined, fenced, section 1/6 only, and substring traps
+    for denied in (
+        "lib/commit_gates.py",
+        "scripts/tdd_guard.py",
+        "lib/tdd_guard.py",
+        "lib/workflow_gates.py",
+        "lib/shell_safety.py",
+        "lib/config.py",
+        "lib/state_makefile.py",
+        "lib/intake_gates.py.bak",
+        "other/lib/intake_gates.py",
+    ):
+      with self.subTest(denied=denied):
+        self.assertFalse(plan_allows_edit_relpath(plan_text, denied))
+
+    # plan_mentions_relpath matches absolute/file:// paths when plugin_root is supplied
+    with tempfile.TemporaryDirectory() as fake_root:
+      real_root = os.path.realpath(fake_root)
+      abs_plan = (
+          "### Specific Edits to Existing Files\n\n"
+          f"- Edit [intake](file://{real_root}/lib/intake_gates.py#L1-L10).\n"
+          "- Trap: other/lib/commit_gates.py and lib/commit_gates.py.bak.\n"
+      )
+      self.assertTrue(
+          plan_mentions_relpath(
+              abs_plan, "lib/intake_gates.py", plugin_root=fake_root
+          )
+      )
+      self.assertTrue(
+          plan_allows_edit_relpath(
+              abs_plan, "lib/intake_gates.py", plugin_root=fake_root
+          )
+      )
+      self.assertFalse(
+          plan_mentions_relpath(
+              abs_plan, "lib/commit_gates.py", plugin_root=fake_root
+          )
+      )
+
+  def test_extract_planned_edit_text_compact_plan_fallback_and_quarantine(
+      self,
+  ) -> None:
+    """GH-331: Compact plans without Section 3 edit headers still exclude quarantine and fences."""
+    from lib.plan_validation import (
+        extract_planned_edit_text,
+        plan_allows_edit_relpath,
+    )
+
+    compact_plan = (
+        "# Plan\n\n"
+        "- Edit `lib/intake_gates.py`.\n"
+        "```markdown\n"
+        "### Specific Edits to Existing Files\n"
+        "- `lib/tdd_guard.py`\n"
+        "```\n\n"
+        "### Untouched Files and Scope Quarantine\n\n"
+        "- `lib/commit_gates.py`\n\n"
+        "## Notes\n\n"
+        "- Also update `lib/config.py`.\n"
+    )
+
+    edit_text = extract_planned_edit_text(compact_plan)
+    self.assertIn("lib/intake_gates.py", edit_text)
+    self.assertIn("lib/config.py", edit_text)
+    self.assertNotIn("lib/commit_gates.py", edit_text)
+    self.assertNotIn("lib/tdd_guard.py", edit_text)
+
+    self.assertTrue(
+        plan_allows_edit_relpath(compact_plan, "lib/intake_gates.py")
+    )
+    self.assertTrue(plan_allows_edit_relpath(compact_plan, "lib/config.py"))
+    self.assertFalse(
+        plan_allows_edit_relpath(compact_plan, "lib/commit_gates.py")
+    )
+    self.assertFalse(plan_allows_edit_relpath(compact_plan, "lib/tdd_guard.py"))
+    self.assertEqual(extract_planned_edit_text(""), "")
+    self.assertFalse(plan_allows_edit_relpath("", "lib/intake_gates.py"))
+
+  def test_resolve_approved_planned_governance_files_requires_git_plan_and_approval(
+      self,
+  ) -> None:
+    """GH-331: Requires .git, 20_plan.md, and 20_plan_approved.md before returning sorted matches."""
+    from lib.plan_validation import resolve_approved_planned_governance_files
+
+    candidates = (
+        "lib/tdd_guard.py",
+        "lib/intake_gates.py",
+        "lib/commit_gates.py",
+        "lib/plan_validation.py",
+    )
+    plan_text = (
+        "### Specific Edits to Existing Files\n\n"
+        "- `lib/plan_validation.py`\n"
+        "- `lib/intake_gates.py`\n"
+        "```\n"
+        "- `lib/tdd_guard.py`\n"
+        "```\n\n"
+        "### Untouched Files and Scope Quarantine\n\n"
+        "- `lib/commit_gates.py`\n"
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      state_dir = os.path.join(tmpdir, ".workflow", "state")
+      os.makedirs(state_dir)
+      plan_path = os.path.join(state_dir, "20_plan.md")
+      approved_path = os.path.join(state_dir, "20_plan_approved.md")
+      with open(plan_path, "w", encoding="utf-8") as fh:
+        fh.write(plan_text)
+      with open(approved_path, "w", encoding="utf-8") as fh:
+        fh.write("approved\n")
+
+      # Missing .git -> empty
+      self.assertEqual(
+          resolve_approved_planned_governance_files(tmpdir, candidates), ()
+      )
+
+      # Add .git directory -> returns sorted planned matches only
+      os.makedirs(os.path.join(tmpdir, ".git"))
+      self.assertEqual(
+          resolve_approved_planned_governance_files(tmpdir, candidates),
+          ("lib/intake_gates.py", "lib/plan_validation.py"),
+      )
+
+      # Missing 20_plan_approved.md -> empty
+      os.unlink(approved_path)
+      self.assertEqual(
+          resolve_approved_planned_governance_files(tmpdir, candidates), ()
+      )
+
+      # Restore approval, remove 20_plan.md -> empty
+      with open(approved_path, "w", encoding="utf-8") as fh:
+        fh.write("approved\n")
+      os.unlink(plan_path)
+      self.assertEqual(
+          resolve_approved_planned_governance_files(tmpdir, candidates), ()
+      )
+
+    # Also verify worktree-style .git file works
+    with tempfile.TemporaryDirectory() as wt_dir:
+      with open(os.path.join(wt_dir, ".git"), "w", encoding="utf-8") as fh:
+        fh.write(f"gitdir: {os.path.join(wt_dir, 'worktree_meta')}\n")
+      state_dir = os.path.join(wt_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(os.path.join(state_dir, "20_plan.md"), "w", encoding="utf-8") as fh:
+        fh.write(plan_text)
+      with open(
+          os.path.join(state_dir, "20_plan_approved.md"), "w", encoding="utf-8"
+      ) as fh:
+        fh.write("approved\n")
+      self.assertEqual(
+          resolve_approved_planned_governance_files(wt_dir, candidates),
+          ("lib/intake_gates.py", "lib/plan_validation.py"),
+      )
+
 
 class TestPlanValidationGatesAndStateMachine(unittest.TestCase):
   """Tests check-plan CLI, make approved-plan prerequisite, and state_machine T15 -> T20 gate."""

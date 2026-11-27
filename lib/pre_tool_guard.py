@@ -37,6 +37,7 @@ from lib.harness_boundary import (
     find_makeflow_plugin_root as _find_makeflow_plugin_root,
     is_plugin_cache_path as _is_plugin_cache_path,
 )
+from lib.plan_validation import plan_allows_edit_relpath
 from lib.shell_safety import (
     DB_TOOLS,
     ENV_ASSIGN_RE,
@@ -902,21 +903,88 @@ def _is_state_governance_dir(raw_token):
 
 
 def _resolve_direct_target_paths(target_path, workspace_paths):
-  """Resolves absolute candidate paths for a write_file/edit_file target."""
+  """Resolves absolute candidate paths for a direct file write target.
+
+  Filters blank, whitespace-only, and non-string entries from
+  ``workspace_paths`` and falls back to ``os.path.abspath(expanded)`` when no
+  valid workspace root remains.
+
+  Args:
+    target_path: Raw target path string from the tool call arguments.
+    workspace_paths: Optional sequence of workspace root paths from the hook
+      payload.
+
+  Returns:
+    List of normalized absolute candidate path strings.
+  """
   expanded = os.path.expanduser(target_path)
   if os.path.isabs(expanded):
     return [os.path.abspath(expanded)]
-  if workspace_paths:
+  non_empty_roots = [
+      ws.strip()
+      for ws in (workspace_paths or ())
+      if isinstance(ws, str) and ws.strip()
+  ]
+  if non_empty_roots:
     return [
         os.path.abspath(os.path.join(os.path.expanduser(ws), target_path))
-        for ws in workspace_paths
-        if ws
+        for ws in non_empty_roots
     ]
-  return [os.path.abspath(target_path)]
+  return [os.path.abspath(expanded)]
+
+
+def _is_plan_approved_governance_edit(
+    plugin_root: str, rel_to_plugin: str
+) -> bool:
+  """Checks whether an approved Target 20 plan authorizes editing a governance file.
+
+  Args:
+    plugin_root: Git-backed Makeflow workspace root directory.
+    rel_to_plugin: POSIX path relative to ``plugin_root``.
+
+  Returns:
+    True only when ``plugin_root/.workflow/state`` has an active ticket, both
+    ``20_plan.md`` and ``20_plan_approved.md`` exist, and
+    ``plan_allows_edit_relpath`` matches ``rel_to_plugin``.
+  """
+  checkout_state = os.path.join(plugin_root, ".workflow", "state")
+  if not is_ticket_active(checkout_state):
+    return False
+  plan_path = os.path.join(checkout_state, "20_plan.md")
+  approved_path = os.path.join(checkout_state, "20_plan_approved.md")
+  if not (os.path.isfile(plan_path) and os.path.isfile(approved_path)):
+    return False
+  try:
+    with open(plan_path, "r", encoding="utf-8", errors="replace") as fh:
+      plan_text = fh.read()
+  except OSError:
+    return False
+  return plan_allows_edit_relpath(
+      plan_text, rel_to_plugin, plugin_root=plugin_root
+  )
 
 
 def _check_direct_file_governance(tool_name, args, workspace_paths, state_dir):
-  """Checks write_file/edit_file calls against protected governance paths."""
+  """Checks direct file write/edit calls against protected Makeflow governance paths.
+
+  Enforces unconditional denial on ``.workflow/state/*`` governance targets,
+  installed plugin cache paths (including symlinks), cross-workspace writes
+  targeting ``_MAKEFLOW_REPO_ROOT_REAL`` or any Makeflow checkout outside
+  ``workspace_paths``, and non-Git Makeflow installations. Allows editing
+  ``GOVERNANCE_FILE_RELPATHS`` inside an active Git-backed Makeflow workspace
+  only when an approved ``20_plan.md`` explicitly authorizes the path.
+
+  Args:
+    tool_name: Name of the invoked file tool.
+    args: Tool call argument dictionary.
+    workspace_paths: Sequence of active workspace root paths from the hook payload.
+    state_dir: Resolved active workflow state directory path (unused when
+      enforcing checkout-scoped plan approval, kept for caller compatibility).
+
+  Returns:
+    Deny decision dictionary when blocked, or ``None`` when allowed.
+  """
+  del state_dir
   if tool_name not in (
       "write_file",
       "edit_file",
@@ -924,7 +992,13 @@ def _check_direct_file_governance(tool_name, args, workspace_paths, state_dir):
       "MultiReplaceFileContent",
   ):
     return None
-  target_path = str(args.get("Path") or args.get("TargetFile") or "").strip()
+  target_path = str(
+      args.get("Path")
+      or args.get("TargetFile")
+      or args.get("file_path")
+      or args.get("path")
+      or ""
+  ).strip()
   if not target_path:
     return None
   deny_resp = {
@@ -938,33 +1012,44 @@ def _check_direct_file_governance(tool_name, args, workspace_paths, state_dir):
     return deny_resp
 
   norm_workspaces = {
-      os.path.abspath(os.path.expanduser(ws))
+      os.path.realpath(os.path.abspath(os.path.expanduser(ws.strip())))
       for ws in (workspace_paths or [])
-      if ws
+      if isinstance(ws, str) and ws.strip()
   }
   for abs_target in _resolve_direct_target_paths(target_path, workspace_paths):
-    if any(
-        abs_target == pref or abs_target.startswith(pref + os.sep)
-        for pref in _KNOWN_PLUGIN_CACHE_PREFIXES
+    real_target = os.path.realpath(abs_target)
+    if _is_state_governance_target(abs_target) or _is_state_governance_target(
+        real_target
     ):
       return deny_resp
-    plugin_root = _find_makeflow_plugin_root(abs_target)
-    if plugin_root is None:
-      continue
-    if not os.path.exists(os.path.join(plugin_root, ".git")):
+    if _is_plugin_cache_path(abs_target):
       return deny_resp
-    rel_to_plugin = os.path.relpath(abs_target, plugin_root).replace(
-        os.sep, "/"
-    )
-    if rel_to_plugin in GOVERNANCE_FILE_RELPATHS:
-      checkout_state = os.path.join(plugin_root, ".workflow", "state")
-      active = is_ticket_active(checkout_state) or (
-          plugin_root in norm_workspaces
-          and bool(state_dir)
-          and is_ticket_active(state_dir)
-      )
-      if not active:
+    if (
+        real_target == _MAKEFLOW_REPO_ROOT_REAL
+        or real_target.startswith(_MAKEFLOW_REPO_ROOT_REAL + os.sep)
+    ) and not any(
+        real_target == ws or real_target.startswith(ws + os.sep)
+        for ws in norm_workspaces
+    ):
+      return deny_resp
+
+    seen_cands = []
+    for cand in (abs_target, real_target):
+      if cand not in seen_cands:
+        seen_cands.append(cand)
+    for cand in seen_cands:
+      plugin_root = _find_makeflow_plugin_root(cand)
+      if plugin_root is None:
+        continue
+      if not os.path.exists(os.path.join(plugin_root, ".git")):
         return deny_resp
+      real_plugin_root = os.path.realpath(plugin_root)
+      if real_plugin_root not in norm_workspaces:
+        return deny_resp
+      rel_to_plugin = os.path.relpath(cand, plugin_root).replace(os.sep, "/")
+      if rel_to_plugin in GOVERNANCE_FILE_RELPATHS:
+        if not _is_plan_approved_governance_edit(plugin_root, rel_to_plugin):
+          return deny_resp
   return None
 
 
