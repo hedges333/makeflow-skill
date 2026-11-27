@@ -18,8 +18,8 @@
     "regressionTimeoutSeconds": 300
   },
   "ci": {
-    "pollIntervalSeconds": 0,
-    "quiescenceSeconds": 5,
+    "pollIntervalSeconds": 5,
+    "quiescenceSeconds": 0,
     "enablePeerReviews": false,
     "minApprovals": 0,
     "requireCodeOwnerReviews": false,
