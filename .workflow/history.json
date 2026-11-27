@@ -3345,5 +3345,26 @@
       "SCAR-LOCAL-DATA-0002: Keep Legacy Original IDs Disjoint from Upstream Short IDs During Tiered Registry Shadowing",
       "SCAR-DATA-0007: Keep Identifier Namespaces Disjoint and Advance Shadowing Only Between Tiers"
     ]
+  },
+  {
+    "id": "GH-336",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/336",
+    "title": "AgySubagentRunner passes --print without attached prompt, causing agy to treat --agent as the prompt",
+    "request": "Fix AgySubagentRunner.build_command() in lib/scar_subagent.py to move --agent ahead of --print and append f'--print={prompt}' as the final argv element, persist planning.bddMode='ask' in .workflow/config.json, update docstrings and Section 4.4 of 09_synthetic_scars_catalog.md, and update tests/test_scar_pipeline.py with special-character multi-line prompt coverage.",
+    "branch": "fix/336-agy-print-flag-order",
+    "subprojects": [
+      ".workflow",
+      "lib",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-27T06:08:21Z",
+    "completed_at": "2026-11-27T08:14:57Z",
+    "commit_sha": "5a4c6442796c1243152928d98253e4445832dfb3",
+    "pr_number": 342,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/342",
+    "closes_issue": true,
+    "tests_added": 1,
+    "scars_earned": []
   }
 ]
