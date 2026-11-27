@@ -11,7 +11,7 @@
     "allowCriticHermeticTests": false
   },
   "planning": {
-    "bddMode": ""
+    "bddMode": "ask"
   },
   "testing": {
     "regressionCommand": "",

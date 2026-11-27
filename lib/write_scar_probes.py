@@ -1,7 +1,7 @@
-"""Single-purpose Socratic probe generation CLI using agy (GH-209).
+"""Single-purpose Socratic probe generation CLI using agy (GH-209, GH-336).
 
 Selects scars with complete Simple English fields and missing ``socratic_probe``
-ordered by ``id ASC``, invokes ``agy --print --agent socratic-probe-writer``
+ordered by ``id ASC``, invokes ``agy --agent socratic-probe-writer ... --print=<prompt>``
 one scar per call, validates JSON output with ``validate_socratic_probe()``,
 enriches metadata and commits immediately per scar, and rebuilds FTS5 and
 ``meta.db_size_bytes`` on exit or signal.

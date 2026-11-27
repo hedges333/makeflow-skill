@@ -1,4 +1,4 @@
-"""Subprocess collaborator for single-scar agy --print agent calls (GH-209, GH-321).
+"""Subprocess collaborator for single-scar agy --agent ... --print=<prompt> calls (GH-209, GH-321, GH-336).
 
 Provides AgySubagentRunner, XML untrusted-data airlock escaping (SCAR-SEC-01),
 SignalTrap subprocess registration (SCAR-SYS-07), bounded timeouts, fail-fast
@@ -78,7 +78,8 @@ def extract_json_payload(raw_text: Any) -> Dict[str, Any]:
   """Unwrap a structured JSON object from direct output or an agy CLI envelope.
 
   Args:
-    raw_text: Parsed dictionary or raw stdout text returned by ``agy --print``.
+    raw_text: Parsed dictionary or raw stdout text returned by
+      ``agy --agent <name> ... --print=<prompt>``.
 
   Returns:
     Extracted JSON dictionary payload.
@@ -146,7 +147,7 @@ def extract_json_payload(raw_text: Any) -> Dict[str, Any]:
 
 
 class AgySubagentRunner:
-  """Executes single-scar non-interactive ``agy --print`` agent calls safely."""
+  """Executes single-scar non-interactive ``agy --agent <name> ... --print=<prompt>`` calls safely."""
 
   def __init__(
       self,
@@ -175,7 +176,7 @@ class AgySubagentRunner:
     self.signal_trap = signal_trap
 
   def build_command(self, prompt: str) -> List[str]:
-    """Build the deterministic ``agy --print`` argument vector.
+    """Build the deterministic ``agy --agent <name> ... --print=<prompt>`` argument vector.
 
     Args:
       prompt: Prompt text for a single scar invocation.
@@ -185,7 +186,6 @@ class AgySubagentRunner:
     """
     cmd: List[str] = [
         self.agy_bin,
-        "--print",
         "--agent",
         self.agent_name,
         "--output-format",
@@ -196,11 +196,11 @@ class AgySubagentRunner:
     ]
     if self.model:
       cmd.extend(["--model", self.model])
-    cmd.append(prompt)
+    cmd.append(f"--print={prompt}")
     return cmd
 
   def run_json(self, prompt: str) -> Dict[str, Any]:
-    """Execute one ``agy --print`` subprocess and return parsed JSON output.
+    """Execute one ``agy --agent <name> ... --print=<prompt>`` subprocess and return parsed JSON output.
 
     Args:
       prompt: Prompt text for a single scar invocation.
