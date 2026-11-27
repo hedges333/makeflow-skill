@@ -6,6 +6,7 @@ and MCP server endpoints.
 """
 
 import copy
+from dataclasses import replace
 import json
 import math
 import os
@@ -13,7 +14,7 @@ import re
 from typing import Dict, List, Mapping, Optional
 
 from lib.active_state import ActiveStateStore, list_state_card_files
-from lib.agent_paths import AgentPathRegistry
+from lib.agent_paths import AgentPathRegistry, PathContext, resolve_path_context
 from lib.ticket_state import TICKET_JSON_FILENAME
 
 SCARS_ENV_VAR = "MAKEFILE_WORKFLOW_SCAR_DBS"
@@ -429,6 +430,8 @@ def expand_scar_database_path(
     agent: Optional[str] = None,
     home_dir: Optional[str] = None,
     plugin_root: Optional[str] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> Optional[str]:
   """Expands tokens and relative segments in a configured SQLite scar database path.
 
@@ -441,18 +444,30 @@ def expand_scar_database_path(
     agent: Optional active agent override for ``{agent_data}``.
     home_dir: Optional home directory override for tilde and agent paths.
     plugin_root: Optional Makeflow plugin root override for ``{plugin_root}``.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     Normalized absolute path string, or ``None`` if the path is empty or
     requires a workspace directory that was not provided.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument.
   """
+  ctx = resolve_path_context(
+      context,
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      plugin_root=plugin_root,
+  )
   if not isinstance(raw_path, str) or not raw_path.strip():
     return None
   expanded = raw_path.strip()
 
   ws_abs = (
-      os.path.abspath(expand_user_path(workspace_dir, home_dir=home_dir))
-      if workspace_dir
+      os.path.abspath(expand_user_path(ctx.workspace_dir, home_dir=ctx.home_dir))
+      if ctx.workspace_dir
       else None
   )
   if "{workspace}" in expanded:
@@ -461,18 +476,20 @@ def expand_scar_database_path(
     expanded = expanded.replace("{workspace}", ws_abs)
 
   if "{agent_data}" in expanded:
-    profile = AgentPathRegistry(home_dir=home_dir).get_profile(agent)
+    profile = AgentPathRegistry(home_dir=ctx.home_dir).get_profile(ctx.agent)
     expanded = expanded.replace("{agent_data}", profile.plugin_data_dir)
 
   if "{plugin_root}" in expanded:
     eff_plugin_root = (
-        os.path.abspath(expand_user_path(plugin_root, home_dir=home_dir))
-        if plugin_root
+        os.path.abspath(
+            expand_user_path(ctx.plugin_root, home_dir=ctx.home_dir)
+        )
+        if ctx.plugin_root
         else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
     expanded = expanded.replace("{plugin_root}", eff_plugin_root)
 
-  expanded = expand_user_path(expanded, home_dir=home_dir)
+  expanded = expand_user_path(expanded, home_dir=ctx.home_dir)
   if not os.path.isabs(expanded):
     if not ws_abs:
       return None
@@ -487,6 +504,8 @@ def insert_scar_databases_before_bundled(
     agent: Optional[str] = None,
     home_dir: Optional[str] = None,
     plugin_root: Optional[str] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> List[str]:
   """Inserts extra SQLite scar DB paths immediately before the bundled registry entry.
 
@@ -501,22 +520,34 @@ def insert_scar_databases_before_bundled(
     agent: Optional active agent override.
     home_dir: Optional home directory override for tilde normalization.
     plugin_root: Optional Makeflow plugin root directory override.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     Updated ordered list of scar database path strings.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument.
   """
-  cleaned_base = _union_path_lists(databases, home_dir=home_dir)
+  ctx = resolve_path_context(
+      context,
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      plugin_root=plugin_root,
+  )
+  cleaned_base = _union_path_lists(databases, home_dir=ctx.home_dir)
   cleaned_extra = _normalize_str_list(extra_dbs)
   if not cleaned_extra:
     return cleaned_base
 
   seen_norm = {
-      os.path.normpath(expand_user_path(item, home_dir=home_dir))
+      os.path.normpath(expand_user_path(item, home_dir=ctx.home_dir))
       for item in cleaned_base
   }
   to_insert: List[str] = []
   for item in cleaned_extra:
-    norm_key = os.path.normpath(expand_user_path(item, home_dir=home_dir))
+    norm_key = os.path.normpath(expand_user_path(item, home_dir=ctx.home_dir))
     if norm_key not in seen_norm:
       seen_norm.add(norm_key)
       to_insert.append(item)
@@ -524,8 +555,8 @@ def insert_scar_databases_before_bundled(
     return cleaned_base
 
   eff_plugin_root = (
-      os.path.abspath(expand_user_path(plugin_root, home_dir=home_dir))
-      if plugin_root
+      os.path.abspath(expand_user_path(ctx.plugin_root, home_dir=ctx.home_dir))
+      if ctx.plugin_root
       else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
   )
   bundled_real = os.path.realpath(
@@ -540,18 +571,13 @@ def insert_scar_databases_before_bundled(
       )
   )
 
+  effective_ctx = replace(ctx, plugin_root=eff_plugin_root)
   insert_idx: Optional[int] = None
   for idx, entry in enumerate(cleaned_base):
     if entry.strip() == DEFAULT_BUNDLED_SCAR_DB_TOKEN:
       insert_idx = idx
       break
-    expanded = expand_scar_database_path(
-        entry,
-        workspace_dir=workspace_dir,
-        agent=agent,
-        home_dir=home_dir,
-        plugin_root=eff_plugin_root,
-    )
+    expanded = expand_scar_database_path(entry, context=effective_ctx)
     if expanded and os.path.realpath(expanded) == bundled_real:
       insert_idx = idx
       break
@@ -816,10 +842,12 @@ def get_workflow_config(
     scars_cfg["databases"] = insert_scar_databases_before_bundled(
         scars_cfg["databases"],
         env_scar_dbs,
-        workspace_dir=first_ws,
-        agent=agent,
-        home_dir=home_dir,
-        plugin_root=plugin_root,
+        context=PathContext(
+            workspace_dir=first_ws,
+            agent=agent,
+            home_dir=home_dir,
+            plugin_root=plugin_root,
+        ),
     )
     env_applied.append(SCARS_ENV_VAR)
 
@@ -1001,7 +1029,12 @@ def map_to_agy_tier(model_value):
 
 
 def resolve_workflow_config(
-    workspace_dir=None, agent=None, home_dir=None, plugin_root=None
+    workspace_dir=None,
+    agent=None,
+    home_dir=None,
+    plugin_root=None,
+    *,
+    context: Optional[PathContext] = None,
 ):
   """Resolves cascaded workflow configuration from global, workspace, and env layers.
 
@@ -1015,20 +1048,32 @@ def resolve_workflow_config(
     agent: Optional active agent override.
     home_dir: Optional home directory override for isolated testing.
     plugin_root: Optional plugin root directory override.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     Normalized workflow configuration dictionary including ``configSource``,
     ``configSources``, ``envOverrides``, ``scars``, and ``agyModelTiers``.
-  """
-  allow_cwd_fallback = workspace_dir != ""
-  ws = workspace_dir if workspace_dir is not None else resolve_workspace_dir({})
-  ws_list = [ws] if ws else []
 
-  config = load_default_config(plugin_root=plugin_root)
-  loaded_layers, loaded_sources, union_db_cfg = _load_cascaded_config_layers(
-      ws_list,
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument.
+  """
+  ctx = resolve_path_context(
+      context,
+      workspace_dir=workspace_dir,
       agent=agent,
       home_dir=home_dir,
+      plugin_root=plugin_root,
+  )
+  allow_cwd_fallback = ctx.workspace_dir != ""
+  ws = ctx.workspace_dir if ctx.workspace_dir is not None else resolve_workspace_dir({})
+  ws_list = [ws] if ws else []
+
+  config = load_default_config(plugin_root=ctx.plugin_root)
+  loaded_layers, loaded_sources, union_db_cfg = _load_cascaded_config_layers(
+      ws_list,
+      agent=ctx.agent,
+      home_dir=ctx.home_dir,
       allow_cwd_fallback=allow_cwd_fallback,
   )
   for _, layer_data in loaded_layers:
@@ -1040,7 +1085,7 @@ def resolve_workflow_config(
       "prodHosts": list(union_db_cfg["prodHosts"]),
   }
   config["scars"] = _normalize_scars_config(
-      config.get("scars"), home_dir=home_dir
+      config.get("scars"), home_dir=ctx.home_dir
   )
   config["configSources"] = [path for path, _ in loaded_sources]
   config["configSource"] = loaded_sources[-1][0] if loaded_sources else "defaults"
@@ -1069,10 +1114,7 @@ def resolve_workflow_config(
     config["scars"]["databases"] = insert_scar_databases_before_bundled(
         config["scars"]["databases"],
         env_scar_dbs,
-        workspace_dir=ws,
-        agent=agent,
-        home_dir=home_dir,
-        plugin_root=plugin_root,
+        context=replace(ctx, workspace_dir=ws),
     )
     config["envOverrides"].append(
         f"{SCARS_ENV_VAR}={','.join(env_scar_dbs)}"
