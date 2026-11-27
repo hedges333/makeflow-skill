@@ -1,72 +1,28 @@
-# Syncing synthetic scars with the three maintainer scripts
+# Syncing Synthetic Scars
 
-This guide explains how to update `skills/makeflow/data/scars_registry.db` using three single-purpose scripts and `make install`.
+Update `skills/makeflow/data/scars_registry.db` with the three maintainer targets and `make install`.
 
-## 1. Sync upstream scars
-
-Run `make sync-scars` to fetch `https://syntheticscars.org/registry.json` and update SQLite (a local relational database file):
+## Quick Run
 
 ```bash
 make sync-scars
-```
-
-You can also invoke the script directly with Python:
-
-```bash
-python3 scripts/sync_synthetic_scars.py
-```
-
-The sync script performs four deterministic steps:
-
-1. Backfills a 4-field `raw_hash` (a SHA-256 content digest) once so existing transformed scars stay intact.
-2. Updates matched `ss_id` rows in place when raw prose changes, keeping the Makeflow `id` and resetting transformed fields to `NULL`.
-3. Sorts unseen `ss_id` records ascending and derives deterministic Makeflow IDs while leaving `source = 'makeflow'` rows untouched.
-4. Enriches metadata, rebuilds `scars_fts` (the SQLite full-text search index), updates `meta.db_size_bytes`, and prints scar counts.
-
-## 2. Write Simple English fields
-
-Run `make import-scars` to transform pending scars one scar per call with `agy` (Antigravity CLI):
-
-```bash
-make import-scars
-```
-
-Pass `MODEL=<name>` or `--model <name>` to forward an explicit model override to `agy`. Pass `WORKERS=<n>` or `--workers <n>` to run bounded parallel single-scar calls:
-
-```bash
-make import-scars MODEL=gemini-2.5-pro WORKERS=4
-python3 scripts/import_synthetic_scars.py --model gemini-2.5-pro --workers 4
-```
-
-Each worker processes one isolated scar per call. Python validates each JSON response with `ScarCandidateValidator` and retries validation failures. The main thread commits each valid scar to SQLite serially. If you press `Ctrl+C`, the script terminates active workers, preserves committed rows, and rebuilds `scars_fts`.
-
-## 3. Write Socratic probes
-
-Run `make probe-scars` to write `socratic_probe` (a short diagnostic question prompt) for scars with complete Simple English fields:
-
-```bash
-make probe-scars
-```
-
-Pass `MODEL=<name>` or `--model <name>` to forward an explicit model override to `agy`. Pass `WORKERS=<n>` or `--workers <n>` to run bounded parallel single-scar calls:
-
-```bash
-make probe-scars MODEL=gemini-2.5-pro WORKERS=4
-python3 scripts/write_scar_probes.py --model gemini-2.5-pro --workers 4
-```
-
-Each worker processes one isolated scar per call. Python validates each probe with `validate_socratic_probe()` and retries validation failures. The main thread enriches metadata and commits each valid probe to SQLite serially. If you press `Ctrl+C`, the script terminates active workers, preserves committed rows, and rebuilds `scars_fts`.
-
-## 4. Test and install updated scars
-
-1. Run the scar pipeline and validator test suites:
-
-```bash
+make import-scars MODEL=gemini-4-hydrogen-high WORKERS=8
+make probe-scars MODEL=gemini-4-neon-high WORKERS=6
 make test-sync-scars test-scar-candidate
-```
-
-2. Run `make install` to validate the plugin and update `~/.gemini/config/plugins/makeflow`:
-
-```bash
 make install
 ```
+
+Run `agy models` to list valid `MODEL` identifiers for `agy` (Antigravity CLI).
+
+## Steps
+
+1. **`make sync-scars`** (`scripts/sync_synthetic_scars.py`): Fetches `https://syntheticscars.org/registry.json`, updates changed `ss_id` rows in place, inserts unseen scars, leaves `source = 'makeflow'` rows untouched, and prints pipeline counts.
+2. **`make import-scars`** (`scripts/import_synthetic_scars.py`): Runs `agy --agent synthetic-scar-importer ... --print=<prompt>` for one isolated scar per call, validates Simple English fields with `ScarCandidateValidator`, and commits each row on the main thread without touching `socratic_probe`.
+3. **`make probe-scars`** (`scripts/write_scar_probes.py`): Runs `agy --agent socratic-probe-writer ... --print=<prompt>` for one isolated scar per call, validates `socratic_probe` with `validate_socratic_probe()`, enriches metadata, and commits each row on the main thread.
+4. **`make test-sync-scars test-scar-candidate` and `make install`**: Verifies the scar suites, validates the plugin, and installs updates into `~/.gemini/config/plugins/makeflow`.
+
+## Options and Safety
+
+- Pass `MODEL=<name>` (`--model <name>`) to select an `agy` model.
+- Pass `WORKERS=<n>` (`--workers <n>`) to run up to `n` parallel single-scar calls (default `1`).
+- If you press `Ctrl+C`, the script broadcasts `SIGTERM` to active workers, preserves committed rows, and rebuilds `scars_fts` (the SQLite search index).
