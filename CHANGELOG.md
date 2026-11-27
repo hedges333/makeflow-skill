@@ -77,3 +77,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-290: Verify CORE_GOVERNANCE_FILES against sealed witness-red toolchain hashes in lib/tdd_guard.py instead of HEAD-relative git diffs.
 - GH-304: Store tiered scars in ordered SQLite databases with lib/scar_locations.py, --id overrides, and namespace-safe shadowing.
 - GH-331: Anchor SCAR-TEST-12 toolchain hashing to the executing plugin, seal plan-scoped workspace governance exemptions, and harden direct write and plugin-cache guards.
+- GH-316: Prevent same-turn denied-call pause-gate turn lockouts and T90 spoofing, clarify bundling denial messages, and add stage manual reminders.

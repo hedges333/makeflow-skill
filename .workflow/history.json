@@ -3283,5 +3283,25 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-316",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/316",
+    "title": "Prevent over-eager pause-gate target chaining and denied-call turn lockouts",
+    "request": "Exclude self-denied bundled pause-gate commands and denied single-advance gated-Git pause bundles from transcript replay in lib/turn_boundary.py using declarative DAG structure without mutable-disk temporal coupling, fix split-brain default_state_dir and parallel-tool-call inspection in step_enters_gate, parse tool calls once in _pause_gate_entered_in_turn, refine PreToolUse bundling denial guidance in lib/pre_tool_guard.py, add concise separate-shell-call reminders in target reference manuals 05, 06, and 07 while leaving SKILL.md untouched, and add 11 hermetic boundary tests.",
+    "branch": "fix/316-pause-gate-chaining-turn-lockouts",
+    "subprojects": [
+      "lib",
+      "skills/makeflow/references",
+      "tests"
+    ],
+    "started_at": "2026-11-26T22:48:00Z",
+    "completed_at": "2026-11-27T07:10:20Z",
+    "commit_sha": "00fb3d5517800b1f28799b3cd823f777d53d9308",
+    "pr_number": 338,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/338",
+    "closes_issue": true,
+    "tests_added": 11,
+    "scars_earned": []
   }
 ]
