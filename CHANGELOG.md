@@ -50,6 +50,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-203: Extract SessionStart hook logic into lib/session_start.py with SessionStartScript and reduce scripts/session_start.py to a thin BaseScript wrapper.
 - GH-209: Decompose lib/scars_db.py and sync_synthetic_scars.py into three single-purpose BaseScript CLIs, lib/scar_metadata.py, lib/scar_subagent.py, and read-only JSON-only subagents.
 - GH-274: Decompose lib/workflow_gates.py into seven cohesive domain modules and unify GateFailure in lib/reflex.py.
+- GH-319: Bundle path-resolution context into frozen PathContext across lib/agent_paths.py, lib/config.py, lib/scar_locations.py, lib/scars_db.py, lib/scar_miner.py, and mcp/server.py.
 
 ### Fixed
 
