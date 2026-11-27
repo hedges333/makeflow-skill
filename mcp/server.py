@@ -35,6 +35,7 @@ except ImportError:
 
 from lib.active_state import list_state_card_files
 from lib.config import (
+    PathContext,
     _normalize_str_list,
     _parse_csv_env,
     deep_merge,
@@ -1027,7 +1028,8 @@ def handle_tools_call(request_id, tool_name, arguments):
 
   elif tool_name == "workflow_get_config":
     ws = resolve_workspace_dir(arguments)
-    cfg = resolve_workflow_config(ws, plugin_root=_REPO_ROOT)
+    ctx = PathContext(workspace_dir=ws, plugin_root=_REPO_ROOT)
+    cfg = resolve_workflow_config(context=ctx)
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -1179,6 +1181,7 @@ def handle_tools_call(request_id, tool_name, arguments):
           "Scars query engine is unavailable. Ensure lib/scars_db.py is present.",
       )
 
+    ctx = PathContext(workspace_dir=ws, plugin_root=_REPO_ROOT)
     explicit_db = arguments.get("dbPath") or arguments.get("db_path")
     if explicit_db:
       explicit_abs = os.path.abspath(os.path.expanduser(explicit_db))
@@ -1203,13 +1206,12 @@ def handle_tools_call(request_id, tool_name, arguments):
         }
       db_paths = [explicit_abs]
     else:
-      cfg = resolve_workflow_config(ws, plugin_root=_REPO_ROOT)
+      cfg = resolve_workflow_config(context=ctx)
       db_paths = (
           resolve_scars_db_paths(
               db_path=None,
-              workspace_dir=ws,
-              package_root=_REPO_ROOT,
               config=cfg,
+              context=ctx,
           )
           if resolve_scars_db_paths is not None
           else []
@@ -1218,8 +1220,7 @@ def handle_tools_call(request_id, tool_name, arguments):
     if not db_paths:
       fallback_path = resolve_scars_db_path(
           db_path=explicit_db,
-          workspace_dir=ws,
-          package_root=_REPO_ROOT,
+          context=ctx,
       )
       return {
           "jsonrpc": "2.0",

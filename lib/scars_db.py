@@ -6,6 +6,7 @@ raw-hash backfilling, deterministic metadata enrichment, multi-dimensional
 queries, protected-span extraction, and per-ticket session scar tracking.
 """
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
+from lib.agent_paths import PathContext, resolve_path_context
 from lib.config import expand_user_path
 from lib.scar_locations import resolve_scar_locations
 from lib.scar_metadata import (
@@ -127,6 +129,8 @@ def resolve_scars_db_path(
     workspace_dir: Optional[str] = None,
     package_root: Optional[str] = None,
     home_dir: Optional[str] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> str:
   """Resolve the primary SQLite scars database path by priority cascade.
 
@@ -136,33 +140,36 @@ def resolve_scars_db_path(
     workspace_dir: Optional workspace directory to check for a project-local DB.
     package_root: Optional plugin root directory override.
     home_dir: Optional home directory override for isolated testing.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     Normalized absolute path to the selected SQLite database file.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument
+      (including ``package_root``).
   """
+  ctx = resolve_path_context(
+      context,
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      package_root=package_root,
+  )
   if db_path:
-    return os.path.abspath(expand_user_path(db_path, home_dir=home_dir))
+    return os.path.abspath(expand_user_path(db_path, home_dir=ctx.home_dir))
 
   env_path = os.getenv("MAKEFLOW_SCARS_DB")
   if env_path:
-    return os.path.abspath(expand_user_path(env_path, home_dir=home_dir))
+    return os.path.abspath(expand_user_path(env_path, home_dir=ctx.home_dir))
 
-  pkg_root = package_root or _REPO_ROOT
+  effective_ctx = replace(ctx, plugin_root=ctx.plugin_root or _REPO_ROOT)
   try:
-    locations = resolve_scar_locations(
-        workspace_dir=workspace_dir,
-        agent=agent,
-        home_dir=home_dir,
-        plugin_root=pkg_root,
-    )
-    resolved_agent_db = locations.user_db if (agent or "").strip() else None
+    locations = resolve_scar_locations(context=effective_ctx)
+    resolved_agent_db = locations.user_db if (ctx.agent or "").strip() else None
   except ValueError:
-    locations = resolve_scar_locations(
-        workspace_dir=workspace_dir,
-        agent=None,
-        home_dir=home_dir,
-        plugin_root=pkg_root,
-    )
+    locations = resolve_scar_locations(context=replace(effective_ctx, agent=None))
     resolved_agent_db = None
 
   if os.path.exists(locations.bundled_db):
@@ -175,8 +182,8 @@ def resolve_scars_db_path(
     return resolved_agent_db
 
   home = (
-      os.path.abspath(os.path.expanduser(home_dir))
-      if home_dir
+      os.path.abspath(os.path.expanduser(ctx.home_dir))
+      if ctx.home_dir
       else os.path.expanduser("~")
   )
   xdg_cache = os.getenv("XDG_CACHE_HOME")
@@ -199,6 +206,8 @@ def resolve_scars_db_paths(
     package_root: Optional[str] = None,
     home_dir: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> List[str]:
   """Resolve existing SQLite scars databases in configured precedence order.
 
@@ -214,24 +223,32 @@ def resolve_scars_db_paths(
     package_root: Optional Makeflow plugin root directory override.
     home_dir: Optional home directory override for isolated testing.
     config: Optional pre-resolved workflow configuration dictionary.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     Deduplicated list of existing absolute SQLite database paths in exact
     precedence order (highest first).
-  """
-  if db_path:
-    norm_explicit = os.path.abspath(
-        expand_user_path(db_path, home_dir=home_dir)
-    )
-    return [norm_explicit] if os.path.isfile(norm_explicit) else []
 
-  locations = resolve_scar_locations(
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument
+      (including ``package_root``).
+  """
+  ctx = resolve_path_context(
+      context,
       workspace_dir=workspace_dir,
       agent=agent,
       home_dir=home_dir,
-      plugin_root=package_root or _REPO_ROOT,
-      config=config,
+      package_root=package_root,
   )
+  if db_path:
+    norm_explicit = os.path.abspath(
+        expand_user_path(db_path, home_dir=ctx.home_dir)
+    )
+    return [norm_explicit] if os.path.isfile(norm_explicit) else []
+
+  effective_ctx = replace(ctx, plugin_root=ctx.plugin_root or _REPO_ROOT)
+  locations = resolve_scar_locations(config=config, context=effective_ctx)
   return list(locations.existing_databases)
 
 

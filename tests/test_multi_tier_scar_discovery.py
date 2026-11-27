@@ -1,5 +1,6 @@
 """Behavioral tests for ordered SQLite multi-tier scar discovery and ID overrides (GH-304)."""
 
+import inspect
 import json
 import os
 import sqlite3
@@ -12,9 +13,10 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
-from lib.agent_paths import AgentPathRegistry
+from lib.agent_paths import AgentPathRegistry, PathContext
 import lib.scars_db as scars_db_mod
 from lib.scars_db import (
+    next_tier_scar_id,
     query_scars,
     resolve_scars_db_path,
     resolve_scars_db_paths,
@@ -647,6 +649,104 @@ class TestMultiTierSqliteScarDiscovery(unittest.TestCase):
                 "SCAR-ARCH-0117",
             ],
         )
+
+  def test_scars_db_resolvers_support_path_context_package_root_and_validation(self):
+    """Verifies resolve_scars_db_path/paths accept keyword-only PathContext, reject conflicts, and keep storage pure (GH-319)."""
+    for fn in (resolve_scars_db_path, resolve_scars_db_paths):
+      with self.subTest(fn=fn.__name__):
+        sig = inspect.signature(fn)
+        self.assertIn("context", sig.parameters)
+        self.assertEqual(
+            sig.parameters["context"].kind, inspect.Parameter.KEYWORD_ONLY
+        )
+        self.assertIsNone(sig.parameters["context"].default)
+
+    # Low-level storage helpers stay free of home_dir, agent, and context (SCAR-API-0006)
+    for fn in (upsert_scar, next_tier_scar_id, query_scars):
+      with self.subTest(low_level_fn=fn.__name__):
+        params = inspect.signature(fn).parameters
+        for forbidden in ("home_dir", "agent", "context"):
+          self.assertNotIn(forbidden, params)
+
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fs = _build_mock_fs_root(tmp_root)
+      registry = AgentPathRegistry(home_dir=fs["home"])
+      user_db = registry.get_profile("codex").scars_db_path
+      _seed_db(fs["project_db"], [_scar_dict("SCAR-LOCAL-ARCH-0001", source="local")])
+      _seed_db(user_db, [_scar_dict("SCAR-USER-ARCH-0001", source="user")])
+      _seed_db(fs["bundled_db"], [_scar_dict("SCAR-ARCH-0001", source="makeflow")])
+
+      ctx = PathContext(
+          workspace_dir=fs["workspace"],
+          agent="codex",
+          home_dir=fs["home"],
+          plugin_root=fs["plugin_root"],
+      )
+      expected_codex_db = os.path.join(
+          fs["home"], ".codex", "plugin_data", "makeflow", "scars_registry.db"
+      )
+
+      with mock.patch.dict(os.environ, _isolated_env(fs["home"]), clear=True):
+        self.assertEqual(
+            resolve_scars_db_path(context=ctx),
+            fs["bundled_db"],
+        )
+        # Missing bundled DB falls back to project DB then agent DB via PathContext
+        empty_plugin = os.path.join(tmp_root, "empty_plugin")
+        os.makedirs(empty_plugin, exist_ok=True)
+        agent_only_ctx = PathContext(
+            workspace_dir=None,
+            agent="codex",
+            home_dir=fs["home"],
+            plugin_root=empty_plugin,
+        )
+        self.assertEqual(
+            resolve_scars_db_path(context=agent_only_ctx),
+            expected_codex_db,
+        )
+        # Invalid agent inside PathContext still falls back cleanly without swallowing validation errors
+        bad_agent_ctx = PathContext(
+            workspace_dir=fs["workspace"],
+            agent="unknown-agent",
+            home_dir=fs["home"],
+            plugin_root=empty_plugin,
+        )
+        self.assertEqual(
+            resolve_scars_db_path(context=bad_agent_ctx),
+            fs["project_db"],
+        )
+
+        # resolve_scars_db_paths parity between PathContext and legacy package_root kwargs
+        via_ctx = resolve_scars_db_paths(context=ctx)
+        via_legacy = resolve_scars_db_paths(
+            agent="codex",
+            workspace_dir=fs["workspace"],
+            package_root=fs["plugin_root"],
+            home_dir=fs["home"],
+        )
+        self.assertEqual(via_ctx, [fs["project_db"], expected_codex_db, fs["bundled_db"]])
+        self.assertEqual(via_ctx, via_legacy)
+
+        # Explicit db_path isolation still expands ~ using ctx.home_dir
+        self.assertEqual(
+            resolve_scars_db_paths(
+                db_path="~/.codex/plugin_data/makeflow/scars_registry.db",
+                context=ctx,
+            ),
+            [expected_codex_db],
+        )
+
+      # TypeError on non-PathContext and ValueError on mixing context with package_root or legacy kwargs
+      for fn in (resolve_scars_db_path, resolve_scars_db_paths):
+        with self.subTest(validation_fn=fn.__name__):
+          with self.assertRaises(TypeError):
+            fn(context={"home_dir": fs["home"]})  # type: ignore[arg-type]
+          with self.assertRaises(ValueError) as pkg_exc:
+            fn(package_root=fs["plugin_root"], context=ctx)
+          self.assertIn("package_root", str(pkg_exc.exception))
+          with self.assertRaises(ValueError) as ws_exc:
+            fn(workspace_dir=fs["workspace"], context=ctx)
+          self.assertIn("workspace_dir", str(ws_exc.exception))
 
 
 if __name__ == "__main__":

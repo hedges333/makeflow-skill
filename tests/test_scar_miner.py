@@ -2,6 +2,7 @@
 
 import ast
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -961,6 +962,72 @@ class TestScarMinerScriptSubcommands(unittest.TestCase):
     payload = json.loads(out.getvalue())
     self.assertFalse(payload["ready"])
     self.assertFalse(payload["ghInstalled"])
+
+  def test_save_scar_signature_invariance_and_paths_context_cwd_isolation(self):
+    """Verifies SqliteScarStore.save_scar stays free of path context and paths subcommand isolates CWD (GH-319)."""
+    save_sig = inspect.signature(SqliteScarStore.save_scar)
+    self.assertEqual(
+        list(save_sig.parameters.keys()),
+        ["self", "db_path", "record", "tier", "scar_id"],
+    )
+    for forbidden in ("home_dir", "agent", "context"):
+      self.assertNotIn(forbidden, save_sig.parameters)
+
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fake_home = os.path.join(tmp_root, "home")
+      ws_dir = os.path.join(tmp_root, "workspace")
+      plugin_root = os.path.join(tmp_root, "plugin_root")
+      ambient_db = os.path.join(tmp_root, "ambient_cwd.db")
+      for d in (fake_home, ws_dir, plugin_root):
+        os.makedirs(d, exist_ok=True)
+      local_cfg = os.path.join(ws_dir, ".workflow", "config.json")
+      os.makedirs(os.path.dirname(local_cfg), exist_ok=True)
+      with open(local_cfg, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "scars": {
+                    "databases": [
+                        ".workflow/scars/scars_registry.db",
+                        ambient_db,
+                        "{agent_data}/scars_registry.db",
+                        "{plugin_root}/skills/makeflow/data/scars_registry.db",
+                    ]
+                }
+            },
+            fh,
+        )
+
+      prev_cwd = os.getcwd()
+      try:
+        os.chdir(ws_dir)
+        with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+          out, err = io.StringIO(), io.StringIO()
+          rc = ScarMinerScript().execute(
+              args=[
+                  "paths",
+                  "--agent",
+                  "claude",
+                  "--home",
+                  fake_home,
+                  "--plugin-root",
+                  plugin_root,
+              ],
+              stdout=out,
+              stderr=err,
+          )
+      finally:
+        os.chdir(prev_cwd)
+
+      self.assertEqual(rc, 0, msg=err.getvalue())
+      data = json.loads(out.getvalue())
+      self.assertIsNone(data["project_db"])
+      self.assertNotIn(ambient_db, data["configured_databases"])
+      self.assertEqual(
+          data["user_db"],
+          os.path.join(
+              fake_home, ".claude", "plugin_data", "makeflow", "scars_registry.db"
+          ),
+      )
 
 
 class TestRepositoryMigrationVerification(unittest.TestCase):
