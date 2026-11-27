@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from lib.agent_paths import AgentPathRegistry
+from lib.agent_paths import AgentPathRegistry, PathContext
 from lib.base_script import BaseScript, ScriptArgumentParser
 from lib.config import (
     DEFAULT_SCAR_DATABASES,
@@ -334,9 +334,11 @@ class ScarConfigStore:
     scars_section["databases"] = insert_scar_databases_before_bundled(
         existing_dbs,
         [db_path],
-        workspace_dir=workspace_dir,
-        agent=agent,
-        home_dir=self.registry.home_dir,
+        context=PathContext(
+            workspace_dir=workspace_dir,
+            agent=agent,
+            home_dir=self.registry.home_dir,
+        ),
     )
 
     _atomic_write_text(abs_cfg, json.dumps(data, indent=2) + "\n")
@@ -846,10 +848,12 @@ class ScarMinerScript(BaseScript):
         else None
     )
     locations = resolve_scar_locations(
-        workspace_dir=ws_abs,
-        agent=ns.agent,
-        home_dir=ns.home,
-        plugin_root=ns.plugin_root,
+        context=PathContext(
+            workspace_dir=ws_abs,
+            agent=ns.agent,
+            home_dir=ns.home,
+            plugin_root=ns.plugin_root,
+        )
     )
     payload = registry.to_dict(agent=ns.agent, workspace_dir=ws_abs)
     payload.update(locations.to_dict())
@@ -861,12 +865,18 @@ class ScarMinerScript(BaseScript):
     if ns.tier == "project":
       ws = ns.workspace or os.getcwd()
       locations = resolve_scar_locations(
-          workspace_dir=ws, agent=ns.agent, home_dir=ns.home
+          context=PathContext(
+              workspace_dir=ws,
+              agent=ns.agent,
+              home_dir=ns.home,
+          )
       )
       assert locations.project_db is not None
       target_db = locations.project_db
     elif ns.tier == "user":
-      locations = resolve_scar_locations(agent=ns.agent, home_dir=ns.home)
+      locations = resolve_scar_locations(
+          context=PathContext(agent=ns.agent, home_dir=ns.home)
+      )
       target_db = locations.user_db
     else:
       if not ns.custom_db or not ns.custom_db.strip():

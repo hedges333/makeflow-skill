@@ -10,11 +10,13 @@ SCAR-SYS-07).
 import io
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -36,6 +38,7 @@ from lib.scar_subagent import (
     AgySubagentError,
     AgySubagentRunner,
     extract_json_payload,
+    iter_bounded_worker_results,
     wrap_untrusted_scar,
 )
 from lib.scars_db import init_scars_db_schema
@@ -997,6 +1000,911 @@ class TestWriteScarProbesScript(unittest.TestCase):
         )
         self.assertEqual(mock_popen.call_count, 1)
         self.assertIn("Failed to launch", probe_err.getvalue())
+
+
+class _InterruptibleFakePopen(FakePopen):
+  """FakePopen test double whose communicate() unblocks on terminate() or kill()."""
+
+  def __init__(self, *args, **kwargs) -> None:
+    super().__init__(*args, **kwargs)
+    self.terminated_event = threading.Event()
+
+  def terminate(self) -> None:
+    super().terminate()
+    self.terminated_event.set()
+
+  def kill(self) -> None:
+    super().kill()
+    self.terminated_event.set()
+
+
+class _NotifyingStringIO(io.StringIO):
+  """StringIO stream that sets an Event when a marker substring is written."""
+
+  def __init__(self, marker: str, event: threading.Event) -> None:
+    super().__init__()
+    self._marker = marker
+    self._event = event
+
+  def write(self, s: str) -> int:
+    written = super().write(s)
+    if self._marker in s:
+      self._event.set()
+    return written
+
+
+def _extract_prompt_scar_id(prompt: str) -> str:
+  """Extract the single ``id: SCAR-...`` line from a worker prompt."""
+  match = re.search(r"^id:\s*(SCAR-[A-Z0-9-]+)\s*$", prompt, re.MULTILINE)
+  if match is None:
+    raise AssertionError(f"Prompt did not contain an id line: {prompt!r}")
+  return match.group(1)
+
+
+def _send_signal_to_main_thread(sig: int) -> None:
+  """Deliver a POSIX signal directly to the main thread for deterministic tests."""
+  main_ident = threading.main_thread().ident
+  if hasattr(signal, "pthread_kill") and main_ident is not None:
+    signal.pthread_kill(main_ident, sig)
+  else:
+    os.kill(os.getpid(), sig)
+
+
+class TestParallelScarPipeline(unittest.TestCase):
+  """Hermetic parallel execution tests for GH-321 (--workers N and WORKERS=N)."""
+
+  def test_workers_validation_rejects_non_positive_and_non_integer_values(
+      self,
+  ) -> None:
+    """Both scripts reject --workers 0, -2, and abc with exit code 2 before DB or agy."""
+    for script_cls in (ImportSyntheticScarsScript, WriteScarProbesScript):
+      for bad_value in ("0", "-2", "abc"):
+        with self.subTest(script=script_cls.__name__, workers=bad_value):
+          out = io.StringIO()
+          err = io.StringIO()
+          with patch(
+              "sqlite3.connect",
+              side_effect=AssertionError("SQLite must not open on invalid --workers"),
+          ), patch(
+              "lib.scar_subagent.subprocess.Popen",
+              side_effect=AssertionError("agy must not spawn on invalid --workers"),
+          ):
+            code = script_cls().execute(
+                ["--workers", bad_value], stdout=out, stderr=err
+            )
+          self.assertEqual(code, 2)
+          err_text = err.getvalue()
+          self.assertIn("Error:", err_text)
+          self.assertIn("--workers", err_text)
+          self.assertNotIn("unrecognized arguments", err_text.lower())
+
+  def test_parallel_import_bounded_concurrency_isolation_and_main_thread_sqlite(
+      self,
+  ) -> None:
+    """Importer --workers 3 runs 6 scars with concurrency <= 3, isolated prompts, and main-thread DB writes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "parallel_import.db")
+      scar_ids = [f"SCAR-PAR-{idx:04d}" for idx in range(1, 7)]
+      _seed_db(
+          db_path,
+          [
+              {
+                  "id": scar_id,
+                  "raw_wound": f"Raw wound for {scar_id}.",
+                  "raw_trap": f"Raw trap for {scar_id}.",
+                  "raw_circuit_breaker": "",
+                  "raw_reflex": f"Raw reflex for {scar_id}.",
+              }
+              for scar_id in scar_ids
+          ],
+      )
+
+      state_lock = threading.Lock()
+      active_count = 0
+      max_active = 0
+      started_count = 0
+      first_wave_barrier = threading.Barrier(3)
+      captured_prompts = []
+
+      def fake_popen(cmd, **kwargs):
+        nonlocal started_count
+        prompt = cmd[-1]
+        scar_id = _extract_prompt_scar_id(prompt)
+        with state_lock:
+          captured_prompts.append(prompt)
+          my_start = started_count
+          started_count += 1
+
+        def on_comm(_proc):
+          nonlocal active_count, max_active
+          with state_lock:
+            active_count += 1
+            if active_count > max_active:
+              max_active = active_count
+          try:
+            if my_start < 3:
+              first_wave_barrier.wait(timeout=5.0)
+          finally:
+            with state_lock:
+              active_count -= 1
+
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": f"Simple wound for {scar_id}.",
+                "trap": f"Simple trap for {scar_id}.",
+                "circuit_breaker": "",
+                "reflex": f"Simple reflex for {scar_id}.",
+            }),
+            on_communicate=on_comm,
+        )
+
+      main_tid = threading.main_thread().ident
+      enrich_tids = []
+      fts_tids = []
+
+      from lib import import_synthetic_scars as import_mod
+
+      orig_enrich = import_mod.enrich_scars_cursor
+      orig_fts = import_mod.populate_scars_fts
+
+      def tracked_enrich(*args, **kwargs):
+        enrich_tids.append(threading.get_ident())
+        return orig_enrich(*args, **kwargs)
+
+      def tracked_fts(*args, **kwargs):
+        fts_tids.append(threading.get_ident())
+        return orig_fts(*args, **kwargs)
+
+      out = io.StringIO()
+      err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=fake_popen), \
+           patch.object(import_mod, "enrich_scars_cursor", side_effect=tracked_enrich), \
+           patch.object(import_mod, "populate_scars_fts", side_effect=tracked_fts):
+        code = ImportSyntheticScarsScript().execute(
+            ["--db-path", db_path, "--workers", "3"], stdout=out, stderr=err
+        )
+
+      self.assertEqual(code, 0, f"Unexpected stderr: {err.getvalue()}")
+      self.assertEqual(max_active, 3, "Expected exactly 3 concurrent workers")
+      self.assertEqual(len(captured_prompts), 6)
+
+      # Strict single-scar prompt isolation (SCAR-SEC-01)
+      for prompt in captured_prompts:
+        self.assertIn("<untrusted_upstream_scar>", prompt)
+        present_ids = [sid for sid in scar_ids if sid in prompt]
+        self.assertEqual(
+            len(present_ids),
+            1,
+            f"Prompt must contain exactly one scar ID, found {present_ids}",
+        )
+
+      # Main-thread SQLite single-writer affinity
+      self.assertEqual(len(enrich_tids), 6)
+      self.assertEqual(set(enrich_tids), {main_tid})
+      self.assertEqual(len(fts_tids), 1)
+      self.assertEqual(set(fts_tids), {main_tid})
+
+      # Monotonic progress counts
+      stdout_text = out.getvalue()
+      for idx in range(1, 7):
+        self.assertIn(f"({idx}/6).", stdout_text)
+
+      conn = sqlite3.connect(db_path)
+      cur = conn.cursor()
+      cur.execute(
+          "SELECT id, wound, trap, circuit_breaker, reflex, socratic_probe "
+          "FROM scars ORDER BY id ASC"
+      )
+      rows = cur.fetchall()
+      self.assertEqual(len(rows), 6)
+      for scar_id, wound, trap_val, cb_val, reflex, probe in rows:
+        self.assertEqual(wound, f"Simple wound for {scar_id}.")
+        self.assertEqual(trap_val, f"Simple trap for {scar_id}.")
+        self.assertIsNone(cb_val)
+        self.assertEqual(reflex, f"Simple reflex for {scar_id}.")
+        self.assertIsNone(probe, "Importer must leave socratic_probe NULL")
+      cur.execute("SELECT COUNT(*) FROM scars_fts")
+      self.assertEqual(cur.fetchone()[0], 6)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+  def test_parallel_probe_writer_bounded_concurrency_isolation_and_main_thread_sqlite(
+      self,
+  ) -> None:
+    """Probe writer --workers 3 runs 6 scars with concurrency <= 3, isolated prompts, and main-thread DB writes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "parallel_probes.db")
+      scar_ids = [f"SCAR-PPAR-{idx:04d}" for idx in range(1, 7)]
+      _seed_db(
+          db_path,
+          [
+              {
+                  "id": scar_id,
+                  "wound": f"Simple wound for {scar_id}.",
+                  "trap": f"Simple trap for {scar_id}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex for {scar_id}.",
+                  "socratic_probe": None,
+              }
+              for scar_id in scar_ids
+          ],
+      )
+
+      state_lock = threading.Lock()
+      active_count = 0
+      max_active = 0
+      started_count = 0
+      first_wave_barrier = threading.Barrier(3)
+      captured_prompts = []
+
+      def fake_popen(cmd, **kwargs):
+        nonlocal started_count
+        prompt = cmd[-1]
+        scar_id = _extract_prompt_scar_id(prompt)
+        with state_lock:
+          captured_prompts.append(prompt)
+          my_start = started_count
+          started_count += 1
+
+        def on_comm(_proc):
+          nonlocal active_count, max_active
+          with state_lock:
+            active_count += 1
+            if active_count > max_active:
+              max_active = active_count
+          try:
+            if my_start < 3:
+              first_wave_barrier.wait(timeout=5.0)
+          finally:
+            with state_lock:
+              active_count -= 1
+
+        return FakePopen(
+            stdout=json.dumps({
+                "socratic_probe": f"Did you verify {scar_id} before saving?",
+            }),
+            on_communicate=on_comm,
+        )
+
+      main_tid = threading.main_thread().ident
+      enrich_tids = []
+      fts_tids = []
+
+      from lib import write_scar_probes as probe_mod
+
+      orig_enrich = probe_mod.enrich_scars_cursor
+      orig_fts = probe_mod.populate_scars_fts
+
+      def tracked_enrich(*args, **kwargs):
+        enrich_tids.append(threading.get_ident())
+        return orig_enrich(*args, **kwargs)
+
+      def tracked_fts(*args, **kwargs):
+        fts_tids.append(threading.get_ident())
+        return orig_fts(*args, **kwargs)
+
+      out = io.StringIO()
+      err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=fake_popen), \
+           patch.object(probe_mod, "enrich_scars_cursor", side_effect=tracked_enrich), \
+           patch.object(probe_mod, "populate_scars_fts", side_effect=tracked_fts):
+        code = WriteScarProbesScript().execute(
+            ["--db-path", db_path, "--workers", "3"], stdout=out, stderr=err
+        )
+
+      self.assertEqual(code, 0, f"Unexpected stderr: {err.getvalue()}")
+      self.assertEqual(max_active, 3, "Expected exactly 3 concurrent workers")
+      self.assertEqual(len(captured_prompts), 6)
+
+      for prompt in captured_prompts:
+        self.assertIn("<untrusted_upstream_scar>", prompt)
+        present_ids = [sid for sid in scar_ids if sid in prompt]
+        self.assertEqual(len(present_ids), 1)
+
+      self.assertEqual(len(enrich_tids), 6)
+      self.assertEqual(set(enrich_tids), {main_tid})
+      self.assertEqual(len(fts_tids), 1)
+      self.assertEqual(set(fts_tids), {main_tid})
+
+      stdout_text = out.getvalue()
+      for idx in range(1, 7):
+        self.assertIn(f"({idx}/6).", stdout_text)
+
+      conn = sqlite3.connect(db_path)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      rows = cur.fetchall()
+      self.assertEqual(len(rows), 6)
+      for scar_id, probe in rows:
+        self.assertEqual(probe, f"Did you verify {scar_id} before saving?")
+      cur.execute("SELECT COUNT(*) FROM scars_fts")
+      self.assertEqual(cur.fetchone()[0], 6)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+  def test_parallel_per_scar_failure_isolation_in_importer_and_probe_writer(
+      self,
+  ) -> None:
+    """One failing scar under --workers 3 leaves 3 valid scars committed and exits 1."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      imp_db = os.path.join(tmpdir, "imp_fail_isolation.db")
+      imp_ids = [f"SCAR-FAIL-{idx:04d}" for idx in range(1, 5)]
+      _seed_db(imp_db, [{"id": sid} for sid in imp_ids])
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        if scar_id == "SCAR-FAIL-0002":
+          return FakePopen(
+              stdout=json.dumps({
+                  "wound": "Invalid; semicolon error.",
+                  "trap": "Trap text.",
+                  "circuit_breaker": "",
+                  "reflex": "Reflex text.",
+              })
+          )
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": f"Valid wound {scar_id}.",
+                "trap": f"Valid trap {scar_id}.",
+                "circuit_breaker": "",
+                "reflex": f"Valid reflex {scar_id}.",
+            })
+        )
+
+      imp_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db, "--workers", "3"],
+            stdout=io.StringIO(),
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 1)
+      self.assertIn("SCAR-FAIL-0002", imp_err.getvalue())
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+      imp_by_id = dict(cur.fetchall())
+      self.assertEqual(imp_by_id["SCAR-FAIL-0001"], "Valid wound SCAR-FAIL-0001.")
+      self.assertIsNone(imp_by_id["SCAR-FAIL-0002"])
+      self.assertEqual(imp_by_id["SCAR-FAIL-0003"], "Valid wound SCAR-FAIL-0003.")
+      self.assertEqual(imp_by_id["SCAR-FAIL-0004"], "Valid wound SCAR-FAIL-0004.")
+      cur.execute("SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Valid wound%'")
+      self.assertEqual(cur.fetchone()[0], 3)
+      conn.close()
+
+      # Mirror for WriteScarProbesScript
+      probe_db = os.path.join(tmpdir, "probe_fail_isolation.db")
+      probe_ids = [f"SCAR-PFAIL-{idx:04d}" for idx in range(1, 5)]
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": "Simple wound.",
+                  "trap": "Simple trap.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex.",
+                  "socratic_probe": None,
+              }
+              for sid in probe_ids
+          ],
+      )
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        if scar_id == "SCAR-PFAIL-0002":
+          return FakePopen(
+              stdout=json.dumps({"socratic_probe": "Not a valid question."})
+          )
+        return FakePopen(
+            stdout=json.dumps({
+                "socratic_probe": f"Did you check {scar_id}?"
+            })
+        )
+
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--workers", "3"],
+            stdout=io.StringIO(),
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 1)
+      self.assertIn("SCAR-PFAIL-0002", probe_err.getvalue())
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      probe_by_id = dict(cur.fetchall())
+      self.assertEqual(probe_by_id["SCAR-PFAIL-0001"], "Did you check SCAR-PFAIL-0001?")
+      self.assertIsNone(probe_by_id["SCAR-PFAIL-0002"])
+      self.assertEqual(probe_by_id["SCAR-PFAIL-0003"], "Did you check SCAR-PFAIL-0003?")
+      self.assertEqual(probe_by_id["SCAR-PFAIL-0004"], "Did you check SCAR-PFAIL-0004?")
+      cur.execute("SELECT COUNT(*) FROM scars_fts WHERE socratic_probe LIKE '%Did you check%'")
+      self.assertEqual(cur.fetchone()[0], 3)
+      conn.close()
+
+  def test_parallel_signal_interruption_importer_sigint(self) -> None:
+    """SIGINT under --workers 2 terminates all active importer children and keeps committed rows."""
+    orig_sigint = signal.getsignal(signal.SIGINT)
+    try:
+      with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "parallel_sigint.db")
+        scar_ids = [f"SCAR-SIG-{idx:04d}" for idx in range(1, 6)]
+        _seed_db(db_path, [{"id": sid} for sid in scar_ids])
+
+        both_active = threading.Barrier(2)
+        spawned_lock = threading.Lock()
+        spawned_ids = []
+        active_procs = []
+
+        def fake_popen(cmd, **kwargs):
+          scar_id = _extract_prompt_scar_id(cmd[-1])
+          with spawned_lock:
+            spawned_ids.append(scar_id)
+
+          if scar_id == "SCAR-SIG-0001":
+            return FakePopen(
+                stdout=json.dumps({
+                    "wound": "Committed wound one.",
+                    "trap": "Committed trap one.",
+                    "circuit_breaker": "",
+                    "reflex": "Committed reflex one.",
+                })
+            )
+
+          def wait_and_trigger(proc_obj):
+            party = both_active.wait(timeout=5.0)
+            if party == 0:
+              _send_signal_to_main_thread(signal.SIGINT)
+            finished = proc_obj.terminated_event.wait(timeout=5.0)
+            if not finished:
+              raise TimeoutError(f"Subprocess for {scar_id} was not terminated")
+
+          proc = _InterruptibleFakePopen(
+              stdout="",
+              stderr="",
+              returncode=0,
+              on_communicate=wait_and_trigger,
+          )
+          with spawned_lock:
+            active_procs.append(proc)
+          return proc
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("lib.scar_subagent.subprocess.Popen", side_effect=fake_popen):
+          code = ImportSyntheticScarsScript().execute(
+              ["--db-path", db_path, "--workers", "2"], stdout=out, stderr=err
+          )
+
+        self.assertEqual(code, 128 + signal.SIGINT)
+        self.assertEqual(len(active_procs), 2)
+        self.assertTrue(
+            all(p.terminated for p in active_procs),
+            "All active child subprocesses must receive terminate() on SIGINT",
+        )
+        self.assertNotIn("SCAR-SIG-0004", spawned_ids)
+        self.assertNotIn("SCAR-SIG-0005", spawned_ids)
+        self.assertEqual(signal.getsignal(signal.SIGINT), orig_sigint)
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+        by_id = dict(cur.fetchall())
+        self.assertEqual(by_id["SCAR-SIG-0001"], "Committed wound one.")
+        for untouched in scar_ids[1:]:
+          self.assertIsNone(by_id[untouched])
+        cur.execute(
+            "SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Committed wound one%'"
+        )
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+        self.assertGreater(int(cur.fetchone()[0]), 0)
+        conn.close()
+    finally:
+      signal.signal(signal.SIGINT, orig_sigint)
+
+  def test_parallel_signal_interruption_probe_writer_sigterm(self) -> None:
+    """SIGTERM under --workers 2 terminates all active probe children and keeps committed probes."""
+    orig_sigterm = signal.getsignal(signal.SIGTERM)
+    try:
+      with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "parallel_sigterm.db")
+        scar_ids = [f"SCAR-PSIG-{idx:04d}" for idx in range(1, 6)]
+        _seed_db(
+            db_path,
+            [
+                {
+                    "id": sid,
+                    "wound": f"Simple wound {sid}.",
+                    "trap": f"Simple trap {sid}.",
+                    "circuit_breaker": None,
+                    "reflex": f"Simple reflex {sid}.",
+                    "socratic_probe": None,
+                }
+                for sid in scar_ids
+            ],
+        )
+
+        both_active = threading.Barrier(2)
+        spawned_lock = threading.Lock()
+        spawned_ids = []
+        active_procs = []
+
+        def fake_popen(cmd, **kwargs):
+          scar_id = _extract_prompt_scar_id(cmd[-1])
+          with spawned_lock:
+            spawned_ids.append(scar_id)
+
+          if scar_id == "SCAR-PSIG-0001":
+            return FakePopen(
+                stdout=json.dumps({
+                    "socratic_probe": "Did you check committed probe one?"
+                })
+            )
+
+          def wait_and_trigger(proc_obj):
+            party = both_active.wait(timeout=5.0)
+            if party == 0:
+              _send_signal_to_main_thread(signal.SIGTERM)
+            finished = proc_obj.terminated_event.wait(timeout=5.0)
+            if not finished:
+              raise TimeoutError(f"Subprocess for {scar_id} was not terminated")
+
+          proc = _InterruptibleFakePopen(
+              stdout="",
+              stderr="",
+              returncode=0,
+              on_communicate=wait_and_trigger,
+          )
+          with spawned_lock:
+            active_procs.append(proc)
+          return proc
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("lib.scar_subagent.subprocess.Popen", side_effect=fake_popen):
+          code = WriteScarProbesScript().execute(
+              ["--db-path", db_path, "--workers", "2"], stdout=out, stderr=err
+          )
+
+        self.assertEqual(code, 128 + signal.SIGTERM)
+        self.assertEqual(len(active_procs), 2)
+        self.assertTrue(
+            all(p.terminated for p in active_procs),
+            "All active child subprocesses must receive terminate() on SIGTERM",
+        )
+        self.assertNotIn("SCAR-PSIG-0004", spawned_ids)
+        self.assertNotIn("SCAR-PSIG-0005", spawned_ids)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), orig_sigterm)
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+        by_id = dict(cur.fetchall())
+        self.assertEqual(
+            by_id["SCAR-PSIG-0001"], "Did you check committed probe one?"
+        )
+        for untouched in scar_ids[1:]:
+          self.assertIsNone(by_id[untouched])
+        cur.execute(
+            "SELECT COUNT(*) FROM scars_fts WHERE socratic_probe LIKE '%committed probe one%'"
+        )
+        self.assertEqual(cur.fetchone()[0], 1)
+        cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+        self.assertGreater(int(cur.fetchone()[0]), 0)
+        conn.close()
+    finally:
+      signal.signal(signal.SIGTERM, orig_sigterm)
+
+  def test_makefile_workers_passthrough_dry_run(self) -> None:
+    """Makefile import-scars and probe-scars forward optional WORKERS=N alongside optional MODEL=."""
+    makefile_path = os.path.join(_REPO_ROOT, "Makefile")
+    clean_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("WORKERS", "MODEL")
+    }
+
+    cases = [
+        (["import-scars", "WORKERS=4"], ['--workers "4"'], ["--model"]),
+        (
+            ["import-scars", "MODEL=gemini-2.5-pro", "WORKERS=4"],
+            ['--model "gemini-2.5-pro"', '--workers "4"'],
+            [],
+        ),
+        (["import-scars"], [], ["--workers", "--model"]),
+        (["probe-scars", "WORKERS=4"], ['--workers "4"'], ["--model"]),
+        (
+            ["probe-scars", "MODEL=claude-opus-4", "WORKERS=4"],
+            ['--model "claude-opus-4"', '--workers "4"'],
+            [],
+        ),
+        (["probe-scars"], [], ["--workers", "--model"]),
+    ]
+
+    for make_args, expected_substrings, forbidden_substrings in cases:
+      with self.subTest(make_args=make_args):
+        res = subprocess.run(
+            ["make", "-n", "-f", makefile_path, *make_args],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=_REPO_ROOT,
+            env=clean_env,
+        )
+        for expected in expected_substrings:
+          self.assertIn(expected, res.stdout)
+        for forbidden in forbidden_substrings:
+          self.assertNotIn(forbidden, res.stdout)
+
+  def test_iter_bounded_worker_results_edge_cases_and_exception_propagation(
+      self,
+  ) -> None:
+    """Direct helper tests for workers < 1, empty rows, workers > len(rows), and exception propagation."""
+    from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
+
+    # workers < 1 raises ValueError
+    for bad_workers in (0, -3):
+      with self.subTest(bad_workers=bad_workers):
+        with self.assertRaises(ValueError):
+          list(
+              iter_bounded_worker_results(
+                  rows=["a"],
+                  workers=bad_workers,
+                  worker_fn=lambda item: item,
+                  should_stop=lambda: False,
+              )
+          )
+
+    # Empty rows yields [] without creating a ThreadPoolExecutor
+    with patch(
+        "lib.scar_subagent.ThreadPoolExecutor",
+        side_effect=AssertionError(
+            "ThreadPoolExecutor must not be constructed for empty rows"
+        ),
+    ):
+      self.assertEqual(
+          list(
+              iter_bounded_worker_results(
+                  rows=[],
+                  workers=4,
+                  worker_fn=lambda item: item,
+                  should_stop=lambda: False,
+              )
+          ),
+          [],
+      )
+
+    # workers > len(rows) caps pool size and yields all results cleanly
+    created_max_workers = []
+
+    def tracking_pool(*args, **kwargs):
+      created_max_workers.append(kwargs.get("max_workers"))
+      return RealThreadPoolExecutor(*args, **kwargs)
+
+    with patch("lib.scar_subagent.ThreadPoolExecutor", side_effect=tracking_pool):
+      results = list(
+          iter_bounded_worker_results(
+              rows=["r1", "r2"],
+              workers=8,
+              worker_fn=lambda item: f"done:{item}",
+              should_stop=lambda: False,
+          )
+      )
+    self.assertEqual(created_max_workers, [2])
+    self.assertEqual(set(results), {("r1", "done:r1"), ("r2", "done:r2")})
+
+    # Unexpected worker_fn exception propagates and cleanly shuts down executor
+    shutdown_calls = []
+
+    class _SpyExecutor(RealThreadPoolExecutor):
+      def shutdown(self, wait=True, *, cancel_futures=False):
+        shutdown_calls.append((wait, cancel_futures))
+        return super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def exploding_worker(item: str) -> str:
+      if item == "boom":
+        raise RuntimeError("unexpected worker crash")
+      return f"ok:{item}"
+
+    with patch("lib.scar_subagent.ThreadPoolExecutor", side_effect=_SpyExecutor):
+      with self.assertRaisesRegex(RuntimeError, "unexpected worker crash"):
+        list(
+            iter_bounded_worker_results(
+                rows=["first", "boom", "later"],
+                workers=2,
+                worker_fn=exploding_worker,
+                should_stop=lambda: False,
+            )
+        )
+    self.assertEqual(shutdown_calls, [(True, True)])
+
+  def test_parallel_cli_error_aborts_sibling_retries_and_preserves_committed(
+      self,
+  ) -> None:
+    """Fatal cli_error sets stop_event so retrying sibling workers abort without extra agy calls."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer: sibling hits validation failure on attempt 1 and must not retry
+      imp_db = os.path.join(tmpdir, "parallel_cli_err_import.db")
+      imp_ids = [f"SCAR-CLI-{idx:04d}" for idx in range(1, 5)]
+      _seed_db(imp_db, [{"id": sid} for sid in imp_ids])
+
+      imp_barrier = threading.Barrier(2)
+      imp_cli_logged = threading.Event()
+      imp_lock = threading.Lock()
+      imp_calls = {}
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with imp_lock:
+          attempt_num = imp_calls.get(scar_id, 0) + 1
+          imp_calls[scar_id] = attempt_num
+
+        if scar_id == "SCAR-CLI-0001":
+          return FakePopen(
+              stdout=json.dumps({
+                  "wound": "Committed cli wound.",
+                  "trap": "Committed cli trap.",
+                  "circuit_breaker": "",
+                  "reflex": "Committed cli reflex.",
+              })
+          )
+
+        if scar_id == "SCAR-CLI-0003":
+          def fail_after_sync(_proc):
+            imp_barrier.wait(timeout=5.0)
+
+          return FakePopen(
+              stdout="",
+              stderr="fatal importer cli error",
+              returncode=42,
+              on_communicate=fail_after_sync,
+          )
+
+        def sibling_wait_then_invalid(_proc):
+          if attempt_num == 1:
+            imp_barrier.wait(timeout=5.0)
+            finished = imp_cli_logged.wait(timeout=5.0)
+            if not finished:
+              raise TimeoutError("Timed out waiting for cli_error stderr log")
+
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": "Invalid; semicolon error.",
+                "trap": "Trap text.",
+                "circuit_breaker": "",
+                "reflex": "Reflex text.",
+            }),
+            on_communicate=sibling_wait_then_invalid,
+        )
+
+      imp_err = _NotifyingStringIO("fatal importer cli error", imp_cli_logged)
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db, "--workers", "2"],
+            stdout=io.StringIO(),
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 42)
+      self.assertEqual(
+          imp_calls.get("SCAR-CLI-0002"),
+          1,
+          f"Sibling worker must abort retries on stop_event, got calls={imp_calls}",
+      )
+      self.assertNotIn("SCAR-CLI-0004", imp_calls)
+
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+      imp_by_id = dict(cur.fetchall())
+      self.assertEqual(imp_by_id["SCAR-CLI-0001"], "Committed cli wound.")
+      for untouched in imp_ids[1:]:
+        self.assertIsNone(imp_by_id[untouched])
+      cur.execute(
+          "SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Committed cli wound%'"
+      )
+      self.assertEqual(cur.fetchone()[0], 1)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+      # 2) Probe writer: sibling gets unparseable JSON (ValueError retry path) and must not retry
+      probe_db = os.path.join(tmpdir, "parallel_cli_err_probe.db")
+      probe_ids = [f"SCAR-PCLI-{idx:04d}" for idx in range(1, 5)]
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": f"Simple wound {sid}.",
+                  "trap": f"Simple trap {sid}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex {sid}.",
+                  "socratic_probe": None,
+              }
+              for sid in probe_ids
+          ],
+      )
+
+      probe_barrier = threading.Barrier(2)
+      probe_cli_logged = threading.Event()
+      probe_lock = threading.Lock()
+      probe_calls = {}
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with probe_lock:
+          attempt_num = probe_calls.get(scar_id, 0) + 1
+          probe_calls[scar_id] = attempt_num
+
+        if scar_id == "SCAR-PCLI-0001":
+          return FakePopen(
+              stdout=json.dumps({
+                  "socratic_probe": "Did you check committed cli probe?"
+              })
+          )
+
+        if scar_id == "SCAR-PCLI-0003":
+          def fail_after_sync(_proc):
+            probe_barrier.wait(timeout=5.0)
+
+          return FakePopen(
+              stdout="",
+              stderr="fatal probe cli error",
+              returncode=43,
+              on_communicate=fail_after_sync,
+          )
+
+        def sibling_wait_then_bad_json(_proc):
+          if attempt_num == 1:
+            probe_barrier.wait(timeout=5.0)
+            finished = probe_cli_logged.wait(timeout=5.0)
+            if not finished:
+              raise TimeoutError("Timed out waiting for probe cli_error stderr log")
+
+        return FakePopen(
+            stdout="not valid json output",
+            on_communicate=sibling_wait_then_bad_json,
+        )
+
+      probe_err = _NotifyingStringIO("fatal probe cli error", probe_cli_logged)
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--workers", "2"],
+            stdout=io.StringIO(),
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 43)
+      self.assertEqual(
+          probe_calls.get("SCAR-PCLI-0002"),
+          1,
+          f"Sibling probe worker must abort retries on stop_event, got calls={probe_calls}",
+      )
+      self.assertNotIn("SCAR-PCLI-0004", probe_calls)
+
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      probe_by_id = dict(cur.fetchall())
+      self.assertEqual(
+          probe_by_id["SCAR-PCLI-0001"], "Did you check committed cli probe?"
+      )
+      for untouched in probe_ids[1:]:
+        self.assertIsNone(probe_by_id[untouched])
+      cur.execute(
+          "SELECT COUNT(*) FROM scars_fts WHERE socratic_probe LIKE '%committed cli probe%'"
+      )
+      self.assertEqual(cur.fetchone()[0], 1)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
 
 
 if __name__ == "__main__":

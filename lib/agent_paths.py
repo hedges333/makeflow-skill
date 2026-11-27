@@ -69,6 +69,95 @@ def normalize_agent_name(agent: Optional[str]) -> str:
 
 
 @dataclass(frozen=True)
+class PathContext:
+  """Immutable value object bundling path-resolution boundary parameters (GH-319).
+
+  Performs zero filesystem I/O on construction so callers can safely pass
+  canonical or sentinel values (such as ``workspace_dir=""`` to disable ambient
+  CWD fallback) across configuration and scar-resolution boundaries.
+
+  Attributes:
+    workspace_dir: Optional project repository root directory. Use ``""`` to
+      explicitly suppress ambient CWD fallback.
+    agent: Optional active agent identifier or alias override.
+    home_dir: Optional home directory override for hermetic execution.
+    plugin_root: Optional Makeflow plugin root directory override.
+  """
+
+  workspace_dir: Optional[str] = None
+  agent: Optional[str] = None
+  home_dir: Optional[str] = None
+  plugin_root: Optional[str] = None
+
+
+def resolve_path_context(
+    context: Optional[PathContext] = None,
+    *,
+    workspace_dir: Optional[str] = None,
+    agent: Optional[str] = None,
+    home_dir: Optional[str] = None,
+    plugin_root: Optional[str] = None,
+    package_root: Optional[str] = None,
+) -> PathContext:
+  """Normalize either a ``PathContext`` or legacy path kwargs at a boundary.
+
+  Enforces type safety and mutual exclusion so boundary entrypoints share one
+  consistent validation contract without duplicating argument checks.
+
+  Args:
+    context: Optional pre-built ``PathContext`` instance.
+    workspace_dir: Optional legacy project root directory path.
+    agent: Optional legacy active agent identifier override.
+    home_dir: Optional legacy home directory override.
+    plugin_root: Optional legacy Makeflow plugin root directory override.
+    package_root: Optional legacy alias for ``plugin_root`` used by scar DB
+      resolvers.
+
+  Returns:
+    Validated ``PathContext`` instance preserving all supplied fields,
+    including the ``workspace_dir=""`` sentinel.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext`` instance.
+    ValueError: If ``context`` is combined with any non-``None`` legacy path
+      keyword argument, or if both ``plugin_root`` and ``package_root`` are
+      supplied.
+  """
+  if context is not None:
+    if not isinstance(context, PathContext):
+      raise TypeError(
+          f"context must be a PathContext instance, got {type(context).__name__}."
+      )
+    conflicting = [
+        name
+        for name, val in (
+            ("workspace_dir", workspace_dir),
+            ("agent", agent),
+            ("home_dir", home_dir),
+            ("plugin_root", plugin_root),
+            ("package_root", package_root),
+        )
+        if val is not None
+    ]
+    if conflicting:
+      joined = ", ".join(conflicting)
+      raise ValueError(
+          f"Cannot specify both 'context' and legacy path parameter(s): {joined}."
+      )
+    return context
+
+  if plugin_root is not None and package_root is not None:
+    raise ValueError("Cannot specify both 'plugin_root' and 'package_root'.")
+
+  return PathContext(
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      plugin_root=plugin_root if plugin_root is not None else package_root,
+  )
+
+
+@dataclass(frozen=True)
 class AgentPathProfile:
   """Immutable path profile for one Makeflow-supported agent platform.
 

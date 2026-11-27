@@ -1,5 +1,6 @@
 """Behavioral tests for cross-agent path registry, ScarLocations, and SQLite scar config cascade (GH-117, GH-304)."""
 
+import inspect
 import json
 import os
 import sys
@@ -11,12 +12,16 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
+import lib.config as config_mod
+import lib.scar_locations as scar_locations_mod
 from lib.agent_paths import (
     AGENT_ALIASES,
     SUPPORTED_AGENTS,
     AgentPathProfile,
     AgentPathRegistry,
+    PathContext,
     normalize_agent_name,
+    resolve_path_context,
 )
 from lib.config import (
     DEFAULT_SCAR_DATABASES,
@@ -25,6 +30,7 @@ from lib.config import (
     expand_scar_database_path,
     expand_user_path,
     get_workflow_config,
+    insert_scar_databases_before_bundled,
     load_database_config,
     load_default_config,
     resolve_workflow_config,
@@ -1038,6 +1044,321 @@ class TestScarLocationsAndConfigCascade(unittest.TestCase):
             is_plugin_dir(wt_link),
             "Symlink into Git worktree checkout must return False",
         )
+
+
+class TestPathContextBoundary(unittest.TestCase):
+  """Behavioral tests for PathContext value object and resolve_path_context validator (GH-319)."""
+
+  def test_path_context_defaults_immutability_hashability_and_zero_io(self):
+    """Verifies PathContext is frozen, hashable, defaults to None, and performs zero construction I/O."""
+    default_ctx = PathContext()
+    self.assertIsNone(default_ctx.workspace_dir)
+    self.assertIsNone(default_ctx.agent)
+    self.assertIsNone(default_ctx.home_dir)
+    self.assertIsNone(default_ctx.plugin_root)
+
+    with mock.patch("os.path.expanduser", side_effect=AssertionError("unexpected I/O")), mock.patch(
+        "os.path.abspath", side_effect=AssertionError("unexpected I/O")
+    ):
+      ctx = PathContext(
+          workspace_dir="~/ws",
+          agent="claude",
+          home_dir="~/home",
+          plugin_root="~/plugin",
+      )
+
+    self.assertEqual(ctx.workspace_dir, "~/ws")
+    self.assertEqual(ctx.agent, "claude")
+    self.assertEqual(ctx.home_dir, "~/home")
+    self.assertEqual(ctx.plugin_root, "~/plugin")
+
+    with self.assertRaises(AttributeError):
+      ctx.agent = "gemini"  # type: ignore[misc]
+
+    duplicate = PathContext(
+        workspace_dir="~/ws",
+        agent="claude",
+        home_dir="~/home",
+        plugin_root="~/plugin",
+    )
+    self.assertEqual(ctx, duplicate)
+    self.assertEqual(hash(ctx), hash(duplicate))
+    self.assertEqual({ctx: "ok"}[duplicate], "ok")
+
+  def test_resolve_path_context_builds_from_legacy_kwargs_and_package_root(self):
+    """Verifies resolve_path_context normalizes legacy kwargs, package_root alias, and empty workspace sentinel."""
+    empty_ctx = resolve_path_context()
+    self.assertEqual(empty_ctx, PathContext())
+
+    from_legacy = resolve_path_context(
+        workspace_dir="/repo",
+        agent="codex",
+        home_dir="/home/dev",
+        plugin_root="/plugin",
+    )
+    self.assertEqual(
+        from_legacy,
+        PathContext(
+            workspace_dir="/repo",
+            agent="codex",
+            home_dir="/home/dev",
+            plugin_root="/plugin",
+        ),
+    )
+
+    from_pkg = resolve_path_context(
+        workspace_dir="",
+        home_dir="/home/dev",
+        package_root="/pkg_root",
+    )
+    self.assertEqual(from_pkg.workspace_dir, "")
+    self.assertEqual(from_pkg.home_dir, "/home/dev")
+    self.assertEqual(from_pkg.plugin_root, "/pkg_root")
+
+    existing = PathContext(workspace_dir="", agent="claude")
+    self.assertIs(resolve_path_context(existing), existing)
+
+  def test_resolve_path_context_rejects_invalid_type_and_conflicting_arguments(self):
+    """Verifies resolve_path_context raises TypeError on non-PathContext and ValueError on mixed args."""
+    with self.assertRaises(TypeError):
+      resolve_path_context(context={"workspace_dir": "/repo"})  # type: ignore[arg-type]
+
+    with self.assertRaises(TypeError):
+      resolve_path_context(context="/repo")  # type: ignore[arg-type]
+
+    ctx = PathContext(home_dir="/home/dev")
+    for kwargs, expected_name in (
+        ({"workspace_dir": "/repo"}, "workspace_dir"),
+        ({"workspace_dir": ""}, "workspace_dir"),
+        ({"agent": "claude"}, "agent"),
+        ({"home_dir": "/other"}, "home_dir"),
+        ({"plugin_root": "/plugin"}, "plugin_root"),
+        ({"package_root": "/pkg"}, "package_root"),
+    ):
+      with self.subTest(kwargs=kwargs):
+        with self.assertRaises(ValueError) as exc_info:
+          resolve_path_context(ctx, **kwargs)
+        self.assertIn(expected_name, str(exc_info.exception))
+
+    with self.assertRaises(ValueError) as pkg_conflict:
+      resolve_path_context(plugin_root="/plugin", package_root="/pkg")
+    self.assertIn("plugin_root", str(pkg_conflict.exception))
+    self.assertIn("package_root", str(pkg_conflict.exception))
+
+  def test_config_reexports_canonical_path_context_and_keeps_load_default_config_pure(self):
+    """Verifies lib.config re-exports PathContext canonically and load_default_config stays free of context."""
+    self.assertIs(config_mod.PathContext, PathContext)
+
+    for fn in (
+        expand_scar_database_path,
+        insert_scar_databases_before_bundled,
+        resolve_workflow_config,
+    ):
+      with self.subTest(fn=fn.__name__):
+        sig = inspect.signature(fn)
+        self.assertIn("context", sig.parameters)
+        self.assertEqual(
+            sig.parameters["context"].kind, inspect.Parameter.KEYWORD_ONLY
+        )
+        self.assertIsNone(sig.parameters["context"].default)
+
+    default_sig = inspect.signature(load_default_config)
+    self.assertEqual(list(default_sig.parameters.keys()), ["plugin_root"])
+    for forbidden in ("home_dir", "agent", "context"):
+      self.assertNotIn(forbidden, default_sig.parameters)
+
+  def test_config_helpers_accept_path_context_with_parity_and_validation(self):
+    """Verifies expand_scar_database_path, insert_scar_databases_before_bundled, and resolve_workflow_config."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fs = _build_mock_fs_root(tmp_root)
+      ctx = PathContext(
+          workspace_dir=fs["workspace"],
+          agent="claude",
+          home_dir=fs["home"],
+          plugin_root=fs["plugin_root"],
+      )
+      expected_agent_db = os.path.join(
+          fs["home"], ".claude", "plugin_data", "makeflow", "scars_registry.db"
+      )
+      expected_bundled_db = os.path.join(
+          fs["plugin_root"], "skills", "makeflow", "data", "scars_registry.db"
+      )
+      expected_proj_db = os.path.join(
+          fs["workspace"], ".workflow", "scars", "scars_registry.db"
+      )
+
+      # 1. expand_scar_database_path parity
+      self.assertEqual(
+          expand_scar_database_path("{agent_data}/scars_registry.db", context=ctx),
+          expected_agent_db,
+      )
+      self.assertEqual(
+          expand_scar_database_path(".workflow/scars/scars_registry.db", context=ctx),
+          expected_proj_db,
+      )
+      self.assertEqual(
+          expand_scar_database_path(
+              "{plugin_root}/skills/makeflow/data/scars_registry.db", context=ctx
+          ),
+          expected_bundled_db,
+      )
+
+      # 2. insert_scar_databases_before_bundled parity
+      extra_db = os.path.join(fs["shared"], "team_extra.db")
+      inserted = insert_scar_databases_before_bundled(
+          [expected_proj_db, expected_bundled_db],
+          [extra_db],
+          context=ctx,
+      )
+      self.assertEqual(inserted, [expected_proj_db, extra_db, expected_bundled_db])
+
+      # 3. resolve_workflow_config parity, positional compatibility, and "" CWD isolation
+      local_cfg_path = os.path.join(fs["workspace"], ".workflow", "config.json")
+      os.makedirs(os.path.dirname(local_cfg_path), exist_ok=True)
+      with open(local_cfg_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "models": {"tdd-worker": "pro"},
+                "ci": {"quiescenceSeconds": 42},
+            },
+            fh,
+        )
+
+      with mock.patch.dict(os.environ, _isolated_env(fs["home"]), clear=True):
+        via_ctx = resolve_workflow_config(context=ctx)
+        via_positional = resolve_workflow_config(
+            fs["workspace"], "claude", fs["home"], fs["plugin_root"]
+        )
+        self.assertEqual(via_ctx["models"]["tdd-worker"], "pro")
+        self.assertEqual(via_ctx["ci"]["quiescenceSeconds"], 42)
+        self.assertEqual(via_ctx["configSource"], local_cfg_path)
+        self.assertEqual(via_ctx, via_positional)
+
+        prev_cwd = os.getcwd()
+        try:
+          os.chdir(fs["workspace"])
+          isolated_ctx = PathContext(
+              workspace_dir="",
+              agent="claude",
+              home_dir=fs["home"],
+              plugin_root=fs["plugin_root"],
+          )
+          isolated_cfg = resolve_workflow_config(context=isolated_ctx)
+        finally:
+          os.chdir(prev_cwd)
+
+      self.assertEqual(isolated_cfg["configSource"], "defaults")
+      self.assertEqual(isolated_cfg["models"]["tdd-worker"], "inherit")
+
+      # 4. Validation errors (TypeError and ValueError) across all three config functions
+      with self.assertRaises(TypeError):
+        expand_scar_database_path("x.db", context="not-a-context")  # type: ignore[arg-type]
+      with self.assertRaises(ValueError):
+        expand_scar_database_path("x.db", home_dir=fs["home"], context=ctx)
+
+      with self.assertRaises(TypeError):
+        insert_scar_databases_before_bundled([], [], context={})  # type: ignore[arg-type]
+      with self.assertRaises(ValueError):
+        insert_scar_databases_before_bundled(
+            [], [extra_db], plugin_root=fs["plugin_root"], context=ctx
+        )
+
+      with self.assertRaises(TypeError):
+        resolve_workflow_config(context=123)  # type: ignore[arg-type]
+      with self.assertRaises(ValueError):
+        resolve_workflow_config(fs["workspace"], context=ctx)
+
+  def test_scar_locations_reexports_path_context_and_supports_context_and_cwd_isolation(self):
+    """Verifies resolve_scar_locations and get_configured_scar_databases accept PathContext and isolate CWD."""
+    self.assertIs(scar_locations_mod.PathContext, PathContext)
+
+    for fn in (resolve_scar_locations, get_configured_scar_databases):
+      with self.subTest(fn=fn.__name__):
+        sig = inspect.signature(fn)
+        self.assertIn("context", sig.parameters)
+        self.assertEqual(
+            sig.parameters["context"].kind, inspect.Parameter.KEYWORD_ONLY
+        )
+        self.assertIsNone(sig.parameters["context"].default)
+
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fs = _build_mock_fs_root(tmp_root)
+      ambient_custom_db = os.path.join(fs["shared"], "ambient_ctx_custom.db")
+      local_cfg_path = os.path.join(fs["workspace"], ".workflow", "config.json")
+      os.makedirs(os.path.dirname(local_cfg_path), exist_ok=True)
+      with open(local_cfg_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "scars": {
+                    "databases": [
+                        ".workflow/scars/scars_registry.db",
+                        ambient_custom_db,
+                        "{agent_data}/scars_registry.db",
+                        "{plugin_root}/skills/makeflow/data/scars_registry.db",
+                    ]
+                }
+            },
+            fh,
+        )
+
+      explicit_ctx = PathContext(
+          workspace_dir=fs["workspace"],
+          agent="claude",
+          home_dir=fs["home"],
+          plugin_root=fs["plugin_root"],
+      )
+      isolated_ctx = PathContext(
+          workspace_dir=None,
+          agent="claude",
+          home_dir=fs["home"],
+          plugin_root=fs["plugin_root"],
+      )
+      expected_proj_db = os.path.join(
+          fs["workspace"], ".workflow", "scars", "scars_registry.db"
+      )
+      expected_user_db = os.path.join(
+          fs["home"], ".claude", "plugin_data", "makeflow", "scars_registry.db"
+      )
+      expected_bundled_db = os.path.join(
+          fs["plugin_root"], "skills", "makeflow", "data", "scars_registry.db"
+      )
+
+      prev_cwd = os.getcwd()
+      try:
+        os.chdir(fs["workspace"])
+        with mock.patch.dict(os.environ, _isolated_env(fs["home"]), clear=True):
+          loc_explicit = resolve_scar_locations(context=explicit_ctx)
+          dbs_explicit = get_configured_scar_databases(context=explicit_ctx)
+          loc_isolated = resolve_scar_locations(context=isolated_ctx)
+          dbs_isolated = get_configured_scar_databases(context=isolated_ctx)
+      finally:
+        os.chdir(prev_cwd)
+
+      self.assertEqual(loc_explicit.project_db, expected_proj_db)
+      self.assertEqual(loc_explicit.user_db, expected_user_db)
+      self.assertEqual(loc_explicit.bundled_db, expected_bundled_db)
+      self.assertEqual(
+          list(loc_explicit.databases),
+          [expected_proj_db, ambient_custom_db, expected_user_db, expected_bundled_db],
+      )
+      self.assertEqual(dbs_explicit, list(loc_explicit.databases))
+
+      self.assertIsNone(loc_isolated.project_db)
+      self.assertNotIn(ambient_custom_db, loc_isolated.databases)
+      self.assertEqual(
+          list(loc_isolated.databases),
+          [expected_user_db, expected_bundled_db],
+      )
+      self.assertEqual(dbs_isolated, [expected_user_db, expected_bundled_db])
+
+      with self.assertRaises(TypeError):
+        resolve_scar_locations(context="bad")  # type: ignore[arg-type]
+      with self.assertRaises(ValueError):
+        resolve_scar_locations(agent="claude", context=explicit_ctx)
+      with self.assertRaises(TypeError):
+        get_configured_scar_databases(context="bad")  # type: ignore[arg-type]
+      with self.assertRaises(ValueError):
+        get_configured_scar_databases(home_dir=fs["home"], context=explicit_ctx)
 
 
 if __name__ == "__main__":

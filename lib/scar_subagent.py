@@ -1,16 +1,23 @@
-"""Subprocess collaborator for single-scar agy --print agent calls (GH-209).
+"""Subprocess collaborator for single-scar agy --print agent calls (GH-209, GH-321).
 
 Provides AgySubagentRunner, XML untrusted-data airlock escaping (SCAR-SEC-01),
 SignalTrap subprocess registration (SCAR-SYS-07), bounded timeouts, fail-fast
-CLI error translation, and JSON envelope unwrapping.
+CLI error translation, JSON envelope unwrapping, and bounded parallel worker
+execution helpers.
 """
 
+import argparse
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import json
 import re
 import subprocess
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
 
 from lib.signal_trap import SignalTrap
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+_WAIT_POLL_TIMEOUT_SEC = 0.1
 
 _FENCED_JSON_RE = re.compile(
     r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
@@ -263,3 +270,107 @@ class AgySubagentRunner:
       )
 
     return extract_json_payload(stdout_text)
+
+
+def parse_positive_workers(value: str) -> int:
+  """Validate a CLI ``--workers`` argument as a positive integer (>= 1).
+
+  Args:
+    value: Raw CLI argument string supplied to ``--workers``.
+
+  Returns:
+    Parsed positive integer worker count.
+
+  Raises:
+    argparse.ArgumentTypeError: Raised when ``value`` is not an integer >= 1.
+  """
+  try:
+    parsed = int(value)
+  except (TypeError, ValueError) as exc:
+    raise argparse.ArgumentTypeError(
+        f"--workers must be a positive integer, got {value!r}."
+    ) from exc
+  if parsed < 1:
+    raise argparse.ArgumentTypeError(
+        f"--workers must be >= 1, got {parsed}."
+    )
+  return parsed
+
+
+def iter_bounded_worker_results(
+    rows: Sequence[_T],
+    workers: int,
+    worker_fn: Callable[[_T], _R],
+    should_stop: Callable[[], bool],
+) -> Iterator[Tuple[_T, _R]]:
+  """Execute ``worker_fn`` over ``rows`` with bounded concurrency and main-thread yields.
+
+  When ``workers == 1``, executes sequentially on the calling thread without
+  creating a thread pool. When ``workers > 1``, uses a sliding-window
+  ``ThreadPoolExecutor`` keeping at most ``workers`` tasks in flight at once,
+  yielding every ``(row, result)`` pair strictly on the calling thread and
+  canceling unstarted work when ``should_stop()`` returns True.
+
+  Args:
+    rows: Ordered sequence of work items to process.
+    workers: Maximum concurrent worker executions (must be >= 1).
+    worker_fn: Pure per-item callable safe to execute on worker threads.
+    should_stop: Zero-argument predicate polled on the calling thread to stop
+      submitting new items on signal or fatal CLI error.
+
+  Yields:
+    ``(row, result)`` tuples on the calling thread as each item completes.
+
+  Raises:
+    ValueError: Raised when ``workers < 1``.
+  """
+  if workers < 1:
+    raise ValueError(f"workers must be >= 1, got {workers}.")
+  if not rows:
+    return
+
+  if workers == 1:
+    for row in rows:
+      if should_stop():
+        break
+      yield row, worker_fn(row)
+    return
+
+  row_iter = iter(rows)
+  max_workers = min(workers, len(rows))
+  executor = ThreadPoolExecutor(max_workers=max_workers)
+  pending: Dict[Future[_R], _T] = {}
+  try:
+    for _ in range(max_workers):
+      if should_stop():
+        break
+      try:
+        row = next(row_iter)
+      except StopIteration:
+        break
+      pending[executor.submit(worker_fn, row)] = row
+
+    while pending:
+      if should_stop():
+        break
+      done, _ = wait(
+          pending.keys(),
+          timeout=_WAIT_POLL_TIMEOUT_SEC,
+          return_when=FIRST_COMPLETED,
+      )
+      if not done:
+        continue
+      for fut in done:
+        row = pending.pop(fut)
+        if should_stop():
+          break
+        result = fut.result()
+        yield row, result
+        if not should_stop():
+          try:
+            next_row = next(row_iter)
+          except StopIteration:
+            continue
+          pending[executor.submit(worker_fn, next_row)] = next_row
+  finally:
+    executor.shutdown(wait=True, cancel_futures=True)

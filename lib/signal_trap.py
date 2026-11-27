@@ -11,6 +11,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from types import FrameType
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
@@ -70,6 +71,8 @@ class SignalTrap:
     self._lockfiles: Set[str] = set()
     self._lock_dirs: Set[str] = set()
     self._subprocesses: Dict[subprocess.Popen, float] = {}
+    self._subprocesses_lock: threading.RLock = threading.RLock()
+    self._signal_shutdown: bool = False
 
     self._installed: bool = False
     self._handling_signal: bool = False
@@ -104,8 +107,10 @@ class SignalTrap:
     return self
 
   def restore(self) -> None:
-    """Restore original signal handlers (idempotent)."""
+    """Restore original signal handlers on the main thread (idempotent)."""
     if not self._installed and not self._original_handlers:
+      return
+    if threading.current_thread() is not threading.main_thread():
       return
 
     for sig, handler in list(self._original_handlers.items()):
@@ -164,6 +169,10 @@ class SignalTrap:
   ) -> subprocess.Popen:
     """Register a child subprocess to be terminated and reaped upon cleanup.
 
+    If signal shutdown has already started, terminates and reaps the
+    subprocess immediately outside the registry lock to prevent orphaned
+    children under concurrent worker execution.
+
     Args:
         proc: Subprocess instance to monitor and manage.
         timeout: Seconds to wait after terminate before escalating to kill.
@@ -171,7 +180,18 @@ class SignalTrap:
     Returns:
         The registered subprocess instance.
     """
-    self._subprocesses[proc] = timeout
+    terminate_now = False
+    with self._subprocesses_lock:
+      if self._signal_shutdown:
+        terminate_now = True
+      else:
+        self._subprocesses[proc] = timeout
+        if self._signal_shutdown and self._subprocesses.pop(proc, None) is not None:
+          terminate_now = True
+
+    if terminate_now:
+      self._terminate_subprocess(proc, timeout)
+      self.reap_zombies()
     return proc
 
   def unregister_subprocess(self, proc: subprocess.Popen) -> None:
@@ -180,7 +200,106 @@ class SignalTrap:
     Args:
         proc: Subprocess instance to unregister.
     """
-    self._subprocesses.pop(proc, None)
+    with self._subprocesses_lock:
+      self._subprocesses.pop(proc, None)
+
+  @staticmethod
+  def _wait_or_kill_subprocess(
+      proc: subprocess.Popen, wait_timeout: float, kill_timeout: float
+  ) -> None:
+    """Wait for a signaled subprocess, escalating to kill on timeout.
+
+    Args:
+        proc: Subprocess instance that has already received SIGTERM.
+        wait_timeout: Remaining seconds to wait before escalating to SIGKILL.
+        kill_timeout: Seconds to wait after SIGKILL.
+    """
+    try:
+      try:
+        proc.wait(timeout=wait_timeout)
+      except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+          proc.wait(timeout=kill_timeout)
+        except subprocess.TimeoutExpired as exc:
+          logger.warning(
+              "Subprocess %s did not exit after kill: %s", proc, exc
+          )
+    except OSError as exc:
+      logger.warning("Error waiting for subprocess %s: %s", proc, exc)
+
+  @classmethod
+  def _terminate_subprocess(
+      cls, proc: subprocess.Popen, timeout: float
+  ) -> None:
+    """Gracefully terminate one subprocess, escalating to kill on timeout.
+
+    Args:
+        proc: Subprocess instance to terminate.
+        timeout: Seconds to wait after terminate before escalating to kill.
+    """
+    if proc.poll() is None:
+      try:
+        proc.terminate()
+      except OSError as exc:
+        logger.warning("Error terminating subprocess %s: %s", proc, exc)
+        return
+      cls._wait_or_kill_subprocess(
+          proc, wait_timeout=timeout, kill_timeout=timeout
+      )
+
+  def _drain_subprocesses(self, reap: bool = True) -> None:
+    """Snapshot, clear, broadcast-terminate, and optionally reap subprocesses outside lock.
+
+    Uses a two-phase shutdown per snapshot so multiple children exit in
+    parallel under a shared deadline instead of waiting serially:
+    Phase 1 broadcasts ``terminate()`` to every live child and records its
+    deadline ``time.monotonic() + timeout``. Phase 2 waits on each live child
+    up to its remaining budget and escalates to ``kill()`` on timeout.
+
+    Args:
+        reap: If True, call ``reap_zombies()`` once when any subprocesses were
+            drained. Pass False when the caller invokes ``reap_zombies()``
+            directly.
+    """
+    drained_any = False
+    while True:
+      with self._subprocesses_lock:
+        if not self._subprocesses:
+          break
+        subprocs = list(self._subprocesses.items())
+        self._subprocesses.clear()
+      drained_any = True
+
+      # Phase 1: Broadcast SIGTERM to all live children before waiting on any.
+      live_procs: List[Tuple[subprocess.Popen, float, float]] = []
+      for proc, timeout in subprocs:
+        if proc.poll() is None:
+          try:
+            proc.terminate()
+          except OSError as exc:
+            logger.warning("Error terminating subprocess %s: %s", proc, exc)
+            continue
+          live_procs.append((proc, timeout, time.monotonic() + timeout))
+
+      # Phase 2: Wait under shared deadline and escalate stubborn children to SIGKILL.
+      if len(live_procs) == 1:
+        proc, timeout, _deadline = live_procs[0]
+        if proc.poll() is None:
+          self._wait_or_kill_subprocess(
+              proc, wait_timeout=timeout, kill_timeout=timeout
+          )
+      else:
+        for proc, timeout, deadline in live_procs:
+          if proc.poll() is not None:
+            continue
+          remaining = max(0.0, deadline - time.monotonic())
+          self._wait_or_kill_subprocess(
+              proc, wait_timeout=remaining, kill_timeout=timeout
+          )
+
+    if reap and drained_any:
+      self.reap_zombies()
 
   @staticmethod
   def reap_zombies() -> List[Tuple[int, int]]:
@@ -261,20 +380,8 @@ class SignalTrap:
         self.caught_exceptions.append((callback, exc))
         logger.warning("Error in cleanup callback %s: %s", callback, exc)
 
-    # Terminate and reap registered child subprocesses
-    subprocs = list(self._subprocesses.items())
-    self._subprocesses.clear()
-    for proc, timeout in subprocs:
-      if proc.poll() is None:
-        try:
-          proc.terminate()
-          try:
-            proc.wait(timeout=timeout)
-          except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=timeout)
-        except OSError as exc:
-          logger.warning("Error terminating subprocess %s: %s", proc, exc)
+    # Terminate registered child subprocesses outside the lock before single reap
+    self._drain_subprocesses(reap=False)
 
     self.reap_zombies()
     self.remove_lockfiles()
@@ -302,6 +409,8 @@ class SignalTrap:
       return
 
     self._handling_signal = True
+    with self._subprocesses_lock:
+      self._signal_shutdown = True
     try:
       self.execute_cleanups()
     finally:
@@ -321,8 +430,11 @@ class SignalTrap:
       exc_tb: Optional[Any],
   ) -> None:
     """Exit context manager, running cleanups if configured and restoring handlers."""
-    if self.cleanup_on_exit and not self._cleanups_executed:
-      self.execute_cleanups()
+    if self.cleanup_on_exit:
+      if not self._cleanups_executed:
+        self.execute_cleanups()
+      else:
+        self._drain_subprocesses()
     self.restore()
 
 

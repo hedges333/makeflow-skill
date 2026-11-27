@@ -5,11 +5,11 @@ token-expanded, deduplicated SQLite scar database tiers across project,
 user-wide agent, custom configured, environment, and bundled locations.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from lib.agent_paths import AgentPathRegistry
+from lib.agent_paths import AgentPathRegistry, PathContext, resolve_path_context
 from lib.config import (
     DEFAULT_SCAR_DATABASES,
     SCARS_ENV_VAR,
@@ -100,6 +100,8 @@ def resolve_scar_locations(
     home_dir: Optional[str] = None,
     plugin_root: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> ScarLocations:
   """Resolve all built-in process scar files and ordered SQLite scar databases.
 
@@ -115,19 +117,36 @@ def resolve_scar_locations(
     home_dir: Optional home directory override for hermetic testing.
     plugin_root: Optional Makeflow plugin root directory override.
     config: Optional pre-resolved workflow configuration dictionary.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     Frozen ``ScarLocations`` instance with canonical process and SQLite paths.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument.
   """
+  ctx = resolve_path_context(
+      context,
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      plugin_root=plugin_root,
+  )
   eff_plugin_root = (
-      os.path.abspath(expand_user_path(plugin_root, home_dir=home_dir))
-      if plugin_root
+      os.path.abspath(expand_user_path(ctx.plugin_root, home_dir=ctx.home_dir))
+      if ctx.plugin_root
       else _REPO_ROOT
   )
   ws_abs = (
-      os.path.abspath(expand_user_path(workspace_dir, home_dir=home_dir))
-      if workspace_dir
+      os.path.abspath(
+          expand_user_path(ctx.workspace_dir, home_dir=ctx.home_dir)
+      )
+      if ctx.workspace_dir
       else None
+  )
+  effective_ctx = replace(
+      ctx, workspace_dir=ws_abs, plugin_root=eff_plugin_root
   )
 
   process_scars_dir = os.path.join(
@@ -135,7 +154,7 @@ def resolve_scar_locations(
   )
   process_scar_files = _discover_process_scar_files(process_scars_dir)
 
-  profile = AgentPathRegistry(home_dir=home_dir).get_profile(agent)
+  profile = AgentPathRegistry(home_dir=ctx.home_dir).get_profile(ctx.agent)
   project_db = (
       os.path.join(ws_abs, ".workflow", "scars", "scars_registry.db")
       if ws_abs
@@ -150,10 +169,10 @@ def resolve_scar_locations(
       config
       if isinstance(config, dict)
       else resolve_workflow_config(
-          workspace_dir=ws_abs if ws_abs is not None else "",
-          agent=agent,
-          home_dir=home_dir,
-          plugin_root=eff_plugin_root,
+          context=replace(
+              effective_ctx,
+              workspace_dir=ws_abs if ws_abs is not None else "",
+          )
       )
   )
   raw_scars = cfg.get("scars")
@@ -168,27 +187,18 @@ def resolve_scar_locations(
     raw_dbs = insert_scar_databases_before_bundled(
         list(raw_dbs),
         env_extra_dbs,
-        workspace_dir=ws_abs,
-        agent=agent,
-        home_dir=home_dir,
-        plugin_root=eff_plugin_root,
+        context=effective_ctx,
     )
 
   candidates: List[str] = []
   env_single_db = os.getenv("MAKEFLOW_SCARS_DB", "").strip()
   if env_single_db:
     candidates.append(
-        os.path.abspath(expand_user_path(env_single_db, home_dir=home_dir))
+        os.path.abspath(expand_user_path(env_single_db, home_dir=ctx.home_dir))
     )
 
   for raw in raw_dbs:
-    resolved = expand_scar_database_path(
-        raw,
-        workspace_dir=ws_abs,
-        agent=agent,
-        home_dir=home_dir,
-        plugin_root=eff_plugin_root,
-    )
+    resolved = expand_scar_database_path(raw, context=effective_ctx)
     if resolved:
       candidates.append(resolved)
 
@@ -220,6 +230,8 @@ def get_configured_scar_databases(
     home_dir: Optional[str] = None,
     plugin_root: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> List[str]:
   """Return ordered, token-expanded, deduplicated SQLite scar database paths.
 
@@ -229,16 +241,20 @@ def get_configured_scar_databases(
     home_dir: Optional home directory override for isolated testing.
     plugin_root: Optional Makeflow plugin root directory override.
     config: Optional pre-resolved workflow configuration dictionary.
+    context: Optional bundled ``PathContext`` overriding legacy path kwargs.
 
   Returns:
     List of normalized absolute SQLite database paths in precedence order.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext``.
+    ValueError: If ``context`` is mixed with any legacy path keyword argument.
   """
-  return list(
-      resolve_scar_locations(
-          workspace_dir=workspace_dir,
-          agent=agent,
-          home_dir=home_dir,
-          plugin_root=plugin_root,
-          config=config,
-      ).databases
+  ctx = resolve_path_context(
+      context,
+      workspace_dir=workspace_dir,
+      agent=agent,
+      home_dir=home_dir,
+      plugin_root=plugin_root,
   )
+  return list(resolve_scar_locations(config=config, context=ctx).databases)
