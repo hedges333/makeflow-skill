@@ -65,4 +65,4 @@ After the user approves the push, run these steps:
    - Readability notes.
    - Error handling and edge cases covered.
 3. If a non-GitHub remote uses Pure Git Mode (`SCAR-GIT-30`), push the branch and skip `gh pr create`. Record `HOSTING_MODE: PURE_GIT` in `.workflow/state/15_archaeology_receipt.md`.
-4. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (or `humanPushApproved: true`) to advance to Target 70.
+4. Run `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` (or `humanPushApproved: true`) to advance to Target 70. Run `git push`, `gh pr create`, and `make -f .workflow/state/Makefile bot-quiescence APPROVED=1` in separate shell calls without `&&`.

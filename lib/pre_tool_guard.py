@@ -79,6 +79,7 @@ from lib.turn_boundary import (
     PAUSE_GATE_EXITS,
     PAUSE_GATE_TARGETS,
     VALID_TRANSITIONS,
+    classify_bundled_pause_gate_violation,
     clear_gate_entry,
     detect_latest_target,
     evaluate_advance_target_turn_boundary,
@@ -1067,31 +1068,49 @@ def _resolve_adv_state_dir(adv, default_state_dir):
 
 
 def _validate_advance_calls_guard(adv_calls, default_state_dir, transcript_path):
-  """Validates turn boundaries and pause-gate bundling without mutating disk."""
-  entered_gates = set()
-  for adv in adv_calls:
-    curr_t = adv["currentTarget"]
-    next_t = adv["nextTarget"]
-    eff_state_dir = _resolve_adv_state_dir(adv, default_state_dir)
-    if curr_t in entered_gates or (
-        len(adv_calls) > 1 and (curr_t, next_t) in PAUSE_GATE_EXITS
-    ):
+  """Validates turn boundaries and pause-gate bundling without mutating disk.
+
+  Args:
+    adv_calls: List of normalized advance-call dicts from one tool call.
+    default_state_dir: Fallback ``.workflow/state`` directory path.
+    transcript_path: Path to the session JSONL transcript file.
+
+  Returns:
+    Deny decision dictionary when a guard fires, or ``None`` when allowed.
+  """
+  violation = classify_bundled_pause_gate_violation(adv_calls)
+  if violation is not None:
+    kind, curr_t, next_t = violation
+    if kind == "entry_and_downstream":
       return {
           "decision": "deny",
           "reason": (
               f"BLOCKED: [SCAR-PROC-102] Cannot bundle pause-gate entry and"
-              f" exit ({curr_t} -> {next_t}) in a single command without an"
-              " intervening human USER_INPUT turn."
+              f" downstream transition ({curr_t} -> {next_t}) in one command."
+              " Run the gate entry in its own shell call, stop tool calls,"
+              " and wait for explicit human approval."
           ),
       }
+    return {
+        "decision": "deny",
+        "reason": (
+            f"BLOCKED: [SCAR-PROC-102] Cannot chain pause-gate exit"
+            f" ({curr_t} -> {next_t}) with another target transition in one"
+            " shell command. Run each target transition and gated command in"
+            " separate shell calls."
+        ),
+    }
+
+  for adv in adv_calls:
+    curr_t = adv["currentTarget"]
+    next_t = adv["nextTarget"]
+    eff_state_dir = _resolve_adv_state_dir(adv, default_state_dir)
     if (curr_t, next_t) in PAUSE_GATE_EXITS:
       ok, reason = evaluate_advance_target_turn_boundary(
           curr_t, next_t, transcript_path, state_dir=eff_state_dir
       )
       if not ok:
         return {"decision": "deny", "reason": reason}
-    if next_t in PAUSE_GATE_TARGETS:
-      entered_gates.add(next_t)
   return None
 
 
@@ -1240,9 +1259,10 @@ def evaluate_tool_call(payload):
     return {
         "decision": "deny",
         "reason": (
-            "BLOCKED: [SCAR-PROC-102] Cannot bundle pause-gate entry with a"
-            " gated Git command in the same shell invocation. Stop tool calls"
-            " and wait for explicit human approval."
+            "BLOCKED: [SCAR-PROC-102] Cannot bundle a gated Git command with"
+            " a pause-gate target transition in one shell command. Run the"
+            " gated Git command and the pause-gate target transition in"
+            " separate shell calls."
         ),
     }
   if git_res.get("decision") == "deny":

@@ -20,7 +20,9 @@ from lib.shell_safety import (
     _expand_shell_subcommands,
     _extract_redirection_targets,
     _extract_shell_substitutions,
+    _parse_git_subcommand,
     _preprocess_shell,
+    _split_git_args,
     _tokenize_subcommand,
     _unwrap_command_tokens,
 )
@@ -235,6 +237,33 @@ VALID_TRANSITIONS = {
     for tid, meta in TARGETS_CONFIG.items()
 }
 
+_NON_INIT_PREDECESSORS = {}
+for _src_t, _meta in TARGETS_CONFIG.items():
+  if _src_t == "T00":
+    continue
+  for _dst_t in list(_meta.get("next", ())) + list(
+      _meta.get("recoveryNext", ())
+  ):
+    _NON_INIT_PREDECESSORS.setdefault(_dst_t, set()).add(_src_t)
+
+_PAUSE_GATE_EXIT_DEST_SOURCES = {}
+for _src_t, _dst_t in PAUSE_GATE_EXITS:
+  _PAUSE_GATE_EXIT_DEST_SOURCES.setdefault(_dst_t, set()).add(_src_t)
+
+_PAUSE_GATE_ONLY_EXIT_TARGETS = frozenset(
+    dst_t
+    for dst_t, preds in _NON_INIT_PREDECESSORS.items()
+    if preds and all((src_t, dst_t) in PAUSE_GATE_EXITS for src_t in preds)
+)
+
+_PAUSE_GATED_COMMAND_TUPLES = frozenset(
+    tuple(cmd_spec.split())
+    for meta in TARGETS_CONFIG.values()
+    if meta.get("pauseGate")
+    for cmd_spec in meta.get("gatedCommands", ())
+    if isinstance(cmd_spec, str) and cmd_spec.strip()
+)
+
 
 def _unwrap_json_val(val):
   """Unwraps JSON-encoded string values found in compact transcript.jsonl."""
@@ -383,18 +412,33 @@ def _parse_make_tokens(rem):
   return makefile_arg, dir_arg, make_vars, goals
 
 
-def _build_shell_adv_record(curr_t, next_t, approved_raw, complete, dirs):
-  """Builds a normalized advance-call dict from parsed shell parameters."""
+def _build_shell_adv_record(
+    curr_t, next_t, approved_raw, complete, dirs, from_omitted=False
+):
+  """Builds a normalized advance-call dict from parsed shell parameters.
+
+  Args:
+    curr_t: Resolved source target ID (explicit or inferred).
+    next_t: Canonical destination target ID.
+    approved_raw: Raw ``APPROVED`` / ``--approved`` value from the command.
+    complete: True when the command invokes ``finish`` completion.
+    dirs: Tuple ``(workspace_dir, state_dir)``.
+    from_omitted: True when the shell command omitted explicit ``FROM``/``--from``.
+
+  Returns:
+    Normalized advance-call dictionary preserving structural exit metadata.
+  """
   ws_dir, st_dir = dirs
   ev = {}
   if complete:
     ev["complete"] = True
-  gate_key = PAUSE_GATE_EXITS.get((curr_t, next_t))
-  if gate_key and str(approved_raw or "").strip().lower() in (
+  is_approved = str(approved_raw or "").strip().lower() in (
       "1",
       "true",
       "yes",
-  ):
+  )
+  gate_key = PAUSE_GATE_EXITS.get((curr_t, next_t))
+  if gate_key and is_approved:
     ev[gate_key] = True
   return {
       "currentTarget": curr_t,
@@ -402,6 +446,8 @@ def _build_shell_adv_record(curr_t, next_t, approved_raw, complete, dirs):
       "evidence": ev,
       "workspaceDir": ws_dir or "",
       "stateDir": st_dir or "",
+      "fromOmitted": bool(from_omitted),
+      "approved": is_approved,
   }
 
 
@@ -496,7 +542,12 @@ def _parse_workflow_gates_cli_advance(exe, rem, cwd_dir, default_state_dir, ctx)
       else _infer_shell_current_target(st_dir, prior, next_target=next_t)
   )
   return _build_shell_adv_record(
-      curr_t, next_t, approved, complete, (eff_root, st_dir)
+      curr_t,
+      next_t,
+      approved,
+      complete,
+      (eff_root, st_dir),
+      from_omitted=not bool(raw_from),
   )
 
 
@@ -584,7 +635,12 @@ def _extract_shell_advance_calls(cmd_str, default_state_dir=""):
               )
           )
           rec = _build_shell_adv_record(
-              curr_t, next_t, mvars.get("APPROVED"), complete, (ws_dir, st_dir)
+              curr_t,
+              next_t,
+              mvars.get("APPROVED"),
+              complete,
+              (ws_dir, st_dir),
+              from_omitted=not bool(raw_from),
           )
           extracted.append(rec)
           prior_target = next_t
@@ -652,6 +708,245 @@ def extract_advance_target_calls(tool_calls, default_state_dir=""):
           "stateDir": str(st_dir).strip() if st_dir else "",
       })
   return results
+
+
+def _pause_gate_exit_source(adv):
+  """Returns canonical pause-gate source ID when ``adv`` is a pause-gate exit.
+
+  Detects pause-gate exits deterministically across both ``PreToolUse`` and
+  later transcript replays even when ``FROM`` was omitted and on-disk
+  ``active_target.json`` has subsequently moved, completed, or been removed:
+
+  1. Explicit or currently inferred pair ``(curr_t, next_t) in PAUSE_GATE_EXITS``.
+  2. Structural ``FROM``-omitted exit target whose non-``T00`` DAG predecessors
+     are exclusively pause-gate exits (``_PAUSE_GATE_ONLY_EXIT_TARGETS``, for
+     example ``T80`` from ``T75`` and ``T50`` from ``T45``).
+  3. Structural ``FROM``-omitted exit destination in ``PAUSE_GATE_EXITS`` that
+     explicitly carries ``APPROVED=1`` / ``--approved`` or pause-gate approval
+     evidence (for example ``T30`` from ``T20``/``T42``, ``T60`` from ``T50``,
+     and ``T70`` from ``T50``/``T60``).
+
+  Args:
+    adv: Normalized advance-call dictionary.
+
+  Returns:
+    Source pause-gate ID string (or ``"A/B"`` when multiple pause gates share
+    the destination and ``FROM`` was omitted), or ``""`` when ``adv`` is not a
+    pause-gate exit.
+  """
+  curr_t = adv.get("currentTarget", "")
+  next_t = adv.get("nextTarget", "")
+  if (curr_t, next_t) in PAUSE_GATE_EXITS:
+    return curr_t
+  if not adv.get("fromOmitted") or next_t not in _PAUSE_GATE_EXIT_DEST_SOURCES:
+    return ""
+  ev = adv.get("evidence") if isinstance(adv.get("evidence"), dict) else {}
+  has_approval_ev = bool(adv.get("approved")) or any(
+      bool(ev.get(PAUSE_GATE_EXITS[(src_t, next_t)]))
+      for src_t in _PAUSE_GATE_EXIT_DEST_SOURCES[next_t]
+  )
+  if next_t in _PAUSE_GATE_ONLY_EXIT_TARGETS or has_approval_ev:
+    return "/".join(sorted(_PAUSE_GATE_EXIT_DEST_SOURCES[next_t]))
+  return ""
+
+
+def classify_bundled_pause_gate_violation(adv_calls):
+  """Classifies bundled pause-gate chaining violations within one tool call.
+
+  Detects two distinct violations when a single tool call bundles multiple
+  target advance transitions:
+
+  1. ``"entry_and_downstream"``: An earlier transition enters a pause gate
+     (``nextTarget in PAUSE_GATE_TARGETS``) and a later transition attempts
+     any downstream advance in the same command.
+  2. ``"exit_and_chained"``: A pause-gate exit transition (explicit,
+     disk-inferred, or structurally identified ``FROM``-omitted exit) is
+     bundled with any other target advance in the same command.
+
+  Args:
+    adv_calls: Sequence of normalized advance-call dicts extracted from one
+      tool call.
+
+  Returns:
+    Tuple ``(violation_kind, curr_t, next_t)`` where ``violation_kind`` is
+    ``"entry_and_downstream"`` or ``"exit_and_chained"``, or ``None`` when
+    ``adv_calls`` has no bundled pause-gate violation.
+  """
+  if not adv_calls or len(adv_calls) <= 1:
+    return None
+  entered_gates = set()
+  for adv in adv_calls:
+    if not isinstance(adv, dict):
+      continue
+    curr_t = adv.get("currentTarget", "")
+    next_t = adv.get("nextTarget", "")
+    if entered_gates:
+      return ("entry_and_downstream", curr_t, next_t)
+    exit_src = _pause_gate_exit_source(adv)
+    if exit_src:
+      return ("exit_and_chained", exit_src, next_t)
+    if next_t in PAUSE_GATE_TARGETS:
+      entered_gates.add(next_t)
+  return None
+
+
+def is_bundled_pause_gate_advance_call(adv_calls):
+  """Returns True when one tool call's advance calls form a self-denied bundle.
+
+  Args:
+    adv_calls: Sequence of normalized advance-call dicts extracted from one
+      tool call.
+
+  Returns:
+    True when ``classify_bundled_pause_gate_violation(adv_calls)`` identifies
+    a bundled pause-gate violation that ``PreToolUse`` denies before execution.
+  """
+  return classify_bundled_pause_gate_violation(adv_calls) is not None
+
+
+def _extract_shell_tool_command(tc):
+  """Extracts the unwrapped shell command string from a shell tool-call dict.
+
+  Args:
+    tc: Transcript tool-call dictionary.
+
+  Returns:
+    Command string when ``tc`` invokes a shell tool with dict arguments, or
+    ``""`` otherwise.
+  """
+  if not isinstance(tc, dict):
+    return ""
+  tc_name = _unwrap_json_val(tc.get("name", ""))
+  if tc_name not in _SHELL_TOOL_NAMES:
+    return ""
+  tc_args = _unwrap_json_val(tc.get("args", {}))
+  if not isinstance(tc_args, dict):
+    return ""
+  cmd_line = _unwrap_json_val(
+      tc_args.get("CommandLine")
+      or tc_args.get("command")
+      or tc_args.get("cmd")
+      or ""
+  )
+  return str(cmd_line) if cmd_line else ""
+
+
+def _shell_command_contains_gated_git_command(cmd_str):
+  """Returns True when a shell command invokes a pause-gated Git or gh command.
+
+  Matches pause-gate ``gatedCommands`` declared in ``TARGETS_CONFIG`` (``git
+  commit``, ``git push``, and ``gh pr merge``) across chained subcommands,
+  shell wrappers, and global flags using ``lib.shell_safety`` tokenizers so
+  transcript replay matches ``PreToolUse`` gated-Git bundling denial semantics.
+
+  Args:
+    cmd_str: Raw shell command string.
+
+  Returns:
+    True if any expanded subcommand invokes a pause-gated Git or ``gh``
+    command.
+  """
+  if not cmd_str or not isinstance(cmd_str, str):
+    return False
+  for subcmd in _expand_shell_subcommands(cmd_str):
+    for tokens in _tokenize_subcommand(subcmd):
+      exe, rem = _unwrap_command_tokens(tokens)
+      if not exe or exe == "SHELL_C":
+        continue
+      if exe == "gh":
+        _, _, _, gh_pos, _ = _split_git_args(
+            rem,
+            short_value_chars="R",
+            long_value_flags=("--repo", "--hostname"),
+        )
+        if (
+            len(gh_pos) >= 2
+            and ("gh", gh_pos[0], gh_pos[1]) in _PAUSE_GATED_COMMAND_TUPLES
+        ):
+          return True
+      elif exe == "git":
+        subcmd_name, _, _ = _parse_git_subcommand(rem)
+        if subcmd_name and ("git", subcmd_name) in _PAUSE_GATED_COMMAND_TUPLES:
+          return True
+  return False
+
+
+def is_denied_gated_git_pause_bundle(cmd_str, adv_calls):
+  """Returns True when a shell call bundles a gated Git command with pause-gate entry.
+
+  Mirrors the unconditional ``PreToolUse`` denial for shell commands that pair
+  a pause-gated Git or ``gh`` command (``git commit``, ``git push``, or
+  ``gh pr merge``) with an advance entering any pause gate in
+  ``PAUSE_GATE_TARGETS``.
+
+  Args:
+    cmd_str: Raw shell command string from the tool call.
+    adv_calls: Sequence of normalized advance-call dicts extracted from the
+      same tool call.
+
+  Returns:
+    True when ``adv_calls`` enters a pause gate and ``cmd_str`` invokes a
+    pause-gated Git or ``gh`` command.
+  """
+  if not cmd_str or not adv_calls:
+    return False
+  enters_pause_gate = any(
+      isinstance(adv, dict) and adv.get("nextTarget") in PAUSE_GATE_TARGETS
+      for adv in adv_calls
+  )
+  if not enters_pause_gate:
+    return False
+  return _shell_command_contains_gated_git_command(cmd_str)
+
+
+def _is_self_denied_advance_tool_call(tc, adv_calls):
+  """Returns True when a single tool call is deterministically denied by PreToolUse.
+
+  Args:
+    tc: Transcript tool-call dictionary.
+    adv_calls: Normalized advance-call dicts already extracted from ``tc``.
+
+  Returns:
+    True when ``tc`` triggers either bundled pause-gate target chaining or
+    gated-Git plus pause-gate entry bundling.
+  """
+  if not adv_calls:
+    return False
+  if is_bundled_pause_gate_advance_call(adv_calls):
+    return True
+  cmd_str = _extract_shell_tool_command(tc)
+  return is_denied_gated_git_pause_bundle(cmd_str, adv_calls)
+
+
+def _extract_effective_advance_calls(tool_calls, default_state_dir=""):
+  """Extracts advance calls while excluding self-denied bundled tool calls.
+
+  A single tool call that triggers ``classify_bundled_pause_gate_violation``
+  or ``is_denied_gated_git_pause_bundle`` is deterministically denied by
+  ``PreToolUse`` before execution and never mutates workflow state. Skipping
+  each such tool call prevents denied-call same-turn lockouts and target/gate
+  spoofing while retaining separate executed tool calls in the same turn.
+
+  Args:
+    tool_calls: List of transcript tool_call dictionaries from one step.
+    default_state_dir: Optional fallback ``.workflow/state`` directory path.
+
+  Returns:
+    List of normalized advance-call dicts from non-bundled tool calls.
+  """
+  if not isinstance(tool_calls, list):
+    return []
+  effective = []
+  for tc in tool_calls:
+    if not isinstance(tc, dict):
+      continue
+    adv_calls = extract_advance_target_calls(
+        [tc], default_state_dir=default_state_dir
+    )
+    if not adv_calls or _is_self_denied_advance_tool_call(tc, adv_calls):
+      continue
+    effective.extend(adv_calls)
+  return effective
 
 
 def is_human_approval_step(step, gate=None):
@@ -788,67 +1083,96 @@ def _shell_command_writes_entry_card(cmd, entry_cards):
   return False
 
 
-def step_enters_gate(step, gate):
+def _tool_call_writes_entry_card(tc, entry_cards):
+  """Returns True when a non-advance tool call writes any file in entry_cards.
+
+  Args:
+    tc: Transcript tool-call dictionary.
+    entry_cards: Collection of entry-card basenames for a pause gate.
+
+  Returns:
+    True when ``tc`` writes an entry card via ``write_file``, ``edit_file``,
+    or a shell command writer.
+  """
+  if not entry_cards or not isinstance(tc, dict):
+    return False
+  tc_name = _unwrap_json_val(tc.get("name", ""))
+  tc_args = _unwrap_json_val(tc.get("args", {}))
+  if not isinstance(tc_args, dict):
+    return False
+  if tc_name in ("write_file", "edit_file"):
+    path_val = str(
+        _unwrap_json_val(
+            tc_args.get("Path") or tc_args.get("TargetFile") or ""
+        )
+    )
+    base = os.path.basename(path_val.replace("\\", "/"))
+    return base in entry_cards
+  if tc_name in _SHELL_TOOL_NAMES:
+    cmd_line = _extract_shell_tool_command(tc)
+    return _shell_command_writes_entry_card(cmd_line, entry_cards)
+  return False
+
+
+def step_enters_gate(step, gate, default_state_dir=""):
   """Checks if a PLANNER_RESPONSE step entered the specified pause gate.
+
+  Inspects each element of ``step["tool_calls"]`` independently so a
+  self-denied bundled call or an advance to another target never masks a
+  sibling parallel tool call that enters ``gate`` or writes one of its
+  ``entryCards`` (SCAR-PROC-102). Preserves optional ``default_state_dir=""``
+  for backward compatibility (SCAR-API-0002).
 
   Args:
     step: Transcript step dictionary.
     gate: Canonical pause-gate target ID (for example ``T20`` or ``T50``).
+    default_state_dir: Optional fallback ``.workflow/state`` directory path
+      for resolving ``FROM``-omitted shell advance calls.
 
   Returns:
-    True if the step advances into ``gate`` or writes one of its ``entryCards``.
+    True if any non-denied tool call in the step advances into ``gate`` or
+    writes one of its ``entryCards``.
   """
   if not isinstance(step, dict) or step.get("type") != "PLANNER_RESPONSE":
     return False
 
   tool_calls = step.get("tool_calls") or []
-  adv_calls = extract_advance_target_calls(tool_calls)
-  for adv in adv_calls:
-    if adv["nextTarget"] == gate:
-      return True
-
-  if adv_calls:
-    return False
-
   entry_cards = tuple(TARGETS_CONFIG.get(gate, {}).get("entryCards", ()))
-  if not entry_cards:
-    return False
 
   for tc in tool_calls:
     if not isinstance(tc, dict):
       continue
-    tc_name = _unwrap_json_val(tc.get("name", ""))
-    tc_args = _unwrap_json_val(tc.get("args", {}))
-    if not isinstance(tc_args, dict):
+    adv_calls = extract_advance_target_calls(
+        [tc], default_state_dir=default_state_dir
+    )
+    if adv_calls:
+      if _is_self_denied_advance_tool_call(tc, adv_calls):
+        continue
+      if any(adv["nextTarget"] == gate for adv in adv_calls):
+        return True
       continue
-    if tc_name in ("write_file", "edit_file"):
-      path_val = str(
-          _unwrap_json_val(
-              tc_args.get("Path") or tc_args.get("TargetFile") or ""
-          )
-      )
-      base = os.path.basename(path_val.replace("\\", "/"))
-      if base in entry_cards:
-        return True
-    elif tc_name in _SHELL_TOOL_NAMES:
-      cmd_line = str(
-          _unwrap_json_val(
-              tc_args.get("CommandLine")
-              or tc_args.get("command")
-              or tc_args.get("cmd")
-              or ""
-          )
-      )
-      if _shell_command_writes_entry_card(cmd_line, entry_cards):
-        return True
+    if _tool_call_writes_entry_card(tc, entry_cards):
+      return True
 
   return False
 
 
-def step_enters_or_presents_gate(step, gate, check_content_prompt=False):
-  """Alias for step_enters_gate without prose or 99_next_action.md scraping."""
+def step_enters_or_presents_gate(
+    step, gate, check_content_prompt=False, default_state_dir=""
+):
+  """Alias for step_enters_gate without prose or 99_next_action.md scraping.
+
+  Args:
+    step: Transcript step dictionary.
+    gate: Canonical pause-gate target ID.
+    check_content_prompt: Unused legacy parameter retained for API compatibility.
+    default_state_dir: Optional fallback ``.workflow/state`` directory path.
+
+  Returns:
+    True if ``step_enters_gate`` detects entry into ``gate``.
+  """
   del check_content_prompt
-  return step_enters_gate(step, gate)
+  return step_enters_gate(step, gate, default_state_dir=default_state_dir)
 
 
 def detect_latest_target(steps, state_dir=None):
@@ -870,7 +1194,7 @@ def detect_latest_target(steps, state_dir=None):
   for st in steps or ():
     if not isinstance(st, dict):
       continue
-    for adv in extract_advance_target_calls(
+    for adv in _extract_effective_advance_calls(
         st.get("tool_calls") or [], default_state_dir=state_dir or ""
     ):
       if adv["nextTarget"]:
@@ -991,8 +1315,19 @@ def clear_gate_entry(state_dir, gate_target=None):
     pass
 
 
-def _has_user_turn_since_entry(steps, gate, entry):
-  """Checks whether steps contain a human approval turn after entry."""
+def _has_user_turn_since_entry(steps, gate, entry, default_state_dir=""):
+  """Checks whether steps contain a human approval turn after entry.
+
+  Args:
+    steps: List of parsed transcript step dictionaries.
+    gate: Canonical pause-gate target ID (for example ``T20`` or ``T75``).
+    entry: Parsed ``gate_entry.json`` dictionary.
+    default_state_dir: Optional fallback ``.workflow/state`` directory path
+      forwarded to ``step_enters_gate`` when ``entryStepIndex`` is absent.
+
+  Returns:
+    True when an explicit human approval step occurred after entering ``gate``.
+  """
   entry_step_idx = entry.get("entryStepIndex", -1)
   if not isinstance(entry_step_idx, int) or entry_step_idx < 0:
     last_entry_idx = -1
@@ -1000,7 +1335,7 @@ def _has_user_turn_since_entry(steps, gate, entry):
     for idx, st in enumerate(steps):
       if is_human_approval_step(st, gate):
         last_user_idx = idx
-      if step_enters_gate(st, gate):
+      if step_enters_gate(st, gate, default_state_dir=default_state_dir):
         last_entry_idx = idx
     return last_entry_idx != -1 and last_user_idx > last_entry_idx
 
@@ -1031,12 +1366,13 @@ def evaluate_advance_target_turn_boundary(
   )
   steps = load_transcript_steps(eff_transcript)
   if steps:
+    eff_state_dir = state_dir or ""
     last_user_idx = -1
     last_entry_idx = -1
     for idx, st in enumerate(steps):
       if is_human_approval_step(st, gate):
         last_user_idx = idx
-      if step_enters_gate(st, gate):
+      if step_enters_gate(st, gate, default_state_dir=eff_state_dir):
         last_entry_idx = idx
 
     if last_user_idx == -1:
@@ -1058,7 +1394,7 @@ def evaluate_advance_target_turn_boundary(
       )
 
     for st in steps[last_user_idx + 1 :]:
-      if step_enters_gate(st, gate):
+      if step_enters_gate(st, gate, default_state_dir=eff_state_dir):
         return (
             False,
             f"BLOCKED: Cannot bundle pause gate {current_target} entry"
@@ -1066,8 +1402,8 @@ def evaluate_advance_target_turn_boundary(
             " same autonomous turn without an intervening human USER_INPUT"
             " step (SCAR-PROC-102).",
         )
-      for adv in extract_advance_target_calls(
-          st.get("tool_calls") or [], default_state_dir=state_dir or ""
+      for adv in _extract_effective_advance_calls(
+          st.get("tool_calls") or [], default_state_dir=eff_state_dir
       ):
         if (adv["currentTarget"], adv["nextTarget"]) != (
             current_target,
@@ -1085,7 +1421,9 @@ def evaluate_advance_target_turn_boundary(
         entry
         and entry.get("gate") == gate
         and not entry.get("humanTurnVerified")
-        and not _has_user_turn_since_entry(steps, gate, entry)
+        and not _has_user_turn_since_entry(
+            steps, gate, entry, default_state_dir=eff_state_dir
+        )
     ):
       return (
           False,
@@ -1122,8 +1460,11 @@ def evaluate_command_turn_boundary(cmd_gate, transcript_path, state_dir=None):
   if latest_target in ("T80", "T90") and cmd_gate in ("T50", "T60"):
     return True, ""
 
+  eff_state_dir = state_dir or ""
   if entry and entry.get("gate") == cmd_gate and not entry.get("humanTurnVerified"):
-    if not steps or not _has_user_turn_since_entry(steps, cmd_gate, entry):
+    if not steps or not _has_user_turn_since_entry(
+        steps, cmd_gate, entry, default_state_dir=eff_state_dir
+    ):
       return (
           False,
           f"BLOCKED: Cannot execute pause-gated command for {cmd_gate} in the"
@@ -1140,7 +1481,7 @@ def evaluate_command_turn_boundary(cmd_gate, transcript_path, state_dir=None):
   for idx, st in enumerate(steps):
     if is_human_approval_step(st, cmd_gate):
       last_user_idx = idx
-    if step_enters_gate(st, cmd_gate):
+    if step_enters_gate(st, cmd_gate, default_state_dir=eff_state_dir):
       last_entry_idx = idx
 
   if last_user_idx == -1:
@@ -1207,7 +1548,8 @@ def _pause_gate_entered_in_turn(turn_steps, default_state_dir=""):
   Scans ``turn_steps`` and each step's tool calls chronologically so writing a
   pause-gate entry card (such as ``20_plan.md``) or advancing into a pause gate
   records that gate, while a subsequent recovery advance to a non-pause target
-  (such as ``T20 -> T15``) clears it.
+  (such as ``T20 -> T15``) clears it. Excludes self-denied bundled tool calls
+  while extracting advance calls once per tool call.
 
   Args:
     turn_steps: Transcript steps emitted since the latest human USER_INPUT step.
@@ -1223,20 +1565,24 @@ def _pause_gate_entered_in_turn(turn_steps, default_state_dir=""):
     for tc in st.get("tool_calls") or []:
       if not isinstance(tc, dict):
         continue
-      adv_calls = extract_advance_target_calls(
+      raw_adv_calls = extract_advance_target_calls(
           [tc], default_state_dir=default_state_dir
       )
-      if adv_calls:
-        for adv in adv_calls:
+      if raw_adv_calls:
+        if _is_self_denied_advance_tool_call(tc, raw_adv_calls):
+          continue
+        for adv in raw_adv_calls:
           nxt = adv.get("nextTarget") or ""
           if nxt in PAUSE_GATE_TARGETS:
             entered = nxt
           elif nxt:
             entered = ""
         continue
-      single_step = {"type": "PLANNER_RESPONSE", "tool_calls": [tc]}
       for gate_id in sorted(PAUSE_GATE_TARGETS):
-        if step_enters_gate(single_step, gate_id):
+        entry_cards = tuple(
+            TARGETS_CONFIG.get(gate_id, {}).get("entryCards", ())
+        )
+        if _tool_call_writes_entry_card(tc, entry_cards):
           entered = gate_id
           break
   return entered

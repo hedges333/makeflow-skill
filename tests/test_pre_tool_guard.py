@@ -4803,5 +4803,1395 @@ class TestPreToolGuardCommitMessageEnforcement(unittest.TestCase):
       self.assertEqual(res_mixed["decision"], "allow", res_mixed)
 
 
+class TestPauseGateChainingAndDeniedTurnRecovery(unittest.TestCase):
+  """Tests bundled pause-gate chaining denials and same-turn recovery (GH-316)."""
+
+  def test_denied_bundled_t75_exit_recovers_with_standalone_retry_same_turn(
+      self,
+  ):
+    """GH-316 Scenario 1: Denied bundled T75 exit allows same-turn standalone retry."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        evaluate_advance_target_turn_boundary,
+        record_gate_entry,
+    )
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T75", status="ACTIVE")
+      )
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Run CI triage."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Advancing to Target 75.",
+              "tool_calls": [{
+                  "id": "call_enter_t75",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile ready-to-land"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+      record_gate_entry(state_dir, "T70", "T75", transcript_path=transcript_path)
+
+      steps.append(
+          {"step_index": 3, "type": "USER_INPUT", "content": "Approved. Land."}
+      )
+      _write_transcript(transcript_path, steps)
+
+      gate_file = os.path.join(state_dir, "gate_entry.json")
+      with open(gate_file, "rb") as f:
+        before_bytes = f.read()
+
+      bundled_cmd = (
+          "make -f .workflow/state/Makefile land APPROVED=1 && "
+          "gh pr merge 123 --squash --delete-branch && "
+          "make -f .workflow/state/Makefile codified-scars-consolidated"
+      )
+      denied = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": bundled_cmd},
+          },
+      })
+      self.assertEqual(denied["decision"], "deny", denied)
+      self.assertIn("SCAR-PROC-102", denied["reason"])
+      self.assertIn("separate shell calls", denied["reason"].lower())
+      self.assertNotIn("pause-gate entry and exit", denied["reason"].lower())
+      with open(gate_file, "rb") as f:
+        self.assertEqual(f.read(), before_bytes)
+
+      steps.append({
+          "step_index": 4,
+          "type": "PLANNER_RESPONSE",
+          "content": "Landing PR.",
+          "tool_calls": [{
+              "id": "call_denied_bundle",
+              "name": "run_command",
+              "args": {"CommandLine": json.dumps(bundled_cmd)},
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+
+      ok, reason = evaluate_advance_target_turn_boundary(
+          "T75", "T80", transcript_path, state_dir=state_dir
+      )
+      self.assertTrue(ok, f"Expected standalone retry to pass, got: {reason}")
+
+      retry = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile land APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(retry["decision"], "allow", retry)
+
+  def test_executed_same_turn_chaining_t45_to_t50_then_t50_to_t60_stays_denied(
+      self,
+  ):
+    """GH-316 Scenario 2: Executed same-turn T45->T50 then T50->T60 stays denied."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        evaluate_advance_target_turn_boundary,
+        record_gate_entry,
+    )
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T50", status="ACTIVE")
+      )
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Review approved."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Entering T50.",
+              "tool_calls": [{
+                  "id": "call_t45_t50",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile commit FROM=T45"
+                          " APPROVED=1"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+      record_gate_entry(state_dir, "T45", "T50", transcript_path=transcript_path)
+
+      ok, reason = evaluate_advance_target_turn_boundary(
+          "T50", "T60", transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(ok)
+      self.assertIn("SCAR-PROC-102", reason)
+
+      chained = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile push FROM=T50"
+                      " APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(chained["decision"], "deny", chained)
+      self.assertIn("SCAR-PROC-102", chained["reason"])
+
+  def test_bundled_pause_gate_entry_and_downstream_denied_with_entry_guidance(
+      self,
+  ):
+    """GH-316 Scenario 1: Bundled entry-plus-downstream commands fail with entry guidance."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T70", status="ACTIVE")
+      )
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [{"step_index": 1, "type": "USER_INPUT", "content": "Continue."}],
+      )
+      gate_file = os.path.join(state_dir, "gate_entry.json")
+
+      for cmd in (
+          "make -f .workflow/state/Makefile ready-to-land && "
+          "make -f .workflow/state/Makefile land APPROVED=1",
+          "make -f .workflow/state/Makefile ready-to-land && "
+          "make -f .workflow/state/Makefile codified-scars-consolidated"
+          " FROM=T80",
+      ):
+        with self.subTest(cmd=cmd):
+          res = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {"CommandLine": cmd},
+              },
+          })
+          self.assertEqual(res["decision"], "deny", res)
+          self.assertIn("SCAR-PROC-102", res["reason"])
+          self.assertIn("entry", res["reason"].lower())
+          self.assertIn("downstream", res["reason"].lower())
+          self.assertIn("human approval", res["reason"].lower())
+          self.assertFalse(os.path.exists(gate_file))
+
+  def test_denied_bundled_command_never_spoofs_detect_latest_target_or_t80_t90_exemption(
+      self,
+  ):
+    """GH-316 Scenario 3: Denied FROM-omitted bundled T90 command never spoofs detect_latest_target or T80/T90 exemptions."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        detect_latest_target,
+        evaluate_command_turn_boundary,
+    )
+
+    bundled_t90_cmd = (
+        "make -f .workflow/state/Makefile land APPROVED=1 && "
+        "gh pr merge 123 --squash --delete-branch && "
+        "make -f .workflow/state/Makefile codified-scars-consolidated"
+    )
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T75", status="ACTIVE")
+      )
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Approved. Land."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Trying bundled land.",
+              "tool_calls": [{
+                  "id": "call_denied_t90",
+                  "name": "run_command",
+                  "args": {"CommandLine": json.dumps(bundled_t90_cmd)},
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+
+      self.assertEqual(
+          detect_latest_target(steps, state_dir=state_dir),
+          "T75",
+      )
+
+      # Realistic T50 state: same-turn T50 entry + canonical FROM-omitted denied T90 bundle must fail closed
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T50", status="ACTIVE")
+      )
+      steps_t50 = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Proceed."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Writing commit msg.",
+              "tool_calls": [{
+                  "id": "call_write_50",
+                  "name": "write_file",
+                  "args": {
+                      "Path": json.dumps(
+                          os.path.join(state_dir, "50_commit_msg.txt")
+                      )
+                  },
+              }],
+          },
+          {
+              "step_index": 3,
+              "type": "PLANNER_RESPONSE",
+              "content": "Trying bundled land.",
+              "tool_calls": [{
+                  "id": "call_denied_t90",
+                  "name": "run_command",
+                  "args": {"CommandLine": json.dumps(bundled_t90_cmd)},
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps_t50)
+      self.assertEqual(
+          detect_latest_target(steps_t50, state_dir=state_dir),
+          "T50",
+      )
+      ok_t50, reason_t50 = evaluate_command_turn_boundary(
+          "T50", transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(ok_t50, "Denied bundled T90 must not unlock T50")
+      self.assertIn("SCAR-PROC-102", reason_t50)
+
+      # Realistic T60 state: same-turn T60 entry + canonical FROM-omitted denied T90 bundle must fail closed
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T60", status="ACTIVE")
+      )
+      steps_t60 = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Commit ok."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Entering T60.",
+              "tool_calls": [{
+                  "id": "call_enter_t60",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile push FROM=T50"
+                          " APPROVED=1"
+                      )
+                  },
+              }],
+          },
+          {
+              "step_index": 3,
+              "type": "PLANNER_RESPONSE",
+              "content": "Trying bundled land.",
+              "tool_calls": [{
+                  "id": "call_denied_t90",
+                  "name": "run_command",
+                  "args": {"CommandLine": json.dumps(bundled_t90_cmd)},
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps_t60)
+      self.assertEqual(
+          detect_latest_target(steps_t60, state_dir=state_dir),
+          "T60",
+      )
+      ok_t60, reason_t60 = evaluate_command_turn_boundary(
+          "T60", transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(ok_t60, "Denied bundled T90 must not unlock T60")
+      self.assertIn("SCAR-PROC-102", reason_t60)
+
+      # Realistic T70 and T30 states must not spoof T90 on canonical FROM-omitted bundle
+      for active_tid in ("T70", "T30"):
+        with self.subTest(active_target=active_tid):
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target=active_tid, status="ACTIVE")
+          )
+          self.assertEqual(
+              detect_latest_target(steps, state_dir=state_dir),
+              active_tid,
+          )
+
+      # Completed active_target.json with canonical FROM-omitted denied bundle must return "" and fail closed
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T90", status="COMPLETE")
+      )
+      steps_complete = [{
+          "step_index": 1,
+          "type": "PLANNER_RESPONSE",
+          "content": "Stale denied bundle.",
+          "tool_calls": [{
+              "id": "call_denied_t90_canonical",
+              "name": "run_command",
+              "args": {"CommandLine": json.dumps(bundled_t90_cmd)},
+          }],
+      }]
+      self.assertEqual(
+          detect_latest_target(steps_complete, state_dir=state_dir),
+          "",
+      )
+      self.assertEqual(
+          detect_latest_target(steps_complete, state_dir=None),
+          "",
+      )
+
+      _write_transcript(transcript_path, steps_t50)
+      ok_t50_complete, reason_t50_complete = evaluate_command_turn_boundary(
+          "T50", transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(
+          ok_t50_complete,
+          "COMPLETE active_target.json with denied T90 bundle must fail closed for T50",
+      )
+      self.assertIn("SCAR-PROC-102", reason_t50_complete)
+
+      _write_transcript(transcript_path, steps_t60)
+      ok_t60_complete, reason_t60_complete = evaluate_command_turn_boundary(
+          "T60", transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(
+          ok_t60_complete,
+          "COMPLETE active_target.json with denied T90 bundle must fail closed for T60",
+      )
+      self.assertIn("SCAR-PROC-102", reason_t60_complete)
+
+  def test_from_omitted_pause_gate_exit_bundles_classified_deterministically_across_states(
+      self,
+  ):
+    """GH-316 BLOCKER-1: FROM-omitted exit bundles classify deterministically across disk states without false positives."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        classify_bundled_pause_gate_violation,
+        detect_latest_target,
+        extract_advance_target_calls,
+    )
+
+    exit_bundles = (
+        (
+            "land_with_approved",
+            "make -f .workflow/state/Makefile land APPROVED=1 && "
+            "gh pr merge 123 --squash --delete-branch && "
+            "make -f .workflow/state/Makefile codified-scars-consolidated",
+            "T80",
+        ),
+        (
+            "land_without_approved",
+            "make -f .workflow/state/Makefile land && "
+            "make -f .workflow/state/Makefile codified-scars-consolidated",
+            "T80",
+        ),
+        (
+            "bot_quiescence_approved",
+            "make -f .workflow/state/Makefile bot-quiescence APPROVED=1 && "
+            "make -f .workflow/state/Makefile ready-to-land",
+            "T70",
+        ),
+        (
+            "implementation_diff_approved",
+            "make -f .workflow/state/Makefile implementation-diff APPROVED=1 && "
+            "make -f .workflow/state/Makefile adversarial-review",
+            "T30",
+        ),
+        (
+            "cli_workflow_gates_land_approved",
+            "python3 scripts/workflow_gates.py advance --to land --approved 1 && "
+            "python3 scripts/workflow_gates.py advance --to codified-scars-consolidated",
+            "T80",
+        ),
+    )
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+
+      disk_states = (
+          ("T75", "ACTIVE", "T75"),
+          ("T50", "ACTIVE", "T50"),
+          ("T60", "ACTIVE", "T60"),
+          ("T70", "ACTIVE", "T70"),
+          ("T30", "ACTIVE", "T30"),
+          ("T90", "COMPLETE", ""),
+          (None, None, ""),
+      )
+
+      for label, cmd, expected_next in exit_bundles:
+        tc = {
+            "id": f"call_{label}",
+            "name": "run_command",
+            "args": {"CommandLine": json.dumps(cmd)},
+        }
+        steps = [{
+            "step_index": 1,
+            "type": "PLANNER_RESPONSE",
+            "content": "Bundled exit.",
+            "tool_calls": [tc],
+        }]
+        for target_id, status, expected_latest in disk_states:
+          with self.subTest(bundle=label, target=target_id, status=status):
+            if target_id is not None:
+              ActiveStateStore(state_dir).save(
+                  ActiveTargetState(target=target_id, status=status)
+              )
+              eff_state_dir = state_dir
+            else:
+              eff_state_dir = None
+
+            adv_calls = extract_advance_target_calls(
+                [tc], default_state_dir=eff_state_dir or ""
+            )
+            violation = classify_bundled_pause_gate_violation(adv_calls)
+            self.assertIsNotNone(violation, f"Expected violation for {label}")
+            self.assertEqual(violation[0], "exit_and_chained")
+            self.assertEqual(violation[2], expected_next)
+            self.assertEqual(
+                detect_latest_target(steps, state_dir=eff_state_dir),
+                expected_latest,
+            )
+
+      # Non-pause-gate chains and standalone calls must NEVER be falsely classified
+      allowed_cases = (
+          (
+              "non_pause_t10_t15",
+              "T10",
+              "make -f .workflow/state/Makefile ticket-assigned && "
+              "make -f .workflow/state/Makefile archaeology-verified",
+              "T15",
+          ),
+          (
+              "non_pause_ending_on_t20",
+              "T10",
+              "make -f .workflow/state/Makefile archaeology-verified && "
+              "make -f .workflow/state/Makefile approved-plan",
+              "T20",
+          ),
+          (
+              "recovery_t80_to_t70_to_t75_without_approved",
+              "T80",
+              "make -f .workflow/state/Makefile bot-quiescence && "
+              "make -f .workflow/state/Makefile ready-to-land",
+              "T75",
+          ),
+          (
+              "recovery_t70_to_t30_to_t40_without_approved",
+              "T70",
+              "make -f .workflow/state/Makefile implementation-diff && "
+              "make -f .workflow/state/Makefile adversarial-review",
+              "T40",
+          ),
+          (
+              "standalone_land_approved",
+              "T75",
+              "make -f .workflow/state/Makefile land APPROVED=1",
+              "T80",
+          ),
+      )
+      for label, target_id, cmd, expected_latest in allowed_cases:
+        with self.subTest(allowed=label):
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target=target_id, status="ACTIVE")
+          )
+          tc = {
+              "id": f"call_{label}",
+              "name": "run_command",
+              "args": {"CommandLine": json.dumps(cmd)},
+          }
+          adv_calls = extract_advance_target_calls(
+              [tc], default_state_dir=state_dir
+          )
+          self.assertIsNone(classify_bundled_pause_gate_violation(adv_calls))
+          steps = [{
+              "step_index": 1,
+              "type": "PLANNER_RESPONSE",
+              "content": "Valid command.",
+              "tool_calls": [tc],
+          }]
+          self.assertEqual(
+              detect_latest_target(steps, state_dir=state_dir),
+              expected_latest,
+          )
+
+  def test_denied_bundled_command_never_spoofs_step_enters_gate_or_ask_question_state(
+      self,
+  ):
+    """GH-316 Scenario 3: Denied bundled commands never spoof step_enters_gate or ask_question turn state."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import evaluate_ask_question_turn_boundary
+
+    for bundled_cmd in (
+        "make -f .workflow/state/Makefile ready-to-land && "
+        "make -f .workflow/state/Makefile land APPROVED=1",
+        "echo '# 70' > .workflow/state/70_bot_triage.md && "
+        "make -f .workflow/state/Makefile ready-to-land && "
+        "make -f .workflow/state/Makefile land APPROVED=1",
+    ):
+      with self.subTest(step_enters_gate_cmd=bundled_cmd):
+        step = {
+            "type": "PLANNER_RESPONSE",
+            "tool_calls": [{
+                "id": "call_denied_entry",
+                "name": "run_command",
+                "args": {"CommandLine": json.dumps(bundled_cmd)},
+            }],
+        }
+        self.assertFalse(step_enters_gate(step, "T75"))
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+
+      # Case A: Denied bundled command must NOT clear an earlier same-turn T75 entry
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T70", status="ACTIVE")
+      )
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Triage."},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Triage report written.",
+                  "tool_calls": [{
+                      "id": "call_write_70",
+                      "name": "write_file",
+                      "args": {
+                          "Path": json.dumps(
+                              os.path.join(state_dir, "70_bot_triage.md")
+                          )
+                      },
+                  }],
+              },
+              {
+                  "step_index": 3,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Attempting bundled entry+exit.",
+                  "tool_calls": [{
+                      "id": "call_denied_clear",
+                      "name": "run_command",
+                      "args": {
+                          "CommandLine": json.dumps(
+                              "make -f .workflow/state/Makefile ready-to-land"
+                              " && make -f .workflow/state/Makefile land"
+                              " APPROVED=1"
+                          )
+                      },
+                  }],
+              },
+          ],
+      )
+      ok_clear, reason_clear = evaluate_ask_question_turn_boundary(
+          transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(
+          ok_clear,
+          "Denied bundled command must not clear same-turn T75 entry",
+      )
+      self.assertIn("SCAR-PROC-161", reason_clear)
+      self.assertIn("ASK_QUESTION_BUNDLED_WITH_PAUSE_GATE", reason_clear)
+
+      # Case B: Denied bundled command ending on a pause gate must NOT spoof entry in T15
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T15", status="ACTIVE")
+      )
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Explore."},
+              {
+                  "step_index": 2,
+                  "type": "PLANNER_RESPONSE",
+                  "content": "Here are the options with file:// links.",
+                  "tool_calls": [{
+                      "id": "call_denied_spoof",
+                      "name": "run_command",
+                      "args": {
+                          "CommandLine": json.dumps(
+                              "make -f .workflow/state/Makefile approved-plan"
+                              " && make -f .workflow/state/Makefile commit"
+                              " FROM=T45 APPROVED=1"
+                          )
+                      },
+                  }],
+              },
+          ],
+      )
+      ok_spoof, reason_spoof = evaluate_ask_question_turn_boundary(
+          transcript_path, state_dir=state_dir
+      )
+      self.assertTrue(
+          ok_spoof,
+          f"Denied bundled command must not spoof pause-gate entry: {reason_spoof}",
+      )
+
+  def test_step_enters_gate_parallel_tool_calls_and_from_omitted_exit_entry_bundle(
+      self,
+  ):
+    """GH-316 BLOCKER-2: step_enters_gate threads default_state_dir and inspects parallel tool calls independently."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        evaluate_advance_target_turn_boundary,
+        record_gate_entry,
+        step_enters_or_presents_gate,
+    )
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+
+      # 1. Parallel [write_file entry_card, denied FROM-omitted exit bundle] (both orderings)
+      #    plus [valid non-T75 advance, write_file entry_card] must all return True and block same-turn exit.
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T75", status="ACTIVE")
+      )
+      write_t75_tc = {
+          "id": "call_write_70",
+          "name": "write_file",
+          "args": {
+              "Path": json.dumps(os.path.join(state_dir, "70_bot_triage.md"))
+          },
+      }
+      denied_exit_bundle_tc = {
+          "id": "call_denied_exit_bundle",
+          "name": "run_command",
+          "args": {
+              "CommandLine": json.dumps(
+                  "make -f .workflow/state/Makefile land APPROVED=1 && "
+                  "make -f .workflow/state/Makefile codified-scars-consolidated"
+              )
+          },
+      }
+      valid_other_adv_tc = {
+          "id": "call_valid_t70",
+          "name": "run_command",
+          "args": {
+              "CommandLine": json.dumps(
+                  "make -f .workflow/state/Makefile bot-quiescence FROM=T60"
+                  " APPROVED=1"
+              )
+          },
+      }
+
+      parallel_cases = (
+          ("write_then_denied_bundle", [write_t75_tc, denied_exit_bundle_tc]),
+          ("denied_bundle_then_write", [denied_exit_bundle_tc, write_t75_tc]),
+          ("valid_other_advance_then_write", [valid_other_adv_tc, write_t75_tc]),
+      )
+      for label, tool_calls in parallel_cases:
+        with self.subTest(parallel_t75=label):
+          parallel_step = {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Parallel tool calls.",
+              "tool_calls": tool_calls,
+          }
+          self.assertTrue(
+              step_enters_gate(
+                  parallel_step, "T75", default_state_dir=state_dir
+              ),
+              f"Expected step_enters_gate True for {label}",
+          )
+          self.assertTrue(
+              step_enters_gate(parallel_step, "T75"),
+              f"Expected 2-arg step_enters_gate True for {label}",
+          )
+          _write_transcript(
+              transcript_path,
+              [
+                  {"step_index": 1, "type": "USER_INPUT", "content": "Go."},
+                  parallel_step,
+              ],
+          )
+          ok, reason = evaluate_advance_target_turn_boundary(
+              "T75", "T80", transcript_path, state_dir=state_dir
+          )
+          self.assertFalse(ok, f"Expected SCAR-PROC-102 deny for {label}")
+          self.assertIn("SCAR-PROC-102", reason)
+
+      # Parallel [write_file 20_plan.md, denied FROM-omitted exit bundle] blocks T20 -> T30
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T20", status="ACTIVE")
+      )
+      plan_parallel_step = {
+          "step_index": 2,
+          "type": "PLANNER_RESPONSE",
+          "content": "Writing plan alongside denied bundle.",
+          "tool_calls": [
+              {
+                  "id": "call_write_20",
+                  "name": "write_file",
+                  "args": {
+                      "Path": json.dumps(os.path.join(state_dir, "20_plan.md"))
+                  },
+              },
+              denied_exit_bundle_tc,
+          ],
+      }
+      self.assertTrue(
+          step_enters_gate(
+              plan_parallel_step, "T20", default_state_dir=state_dir
+          )
+      )
+      _write_transcript(
+          transcript_path,
+          [
+              {"step_index": 1, "type": "USER_INPUT", "content": "Plan."},
+              plan_parallel_step,
+          ],
+      )
+      ok_t20, reason_t20 = evaluate_advance_target_turn_boundary(
+          "T20", "T30", transcript_path, state_dir=state_dir
+      )
+      self.assertFalse(ok_t20)
+      self.assertIn("SCAR-PROC-102", reason_t20)
+
+      # 2. Split-brain check: default_state_dir resolves disk-inferred T60 -> T70 bundle without APPROVED=1
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T60", status="ACTIVE")
+      )
+      t60_unapproved_bundle_tc = {
+          "id": "call_t60_unapproved_bundle",
+          "name": "run_command",
+          "args": {
+              "CommandLine": json.dumps(
+                  "make -f .workflow/state/Makefile bot-quiescence && "
+                  "make -f .workflow/state/Makefile ready-to-land"
+              )
+          },
+      }
+      t60_bundle_step = {
+          "step_index": 2,
+          "type": "PLANNER_RESPONSE",
+          "content": "Trying unapproved T60 exit + T75 entry bundle.",
+          "tool_calls": [t60_unapproved_bundle_tc],
+      }
+      self.assertFalse(
+          step_enters_gate(
+              t60_bundle_step, "T75", default_state_dir=state_dir
+          )
+      )
+      self.assertFalse(
+          step_enters_or_presents_gate(
+              t60_bundle_step, "T75", default_state_dir=state_dir
+          )
+      )
+
+      # 3. Denied FROM-omitted exit-plus-entry bundle (make land APPROVED=1 && make ready-to-land)
+      #    returns False in step_enters_gate and allows standalone make land APPROVED=1 recovery same turn.
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T75", status="ACTIVE")
+      )
+      steps = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Triage."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Entering T75.",
+              "tool_calls": [{
+                  "id": "call_enter_t75",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile ready-to-land"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+      record_gate_entry(state_dir, "T70", "T75", transcript_path=transcript_path)
+
+      steps.append(
+          {"step_index": 3, "type": "USER_INPUT", "content": "Approved. Land."}
+      )
+      exit_plus_entry_step = {
+          "step_index": 4,
+          "type": "PLANNER_RESPONSE",
+          "content": "Accidental exit+entry bundle.",
+          "tool_calls": [{
+              "id": "call_exit_plus_entry",
+              "name": "run_command",
+              "args": {
+                  "CommandLine": json.dumps(
+                      "make -f .workflow/state/Makefile land APPROVED=1 && "
+                      "make -f .workflow/state/Makefile ready-to-land"
+                  )
+              },
+          }],
+      }
+      self.assertFalse(
+          step_enters_gate(
+              exit_plus_entry_step, "T75", default_state_dir=state_dir
+          )
+      )
+      self.assertFalse(step_enters_gate(exit_plus_entry_step, "T75"))
+
+      steps.append(exit_plus_entry_step)
+      _write_transcript(transcript_path, steps)
+
+      ok_recover, reason_recover = evaluate_advance_target_turn_boundary(
+          "T75", "T80", transcript_path, state_dir=state_dir
+      )
+      self.assertTrue(
+          ok_recover,
+          f"Expected same-turn standalone recovery after exit+entry bundle, got: {reason_recover}",
+      )
+      retry_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile land APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(retry_res["decision"], "allow", retry_res)
+
+  def test_denied_gated_git_pause_bundle_excluded_from_replay_and_allows_pure_git_recovery(
+      self,
+  ):
+    """GH-316 NBO-1: Denied gated-Git pause bundles never spoof replay and allow Pure Git T50->T70 recovery."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        detect_latest_target,
+        evaluate_advance_target_turn_boundary,
+        record_gate_entry,
+    )
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      subprocess.run(["git", "init", "-q"], cwd=ws_dir, check=True)
+      subprocess.run(
+          ["git", "config", "user.name", "Makeflow Test"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "config", "user.email", "test@example.com"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "checkout", "-q", "-b", "fix/316-pure-git"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "--allow-empty", "-m", "chore: init"],
+          cwd=ws_dir,
+          check=True,
+      )
+
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "45_review_approved.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("APPROVED\n")
+      with open(
+          os.path.join(state_dir, "50_commit_msg.txt"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write(
+            "fix(gates): isolate denied git bundles\n\n"
+            "Ticket: LOCAL-316\n"
+            "Reviewed-by: adversarial-critic\n"
+        )
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T50", status="ACTIVE")
+      )
+
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Review ok."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Entering T50.",
+              "tool_calls": [{
+                  "id": "call_enter_t50",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile commit FROM=T45"
+                          " APPROVED=1"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+      record_gate_entry(state_dir, "T45", "T50", transcript_path=transcript_path)
+
+      steps.append(
+          {"step_index": 3, "type": "USER_INPUT", "content": "Commit approved."}
+      )
+      _write_transcript(transcript_path, steps)
+
+      gate_file = os.path.join(state_dir, "gate_entry.json")
+      with open(gate_file, "rb") as f:
+        before_bytes = f.read()
+
+      denied_git_bundle_cmd = (
+          "git commit -F .workflow/state/50_commit_msg.txt && "
+          "make -f .workflow/state/Makefile push APPROVED=1"
+      )
+      denied = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": denied_git_bundle_cmd},
+          },
+      })
+      self.assertEqual(denied["decision"], "deny", denied)
+      self.assertIn("SCAR-PROC-102", denied["reason"])
+      with open(gate_file, "rb") as f:
+        self.assertEqual(f.read(), before_bytes)
+
+      denied_step = {
+          "step_index": 4,
+          "type": "PLANNER_RESPONSE",
+          "content": "Trying commit and push.",
+          "tool_calls": [{
+              "id": "call_denied_git_push_bundle",
+              "name": "run_command",
+              "args": {"CommandLine": json.dumps(denied_git_bundle_cmd)},
+          }],
+      }
+      steps.append(denied_step)
+      _write_transcript(transcript_path, steps)
+
+      # Denied gated-Git pause bundle must NOT spoof T60 in detect_latest_target or step_enters_gate
+      self.assertEqual(
+          detect_latest_target(steps, state_dir=state_dir),
+          "T50",
+      )
+      self.assertFalse(
+          step_enters_gate(denied_step, "T60", default_state_dir=state_dir)
+      )
+      self.assertFalse(step_enters_gate(denied_step, "T60"))
+
+      # Pure Git Mode same-turn recovery (T50 -> T70) must be allowed
+      ok_t70, reason_t70 = evaluate_advance_target_turn_boundary(
+          "T50", "T70", transcript_path, state_dir=state_dir
+      )
+      self.assertTrue(
+          ok_t70,
+          f"Expected Pure Git Mode T50->T70 recovery to pass, got: {reason_t70}",
+      )
+      t70_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile bot-quiescence"
+                      " APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(t70_res["decision"], "allow", t70_res)
+
+      # Also verify git push and gh pr merge gated bundles + parallel write sibling
+      for label, cmd, gate in (
+          (
+              "git_push_plus_t75",
+              "git push -u origin fix/316-pure-git && "
+              "make -f .workflow/state/Makefile ready-to-land",
+              "T75",
+          ),
+          (
+              "gh_pr_merge_plus_t50",
+              "gh -R owner/repo pr merge 123 --squash && "
+              "make -f .workflow/state/Makefile commit APPROVED=1",
+              "T50",
+          ),
+      ):
+        with self.subTest(gated_git_bundle=label):
+          step = {
+              "step_index": 1,
+              "type": "PLANNER_RESPONSE",
+              "tool_calls": [{
+                  "id": f"call_{label}",
+                  "name": "run_command",
+                  "args": {"CommandLine": json.dumps(cmd)},
+              }],
+          }
+          self.assertFalse(
+              step_enters_gate(step, gate, default_state_dir=state_dir)
+          )
+          self.assertEqual(
+              detect_latest_target([step], state_dir=None),
+              "",
+          )
+
+      parallel_git_step = {
+          "step_index": 1,
+          "type": "PLANNER_RESPONSE",
+          "tool_calls": [
+              {
+                  "id": "call_write_50_parallel",
+                  "name": "write_file",
+                  "args": {
+                      "Path": json.dumps(
+                          os.path.join(state_dir, "50_commit_msg.txt")
+                      )
+                  },
+              },
+              {
+                  "id": "call_denied_git_bundle_parallel",
+                  "name": "run_command",
+                  "args": {"CommandLine": json.dumps(denied_git_bundle_cmd)},
+              },
+          ],
+      }
+      self.assertTrue(
+          step_enters_gate(
+              parallel_git_step, "T50", default_state_dir=state_dir
+          )
+      )
+      self.assertFalse(
+          step_enters_gate(
+              parallel_git_step, "T60", default_state_dir=state_dir
+          )
+      )
+
+      # Non-gated git commands and non-pause-gate advances must NOT be excluded
+      non_excluded_cases = (
+          (
+              "git_status_plus_t50",
+              "git status && make -f .workflow/state/Makefile commit"
+              " APPROVED=1",
+              "T50",
+              True,
+          ),
+          (
+              "echo_git_commit_plus_t50",
+              'echo "git commit" && make -f .workflow/state/Makefile commit'
+              " APPROVED=1",
+              "T50",
+              True,
+          ),
+          (
+              "git_commit_plus_non_pause_t70",
+              "git commit -F .workflow/state/50_commit_msg.txt && "
+              "make -f .workflow/state/Makefile bot-quiescence APPROVED=1",
+              "T70",
+              False,
+          ),
+      )
+      for label, cmd, expected_latest, is_pause_gate in non_excluded_cases:
+        with self.subTest(non_excluded=label):
+          step = {
+              "step_index": 1,
+              "type": "PLANNER_RESPONSE",
+              "tool_calls": [{
+                  "id": f"call_{label}",
+                  "name": "run_command",
+                  "args": {"CommandLine": json.dumps(cmd)},
+              }],
+          }
+          self.assertEqual(
+              detect_latest_target([step], state_dir=None),
+              expected_latest,
+          )
+          if is_pause_gate:
+            self.assertTrue(
+                step_enters_gate(
+                    step, expected_latest, default_state_dir=state_dir
+                )
+            )
+
+  def test_pause_gate_entered_in_turn_parses_each_tool_call_once(self):
+    """GH-316 NBO-2: _pause_gate_entered_in_turn calls extract_advance_target_calls once per tool call."""
+    import lib.turn_boundary as tb
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      step = {
+          "step_index": 2,
+          "type": "PLANNER_RESPONSE",
+          "content": "Inspecting, writing plan, and attempting denied bundles.",
+          "tool_calls": [
+              {
+                  "id": "call_read",
+                  "name": "read_file",
+                  "args": {"Path": json.dumps(os.path.join(ws_dir, "README.md"))},
+              },
+              {
+                  "id": "call_write_plan",
+                  "name": "write_file",
+                  "args": {
+                      "Path": json.dumps(os.path.join(state_dir, "20_plan.md"))
+                  },
+              },
+              {
+                  "id": "call_denied_bundle",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile land APPROVED=1 && "
+                          "make -f .workflow/state/Makefile"
+                          " codified-scars-consolidated"
+                      )
+                  },
+              },
+              {
+                  "id": "call_denied_git_bundle",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "git commit -F .workflow/state/50_commit_msg.txt && "
+                          "make -f .workflow/state/Makefile push APPROVED=1"
+                      )
+                  },
+              },
+          ],
+      }
+
+      with mock.patch.object(
+          tb,
+          "extract_advance_target_calls",
+          wraps=tb.extract_advance_target_calls,
+      ) as spy_extract:
+        entered = tb._pause_gate_entered_in_turn(
+            [step], default_state_dir=state_dir
+        )
+
+      self.assertEqual(entered, "T20")
+      self.assertEqual(
+          spy_extract.call_count,
+          len(step["tool_calls"]),
+          f"Expected 1 parse per tool call, got {spy_extract.call_count}",
+      )
+
+  def test_approved_t50_gated_git_bundling_denial_and_same_turn_separate_recovery(
+      self,
+  ):
+    """GH-316 Scenario 4: Approved T50 git commit && make push emits separate-call guidance and recovers."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import record_gate_entry
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      subprocess.run(["git", "init", "-q"], cwd=ws_dir, check=True)
+      subprocess.run(
+          ["git", "config", "user.name", "Makeflow Test"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "config", "user.email", "test@example.com"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "checkout", "-q", "-b", "fix/316-bundling"],
+          cwd=ws_dir,
+          check=True,
+      )
+      subprocess.run(
+          ["git", "commit", "-q", "--allow-empty", "-m", "chore: init"],
+          cwd=ws_dir,
+          check=True,
+      )
+
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      with open(
+          os.path.join(state_dir, "45_review_approved.md"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write("APPROVED\n")
+      with open(
+          os.path.join(state_dir, "50_commit_msg.txt"),
+          "w",
+          encoding="utf-8",
+      ) as f:
+        f.write(
+            "fix(gates): refine bundling guidance (closes #316)\n\n"
+            "Keep pause-gate transitions and gated commands in separate"
+            " calls.\n\n"
+            "Issue: #316\n"
+            "Reviewed-by: adversarial-critic\n"
+        )
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(target="T50", status="ACTIVE")
+      )
+
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      steps = [
+          {"step_index": 1, "type": "USER_INPUT", "content": "Review ok."},
+          {
+              "step_index": 2,
+              "type": "PLANNER_RESPONSE",
+              "content": "Entering T50.",
+              "tool_calls": [{
+                  "id": "call_enter_t50",
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": json.dumps(
+                          "make -f .workflow/state/Makefile commit FROM=T45"
+                          " APPROVED=1"
+                      )
+                  },
+              }],
+          },
+      ]
+      _write_transcript(transcript_path, steps)
+      record_gate_entry(state_dir, "T45", "T50", transcript_path=transcript_path)
+
+      steps.append(
+          {"step_index": 3, "type": "USER_INPUT", "content": "Commit approved."}
+      )
+      _write_transcript(transcript_path, steps)
+
+      gate_file = os.path.join(state_dir, "gate_entry.json")
+      with open(gate_file, "rb") as f:
+        before_bytes = f.read()
+
+      bundled_cmd = (
+          "git commit -F .workflow/state/50_commit_msg.txt && "
+          "make -f .workflow/state/Makefile push APPROVED=1"
+      )
+      denied = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {"CommandLine": bundled_cmd},
+          },
+      })
+      self.assertEqual(denied["decision"], "deny", denied)
+      self.assertIn("SCAR-PROC-102", denied["reason"])
+      self.assertIn("separate shell calls", denied["reason"].lower())
+      self.assertNotIn(
+          "wait for explicit human approval", denied["reason"].lower()
+      )
+      with open(gate_file, "rb") as f:
+        self.assertEqual(f.read(), before_bytes)
+
+      steps.append({
+          "step_index": 4,
+          "type": "PLANNER_RESPONSE",
+          "content": "Trying commit and push.",
+          "tool_calls": [{
+              "id": "call_denied_git_bundle",
+              "name": "run_command",
+              "args": {"CommandLine": json.dumps(bundled_cmd)},
+          }],
+      })
+      _write_transcript(transcript_path, steps)
+
+      commit_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "git commit -F .workflow/state/50_commit_msg.txt"
+                  )
+              },
+          },
+      })
+      self.assertEqual(commit_res["decision"], "force_ask", commit_res)
+
+      push_adv_res = evaluate_tool_call({
+          "transcriptPath": transcript_path,
+          "workspacePaths": [ws_dir],
+          "toolCall": {
+              "name": "run_command",
+              "args": {
+                  "CommandLine": (
+                      "make -f .workflow/state/Makefile push APPROVED=1"
+                  )
+              },
+          },
+      })
+      self.assertEqual(push_adv_res["decision"], "allow", push_adv_res)
+
+  def test_stage_reference_manuals_remind_separate_shell_calls_within_skill_budget(
+      self,
+  ):
+    """GH-316 Scenario 4: Manuals 05, 06, and 07 remind separate shell calls while SKILL.md stays within budget."""
+    refs_dir = os.path.join(REPO_ROOT, "skills", "makeflow", "references")
+    with open(
+        os.path.join(refs_dir, "05_pre_commit_hygiene.md"),
+        "r",
+        encoding="utf-8",
+    ) as f:
+      ref05 = f.read()
+    with open(
+        os.path.join(refs_dir, "06_clean_commit_and_pr.md"),
+        "r",
+        encoding="utf-8",
+    ) as f:
+      ref06 = f.read()
+    with open(
+        os.path.join(refs_dir, "07_ci_and_bot_triage.md"),
+        "r",
+        encoding="utf-8",
+    ) as f:
+      ref07 = f.read()
+
+    self.assertIn("separate shell calls", ref05.lower())
+    self.assertIn("separate shell calls", ref06.lower())
+    sec2_idx = ref07.index("## 2. Target 75: Ready to Land Gate")
+    sec3_idx = ref07.index("## 3. Target 80: Merge and Branch Cleanup")
+    self.assertIn("own shell call", ref07[sec2_idx:sec3_idx].lower())
+    self.assertIn("separate shell calls", ref07[sec3_idx:].lower())
+
+    skill_path = os.path.join(REPO_ROOT, "skills", "makeflow", "SKILL.md")
+    self.assertLessEqual(os.path.getsize(skill_path), 24576)
+
+
 if __name__ == "__main__":
   unittest.main()
