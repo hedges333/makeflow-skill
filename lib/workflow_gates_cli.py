@@ -524,8 +524,8 @@ def build_workflow_gates_parser(
 
   p_rel = subparsers.add_parser(
       "release-intake",
-      help="Release active ticket lock and reset terminal title upon completion.",
-      description="Release the workspace mutex lock for the active ticket and reset the terminal title.",
+      help="Release active ticket lock and restore terminal title when idle.",
+      description="Release the workspace mutex lock for the active ticket and restore the terminal title when idle.",
       epilog="Example:\n  python3 scripts/workflow_gates.py release-intake --ticket GH-170",
       formatter_class=argparse.RawDescriptionHelpFormatter,
   )

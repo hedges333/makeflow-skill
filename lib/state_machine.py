@@ -40,7 +40,11 @@ from lib.state_reports import (
     load_archaeology_hosting_mode,
     load_critic_review_validation,
 )
-from lib.ticket_state import TICKET_JSON_FILENAME, TicketStateStore
+from lib.ticket_state import (
+    TICKET_JSON_FILENAME,
+    TicketStateStore,
+    canonicalize_ticket_id,
+)
 from lib.turn_boundary import (
     ACTIVE_SUBAGENT_FILENAME,
     GATE_EVIDENCE_KEYS,
@@ -1045,7 +1049,13 @@ def _finalize_completed_ticket(
   )
   skipped_targets = _resolve_skipped_targets(state_dir, "T90", previous_target)
   meta = _parse_metadata_from_files(state_dir, workspace_dir=ws)
-  ticket_id = meta.get("ticket_id", "")
+  prior_active = ActiveStateStore(state_dir).load()
+  raw_ticket_id = meta.get("ticket_id", "") or (
+      prior_active.ticket_id if prior_active is not None else ""
+  )
+  ticket_id = canonicalize_ticket_id(raw_ticket_id)
+  if ticket_id:
+    meta["ticket_id"] = ticket_id
   cfg = resolve_workflow_config(workspace_dir=ws if os.path.isdir(ws) else None)
   action = cfg.get("state", {}).get("completedCardAction", "unlink")
   archive_slug = (
@@ -1134,9 +1144,11 @@ def _finalize_completed_ticket(
       if not is_temporary_directory_name(ws):
         dir_name = detect_directory_name(repo_root=ws)
         if dir_name and not is_temporary_directory_name(dir_name):
-          restored_title = format_terminal_title("", dir_name)
-          if restored_title:
-            set_terminal_title(title=restored_title, repo_root=ws)
+          final_title = format_terminal_title(
+              ticket_id, dir_name, "DONE" if ticket_id else None
+          )
+          if final_title:
+            set_terminal_title(title=final_title, repo_root=ws)
     except (ImportError, OSError):
       pass
 
