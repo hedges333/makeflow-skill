@@ -25,4 +25,15 @@ Run `agy models` to list valid `MODEL` identifiers for `agy` (Antigravity CLI).
 
 - Pass `MODEL=<name>` (`--model <name>`) to select an `agy` model.
 - Pass `WORKERS=<n>` (`--workers <n>`) to run up to `n` parallel single-scar calls (default `1`).
-- If you press `Ctrl+C`, the script broadcasts `SIGTERM` to active workers, preserves committed rows, and rebuilds `scars_fts` (the SQLite search index).
+- Pass `TIMEOUT=<sec>` (`--timeout <sec>`) to set the per-call timeout in seconds (default `120`).
+- Pass `MAX_RETRIES=<n>` (`--max-retries <n>`) to set retries per scar for validation or transient errors (default `2`).
+- Pass `MAX_ERRORS=<n>` (`--max-errors <n>`) to set the consecutive transient error limit before aborting (default `5`).
+- Pass `VERBOSE=1` (`--verbose`) to write buffered per-scar attempt traces to `stderr` without interleaving.
+- Pass `PRINT_RESULT=1` (`--print-result`) to print each committed scar row as formatted JSON to `stdout`.
+- Transient errors include timeouts, rate limits, network errors, and 5xx exits.
+- Both scripts retry transient errors per scar up to `MAX_RETRIES` times.
+- A circuit breaker stops a batch after repeated consecutive failures.
+- If consecutive transient failures reach `MAX_ERRORS`, the script stops unstarted scars and drains active workers.
+- Each committed scar resets the consecutive transient error counter to zero.
+- Fatal launch, flag, model, and auth errors fail fast with zero retries.
+- If you press `Ctrl+C`, the script sends `SIGTERM` to active workers. It preserves committed rows and rebuilds `scars_fts` (the SQLite search index).

@@ -216,8 +216,23 @@ make probe-scars
 ```
 
 1. `scripts/sync_synthetic_scars.py` (`make sync-scars`): Fetches `https://syntheticscars.org/registry.json`, updates changed matched `ss_id` rows in place, imports unseen scars deterministically, preserves `source = 'makeflow'` rows, rebuilds `scars_fts`, and prints scar counts.
-2. `scripts/import_synthetic_scars.py` (`make import-scars`): Runs `agy --agent synthetic-scar-importer ... --print=<prompt>` once per scar. It validates JSON with `ScarCandidateValidator` in `lib/scar_candidate.py` and commits each scar immediately. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model. Pass `WORKERS=<n>` or `--workers <n>` for bounded parallel workers.
-3. `scripts/write_scar_probes.py` (`make probe-scars`): Runs `agy --agent socratic-probe-writer ... --print=<prompt>` once per scar. It validates `socratic_probe` with `validate_socratic_probe()`, enriches metadata, commits immediately, and rebuilds `scars_fts` on exit. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model. Pass `WORKERS=<n>` or `--workers <n>` for bounded parallel workers.
+2. `scripts/import_synthetic_scars.py` (`make import-scars`): Runs `agy --agent synthetic-scar-importer ... --print=<prompt>` once per scar. It validates JSON with `ScarCandidateValidator` in `lib/scar_candidate.py` and commits each scar immediately.
+3. `scripts/write_scar_probes.py` (`make probe-scars`): Runs `agy --agent socratic-probe-writer ... --print=<prompt>` once per scar. It validates `socratic_probe` with `validate_socratic_probe()`, enriches metadata, commits immediately, and rebuilds `scars_fts` on exit.
+
+Both `make import-scars` and `make probe-scars` accept shared runtime options:
+
+- Pass `MODEL=<name>` (`--model <name>`) to override the `agy` model.
+- Pass `WORKERS=<n>` (`--workers <n>`) for bounded parallel workers (default `1`).
+- Pass `TIMEOUT=<sec>` (`--timeout <sec>`) to set the per-call timeout in seconds (default `120`).
+- Pass `MAX_RETRIES=<n>` (`--max-retries <n>`) to retry transient errors or validation errors per scar (default `2`).
+- Pass `MAX_ERRORS=<n>` (`--max-errors <n>`) to abort after consecutive transient scar failures (default `5`).
+- Pass `VERBOSE=1` (`--verbose`) to emit buffered per-scar diagnostics to `stderr` without interleaving.
+- Pass `PRINT_RESULT=1` (`--print-result`) to print each committed scar row as formatted JSON to `stdout`.
+
+Both scripts retry timeouts, rate limits, network errors, and 5xx exits up to `MAX_RETRIES` times.
+If consecutive transient failures reach `MAX_ERRORS`, the circuit breaker (a batch stop guard) halts unstarted scars and preserves committed rows.
+Each committed scar resets the consecutive transient error count to zero.
+Fatal launch, flag, model, and auth errors fail fast with zero retries.
 
 ### 4.5 Two-Query MCP Playbook
 

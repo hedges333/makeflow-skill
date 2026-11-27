@@ -1123,6 +1123,31 @@ def select_scars_needing_probe_writer(
   return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def select_scar_row_by_id(
+    cur: sqlite3.Cursor,
+    scar_id: str,
+) -> Optional[Dict[str, Any]]:
+  """Select all canonical ``scars`` columns for a single committed scar ID.
+
+  Args:
+    cur: Open SQLite cursor on an initialized scars database.
+    scar_id: Canonical Makeflow primary key in ``scars.id``.
+
+  Returns:
+    Dictionary containing all 27 ``_SCARS_COLUMN_DEFS`` columns when found, or
+    ``None`` when no matching row exists.
+  """
+  cols = [col_name for col_name, _ in _SCARS_COLUMN_DEFS]
+  cur.execute(
+      f"SELECT {', '.join(cols)} FROM scars WHERE id = ?",
+      (scar_id,),
+  )
+  row = cur.fetchone()
+  if row is None:
+    return None
+  return dict(zip(cols, row))
+
+
 def _sanitize_fts_query(query: str) -> str:
   """Sanitize user search query for safe FTS5 MATCH evaluation."""
   tokens = re.findall(r"[a-zA-Z0-9_\-]+", query)
