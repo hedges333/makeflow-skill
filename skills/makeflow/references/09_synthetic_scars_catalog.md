@@ -216,8 +216,8 @@ make probe-scars
 ```
 
 1. `scripts/sync_synthetic_scars.py` (`make sync-scars`): Fetches `https://syntheticscars.org/registry.json`, updates changed matched `ss_id` rows in place, imports unseen scars deterministically, preserves `source = 'makeflow'` rows, rebuilds `scars_fts`, and prints scar counts.
-2. `scripts/import_synthetic_scars.py` (`make import-scars`): Calls `agy --print --agent synthetic-scar-importer` one scar per call, validates JSON with `ScarCandidateValidator` in `lib/scar_candidate.py`, and commits each scar immediately. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model. Pass `WORKERS=<n>` or `--workers <n>` for bounded parallel workers.
-3. `scripts/write_scar_probes.py` (`make probe-scars`): Calls `agy --print --agent socratic-probe-writer` one scar per call, validates `socratic_probe` with `validate_socratic_probe()`, enriches metadata, commits immediately, and rebuilds `scars_fts` on exit. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model. Pass `WORKERS=<n>` or `--workers <n>` for bounded parallel workers.
+2. `scripts/import_synthetic_scars.py` (`make import-scars`): Runs `agy --agent synthetic-scar-importer ... --print=<prompt>` once per scar. It validates JSON with `ScarCandidateValidator` in `lib/scar_candidate.py` and commits each scar immediately. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model. Pass `WORKERS=<n>` or `--workers <n>` for bounded parallel workers.
+3. `scripts/write_scar_probes.py` (`make probe-scars`): Runs `agy --agent socratic-probe-writer ... --print=<prompt>` once per scar. It validates `socratic_probe` with `validate_socratic_probe()`, enriches metadata, commits immediately, and rebuilds `scars_fts` on exit. Pass `MODEL=<name>` or `--model <name>` to override the `agy` model. Pass `WORKERS=<n>` or `--workers <n>` for bounded parallel workers.
 
 ### 4.5 Two-Query MCP Playbook
 

@@ -1,10 +1,11 @@
-"""Single-purpose Simple English scar transformation CLI using agy (GH-209).
+"""Single-purpose Simple English scar transformation CLI using agy (GH-209, GH-336).
 
 Selects scars missing required Simple English fields ordered by ``id ASC``,
-invokes ``agy --print --agent synthetic-scar-importer`` one scar per call,
-validates JSON output in Python with ScarCandidateValidator, enforces NULL
-``circuit_breaker`` when ``raw_circuit_breaker`` is empty, commits each scar
-immediately, and rebuilds FTS5 and ``meta.db_size_bytes`` on exit or signal.
+invokes ``agy --agent synthetic-scar-importer ... --print=<prompt>`` one scar
+per call, validates JSON output in Python with ScarCandidateValidator, enforces
+NULL ``circuit_breaker`` when ``raw_circuit_breaker`` is empty, commits each
+scar immediately, and rebuilds FTS5 and ``meta.db_size_bytes`` on exit or
+signal.
 """
 
 import argparse

@@ -194,7 +194,7 @@ class TestAgySubagentRunner(unittest.TestCase):
   """Unit tests for lib/scar_subagent.py collaborator."""
 
   def test_build_command_exact_argv_and_model_passthrough(self) -> None:
-    """Verify exact agy CLI arguments with and without verbatim --model."""
+    """Verify exact agy CLI arguments with and without verbatim --model (GH-336)."""
     runner = AgySubagentRunner(
         agent_name="synthetic-scar-importer",
         json_schema=SIMPLE_ENGLISH_JSON_SCHEMA,
@@ -205,7 +205,6 @@ class TestAgySubagentRunner(unittest.TestCase):
         cmd,
         [
             "agy",
-            "--print",
             "--agent",
             "synthetic-scar-importer",
             "--output-format",
@@ -213,9 +212,10 @@ class TestAgySubagentRunner(unittest.TestCase):
             "--json-schema",
             json.dumps(SIMPLE_ENGLISH_JSON_SCHEMA),
             "--disable-slash-commands",
-            "Transform scar",
+            "--print=Transform scar",
         ],
     )
+    self.assertNotIn("--print", cmd)
 
     runner_with_model = AgySubagentRunner(
         agent_name="socratic-probe-writer",
@@ -227,7 +227,6 @@ class TestAgySubagentRunner(unittest.TestCase):
         cmd_model,
         [
             "agy",
-            "--print",
             "--agent",
             "socratic-probe-writer",
             "--output-format",
@@ -237,9 +236,60 @@ class TestAgySubagentRunner(unittest.TestCase):
             "--disable-slash-commands",
             "--model",
             "custom/unvalidated-model-xyz",
-            "Write probe",
+            "--print=Write probe",
         ],
     )
+    self.assertNotIn("--print", cmd_model)
+
+  def test_build_command_and_run_json_preserve_special_char_prompt_without_shell(
+      self,
+  ) -> None:
+    """Verify multi-line prompts with =, quotes, and leading '-' pass intact via --print=<prompt> without shell=True (GH-336)."""
+    prompt = (
+        "- leading dash line\n"
+        "key=value with 'single' and \"double\" quotes\n"
+        "--agent should remain passive prompt text"
+    )
+    runner = AgySubagentRunner(
+        agent_name="socratic-probe-writer",
+        json_schema=SOCRATIC_PROBE_JSON_SCHEMA,
+        model="gemini-4-hydrogen-high",
+    )
+    expected_cmd = [
+        "agy",
+        "--agent",
+        "socratic-probe-writer",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(SOCRATIC_PROBE_JSON_SCHEMA),
+        "--disable-slash-commands",
+        "--model",
+        "gemini-4-hydrogen-high",
+        f"--print={prompt}",
+    ]
+    cmd = runner.build_command(prompt)
+    self.assertEqual(cmd, expected_cmd)
+    self.assertNotIn("--print", cmd)
+
+    captured_calls = []
+
+    def fake_popen(popen_cmd, **kwargs):
+      captured_calls.append((popen_cmd, kwargs))
+      return FakePopen(
+          stdout=json.dumps({"socratic_probe": "Did you check the argv token?"})
+      )
+
+    with patch("lib.scar_subagent.subprocess.Popen", side_effect=fake_popen):
+      result = runner.run_json(prompt)
+
+    self.assertEqual(
+        result, {"socratic_probe": "Did you check the argv token?"}
+    )
+    self.assertEqual(len(captured_calls), 1)
+    popen_cmd, popen_kwargs = captured_calls[0]
+    self.assertEqual(popen_cmd, expected_cmd)
+    self.assertFalse(popen_kwargs.get("shell", False))
 
   def test_untrusted_scar_airlock_escapes_closing_tags(self) -> None:
     """Verify closing </untrusted_upstream_scar> tags are escaped per SCAR-SEC-01."""
@@ -516,11 +566,10 @@ class TestImportSyntheticScarsScript(unittest.TestCase):
       self.assertEqual(len(responses), 0)
       self.assertIn("SCAR-API-0003", err.getvalue())
 
-      # Verify exact argv and airlock delimiters on first invocation
+      # Verify exact argv and airlock delimiters on first invocation (GH-336)
       first_cmd = captured_cmds[0]
-      self.assertEqual(first_cmd[0:9], [
+      self.assertEqual(first_cmd[0:8], [
           "agy",
-          "--print",
           "--agent",
           "synthetic-scar-importer",
           "--output-format",
@@ -529,9 +578,18 @@ class TestImportSyntheticScarsScript(unittest.TestCase):
           json.dumps(SIMPLE_ENGLISH_JSON_SCHEMA),
           "--disable-slash-commands",
       ])
-      self.assertEqual(first_cmd[9:11], ["--model", "gemini-2.5-pro"])
-      self.assertIn("<untrusted_upstream_scar>", first_cmd[11])
-      self.assertIn("SCAR-API-0001", first_cmd[11])
+      self.assertEqual(first_cmd[8:10], ["--model", "gemini-2.5-pro"])
+      self.assertEqual(len(first_cmd), 11)
+      self.assertNotIn("--print", first_cmd)
+      self.assertTrue(first_cmd[10].startswith("--print="))
+      self.assertIn("<untrusted_upstream_scar>", first_cmd[10])
+      self.assertIn("SCAR-API-0001", first_cmd[10])
+      for invoked_cmd in captured_cmds:
+        self.assertNotIn("--print", invoked_cmd)
+        self.assertEqual(
+            invoked_cmd[1:3], ["--agent", "synthetic-scar-importer"]
+        )
+        self.assertTrue(invoked_cmd[-1].startswith("--print="))
       # Retry prompt for Scar 1 includes contraction feedback
       self.assertIn("contraction", captured_cmds[1][-1].lower())
 
@@ -765,9 +823,8 @@ class TestWriteScarProbesScript(unittest.TestCase):
       self.assertIn("SCAR-SYS-0004", err.getvalue())
 
       first_cmd = captured_cmds[0]
-      self.assertEqual(first_cmd[0:9], [
+      self.assertEqual(first_cmd[0:8], [
           "agy",
-          "--print",
           "--agent",
           "socratic-probe-writer",
           "--output-format",
@@ -776,9 +833,18 @@ class TestWriteScarProbesScript(unittest.TestCase):
           json.dumps(SOCRATIC_PROBE_JSON_SCHEMA),
           "--disable-slash-commands",
       ])
-      self.assertEqual(first_cmd[9:11], ["--model", "claude-opus-4"])
-      self.assertIn("<untrusted_upstream_scar>", first_cmd[11])
-      self.assertIn("SCAR-SYS-0001", first_cmd[11])
+      self.assertEqual(first_cmd[8:10], ["--model", "claude-opus-4"])
+      self.assertEqual(len(first_cmd), 11)
+      self.assertNotIn("--print", first_cmd)
+      self.assertTrue(first_cmd[10].startswith("--print="))
+      self.assertIn("<untrusted_upstream_scar>", first_cmd[10])
+      self.assertIn("SCAR-SYS-0001", first_cmd[10])
+      for invoked_cmd in captured_cmds:
+        self.assertNotIn("--print", invoked_cmd)
+        self.assertEqual(
+            invoked_cmd[1:3], ["--agent", "socratic-probe-writer"]
+        )
+        self.assertTrue(invoked_cmd[-1].startswith("--print="))
 
       conn = sqlite3.connect(db_path)
       cur = conn.cursor()
