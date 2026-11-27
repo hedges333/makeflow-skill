@@ -90,7 +90,7 @@ Target 75 is a mandatory human pause gate.
    - Documentation updates.
    - Dependency changes.
    - Test coverage.
-4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`. After approval, run `make -f .workflow/state/Makefile land APPROVED=1` (or `humanLandingApproved: true`) to advance to Target 80.
+4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`. After approval, run `make -f .workflow/state/Makefile land APPROVED=1` (or `humanLandingApproved: true`) to advance to Target 80. Run `make -f .workflow/state/Makefile land APPROVED=1` in its own shell call without `&&`.
 5. If branch protection forbids direct push, commit ledger and `CHANGELOG.md` updates on the feature branch before requesting landing approval.
 
 ---
@@ -119,4 +119,4 @@ After the user approves landing, merge the changes and clean up local Git state:
    git branch -D <branch>
    ```
 5. Release the intake lock by running `make -f .workflow/state/Makefile release-intake` (`SCAR-SYS-08`).
-6. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90.
+6. Run `make -f .workflow/state/Makefile codified-scars-consolidated` to enter Target 90. Run `make -f .workflow/state/Makefile land APPROVED=1`, `gh pr merge`, and `make -f .workflow/state/Makefile codified-scars-consolidated` in separate shell calls without `&&`.
