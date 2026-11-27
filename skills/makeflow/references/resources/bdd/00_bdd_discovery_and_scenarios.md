@@ -31,15 +31,26 @@ Follow four scenario quality rules:
 ## 3. Complexity scaling and `planning.bddMode`
 
 Apply proportional BDD ceremony so simple bug fixes stay fast while complex features receive structured discovery.
-Configure `planning.bddMode` in `.workflow/config.json`, `<agent_plugin_data>/config.json`, or `MAKEFILE_WORKFLOW_PLANNING_BDD_MODE`:
+Configure `planning.bddMode` in `.workflow/config.json`, `<agent_plugin_data>/config.json`, or `MAKEFILE_WORKFLOW_PLANNING_BDD_MODE`.
+`lib/config.py` splits valid values into concrete auto-run modes (`CONCRETE_PLANNING_BDD_MODES`) and prompt-triggering values (`""` and `ask`).
 
-| `planning.bddMode` value | Planning and testing behavior |
-| :--- | :--- |
-| `""` (unset default) | Ask once in Target 15 and offer to save the choice to `user-global`, `project-local`, or `both`. |
-| `adaptive` | Bugfix tickets use one concise Given-When-Then scenario with zero extra questions. Feature and ambiguous tickets run bounded `ask_question` discovery in Target 15 and full scenarios in Section 2 of `20_plan.md`. |
-| `full_gherkin` | Run structured discovery in Target 15 and author executable `.feature` files in Target 30 when supported. Record executed scenarios in Target 90 resolution summaries. |
-| `planning_only` | Keep Given-When-Then acceptance criteria in Section 2 of `20_plan.md` without creating separate `.feature` files. |
-| `ask` | Prompt for the active BDD tier on each ticket during Target 15 before drafting `20_plan.md`. |
+| `planning.bddMode` value | Category | Planning and testing behavior |
+| :--- | :--- | :--- |
+| `adaptive` | Concrete mode | Run directly without prompting. Bugfix tickets use one concise Given-When-Then scenario, while feature tickets run bounded Target 15 discovery. |
+| `full_gherkin` | Concrete mode | Run directly without prompting. Run Target 15 discovery, author executable `.feature` files in Target 30 when supported, and record scenarios at Target 90. |
+| `planning_only` | Concrete mode | Run directly without prompting. Keep Given-When-Then acceptance criteria in Section 2 of `20_plan.md` without separate `.feature` files. |
+| `""` (unset default) | Prompt trigger | Run the split two-question Target 15 prompt before drafting `20_plan.md`. |
+| `ask` | Prompt trigger | Ask every time by running the split two-question Target 15 prompt before drafting `20_plan.md`. |
+
+### Target 15 BDD prompt flow
+
+1. If config sets a concrete mode (`adaptive`, `full_gherkin`, or `planning_only`), run that mode directly without calling `ask_question`.
+2. If `planning.bddMode` is unset (`""`) or `ask` (`should_prompt_planning_bdd_mode` returns `True`), call `ask_question` with two questions:
+   - **Question 1**: Ask which concrete BDD mode (`adaptive`, `full_gherkin`, or `planning_only`) to run in this turn.
+   - **Question 2**: Ask whether to save this choice, save `ask` (ask every time), or do not save any choice.
+3. If the user chooses to save this choice or save `ask`, ask for storage scope (`project-local`, `user-global`, or `both`). Save the selected value with `save_planning_bdd_mode`.
+4. If the user chooses do not save any choice, skip the scope question and write zero config files.
+5. Run the concrete mode selected in Question 1 for the current turn.
 
 ## 4. Polyglot `.feature` execution under `full_gherkin`
 

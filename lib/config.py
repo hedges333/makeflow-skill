@@ -29,7 +29,8 @@ DEFAULT_SCAR_DATABASES = [
     DEFAULT_BUNDLED_SCAR_DB_TOKEN,
 ]
 PLANNING_BDD_MODE_ENV_VAR = "MAKEFILE_WORKFLOW_PLANNING_BDD_MODE"
-VALID_PLANNING_BDD_MODES = ("adaptive", "full_gherkin", "planning_only", "ask")
+CONCRETE_PLANNING_BDD_MODES = ("adaptive", "full_gherkin", "planning_only")
+VALID_PLANNING_BDD_MODES = (*CONCRETE_PLANNING_BDD_MODES, "ask")
 
 DEFAULT_WORKFLOW_CONFIG = {
     "models": {
@@ -609,6 +610,24 @@ def _normalize_planning_config(raw_planning):
   return {
       "bddMode": cleaned if cleaned in VALID_PLANNING_BDD_MODES else "",
   }
+
+
+def should_prompt_planning_bdd_mode(mode: Any) -> bool:
+  """Returns whether Target 15 must prompt for a BDD mode in this turn.
+
+  Concrete execution modes in ``CONCRETE_PLANNING_BDD_MODES`` run directly
+  without prompting. Unset values (``""``), ``"ask"``, non-strings, and
+  unrecognized values require prompting.
+
+  Args:
+    mode: Resolved or raw ``planning.bddMode`` value.
+
+  Returns:
+    ``False`` if ``mode`` normalizes to a concrete auto-run mode; ``True``
+    otherwise.
+  """
+  cleaned = mode.strip().lower() if isinstance(mode, str) else ""
+  return cleaned not in CONCRETE_PLANNING_BDD_MODES
 
 
 def _write_planning_mode_to_file(config_path: str, mode: str) -> str:

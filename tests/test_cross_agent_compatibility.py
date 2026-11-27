@@ -12882,14 +12882,14 @@ def check_plan_spec_and_bdd_interrogation_contract(
     files_by_relpath: dict[str, str] | None = None,
     repo_root: str | None = None,
 ) -> list[str]:
-  """Validates GH-270 canonical plan spec, SCAR-PROC-160/161, full tdd-worker plan reading, and BDD docs.
+  """Validates GH-270/GH-337 canonical plan spec, SCAR-PROC-160/161, full tdd-worker plan reading, and split BDD prompt docs.
 
   Args:
     files_by_relpath: Optional in-memory map of repo-relative paths to contents.
     repo_root: Optional repository root directory override.
 
   Returns:
-    List of diagnostic error strings (empty when all GH-270 contracts hold).
+    List of diagnostic error strings (empty when all GH-270 and GH-337 contracts hold).
   """
   errs: list[str] = []
   base_dir = repo_root or REPO_ROOT
@@ -12946,6 +12946,23 @@ def check_plan_spec_and_bdd_interrogation_contract(
     if tok not in r02_text:
       errs.append(f"{r02_rel} must document '{tok}'")
 
+  t15_sec = _extract_markdown_h2_section(r02_text, "Target 15: Codebase Archaeology")
+  for tok in (
+      "should_prompt_planning_bdd_mode",
+      'unset (`""`) or `ask`',
+      "Question 1",
+      "Question 2",
+      "do not save any choice",
+      "save_planning_bdd_mode",
+      "project-local",
+      "user-global",
+      "both",
+      "without calling `ask_question`",
+  ):
+    if tok not in t15_sec:
+      errs.append(f"{r02_rel} Target 15 must document GH-337 contract token '{tok}'")
+  errs.extend(_check_section_simple_english(f"{r02_rel} [Target 15]", t15_sec))
+
   # 3. Full verbatim 20_plan.md reading for tdd-worker across worker, 03, 08, AGENTS.md, SKILL.md
   for rel in (
       "agents/tdd-worker.md",
@@ -12961,10 +12978,20 @@ def check_plan_spec_and_bdd_interrogation_contract(
   # 4. 12_request_history_ledger.md & 13_configuration_and_user_preferences.md
   if "full_gherkin" not in files_map["skills/makeflow/references/12_request_history_ledger.md"]:
     errs.append("skills/makeflow/references/12_request_history_ledger.md must document full_gherkin scenario recording")
-  r13_text = files_map["skills/makeflow/references/13_configuration_and_user_preferences.md"]
+  r13_rel = "skills/makeflow/references/13_configuration_and_user_preferences.md"
+  r13_text = files_map[r13_rel]
   for tok in ("planning.bddMode", "MAKEFILE_WORKFLOW_PLANNING_BDD_MODE", "adaptive", "full_gherkin", "planning_only", "ask"):
     if tok not in r13_text:
-      errs.append(f"skills/makeflow/references/13_configuration_and_user_preferences.md must document '{tok}'")
+      errs.append(f"{r13_rel} must document '{tok}'")
+  r13_sec2 = _extract_markdown_h2_section(r13_text, "Configuration Precedence Order")
+  for tok in ("without prompting", "split two-question Target 15 prompt"):
+    if tok not in r13_sec2:
+      errs.append(f"{r13_rel} Section 2 must document GH-337 contract token '{tok}'")
+  r13_bdd_lines = "\n".join(
+      line for line in r13_sec2.splitlines()
+      if "bddMode" in line or "PLANNING_BDD_MODE" in line
+  )
+  errs.extend(_check_section_simple_english(f"{r13_rel} [bddMode]", r13_bdd_lines))
 
   # 5. Attributed BDD resource guide + Simple English compliance
   bdd_rel = "skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md"
@@ -12975,6 +13002,24 @@ def check_plan_spec_and_bdd_interrogation_contract(
   for tok in ("Three Amigos", "Example Mapping", "Given", "When", "Then", "planning.bddMode"):
     if tok not in bdd_text:
       errs.append(f"{bdd_rel} must document '{tok}'")
+  bdd_sec3 = _extract_markdown_h2_section(bdd_text, "Complexity scaling")
+  for tok in (
+      "CONCRETE_PLANNING_BDD_MODES",
+      "should_prompt_planning_bdd_mode",
+      "Run directly without prompting",
+      "directly without calling `ask_question`",
+      "Question 1",
+      "Question 2",
+      "do not save any choice",
+      "save_planning_bdd_mode",
+      "project-local",
+      "user-global",
+      "both",
+  ):
+    if tok not in bdd_sec3:
+      errs.append(f"{bdd_rel} Section 3 must document GH-337 contract token '{tok}'")
+  if "ask every time" not in bdd_sec3.lower():
+    errs.append(f"{bdd_rel} Section 3 must document 'ask every time'")
   errs.extend(_check_section_simple_english(bdd_rel, bdd_text))
 
   # 6. rules/AGENTS.md Section 1.1, 1.2, 1.4
@@ -12982,7 +13027,15 @@ def check_plan_spec_and_bdd_interrogation_contract(
   sec11 = _extract_markdown_h3_section(files_map[agents_rel], "### 1.1 Target 20 Plan Artifact")
   sec12 = _extract_markdown_h3_section(files_map[agents_rel], "### 1.2 Pause Gates")
   sec14 = _extract_markdown_h3_section(files_map[agents_rel], "### 1.4 Explicit Six Pillars")
-  for tok in ("SCAR-PROC-160", "SCAR-PROC-161", "planning.bddMode", "ask_question"):
+  for tok in (
+      "SCAR-PROC-160",
+      "SCAR-PROC-161",
+      "planning.bddMode",
+      "ask_question",
+      "run directly without prompting",
+      "split two-question Target 15 prompt",
+      "do not save",
+  ):
     if tok not in sec11:
       errs.append(f"{agents_rel} Section 1.1 must document '{tok}'")
   if "Target 20" not in sec12 or "SCAR-PROC-161" not in sec12:
@@ -13049,6 +13102,42 @@ class TestPlanSpecAndBddInterrogationContract(unittest.TestCase):
         (".cursor/rules/makeflow.mdc", "SCAR-PROC-160", "REMOVED_160"),
         (".github/copilot-instructions.md", "SCAR-PROC-161", "REMOVED_161"),
         ("adapters/chatgpt/instructions.md", "SCAR-PROC-160", "REMOVED_160"),
+    )
+    for rel, token, repl in mutations:
+      with self.subTest(file=rel, mutated=token):
+        mut = dict(base)
+        mut[rel] = mut[rel].replace(token, repl)
+        self.assertNotEqual(mut[rel], base[rel])
+        errs = check_plan_spec_and_bdd_interrogation_contract(mut)
+        self.assertTrue(
+            any(rel in e for e in errs),
+            f"Expected rejection when '{token}' mutated in {rel}, got: {errs}",
+        )
+
+  def test_negative_falsification_rejects_broken_split_bdd_prompt_contract(
+      self,
+  ) -> None:
+    """GH-337: In-memory mutations removing split BDD prompt rules or adding contractions must fail."""
+    base = self._load_base_files()
+    self.assertEqual(check_plan_spec_and_bdd_interrogation_contract(base), [])
+
+    mutations = (
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "CONCRETE_PLANNING_BDD_MODES", "REMOVED_CONST"),
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "should_prompt_planning_bdd_mode", "REMOVED_PRED"),
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "Question 1", "REMOVED_Q1"),
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "Question 2", "REMOVED_Q2"),
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "do not save any choice", "don't save any choice"),
+        ("skills/makeflow/references/resources/bdd/00_bdd_discovery_and_scenarios.md", "directly without calling `ask_question`", "REMOVED_DIRECT"),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", 'unset (`""`) or `ask`', 'unset (`""`)'),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", "Question 1", "REMOVED_Q1"),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", "Question 2", "REMOVED_Q2"),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", "do not save any choice", "don't save any choice"),
+        ("skills/makeflow/references/02_archaeology_and_planning.md", "should_prompt_planning_bdd_mode", "REMOVED_PRED"),
+        ("skills/makeflow/references/13_configuration_and_user_preferences.md", "without prompting", "REMOVED_DIRECT"),
+        ("skills/makeflow/references/13_configuration_and_user_preferences.md", "split two-question Target 15 prompt", "REMOVED_SPLIT"),
+        ("rules/AGENTS.md", "run directly without prompting", "REMOVED_DIRECT"),
+        ("rules/AGENTS.md", "split two-question Target 15 prompt", "REMOVED_SPLIT"),
+        ("rules/AGENTS.md", "do not save", "don't save"),
     )
     for rel, token, repl in mutations:
       with self.subTest(file=rel, mutated=token):

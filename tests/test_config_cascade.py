@@ -946,6 +946,110 @@ class TestScarLocationsAndConfigCascade(unittest.TestCase):
               "adaptive", "project-local", workspace_dir=ws_dir
           )
 
+  def test_planning_bdd_mode_prompt_classification_and_round_trip(self):
+    """GH-337: Classifies concrete auto-run BDD modes vs prompt-triggering unset/ask values."""
+    from lib.config import (
+        CONCRETE_PLANNING_BDD_MODES,
+        VALID_PLANNING_BDD_MODES,
+        save_planning_bdd_mode,
+        should_prompt_planning_bdd_mode,
+    )
+
+    self.assertEqual(
+        CONCRETE_PLANNING_BDD_MODES,
+        ("adaptive", "full_gherkin", "planning_only"),
+    )
+    self.assertEqual(
+        VALID_PLANNING_BDD_MODES,
+        ("adaptive", "full_gherkin", "planning_only", "ask"),
+    )
+
+    for concrete_value in (
+        "adaptive",
+        "full_gherkin",
+        "planning_only",
+        " ADAPTIVE ",
+        "Full_Gherkin",
+        "\tplanning_only\n",
+    ):
+      with self.subTest(concrete_value=concrete_value):
+        self.assertFalse(should_prompt_planning_bdd_mode(concrete_value))
+
+    for prompt_value in (
+        "",
+        "   ",
+        "ask",
+        " ASK ",
+        "\task\n",
+        None,
+        123,
+        True,
+        [],
+        {},
+        "invalid",
+        "gherkin",
+    ):
+      with self.subTest(prompt_value=prompt_value):
+        self.assertTrue(should_prompt_planning_bdd_mode(prompt_value))
+
+    with (
+        tempfile.TemporaryDirectory() as ws_dir,
+        tempfile.TemporaryDirectory() as fake_home,
+    ):
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        # Default unset mode prompts
+        default_cfg = resolve_workflow_config(ws_dir)
+        self.assertEqual(default_cfg["planning"]["bddMode"], "")
+        self.assertTrue(
+            should_prompt_planning_bdd_mode(default_cfg["planning"]["bddMode"])
+        )
+
+        # Persisting "ask" round-trips and still prompts every time
+        save_planning_bdd_mode("ask", "project-local", workspace_dir=ws_dir)
+        ask_cfg = resolve_workflow_config(ws_dir)
+        self.assertEqual(ask_cfg["planning"]["bddMode"], "ask")
+        self.assertTrue(
+            should_prompt_planning_bdd_mode(ask_cfg["planning"]["bddMode"])
+        )
+
+        # Concrete env override over saved "ask" runs directly without prompting
+        env_concrete = _isolated_env(
+            fake_home, {"MAKEFILE_WORKFLOW_PLANNING_BDD_MODE": "planning_only"}
+        )
+        with mock.patch.dict(os.environ, env_concrete, clear=True):
+          override_cfg = resolve_workflow_config(ws_dir)
+        self.assertEqual(override_cfg["planning"]["bddMode"], "planning_only")
+        self.assertFalse(
+            should_prompt_planning_bdd_mode(
+                override_cfg["planning"]["bddMode"]
+            )
+        )
+
+        # Persisting concrete modes round-trips and skips prompting
+        for mode in ("adaptive", "full_gherkin", "planning_only"):
+          with self.subTest(saved_mode=mode):
+            save_planning_bdd_mode(mode, "project-local", workspace_dir=ws_dir)
+            concrete_cfg = resolve_workflow_config(ws_dir)
+            self.assertEqual(concrete_cfg["planning"]["bddMode"], mode)
+            self.assertFalse(
+                should_prompt_planning_bdd_mode(
+                    concrete_cfg["planning"]["bddMode"]
+                )
+            )
+
+        # "ask" env override over saved concrete mode prompts every time
+        env_ask = _isolated_env(
+            fake_home, {"MAKEFILE_WORKFLOW_PLANNING_BDD_MODE": "ask"}
+        )
+        with mock.patch.dict(os.environ, env_ask, clear=True):
+          ask_override_cfg = resolve_workflow_config(ws_dir)
+        self.assertEqual(ask_override_cfg["planning"]["bddMode"], "ask")
+        self.assertTrue(
+            should_prompt_planning_bdd_mode(
+                ask_override_cfg["planning"]["bddMode"]
+            )
+        )
+
   def test_is_plugin_dir_expanded_agent_caches_and_symlinks(self):
     """GH-331: is_plugin_dir detects Codex/Cursor/Copilot plugin caches and symlinked targets."""
     from lib.config import is_plugin_dir
