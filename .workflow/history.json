@@ -3322,5 +3322,28 @@
     "closes_issue": true,
     "tests_added": 4,
     "scars_earned": []
+  },
+  {
+    "id": "GH-323",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/323",
+    "title": "Keep Legacy Original IDs Disjoint from Upstream Short IDs During Tiered Registry Shadowing",
+    "request": "Add Makeflow-specific SCAR-LOCAL-DATA-0002 to .workflow/scars/scars_registry.db (Tier 2) and generalized SCAR-DATA-0007 to skills/makeflow/data/scars_registry.db (Tier 1B SQLite only) while keeping Tier 1A Markdown spokes lean, and add 6 hermetic behavioral tests in tests/test_multi_tier_scar_discovery.py.",
+    "branch": "feat/323-disjoint-legacy-short-ids-scar",
+    "subprojects": [
+      ".workflow/scars",
+      "skills/makeflow/data",
+      "tests"
+    ],
+    "started_at": "2026-11-26T22:35:00Z",
+    "completed_at": "2026-11-27T07:50:16Z",
+    "commit_sha": "e8f382f514e41cc986502369fda188fb772ae44a",
+    "pr_number": 335,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/335",
+    "closes_issue": true,
+    "tests_added": 6,
+    "scars_earned": [
+      "SCAR-LOCAL-DATA-0002: Keep Legacy Original IDs Disjoint from Upstream Short IDs During Tiered Registry Shadowing",
+      "SCAR-DATA-0007: Keep Identifier Namespaces Disjoint and Advance Shadowing Only Between Tiers"
+    ]
   }
 ]
