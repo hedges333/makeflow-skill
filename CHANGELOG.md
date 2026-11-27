@@ -33,6 +33,7 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-281: Add canonical pretty-printed JSON state stores, deterministic Markdown renderers, and workflow_submit_report MCP tool.
 - GH-273: Add distilled TDD resource pack, SCAR-TEST-46 through SCAR-TEST-49, complexity-scaled slice budgets, and completed_cycles archiving.
 - GH-270: Add canonical plan validation, pause-gate ask_question blocking, configurable BDD planning modes, full plan ingestion, and SCAR-PROC-160 and SCAR-PROC-161.
+- GH-321: Add --workers parallel execution to import_synthetic_scars.py and write_scar_probes.py, single-writer SQLite commits, and two-phase broadcast SignalTrap shutdown.
 
 ### Changed
 

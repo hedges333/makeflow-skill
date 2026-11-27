@@ -3241,5 +3241,27 @@
     "closes_issue": true,
     "tests_added": 15,
     "scars_earned": []
+  },
+  {
+    "id": "GH-321",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/321",
+    "title": "Add --workers N parallel execution to scar import and probe CLI scripts",
+    "request": "Add bounded --workers N (default 1) parallel execution to import_synthetic_scars.py and write_scar_probes.py with WORKERS= Makefile passthrough, strict single-scar context isolation, single-writer main-thread SQLite commits, shared stop_event abort on fatal CLI errors, and thread-safe SignalTrap with two-phase parallel SIGTERM broadcast and shared-deadline SIGKILL escalation.",
+    "branch": "feat/321-parallel-scar-workers",
+    "subprojects": [
+      "Makefile",
+      "lib",
+      "notes",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-26T21:58:12Z",
+    "completed_at": "2026-11-27T05:50:49Z",
+    "commit_sha": "7a34ab6011ee579df5fb435553585e3d4f7d3f3e",
+    "pr_number": 333,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/333",
+    "closes_issue": true,
+    "tests_added": 15,
+    "scars_earned": []
   }
 ]
