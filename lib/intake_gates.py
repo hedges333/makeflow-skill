@@ -403,7 +403,7 @@ def cleanup_tdd_receipt(
 
 
 def run_release_intake_gate(request: ReleaseIntakeRequest) -> int:
-  """Releases canonical workspace mutex locks, cleans up receipts, and restores terminal title.
+  """Releases canonical workspace mutex locks, cleans up receipts, and restores terminal title when idle.
 
   Args:
     request: Frozen ``ReleaseIntakeRequest`` describing workspace and lock
@@ -433,26 +433,35 @@ def run_release_intake_gate(request: ReleaseIntakeRequest) -> int:
   except (ImportError, OSError):
     pass
 
+  from lib.config import is_ticket_active
+
+  state_dir = os.path.join(repo_root, ".workflow", "state")
+  active_state = ActiveStateStore(state_dir).load()
+  skip_title_reset = is_ticket_active(state_dir) or (
+      active_state is not None and active_state.is_complete()
+  )
+
   cleanup_tdd_receipt(repo_root, ticket_id or "", stderr=request.stderr)
 
-  try:
-    from lib.terminal_title import (
-        detect_directory_name,
-        format_terminal_title,
-        is_temporary_directory_name,
-        set_terminal_title,
-    )
-    dir_name = (
-        request.directory
-        if request.directory is not None
-        else detect_directory_name(repo_root=repo_root)
-    )
-    if dir_name and not is_temporary_directory_name(dir_name):
-      restored_title = format_terminal_title("", dir_name)
-      if restored_title:
-        set_terminal_title(
-            title=restored_title, repo_root=repo_root, stream=request.stderr
-        )
-  except (ImportError, OSError):
-    pass
+  if not skip_title_reset:
+    try:
+      from lib.terminal_title import (
+          detect_directory_name,
+          format_terminal_title,
+          is_temporary_directory_name,
+          set_terminal_title,
+      )
+      dir_name = (
+          request.directory
+          if request.directory is not None
+          else detect_directory_name(repo_root=repo_root)
+      )
+      if dir_name and not is_temporary_directory_name(dir_name):
+        restored_title = format_terminal_title("", dir_name)
+        if restored_title:
+          set_terminal_title(
+              title=restored_title, repo_root=repo_root, stream=request.stderr
+          )
+    except (ImportError, OSError):
+      pass
   return 0

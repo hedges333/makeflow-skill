@@ -1311,6 +1311,160 @@ class TestWorkflowGatesTerminalTitleIntegration(unittest.TestCase):
       self.assertIn("\033]0;restored-dir/\007", err.getvalue())
       self.assertNotIn("restored-project", err.getvalue())
 
+  def test_release_intake_preserves_title_when_active_or_complete(self):
+    """GH-325: release-intake skips terminal title reset during active or complete states."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.intake_gates import ReleaseIntakeRequest, run_release_intake_gate
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workspace_mutex import WorkspaceMutex
+
+    with tempfile.TemporaryDirectory(
+        prefix="makeflow_release_title_"
+    ) as temp_dir:
+      repo_dir = os.path.join(temp_dir, "active-repo")
+      state_dir = os.path.join(repo_dir, ".workflow", "state")
+      lock_dir = os.path.join(temp_dir, "locks")
+      os.makedirs(state_dir, exist_ok=True)
+      self.assertFalse(is_temporary_directory_name(repo_dir))
+
+      script = WorkflowGatesScript()
+      mutex = WorkspaceMutex(repo_root=repo_dir, lock_dir=lock_dir)
+
+      # 1. Active T80 and active T90 in active_target.json release locks and preserve title
+      for active_target, target_name in (
+          ("T80", "land"),
+          ("T90", "codified-scars-consolidated"),
+      ):
+        acquired = mutex.acquire(
+            ticket_id="GH-325",
+            workspace_path=repo_dir,
+            branch_name="fix/325-terminal-title-finish",
+        )
+        self.assertTrue(acquired.get("acquired"))
+        self.assertTrue(os.path.isdir(mutex.lock_path("GH-325")))
+        ActiveStateStore(state_dir).save(
+            ActiveTargetState(
+                target=active_target,
+                target_name=target_name,
+                previous_target="T75",
+                status="ACTIVE",
+                complete=False,
+                ticket_id="GH-325",
+            )
+        )
+        err = MockTtyStream()
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+          exit_code = script.execute(
+              [
+                  "--repo-root",
+                  repo_dir,
+                  "--lock-dir",
+                  lock_dir,
+                  "release-intake",
+              ],
+              stdout=io.StringIO(),
+              stderr=err,
+          )
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(os.path.exists(mutex.lock_path("GH-325")))
+        self.assertEqual(err.getvalue(), "")
+
+      # 2. Completed state in active_target.json must preserve DONE title
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(
+              target="T90",
+              target_name="finish",
+              previous_target="T80",
+              status="COMPLETE",
+              complete=True,
+              ticket_id="GH-325",
+          )
+      )
+      err_complete = MockTtyStream()
+      with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+        rc_complete = run_release_intake_gate(
+            ReleaseIntakeRequest(
+                repo_root=repo_dir,
+                lock_dir=lock_dir,
+                stderr=err_complete,
+            )
+        )
+      self.assertEqual(rc_complete, 0)
+      self.assertEqual(err_complete.getvalue(), "")
+
+      # 3. Legacy active 99_next_action.md without active_target.json must preserve title
+      ActiveStateStore(state_dir).clear()
+      next_action_path = os.path.join(state_dir, "99_next_action.md")
+      with open(next_action_path, "w", encoding="utf-8") as f:
+        f.write(
+            "# Active Workflow: Target 80\n"
+            "- Active Target: Target 80 (land)\n"
+            "- Ticket: [GH-325: Fix title](https://example.com) (In Progress)\n"
+        )
+      err_legacy = MockTtyStream()
+      with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+        rc_legacy = script.execute(
+            [
+                "--repo-root",
+                repo_dir,
+                "--lock-dir",
+                lock_dir,
+                "release-intake",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_legacy,
+        )
+      self.assertEqual(rc_legacy, 0)
+      self.assertEqual(err_legacy.getvalue(), "")
+
+      # 4. Inactive Target 00 / unassigned workspace still resets title to active-repo/
+      with open(next_action_path, "w", encoding="utf-8") as f:
+        f.write(
+            "# Target 00: Ready for Intake\n"
+            "- Ticket: Unassigned (Ready for Intake)\n"
+            "- Active Target: Target 00\n"
+        )
+      err_reset = MockTtyStream()
+      with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+        rc_reset = script.execute(
+            [
+                "--repo-root",
+                repo_dir,
+                "--lock-dir",
+                lock_dir,
+                "release-intake",
+            ],
+            stdout=io.StringIO(),
+            stderr=err_reset,
+        )
+      self.assertEqual(rc_reset, 0)
+      self.assertEqual(err_reset.getvalue(), "\033]0;active-repo/\007")
+
+  def test_release_intake_help_documents_idle_only_title_restoration(self):
+    """GH-325: release-intake CLI help states terminal title restoration runs only when idle."""
+    from lib.workflow_gates import WorkflowGatesScript
+    from lib.workflow_gates_cli import build_workflow_gates_parser
+
+    parser = build_workflow_gates_parser("/nonexistent/repo")
+    top_help = " ".join(parser.format_help().split()).lower()
+    self.assertIn("release-intake", top_help)
+    self.assertIn("restore terminal title when idle", top_help)
+    self.assertNotIn("reset terminal title upon completion", top_help)
+
+    out = io.StringIO()
+    err = io.StringIO()
+    exit_code = WorkflowGatesScript().execute(
+        ["release-intake", "--help"],
+        stdout=out,
+        stderr=err,
+    )
+    self.assertEqual(exit_code, 0)
+    self.assertEqual(err.getvalue(), "")
+    sub_help = " ".join(out.getvalue().split()).lower()
+    self.assertIn("restore the terminal title when idle", sub_help)
+    self.assertNotIn("upon completion", sub_help)
+    self.assertNotIn("and reset the terminal title.", sub_help)
+
 
 class TestAncestorPtyResolutionAndDelivery(unittest.TestCase):
   """Hermetic tests for ancestor PTY lookup and real PTY delivery (GH-235)."""

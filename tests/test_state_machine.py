@@ -696,6 +696,116 @@ class TestFullMakefileDagLifecycleAndReaders(unittest.TestCase):
           with self.assertRaises(type(fatal_exc)):
             _finalize_completed_ticket(state_dir, ws, "T80")
 
+  def test_finalize_completed_ticket_sets_done_terminal_title(self) -> None:
+    """GH-325: _finalize_completed_ticket sets '{dir}/: {ticket_id} DONE' or falls back cleanly."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.state_machine import _finalize_completed_ticket
+
+    # 1. Canonical ticket IDs from 10_ticket.json (GitHub, local, and external keys)
+    for raw_ticket_id, expected_title in (
+        ("GH-325", "my-app/: GH-325 DONE"),
+        ("local-1", "my-app/: LOCAL-1 DONE"),
+        ("PROJ-42", "my-app/: PROJ-42 DONE"),
+    ):
+      with self.subTest(ticket_id=raw_ticket_id):
+        with tempfile.TemporaryDirectory(prefix="makeflow_sm_done_") as parent:
+          ws = os.path.join(parent, "my-app")
+          state_dir = os.path.join(ws, ".workflow", "state")
+          _write_file(
+              os.path.join(state_dir, "10_ticket.json"),
+              json.dumps({"ticket_id": raw_ticket_id, "title": "Fix title"})
+              + "\n",
+          )
+          with mock.patch(
+              "lib.terminal_title.set_terminal_title",
+              return_value=(True, expected_title),
+          ) as mock_set:
+            _finalize_completed_ticket(state_dir, ws, "T80")
+          mock_set.assert_called_once_with(title=expected_title, repo_root=ws)
+
+    # 2. Fallback to prior active_target.json ticket_id when 10_ticket.json is absent
+    with tempfile.TemporaryDirectory(prefix="makeflow_sm_done_active_") as parent:
+      ws = os.path.join(parent, "my-app")
+      state_dir = os.path.join(ws, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(
+              target="T90",
+              target_name="codified-scars-consolidated",
+              previous_target="T80",
+              status="ACTIVE",
+              complete=False,
+              ticket_id="gh-325",
+          )
+      )
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "my-app/: GH-325 DONE"),
+      ) as mock_set:
+        _finalize_completed_ticket(state_dir, ws, "T90")
+      mock_set.assert_called_once_with(
+          title="my-app/: GH-325 DONE", repo_root=ws
+      )
+      saved_state = ActiveStateStore(state_dir).load()
+      self.assertIsNotNone(saved_state)
+      self.assertTrue(saved_state.is_complete())
+      self.assertEqual(saved_state.ticket_id, "GH-325")
+
+    # 3. Fallback to '{dir}/' when 10_ticket.json, branch, and prior active_target.json lack ticket_id
+    with tempfile.TemporaryDirectory(prefix="makeflow_sm_done_empty_") as parent:
+      ws = os.path.join(parent, "my-app")
+      state_dir = os.path.join(ws, ".workflow", "state")
+      os.makedirs(state_dir, exist_ok=True)
+      ActiveStateStore(state_dir).save(
+          ActiveTargetState(
+              target="T80",
+              target_name="land",
+              previous_target="T75",
+              status="ACTIVE",
+              complete=False,
+              ticket_id="",
+          )
+      )
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "my-app/"),
+      ) as mock_set:
+        _finalize_completed_ticket(state_dir, ws, "T80")
+      mock_set.assert_called_once_with(title="my-app/", repo_root=ws)
+
+  def test_advance_to_finish_sets_done_terminal_title(self) -> None:
+    """GH-325: advance_workflow_target T80 -> T90 complete=True sets '{dir}/: {ticket_id} DONE'."""
+    from lib.active_state import ActiveStateStore
+    from lib.state_machine import advance_workflow_target
+
+    with tempfile.TemporaryDirectory(prefix="makeflow_sm_adv_done_") as parent:
+      ws = os.path.join(parent, "my-app")
+      state_dir = os.path.join(ws, ".workflow", "state")
+      _write_file(
+          os.path.join(state_dir, "10_ticket.json"),
+          json.dumps({"ticket_id": "GH-325", "title": "Fix finish title"})
+          + "\n",
+      )
+      with mock.patch(
+          "lib.terminal_title.set_terminal_title",
+          return_value=(True, "my-app/: GH-325 DONE"),
+      ) as mock_set:
+        ok, msg = advance_workflow_target(
+            "T80",
+            "T90",
+            workspace_dir=ws,
+            state_dir=state_dir,
+            evidence={"complete": True, "skipMainFetch": True},
+        )
+      self.assertTrue(ok, msg)
+      mock_set.assert_called_once_with(
+          title="my-app/: GH-325 DONE", repo_root=ws
+      )
+      saved_state = ActiveStateStore(state_dir).load()
+      self.assertIsNotNone(saved_state)
+      self.assertTrue(saved_state.is_complete())
+      self.assertEqual(saved_state.ticket_id, "GH-325")
+
   def test_backtick_ticket_id_bracket_title_roundtrip_and_release_intake(
       self,
   ) -> None:
