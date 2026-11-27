@@ -3263,5 +3263,25 @@
     "closes_issue": true,
     "tests_added": 15,
     "scars_earned": []
+  },
+  {
+    "id": "GH-319",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/319",
+    "title": "Bundle path-resolution context parameters (PathContext) at config/scar boundary",
+    "request": "Introduce a frozen PathContext dataclass and resolve_path_context() boundary validator in lib/agent_paths.py with canonical re-exports in lib/config.py and lib/scar_locations.py, add keyword-only context parameters across all seven config and scar boundary entrypoints preserving positional and package_root compatibility, simplify internal context forwarding across lib/config.py, lib/scar_locations.py, lib/scars_db.py, lib/scar_miner.py, and mcp/server.py while keeping low-level persistence helpers context-free, and add 8 hermetic test suites.",
+    "branch": "feat/319-path-context-boundary",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "tests"
+    ],
+    "started_at": "2026-11-26T22:48:33Z",
+    "completed_at": "2026-11-27T06:01:41Z",
+    "commit_sha": "b9e778077f5c36cf90cf1cbcad44fbbc8c9514fa",
+    "pr_number": 334,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/334",
+    "closes_issue": true,
+    "tests_added": 8,
+    "scars_earned": []
   }
 ]
