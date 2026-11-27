@@ -87,6 +87,8 @@ from lib.turn_boundary import (
     evaluate_command_turn_boundary,
     evaluate_subagent_airlock,
     extract_advance_target_calls,
+    format_missing_from_recovery_message,
+    is_from_omitted_recovery_transition,
     load_transcript_steps,
     mark_gate_human_verified,
     read_gate_entry,
@@ -1104,6 +1106,13 @@ def _validate_advance_calls_guard(adv_calls, default_state_dir, transcript_path)
   for adv in adv_calls:
     curr_t = adv["currentTarget"]
     next_t = adv["nextTarget"]
+    if is_from_omitted_recovery_transition(
+        curr_t, next_t, bool(adv.get("fromOmitted"))
+    ):
+      return {
+          "decision": "deny",
+          "reason": format_missing_from_recovery_message(curr_t, next_t),
+      }
     eff_state_dir = _resolve_adv_state_dir(adv, default_state_dir)
     if (curr_t, next_t) in PAUSE_GATE_EXITS:
       ok, reason = evaluate_advance_target_turn_boundary(

@@ -5230,6 +5230,18 @@ class TestPauseGateChainingAndDeniedTurnRecovery(unittest.TestCase):
             "python3 scripts/workflow_gates.py advance --to codified-scars-consolidated",
             "T80",
         ),
+        (
+            "recovery_t80_to_t70_to_t75_without_approved",
+            "make -f .workflow/state/Makefile bot-quiescence && "
+            "make -f .workflow/state/Makefile ready-to-land",
+            "T70",
+        ),
+        (
+            "recovery_t70_to_t30_to_t40_without_approved",
+            "make -f .workflow/state/Makefile implementation-diff && "
+            "make -f .workflow/state/Makefile adversarial-review",
+            "T30",
+        ),
     )
 
     with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
@@ -5297,16 +5309,16 @@ class TestPauseGateChainingAndDeniedTurnRecovery(unittest.TestCase):
               "T20",
           ),
           (
-              "recovery_t80_to_t70_to_t75_without_approved",
+              "explicit_from_t80_to_t70_to_t75",
               "T80",
-              "make -f .workflow/state/Makefile bot-quiescence && "
+              "make -f .workflow/state/Makefile bot-quiescence FROM=T80 && "
               "make -f .workflow/state/Makefile ready-to-land",
               "T75",
           ),
           (
-              "recovery_t70_to_t30_to_t40_without_approved",
+              "explicit_from_t70_to_t30_to_t40",
               "T70",
-              "make -f .workflow/state/Makefile implementation-diff && "
+              "make -f .workflow/state/Makefile implementation-diff FROM=T70 && "
               "make -f .workflow/state/Makefile adversarial-review",
               "T40",
           ),
@@ -6191,6 +6203,581 @@ class TestPauseGateChainingAndDeniedTurnRecovery(unittest.TestCase):
 
     skill_path = os.path.join(REPO_ROOT, "skills", "makeflow", "SKILL.md")
     self.assertLessEqual(os.path.getsize(skill_path), 24576)
+
+  def test_explicit_from_recovery_table_and_helpers_derived_from_targets_config(
+      self,
+  ):
+    """GH-341 Slice 1: Recovery transition sets and helpers derive cleanly from TARGETS_CONFIG."""
+    import lib.turn_boundary as tb
+
+    self.assertFalse(hasattr(tb, "_NON_INIT_PREDECESSORS"))
+    self.assertFalse(hasattr(tb, "_PAUSE_GATE_ONLY_EXIT_TARGETS"))
+
+    expected_overloaded = frozenset({
+        ("T45", "T30"),
+        ("T50", "T30"),
+        ("T60", "T30"),
+        ("T70", "T30"),
+        ("T75", "T30"),
+        ("T75", "T70"),
+        ("T80", "T30"),
+        ("T80", "T60"),
+        ("T80", "T70"),
+    })
+    expected_non_ambiguous_rewinds = frozenset({
+        ("T20", "T15"),
+        ("T30", "T20"),
+        ("T30", "T15"),
+        ("T42", "T20"),
+        ("T42", "T15"),
+        ("T60", "T40"),
+        ("T75", "T40"),
+        ("T80", "T40"),
+    })
+    self.assertEqual(
+        tb.EXPLICIT_FROM_RECOVERY_TRANSITIONS, expected_overloaded
+    )
+    self.assertEqual(
+        tb.RECOVERY_TRANSITIONS,
+        expected_overloaded | expected_non_ambiguous_rewinds,
+    )
+    self.assertEqual(
+        tb._TARGET_TO_MAKE_GOAL.get("T90"), "codified-scars-consolidated"
+    )
+
+    expected_goals = {
+        "T30": "implementation-diff",
+        "T60": "push",
+        "T70": "bot-quiescence",
+    }
+    for src_t, dst_t in sorted(expected_overloaded):
+      with self.subTest(overloaded=(src_t, dst_t)):
+        self.assertTrue(
+            tb.is_from_omitted_recovery_transition(src_t, dst_t, True)
+        )
+        self.assertFalse(
+            tb.is_from_omitted_recovery_transition(src_t, dst_t, False)
+        )
+        msg = tb.format_missing_from_recovery_message(src_t, dst_t)
+        self.assertIn(f"FROM={src_t}", msg)
+        self.assertIn(
+            f"make -f .workflow/state/Makefile {expected_goals[dst_t]}"
+            f" FROM={src_t}",
+            msg,
+        )
+
+    for src_t, dst_t in sorted(expected_non_ambiguous_rewinds):
+      with self.subTest(non_ambiguous_rewind=(src_t, dst_t)):
+        self.assertFalse(
+            tb.is_from_omitted_recovery_transition(src_t, dst_t, True)
+        )
+
+    for src_t, dst_t in (
+        ("T20", "T30"),
+        ("T42", "T30"),
+        ("T45", "T50"),
+        ("T50", "T60"),
+        ("T50", "T70"),
+        ("T60", "T70"),
+        ("T75", "T80"),
+        ("T00", "T30"),
+        ("T00", "T60"),
+        ("T00", "T70"),
+    ):
+      with self.subTest(forward_or_resume=(src_t, dst_t)):
+        self.assertFalse(
+            tb.is_from_omitted_recovery_transition(src_t, dst_t, True)
+        )
+
+  def test_unapproved_from_omitted_bundles_classified_across_five_disk_states(
+      self,
+  ):
+    """GH-341 Slice 1: Unapproved FROM-omitted exit bundles classify as exit_and_chained across all 5 disk states."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        classify_bundled_pause_gate_violation,
+        clear_gate_entry,
+        extract_advance_target_calls,
+        record_gate_entry,
+    )
+
+    unapproved_bundles = (
+        (
+            "t30_to_t20_nbo2",
+            "make -f .workflow/state/Makefile implementation-diff && "
+            "make -f .workflow/state/Makefile approved-plan",
+            "T30",
+        ),
+        (
+            "t50_to_t60_unapproved",
+            "make -f .workflow/state/Makefile commit && "
+            "make -f .workflow/state/Makefile push",
+            "T50",
+        ),
+        (
+            "t60_to_t70_unapproved",
+            "make -f .workflow/state/Makefile push && "
+            "make -f .workflow/state/Makefile bot-quiescence",
+            "T60",
+        ),
+        (
+            "t70_to_t75_unapproved",
+            "make -f .workflow/state/Makefile bot-quiescence && "
+            "make -f .workflow/state/Makefile ready-to-land",
+            "T70",
+        ),
+        (
+            "t80_to_t90_unapproved",
+            "make -f .workflow/state/Makefile land && "
+            "make -f .workflow/state/Makefile codified-scars-consolidated",
+            "T80",
+        ),
+    )
+
+    explicit_from_chains = (
+        (
+            "explicit_from_t70_t30_t40",
+            "make -f .workflow/state/Makefile implementation-diff FROM=T70 && "
+            "make -f .workflow/state/Makefile adversarial-review",
+        ),
+        (
+            "explicit_from_t80_t70_t75",
+            "make -f .workflow/state/Makefile bot-quiescence FROM=T80 && "
+            "make -f .workflow/state/Makefile ready-to-land",
+        ),
+    )
+
+    def _apply_disk_state(state_dir, mode):
+      active_path = os.path.join(state_dir, "active_target.json")
+      if os.path.exists(active_path):
+        os.unlink(active_path)
+      clear_gate_entry(state_dir)
+      if mode == "mutated":
+        ActiveStateStore(state_dir).save(
+            ActiveTargetState(target="T40", status="ACTIVE")
+        )
+        record_gate_entry(state_dir, "T40", "T45")
+      elif mode == "advanced":
+        ActiveStateStore(state_dir).save(
+            ActiveTargetState(target="T80", status="ACTIVE")
+        )
+        record_gate_entry(state_dir, "T70", "T75")
+      elif mode == "rewound":
+        ActiveStateStore(state_dir).save(
+            ActiveTargetState(target="T15", status="ACTIVE")
+        )
+        record_gate_entry(state_dir, "T15", "T20")
+      elif mode == "completed":
+        ActiveStateStore(state_dir).save(
+            ActiveTargetState(target="T90", status="COMPLETE")
+        )
+      elif mode == "absent":
+        pass
+
+    five_states = ("mutated", "advanced", "rewound", "completed", "absent")
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+
+      for mode in five_states:
+        _apply_disk_state(state_dir, mode)
+        eff_dir = "" if mode == "absent" else state_dir
+        for label, cmd, expected_next in unapproved_bundles:
+          with self.subTest(disk_state=mode, bundle=label):
+            tc = {
+                "id": f"call_{mode}_{label}",
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            }
+            adv_calls = extract_advance_target_calls(
+                [tc], default_state_dir=eff_dir
+            )
+            violation = classify_bundled_pause_gate_violation(adv_calls)
+            self.assertIsNotNone(violation)
+            self.assertEqual(violation[0], "exit_and_chained")
+            self.assertEqual(violation[2], expected_next)
+
+            res = evaluate_tool_call({
+                "workspacePaths": [ws_dir],
+                "toolCall": tc,
+            })
+            self.assertEqual(res["decision"], "deny", res)
+            self.assertIn("SCAR-PROC-102", res["reason"])
+
+        for label, cmd in explicit_from_chains:
+          with self.subTest(disk_state=mode, explicit_chain=label):
+            tc = {
+                "id": f"call_{mode}_{label}",
+                "name": "run_command",
+                "args": {"CommandLine": cmd},
+            }
+            adv_calls = extract_advance_target_calls(
+                [tc], default_state_dir=eff_dir
+            )
+            self.assertIsNone(classify_bundled_pause_gate_violation(adv_calls))
+
+  def test_transcript_replay_invariants_hold_across_five_disk_states(self):
+    """GH-341 / GH-339 Slice 1: Transcript replay stays invariant across mutated, advanced, rewound, completed, and absent disk states."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        _pause_gate_entered_in_turn,
+        clear_gate_entry,
+        detect_latest_target,
+        evaluate_advance_target_turn_boundary,
+        evaluate_command_turn_boundary,
+        record_gate_entry,
+    )
+
+    denied_unapproved_t30_step = {
+        "step_index": 3,
+        "type": "PLANNER_RESPONSE",
+        "content": "Trying unapproved T30+T20 bundle.",
+        "tool_calls": [{
+            "id": "call_denied_t30_t20",
+            "name": "run_command",
+            "args": {
+                "CommandLine": json.dumps(
+                    "make -f .workflow/state/Makefile implementation-diff && "
+                    "make -f .workflow/state/Makefile approved-plan"
+                )
+            },
+        }],
+    }
+    denied_unapproved_t70_step = {
+        "step_index": 4,
+        "type": "PLANNER_RESPONSE",
+        "content": "Trying unapproved T70+T90 bundle.",
+        "tool_calls": [{
+            "id": "call_denied_t70_t90",
+            "name": "run_command",
+            "args": {
+                "CommandLine": json.dumps(
+                    "make -f .workflow/state/Makefile bot-quiescence && "
+                    "make -f .workflow/state/Makefile codified-scars-consolidated"
+                )
+            },
+        }],
+    }
+    denied_unapproved_t60_step = {
+        "step_index": 5,
+        "type": "PLANNER_RESPONSE",
+        "content": "Trying unapproved T60+T70 bundle.",
+        "tool_calls": [{
+            "id": "call_denied_t60_t70",
+            "name": "run_command",
+            "args": {
+                "CommandLine": json.dumps(
+                    "make -f .workflow/state/Makefile push && "
+                    "make -f .workflow/state/Makefile bot-quiescence"
+                )
+            },
+        }],
+    }
+    same_turn_t50_steps = [
+        {"step_index": 1, "type": "USER_INPUT", "content": "Review approved."},
+        {
+            "step_index": 2,
+            "type": "PLANNER_RESPONSE",
+            "content": "Entering T50.",
+            "tool_calls": [{
+                "id": "call_enter_t50",
+                "name": "run_command",
+                "args": {
+                    "CommandLine": json.dumps(
+                        "make -f .workflow/state/Makefile commit FROM=T45"
+                        " APPROVED=1"
+                    )
+                },
+            }],
+        },
+        denied_unapproved_t30_step,
+        denied_unapproved_t70_step,
+        denied_unapproved_t60_step,
+    ]
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(transcript_path, same_turn_t50_steps)
+
+      def _configure_state(mode):
+        active_path = os.path.join(state_dir, "active_target.json")
+        if os.path.exists(active_path):
+          os.unlink(active_path)
+        clear_gate_entry(state_dir)
+        if mode == "mutated":
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target="T70", status="ACTIVE")
+          )
+          record_gate_entry(
+              state_dir, "T40", "T45", transcript_path=transcript_path
+          )
+          return state_dir
+        if mode == "advanced":
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target="T80", status="ACTIVE")
+          )
+          record_gate_entry(
+              state_dir, "T70", "T75", transcript_path=transcript_path
+          )
+          return state_dir
+        if mode == "rewound":
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target="T15", status="ACTIVE")
+          )
+          record_gate_entry(
+              state_dir, "T15", "T20", transcript_path=transcript_path
+          )
+          return state_dir
+        if mode == "completed":
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target="T90", status="COMPLETE")
+          )
+          return state_dir
+        return None
+
+      for mode in ("mutated", "advanced", "rewound", "completed", "absent"):
+        with self.subTest(replay_disk_state=mode):
+          eff_state_dir = _configure_state(mode)
+          eff_str = eff_state_dir or ""
+
+          # Denied bundles must never spoof T20/T90/T70 or advance latest target past T50
+          self.assertEqual(
+              detect_latest_target(same_turn_t50_steps, state_dir=eff_state_dir),
+              "T50",
+          )
+          self.assertFalse(
+              step_enters_gate(
+                  denied_unapproved_t30_step, "T20", default_state_dir=eff_str
+              )
+          )
+          self.assertFalse(
+              step_enters_gate(
+                  denied_unapproved_t60_step, "T60", default_state_dir=eff_str
+              )
+          )
+          self.assertEqual(
+              _pause_gate_entered_in_turn(
+                  same_turn_t50_steps[1:], default_state_dir=eff_str
+              ),
+              "T50",
+          )
+          # Same-turn T50 exit and git commit must stay blocked (zero bypass, zero COMPLETE leak)
+          ok_adv, reason_adv = evaluate_advance_target_turn_boundary(
+              "T50", "T60", transcript_path, state_dir=eff_state_dir
+          )
+          self.assertFalse(ok_adv)
+          self.assertIn("SCAR-PROC-102", reason_adv)
+
+          ok_cmd, reason_cmd = evaluate_command_turn_boundary(
+              "T50", transcript_path, state_dir=eff_state_dir
+          )
+          self.assertFalse(ok_cmd)
+          self.assertIn("SCAR-PROC-102", reason_cmd)
+
+          # Empty-transcript replay on COMPLETE disk state must never leak T90 into detect_latest_target
+          if mode == "completed":
+            self.assertEqual(
+                detect_latest_target(
+                    [denied_unapproved_t70_step], state_dir=eff_state_dir
+                ),
+                "",
+            )
+
+  def test_pre_tool_guard_denies_standalone_from_omitted_overloaded_recovery_edges(
+      self,
+  ):
+    """GH-341 Slice 2: PreToolUse denies all 9 FROM-omitted overloaded recovery edges without mutating gate_entry.json."""
+    from lib.active_state import ActiveStateStore, ActiveTargetState
+    from lib.turn_boundary import (
+        EXPLICIT_FROM_RECOVERY_TRANSITIONS,
+        PAUSE_GATE_TARGETS,
+        clear_gate_entry,
+        record_gate_entry,
+    )
+
+    dst_goals = {
+        "T15": "archaeology-verified",
+        "T20": "approved-plan",
+        "T30": "implementation-diff",
+        "T40": "adversarial-review",
+        "T50": "commit",
+        "T60": "push",
+        "T70": "bot-quiescence",
+        "T80": "land",
+    }
+
+    with _isolated_guard_env(), tempfile.TemporaryDirectory() as ws_dir:
+      state_dir = os.path.join(ws_dir, ".workflow", "state")
+      os.makedirs(state_dir)
+      transcript_path = os.path.join(ws_dir, "transcript.jsonl")
+      _write_transcript(
+          transcript_path,
+          [{"step_index": 1, "type": "USER_INPUT", "content": "Approved."}],
+      )
+      gate_file = os.path.join(state_dir, "gate_entry.json")
+
+      # 1. All 9 overloaded recovery edges deny when FROM= is omitted and preserve gate_entry.json
+      for src_t, dst_t in sorted(EXPLICIT_FROM_RECOVERY_TRANSITIONS):
+        goal = dst_goals[dst_t]
+        for label, cmd in (
+            ("make", f"make -f .workflow/state/Makefile {goal}"),
+            ("cli", f"python3 scripts/workflow_gates.py advance --to {goal}"),
+        ):
+          with self.subTest(overloaded_deny=(src_t, dst_t, label)):
+            ActiveStateStore(state_dir).save(
+                ActiveTargetState(target=src_t, status="ACTIVE")
+            )
+            clear_gate_entry(state_dir)
+            if src_t in PAUSE_GATE_TARGETS:
+              record_gate_entry(
+                  state_dir, "T40", src_t, transcript_path=transcript_path
+              )
+              with open(gate_file, "rb") as f:
+                before_bytes = f.read()
+            else:
+              before_bytes = None
+
+            res = evaluate_tool_call({
+                "transcriptPath": transcript_path,
+                "workspacePaths": [ws_dir],
+                "toolCall": {
+                    "name": "run_command",
+                    "args": {"CommandLine": cmd},
+                },
+            })
+            self.assertEqual(res["decision"], "deny", res)
+            self.assertIn(f"FROM={src_t}", res["reason"])
+            self.assertIn(
+                f"make -f .workflow/state/Makefile {goal} FROM={src_t}",
+                res["reason"],
+            )
+            if before_bytes is not None:
+              self.assertTrue(os.path.isfile(gate_file))
+              with open(gate_file, "rb") as f:
+                self.assertEqual(f.read(), before_bytes)
+            else:
+              self.assertFalse(os.path.exists(gate_file))
+
+        # 2. Explicit FROM=<src> on the exact same overloaded recovery edge succeeds
+        with self.subTest(overloaded_explicit=(src_t, dst_t)):
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target=src_t, status="ACTIVE")
+          )
+          clear_gate_entry(state_dir)
+          res_ok = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          f"make -f .workflow/state/Makefile {goal} FROM={src_t}"
+                      )
+                  },
+              },
+          })
+          self.assertEqual(res_ok["decision"], "allow", res_ok)
+
+          # MCP call with explicit currentTarget remains allowed
+          mcp_ok = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "call_mcp_tool",
+                  "args": {
+                      "ToolName": "workflow_advance_target",
+                      "Arguments": {
+                          "currentTarget": src_t,
+                          "nextTarget": dst_t,
+                          "workspaceDir": ws_dir,
+                      },
+                  },
+              },
+          })
+          self.assertEqual(mcp_ok["decision"], "allow", mcp_ok)
+
+      # 3. Non-ambiguous rewinds with FROM= omitted remain allowed
+      for src_t, dst_t in (
+          ("T20", "T15"),
+          ("T30", "T20"),
+          ("T30", "T15"),
+          ("T42", "T20"),
+          ("T42", "T15"),
+          ("T60", "T40"),
+          ("T75", "T40"),
+          ("T80", "T40"),
+      ):
+        with self.subTest(non_ambiguous_rewind=(src_t, dst_t)):
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target=src_t, status="ACTIVE")
+          )
+          clear_gate_entry(state_dir)
+          res_rewind = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          f"make -f .workflow/state/Makefile {dst_goals[dst_t]}"
+                      )
+                  },
+              },
+          })
+          self.assertEqual(res_rewind["decision"], "allow", res_rewind)
+
+      # 4. Standalone forward pause-gate exits after human approval remain allowed with FROM= omitted
+      for src_t, dst_t in (
+          ("T20", "T30"),
+          ("T42", "T30"),
+          ("T45", "T50"),
+          ("T50", "T60"),
+          ("T50", "T70"),
+          ("T60", "T70"),
+          ("T75", "T80"),
+      ):
+        with self.subTest(forward_exit=(src_t, dst_t)):
+          ActiveStateStore(state_dir).save(
+              ActiveTargetState(target=src_t, status="ACTIVE")
+          )
+          clear_gate_entry(state_dir)
+          res_fwd = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": (
+                          f"make -f .workflow/state/Makefile {dst_goals[dst_t]}"
+                          " APPROVED=1"
+                      )
+                  },
+              },
+          })
+          self.assertEqual(res_fwd["decision"], "allow", res_fwd)
+
+      # 5. Standalone T00 session resume remains allowed with FROM= omitted
+      active_path = os.path.join(state_dir, "active_target.json")
+      if os.path.exists(active_path):
+        os.unlink(active_path)
+      for goal in ("implementation-diff", "push", "bot-quiescence"):
+        with self.subTest(t00_resume=goal):
+          if os.path.exists(active_path):
+            os.unlink(active_path)
+          clear_gate_entry(state_dir)
+          res_t00 = evaluate_tool_call({
+              "transcriptPath": transcript_path,
+              "workspacePaths": [ws_dir],
+              "toolCall": {
+                  "name": "run_command",
+                  "args": {
+                      "CommandLine": f"make -f .workflow/state/Makefile {goal}"
+                  },
+              },
+          })
+          self.assertEqual(res_t00["decision"], "allow", res_t00)
 
 
 if __name__ == "__main__":

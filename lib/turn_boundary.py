@@ -59,6 +59,11 @@ _MAKE_GOAL_TO_TARGET = {
     "codified-scars-consolidated": "T90",
     "finish": "T90",
 }
+_TARGET_TO_MAKE_GOAL = {
+    tid: goal
+    for goal, tid in _MAKE_GOAL_TO_TARGET.items()
+    if goal != "finish"
+}
 _GOAL_OR_INIT_TO_TARGET = {"read-init-d": "T00", **_MAKE_GOAL_TO_TARGET}
 
 _SHELL_TOOL_NAMES = frozenset({"run_command", "Bash", "bash", "shell"})
@@ -237,23 +242,20 @@ VALID_TRANSITIONS = {
     for tid, meta in TARGETS_CONFIG.items()
 }
 
-_NON_INIT_PREDECESSORS = {}
-for _src_t, _meta in TARGETS_CONFIG.items():
-  if _src_t == "T00":
-    continue
-  for _dst_t in list(_meta.get("next", ())) + list(
-      _meta.get("recoveryNext", ())
-  ):
-    _NON_INIT_PREDECESSORS.setdefault(_dst_t, set()).add(_src_t)
-
 _PAUSE_GATE_EXIT_DEST_SOURCES = {}
 for _src_t, _dst_t in PAUSE_GATE_EXITS:
   _PAUSE_GATE_EXIT_DEST_SOURCES.setdefault(_dst_t, set()).add(_src_t)
 
-_PAUSE_GATE_ONLY_EXIT_TARGETS = frozenset(
-    dst_t
-    for dst_t, preds in _NON_INIT_PREDECESSORS.items()
-    if preds and all((src_t, dst_t) in PAUSE_GATE_EXITS for src_t in preds)
+RECOVERY_TRANSITIONS = frozenset(
+    (src_t, dst_t)
+    for src_t, meta in TARGETS_CONFIG.items()
+    for dst_t in meta.get("recoveryNext", ())
+)
+
+EXPLICIT_FROM_RECOVERY_TRANSITIONS = frozenset(
+    (src_t, dst_t)
+    for (src_t, dst_t) in RECOVERY_TRANSITIONS
+    if dst_t in _PAUSE_GATE_EXIT_DEST_SOURCES
 )
 
 _PAUSE_GATED_COMMAND_TUPLES = frozenset(
@@ -718,13 +720,12 @@ def _pause_gate_exit_source(adv):
   ``active_target.json`` has subsequently moved, completed, or been removed:
 
   1. Explicit or currently inferred pair ``(curr_t, next_t) in PAUSE_GATE_EXITS``.
-  2. Structural ``FROM``-omitted exit target whose non-``T00`` DAG predecessors
-     are exclusively pause-gate exits (``_PAUSE_GATE_ONLY_EXIT_TARGETS``, for
-     example ``T80`` from ``T75`` and ``T50`` from ``T45``).
-  3. Structural ``FROM``-omitted exit destination in ``PAUSE_GATE_EXITS`` that
-     explicitly carries ``APPROVED=1`` / ``--approved`` or pause-gate approval
-     evidence (for example ``T30`` from ``T20``/``T42``, ``T60`` from ``T50``,
-     and ``T70`` from ``T50``/``T60``).
+  2. Structural ``FROM``-omitted call whose destination is in
+     ``_PAUSE_GATE_EXIT_DEST_SOURCES`` (``T30``, ``T50``, ``T60``, ``T70``,
+     or ``T80``). Because overloaded recovery loop-backs into those
+     destinations require explicit ``FROM=<source>``, any ``FROM``-omitted
+     call targeting them classifies unconditionally as a forward pause-gate
+     exit regardless of ``APPROVED=1`` or mutable disk state.
 
   Args:
     adv: Normalized advance-call dictionary.
@@ -738,16 +739,47 @@ def _pause_gate_exit_source(adv):
   next_t = adv.get("nextTarget", "")
   if (curr_t, next_t) in PAUSE_GATE_EXITS:
     return curr_t
-  if not adv.get("fromOmitted") or next_t not in _PAUSE_GATE_EXIT_DEST_SOURCES:
-    return ""
-  ev = adv.get("evidence") if isinstance(adv.get("evidence"), dict) else {}
-  has_approval_ev = bool(adv.get("approved")) or any(
-      bool(ev.get(PAUSE_GATE_EXITS[(src_t, next_t)]))
-      for src_t in _PAUSE_GATE_EXIT_DEST_SOURCES[next_t]
-  )
-  if next_t in _PAUSE_GATE_ONLY_EXIT_TARGETS or has_approval_ev:
+  if adv.get("fromOmitted") and next_t in _PAUSE_GATE_EXIT_DEST_SOURCES:
     return "/".join(sorted(_PAUSE_GATE_EXIT_DEST_SOURCES[next_t]))
   return ""
+
+
+def is_from_omitted_recovery_transition(curr_t, next_t, from_omitted):
+  """Returns True when an overloaded recovery loop-back omitted explicit FROM=.
+
+  Args:
+    curr_t: Resolved source target ID (for example ``"T70"`` or ``"T80"``).
+    next_t: Canonical destination target ID (for example ``"T30"``).
+    from_omitted: True when the shell or CLI command omitted ``FROM=`` or
+      ``--from``.
+
+  Returns:
+    True when ``from_omitted`` is True and ``(curr_t, next_t)`` belongs to
+    ``EXPLICIT_FROM_RECOVERY_TRANSITIONS``.
+  """
+  return bool(from_omitted) and (
+      curr_t,
+      next_t,
+  ) in EXPLICIT_FROM_RECOVERY_TRANSITIONS
+
+
+def format_missing_from_recovery_message(curr_t, next_t):
+  """Formats the refusal message requiring explicit FROM=<current> on recovery.
+
+  Args:
+    curr_t: Resolved source target ID (for example ``"T70"`` or ``"T80"``).
+    next_t: Canonical destination target ID (for example ``"T30"``).
+
+  Returns:
+    Deterministic refusal message naming the exact ``make`` command with
+    ``FROM=<curr_t>``.
+  """
+  goal = _TARGET_TO_MAKE_GOAL.get(next_t, next_t)
+  return (
+      f"BLOCKED: Recovery transition {curr_t} -> {next_t} requires explicit"
+      f" FROM={curr_t} because {next_t} is also a pause-gate exit target."
+      f" Run: make -f .workflow/state/Makefile {goal} FROM={curr_t}"
+  )
 
 
 def classify_bundled_pause_gate_violation(adv_calls):

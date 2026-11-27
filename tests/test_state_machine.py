@@ -3760,6 +3760,100 @@ class TestMakeAdvanceEnvSanitization(unittest.TestCase):
       self.assertEqual(receipt["regression_cmd"], unittest_cmd)
 
 
+class TestExplicitFromOnOverloadedRecoveryEdges(unittest.TestCase):
+  """Tests explicit FROM= enforcement on overloaded recovery loop-backs (GH-341)."""
+
+  _OVERLOADED_EDGES = (
+      ("T45", "T30", "implementation-diff"),
+      ("T50", "T30", "implementation-diff"),
+      ("T60", "T30", "implementation-diff"),
+      ("T70", "T30", "implementation-diff"),
+      ("T75", "T30", "implementation-diff"),
+      ("T80", "T30", "implementation-diff"),
+      ("T80", "T60", "push"),
+      ("T75", "T70", "bot-quiescence"),
+      ("T80", "T70", "bot-quiescence"),
+  )
+  _REFUSAL = "requires explicit FROM="
+
+  def _make_repo(self, repo: str, source: str) -> str:
+    """Creates a hermetic repo whose active_target.json sits at source."""
+    from lib.workflow_gates import WorkflowGatesScript
+
+    _init_git_repo(repo, branch="feat/341-explicit-from")
+    WorkflowGatesScript().execute(["--repo-root", repo, "init-makefile"])
+    state_dir = os.path.join(repo, ".workflow", "state")
+    _write_file(
+        os.path.join(state_dir, "active_target.json"),
+        json.dumps({"target": source, "status": "ACTIVE"}),
+    )
+    return state_dir
+
+  def _run_cli(self, repo: str, goal: str, *extra: str):
+    """Runs scripts/workflow_gates.py advance as a subprocess."""
+    return subprocess.run(
+        [
+            sys.executable, WORKFLOW_GATES_SCRIPT, "--repo-root", repo,
+            "advance", "--to", goal, *extra,
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+  def test_cli_rejects_from_omitted_overloaded_recovery_edges(self) -> None:
+    """GH-341: FROM-omitted overloaded recovery edges exit 2 naming FROM=<current>."""
+    for src, dst, goal in self._OVERLOADED_EDGES:
+      with self.subTest(edge=(src, dst)), tempfile.TemporaryDirectory() as repo:
+        state_dir = self._make_repo(repo, src)
+        with open(os.path.join(state_dir, "active_target.json"), "rb") as f:
+          before = f.read()
+        proc = self._run_cli(repo, goal)
+        self.assertEqual(proc.returncode, 2, proc.stderr + proc.stdout)
+        out = proc.stderr + proc.stdout
+        self.assertIn(
+            f"make -f .workflow/state/Makefile {goal} FROM={src}", out
+        )
+        with open(os.path.join(state_dir, "active_target.json"), "rb") as f:
+          self.assertEqual(f.read(), before)
+
+  def test_cli_explicit_from_is_not_refused_as_missing_from(self) -> None:
+    """GH-341: explicit --from on an overloaded edge never hits the FROM refusal."""
+    for src, dst, goal in self._OVERLOADED_EDGES:
+      with self.subTest(edge=(src, dst)), tempfile.TemporaryDirectory() as repo:
+        self._make_repo(repo, src)
+        proc = self._run_cli(repo, goal, "--from", src)
+        self.assertNotIn(self._REFUSAL, proc.stderr + proc.stdout)
+
+  def test_cli_non_ambiguous_rewinds_and_forward_exits_not_refused(self) -> None:
+    """GH-341: -> T15/T20/T40 rewinds and forward exits omit FROM= freely."""
+    for src, goal in (
+        ("T20", "archaeology-verified"),
+        ("T30", "approved-plan"),
+        ("T60", "adversarial-review"),
+        ("T20", "implementation-diff"),
+        ("T75", "land"),
+    ):
+      with self.subTest(edge=(src, goal)), tempfile.TemporaryDirectory() as repo:
+        self._make_repo(repo, src)
+        proc = self._run_cli(repo, goal)
+        self.assertNotIn(self._REFUSAL, proc.stderr + proc.stdout)
+
+  def test_make_rejects_from_omitted_recovery_to_t30(self) -> None:
+    """GH-341: real GNU Make implementation-diff without FROM= exits 2 with the hint."""
+    for src in ("T45", "T50", "T60", "T70", "T75", "T80"):
+      with self.subTest(source=src), tempfile.TemporaryDirectory() as repo:
+        self._make_repo(repo, src)
+        proc = _assert_make_rc(self, _run_make(repo, "implementation-diff"), 2)
+        self.assertIn(
+            f"make -f .workflow/state/Makefile implementation-diff FROM={src}",
+            proc.stderr + proc.stdout,
+        )
+        explicit = _run_make(repo, "implementation-diff", f"FROM={src}")
+        self.assertNotIn(self._REFUSAL, explicit.stderr + explicit.stdout)
+
+
 class TestPostCommitTarget50ExitGate(unittest.TestCase):
   """Tests post-commit HEAD validation on T50 -> T60/T70 and check-post-commit (GH-292)."""
 

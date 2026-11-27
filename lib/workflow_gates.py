@@ -532,6 +532,7 @@ class WorkflowGatesScript(BaseScript):
 
   def _advance(self) -> int:
     """Executes the advance subcommand and renders 99_next_action.md."""
+    from lib import turn_boundary as tb
     from lib.state_machine import (
         TARGET_NAME_TO_ID,
         advance_workflow_target,
@@ -551,6 +552,9 @@ class WorkflowGatesScript(BaseScript):
         else infer_current_target(state_dir, next_target=next_t)
     )
 
+    if tb.is_from_omitted_recovery_transition(current, next_t, not raw_from):
+      msg = tb.format_missing_from_recovery_message(current, next_t)
+      return self._emit_advance_reflex(msg)
     if next_t in ("T40", "T45", "T50"):
       rc_tree = self._check_approved_tree()
       if rc_tree != 0:
