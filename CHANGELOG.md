@@ -74,3 +74,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-242: Isolate external consumer repositories from Makeflow governance toolchain hashes, git diff checks, and shell self-modification guards in lib/tdd_guard.py and scripts/pre_tool_guard.py.
 - GH-290: Verify CORE_GOVERNANCE_FILES against sealed witness-red toolchain hashes in lib/tdd_guard.py instead of HEAD-relative git diffs.
 - GH-304: Store tiered scars in ordered SQLite databases with lib/scar_locations.py, --id overrides, and namespace-safe shadowing.
+- GH-331: Anchor SCAR-TEST-12 toolchain hashing to the executing plugin, seal plan-scoped workspace governance exemptions, and harden direct write and plugin-cache guards.

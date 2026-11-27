@@ -3221,5 +3221,25 @@
       "SCAR-PROC-160: Canonical Plan Specification and Verbatim TDD Worker Plan Ingestion",
       "SCAR-PROC-161: Planning-Stage ask_question and Target 20 Artifact Approval Separation"
     ]
+  },
+  {
+    "id": "GH-331",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/331",
+    "title": "Self-hosting SCAR-TEST-12 verify-green blocks Target 30 edits to CORE_GOVERNANCE_FILES",
+    "request": "Anchor SCAR-TEST-12 toolchain hashing unconditionally to the executing plugin root with zero exemptions while sealing approved plan-scoped workspace governance exemptions into 30_tdd_receipt.json, and harden PreToolUse direct write and plugin directory guards against symlinks, blank workspacePaths, Git worktree files, cross-workspace writes, and Codex/Cursor/Copilot plugin caches.",
+    "branch": "fix/331-self-hosting-governance-edits",
+    "subprojects": [
+      "lib",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-27T00:16:40Z",
+    "completed_at": "2026-11-27T03:17:21Z",
+    "commit_sha": "6bfaaff56366fbaa0235255a73738c918cad9632",
+    "pr_number": 332,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/332",
+    "closes_issue": true,
+    "tests_added": 15,
+    "scars_earned": []
   }
 ]
