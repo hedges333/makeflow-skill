@@ -1,7 +1,9 @@
 """Behavioral tests for ordered SQLite multi-tier scar discovery and ID overrides (GH-304)."""
 
+import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -13,13 +15,16 @@ if REPO_ROOT not in sys.path:
   sys.path.insert(0, REPO_ROOT)
 
 from lib.agent_paths import AgentPathRegistry
+from lib.scar_candidate import ScarCandidateValidator, validate_socratic_probe
 import lib.scars_db as scars_db_mod
 from lib.scars_db import (
+    compute_raw_fields_hash,
     query_scars,
     resolve_scars_db_path,
     resolve_scars_db_paths,
     upsert_scar,
 )
+from lib.sync_synthetic_scars import SyncSyntheticScarsScript
 from mcp import server as mcp_server
 
 
@@ -647,6 +652,390 @@ class TestMultiTierSqliteScarDiscovery(unittest.TestCase):
                 "SCAR-ARCH-0117",
             ],
         )
+
+
+def _fetch_scar_row_readonly(db_path, scar_id):
+  """Read one scar row from a SQLite registry using read-only URI mode.
+
+  Args:
+    db_path: Absolute path to the SQLite scars database file.
+    scar_id: Canonical scar identifier to look up.
+
+  Returns:
+    Dictionary mapping column names to stored values, or None when absent.
+  """
+  conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+  try:
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM scars WHERE id = ?", (scar_id,))
+    row = cur.fetchone()
+    return dict(row) if row is not None else None
+  finally:
+    conn.close()
+
+
+class _FakeHttpJsonResponse:
+  """Minimal context-manager HTTP response double for mocked registry sync."""
+
+  def __init__(self, payload, status=200, etag='"mock-sync-etag"'):
+    """Initialize fake HTTP response with JSON payload, status, and ETag.
+
+    Args:
+      payload: JSON-serializable object returned by read().
+      status: HTTP status code integer.
+      etag: Optional ETag header value.
+    """
+    self._body = json.dumps(payload).encode("utf-8")
+    self.status = status
+    self.headers = {"ETag": etag} if etag else {}
+
+  def read(self):
+    """Return encoded JSON response bytes."""
+    return self._body
+
+  def __enter__(self):
+    """Enter context manager returning this response double."""
+    return self
+
+  def __exit__(self, exc_type, exc, tb):
+    """Exit context manager without suppressing exceptions."""
+    return False
+
+
+class TestDualTierShadowingRegistryScars(unittest.TestCase):
+  """Behavioral tests for GH-323 dual-tier shadowing scars in SQLite registries."""
+
+  PROJECT_LOCAL_DB = os.path.join(
+      REPO_ROOT, ".workflow", "scars", "scars_registry.db"
+  )
+  BUNDLED_DB = os.path.join(
+      REPO_ROOT, "skills", "makeflow", "data", "scars_registry.db"
+  )
+
+  def test_project_local_shadowing_scar_schema_validation_and_preservation(self):
+    """Verifies SCAR-LOCAL-DATA-0002 schema, Simple English rules, and SCAR-LOCAL-DATA-0001 preservation."""
+    self.assertTrue(os.path.isfile(self.PROJECT_LOCAL_DB))
+
+    local_one = _fetch_scar_row_readonly(
+        self.PROJECT_LOCAL_DB, "SCAR-LOCAL-DATA-0001"
+    )
+    self.assertIsNotNone(local_one)
+    self.assertEqual(local_one["source"], "local")
+
+    expected_title = (
+        "Keep Legacy Original IDs Disjoint from Upstream Short IDs "
+        "During Tiered Registry Shadowing"
+    )
+    expected_wound = (
+        "Collapsing primary ID, upstream short ID, and legacy original ID "
+        "into one shadowing set drops unrelated upstream scars during registry queries."
+    )
+    expected_trap = (
+        "Developers assume short legacy tokens belong to one namespace and "
+        "update shadowing sets mid-batch while iterating rows inside a single database."
+    )
+    expected_circuit_breaker = (
+        "If a query reads multiple identifiers inside one database tier, "
+        "stop mutating shadowing state until that entire database finishes."
+    )
+    expected_reflex = (
+        "Keep upstream `ss_id` separate from legacy `original_id` across "
+        "database tiers, and advance shadowing sets only after each "
+        "higher-precedence database completes."
+    )
+    expected_probe = (
+        "If two unrelated records share a legacy token in different columns, "
+        "will one flat shadowing set drop valid rows? "
+        "Do you advance shadowing state only between database tiers?"
+    )
+
+    row = _fetch_scar_row_readonly(
+        self.PROJECT_LOCAL_DB, "SCAR-LOCAL-DATA-0002"
+    )
+    self.assertIsNotNone(
+        row, "SCAR-LOCAL-DATA-0002 must exist in .workflow/scars/scars_registry.db"
+    )
+    self.assertEqual(row["title"], expected_title)
+    self.assertEqual(row["wound"], expected_wound)
+    self.assertEqual(row["trap"], expected_trap)
+    self.assertEqual(row["circuit_breaker"], expected_circuit_breaker)
+    self.assertEqual(row["reflex"], expected_reflex)
+    self.assertEqual(row["socratic_probe"], expected_probe)
+    self.assertEqual(row["source"], "local")
+    self.assertEqual(row["visibility"], "local")
+    self.assertEqual(row["graduation_status"], "local")
+    self.assertIsNone(row["ss_id"])
+    self.assertIsNone(row["original_id"])
+    self.assertEqual(row["category"], "DATA")
+    self.assertEqual(row["category_slug"], "data")
+    self.assertEqual(json.loads(row["languages"]), ["universal"])
+    self.assertEqual(json.loads(row["mf_targets"]), [15, 20, 30, 40])
+    self.assertEqual(
+        json.loads(row["workflow_phases"]),
+        [
+            "Target 15: archaeology",
+            "Target 20: plan",
+            "Target 30: tdd",
+            "Target 40: review",
+        ],
+    )
+    self.assertEqual(
+        json.loads(row["ss_targets"]),
+        ["Target 20: plan", "Target 30: tdd", "Target 40: review"],
+    )
+    self.assertEqual(
+        row["raw_hash"],
+        compute_raw_fields_hash(
+            expected_wound,
+            expected_trap,
+            expected_circuit_breaker,
+            expected_reflex,
+        ),
+    )
+
+    validator = ScarCandidateValidator()
+    self.assertEqual(validator.validate(row), [])
+    self.assertEqual(
+        validate_socratic_probe(row["socratic_probe"], "SCAR-LOCAL-DATA-0002"),
+        [],
+    )
+
+    # Negative falsification checks confirm validators catch contract violations.
+    mutated = dict(row)
+    mutated["wound"] = f"{row['wound']}; forbidden semicolon."
+    self.assertNotEqual(validator.validate(mutated), [])
+    self.assertNotEqual(
+        validate_socratic_probe("Not a question.", "SCAR-LOCAL-DATA-0002"), []
+    )
+
+  def test_project_local_shadowing_scar_fts5_and_target_queries(self):
+    """Verifies SCAR-LOCAL-DATA-0002 is discoverable by ID, keywords, and Targets 15..40."""
+    by_id = query_scars(
+        self.PROJECT_LOCAL_DB, query="SCAR-LOCAL-DATA-0002", limit=5
+    )
+    self.assertEqual([r["id"] for r in by_id], ["SCAR-LOCAL-DATA-0002"])
+    self.assertEqual(by_id[0]["languages"], ["universal"])
+    self.assertEqual(by_id[0]["mf_targets"], [15, 20, 30, 40])
+
+    for keyword in ("ss_id", "original_id", "shadowing"):
+      matches = query_scars(self.PROJECT_LOCAL_DB, query=keyword, limit=5)
+      self.assertIn(
+          "SCAR-LOCAL-DATA-0002",
+          [r["id"] for r in matches],
+          f"Expected SCAR-LOCAL-DATA-0002 to match FTS5 query '{keyword}'",
+      )
+
+    for target in (15, 20, 30, 40):
+      target_matches = query_scars(
+          self.PROJECT_LOCAL_DB,
+          category="DATA",
+          language="universal",
+          mf_target=target,
+          limit=10,
+      )
+      self.assertIn(
+          "SCAR-LOCAL-DATA-0002",
+          [r["id"] for r in target_matches],
+          f"Expected SCAR-LOCAL-DATA-0002 to match mf_target={target}",
+      )
+
+  def test_bundled_shadowing_scar_schema_generalization_and_upstream_preservation(self):
+    """Verifies SCAR-DATA-0007 schema, generalization hygiene, and upstream DATA row preservation."""
+    self.assertTrue(os.path.isfile(self.BUNDLED_DB))
+
+    for upstream_id in (
+        "SCAR-DATA-0002",
+        "SCAR-DATA-0005",
+        "SCAR-LANG-DART-DATA-0003",
+        "SCAR-LANG-DART-DATA-0004",
+        "SCAR-LANG-DART-DATA-0006",
+    ):
+      upstream_row = _fetch_scar_row_readonly(self.BUNDLED_DB, upstream_id)
+      self.assertIsNotNone(
+          upstream_row,
+          f"Existing upstream DATA scar {upstream_id} must remain intact",
+      )
+      self.assertEqual(upstream_row["source"], "upstream")
+
+    expected_title = (
+        "Keep Identifier Namespaces Disjoint and Advance Shadowing Only Between Tiers"
+    )
+    expected_wound = (
+        "Collapsing primary keys, external IDs, and legacy aliases into one "
+        "shadowing set drops unrelated valid records during layered registry queries."
+    )
+    expected_trap = (
+        "Developers treat distinct identifier columns as one shared namespace and "
+        "update shadowing sets mid-batch while scanning rows inside one data tier."
+    )
+    expected_circuit_breaker = (
+        "If a layered query inspects multiple key columns inside one tier, "
+        "stop mutating shadowing sets until that tier finishes."
+    )
+    expected_reflex = (
+        "Keep canonical primary keys, external IDs, and legacy aliases in disjoint "
+        "shadowing sets. Advance shadowing sets only after each higher-precedence "
+        "tier completes."
+    )
+    expected_probe = (
+        "If two unrelated records share a token across different key columns, "
+        "will one flat shadowing set drop valid rows? "
+        "Do you advance shadowing sets only between data tiers?"
+    )
+
+    row = _fetch_scar_row_readonly(self.BUNDLED_DB, "SCAR-DATA-0007")
+    self.assertIsNotNone(
+        row, "SCAR-DATA-0007 must exist in skills/makeflow/data/scars_registry.db"
+    )
+    self.assertEqual(row["title"], expected_title)
+    self.assertEqual(row["wound"], expected_wound)
+    self.assertEqual(row["trap"], expected_trap)
+    self.assertEqual(row["circuit_breaker"], expected_circuit_breaker)
+    self.assertEqual(row["reflex"], expected_reflex)
+    self.assertEqual(row["socratic_probe"], expected_probe)
+    self.assertEqual(row["source"], "makeflow")
+    self.assertEqual(row["visibility"], "public")
+    self.assertEqual(row["graduation_status"], "graduated")
+    self.assertIsNone(row["ss_id"])
+    self.assertIsNone(row["original_id"])
+    self.assertEqual(row["category"], "DATA")
+    self.assertEqual(row["category_slug"], "data")
+    self.assertEqual(json.loads(row["languages"]), ["universal"])
+    self.assertEqual(json.loads(row["mf_targets"]), [15, 20, 30, 40])
+    self.assertEqual(
+        json.loads(row["workflow_phases"]),
+        [
+            "Target 15: archaeology",
+            "Target 20: plan",
+            "Target 30: tdd",
+            "Target 40: review",
+        ],
+    )
+    self.assertEqual(
+        json.loads(row["ss_targets"]),
+        ["Target 20: plan", "Target 30: tdd", "Target 40: review"],
+    )
+    self.assertEqual(
+        row["raw_hash"],
+        compute_raw_fields_hash(
+            expected_wound,
+            expected_trap,
+            expected_circuit_breaker,
+            expected_reflex,
+        ),
+    )
+
+    validator = ScarCandidateValidator()
+    self.assertEqual(validator.validate(row), [])
+    self.assertEqual(
+        validate_socratic_probe(row["socratic_probe"], "SCAR-DATA-0007"), []
+    )
+
+    # Zero repository-internal column-name leakage into Tier 1B bundled scar.
+    inspected_text = " ".join(
+        str(row.get(col) or "")
+        for col in (
+            "title",
+            "wound",
+            "trap",
+            "circuit_breaker",
+            "reflex",
+            "socratic_probe",
+            "keywords",
+        )
+    ).lower()
+    self.assertNotIn("ss_id", inspected_text)
+    self.assertNotIn("original_id", inspected_text)
+
+    # Negative falsification check confirms validator catches em-dash leakage.
+    mutated = dict(row)
+    mutated["reflex"] = f"{row['reflex']} \u2014 forbidden em-dash."
+    self.assertNotEqual(validator.validate(mutated), [])
+
+  def test_bundled_shadowing_scar_fts5_and_target_queries(self):
+    """Verifies SCAR-DATA-0007 is discoverable by ID, shadowing keyword, universal filter, and Targets 15..40."""
+    by_id = query_scars(self.BUNDLED_DB, query="SCAR-DATA-0007", limit=5)
+    self.assertEqual([r["id"] for r in by_id], ["SCAR-DATA-0007"])
+    self.assertEqual(by_id[0]["source"], "makeflow")
+    self.assertEqual(by_id[0]["languages"], ["universal"])
+    self.assertEqual(by_id[0]["mf_targets"], [15, 20, 30, 40])
+
+    by_keyword = query_scars(
+        self.BUNDLED_DB,
+        query="shadowing",
+        category="DATA",
+        language="universal",
+        exclude_categories=["WORKFLOW"],
+        limit=10,
+    )
+    self.assertIn("SCAR-DATA-0007", [r["id"] for r in by_keyword])
+
+    for target in (15, 20, 30, 40):
+      target_matches = query_scars(
+          self.BUNDLED_DB,
+          category="DATA",
+          language="universal",
+          exclude_categories=["WORKFLOW"],
+          mf_target=target,
+          limit=10,
+      )
+      self.assertIn(
+          "SCAR-DATA-0007",
+          [r["id"] for r in target_matches],
+          f"Expected SCAR-DATA-0007 to match mf_target={target}",
+      )
+
+  def test_multi_tier_coexistence_returns_local_and_bundled_shadowing_scars(self):
+    """Verifies Tier 2 SCAR-LOCAL-DATA-0002 and Tier 1B SCAR-DATA-0007 coexist without shadowing."""
+    results = query_scars(
+        [self.PROJECT_LOCAL_DB, self.BUNDLED_DB],
+        query="shadowing",
+        category="DATA",
+        limit=10,
+    )
+    ids = [r["id"] for r in results]
+    self.assertIn("SCAR-LOCAL-DATA-0002", ids)
+    self.assertIn("SCAR-DATA-0007", ids)
+    self.assertLess(
+        ids.index("SCAR-LOCAL-DATA-0002"),
+        ids.index("SCAR-DATA-0007"),
+    )
+
+  def test_upstream_sync_preserves_makeflow_bundled_shadowing_scar(self):
+    """Verifies SyncSyntheticScarsScript preserves SCAR-DATA-0007 on an isolated DB copy."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      db_copy = os.path.join(tmp_dir, "scars_registry_copy.db")
+      shutil.copyfile(self.BUNDLED_DB, db_copy)
+
+      before_row = _fetch_scar_row_readonly(db_copy, "SCAR-DATA-0007")
+      self.assertIsNotNone(
+          before_row,
+          "SCAR-DATA-0007 must exist in bundled DB before upstream sync check",
+      )
+
+      stdout_buf = io.StringIO()
+      stderr_buf = io.StringIO()
+      with mock.patch(
+          "urllib.request.urlopen",
+          return_value=_FakeHttpJsonResponse({"scars": []}),
+      ):
+        exit_code = SyncSyntheticScarsScript().execute(
+            args=["--db-path", db_copy],
+            stdout=stdout_buf,
+            stderr=stderr_buf,
+        )
+
+      self.assertEqual(exit_code, 0, stderr_buf.getvalue())
+      after_row = _fetch_scar_row_readonly(db_copy, "SCAR-DATA-0007")
+      self.assertIsNotNone(after_row)
+      self.assertEqual(after_row["source"], "makeflow")
+      self.assertEqual(after_row["title"], before_row["title"])
+      self.assertEqual(after_row["raw_hash"], before_row["raw_hash"])
+      self.assertEqual(after_row["socratic_probe"], before_row["socratic_probe"])
+
+      synced_query = query_scars(db_copy, query="SCAR-DATA-0007", limit=5)
+      self.assertEqual([r["id"] for r in synced_query], ["SCAR-DATA-0007"])
 
 
 if __name__ == "__main__":
