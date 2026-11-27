@@ -40,8 +40,8 @@ help:
 	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync, query, and agy pipeline"
 	@echo "  make test-scar-candidate - Test synthetic scar candidate validator (GH-146)"
 	@echo "  make sync-scars         - Sync public synthetic scars registry into bundled package database"
-	@echo "  make import-scars       - Write Simple English scar fields with agy (optional MODEL=<name> WORKERS=<n>)"
-	@echo "  make probe-scars        - Write Socratic probes for transformed scars with agy (optional MODEL=<name> WORKERS=<n>)"
+	@echo "  make import-scars       - Write Simple English scar fields with agy (optional MODEL, WORKERS, TIMEOUT, MAX_RETRIES, MAX_ERRORS, VERBOSE, PRINT_RESULT)"
+	@echo "  make probe-scars        - Write Socratic probes for transformed scars with agy (optional MODEL, WORKERS, TIMEOUT, MAX_RETRIES, MAX_ERRORS, VERBOSE, PRINT_RESULT)"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
 	@echo "  make test-base-script   - Test BaseScript execution lifecycle (SCAR-ARCH-05)"
@@ -161,13 +161,15 @@ sync-scars:
 	@mkdir -p "$(REPO_ROOT)/skills/makeflow/data"
 	@$(PYTHON) "$(SCRIPTS_DIR)/sync_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"
 
+SCAR_PIPELINE_FLAGS = $(if $(MODEL), --model "$(MODEL)",)$(if $(WORKERS), --workers "$(WORKERS)",)$(if $(TIMEOUT), --timeout "$(TIMEOUT)",)$(if $(MAX_RETRIES), --max-retries "$(MAX_RETRIES)",)$(if $(MAX_ERRORS), --max-errors "$(MAX_ERRORS)",)$(if $(filter-out 0 false no FALSE NO False No,$(VERBOSE)), --verbose,)$(if $(filter-out 0 false no FALSE NO False No,$(PRINT_RESULT)), --print-result,)
+
 import-scars:
 	@echo "Importing Simple English scar fields with agy..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/import_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)$(if $(WORKERS), --workers "$(WORKERS)",)
+	@$(PYTHON) "$(SCRIPTS_DIR)/import_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(SCAR_PIPELINE_FLAGS)
 
 probe-scars:
 	@echo "Writing Socratic probes for transformed scars with agy..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/write_scar_probes.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)$(if $(WORKERS), --workers "$(WORKERS)",)
+	@$(PYTHON) "$(SCRIPTS_DIR)/write_scar_probes.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(SCAR_PIPELINE_FLAGS)
 
 test-scar-candidate:
 	@echo "Testing synthetic scar candidate validator..."

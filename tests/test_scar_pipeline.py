@@ -1673,7 +1673,16 @@ class TestParallelScarPipeline(unittest.TestCase):
     clean_env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("WORKERS", "MODEL")
+        if k
+        not in (
+            "WORKERS",
+            "MODEL",
+            "TIMEOUT",
+            "MAX_RETRIES",
+            "MAX_ERRORS",
+            "VERBOSE",
+            "PRINT_RESULT",
+        )
     }
 
     cases = [
@@ -1971,6 +1980,1801 @@ class TestParallelScarPipeline(unittest.TestCase):
       cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
       self.assertGreater(int(cur.fetchone()[0]), 0)
       conn.close()
+
+
+class TestScarPipelineRuntimeAndErrors(unittest.TestCase):
+  """Hermetic unit tests for GH-345 Slice 1: error classification, stop_stats, DB readback, and runtime collaborators."""
+
+  def test_agy_subagent_error_kind_and_transient_classification(self) -> None:
+    """Verify error_kind on launch/timeout/exit and is_transient_agy_error() classification."""
+    from lib.scar_subagent import is_transient_agy_error
+
+    # Default error_kind preserves backward compatibility (SCAR-API-0002)
+    default_err = AgySubagentError("plain error", returncode=1, stderr_text="boom")
+    self.assertEqual(default_err.error_kind, "exit")
+    self.assertFalse(is_transient_agy_error(default_err))
+
+    # Runner sets error_kind='launch' on OSError -> fatal (False)
+    runner = AgySubagentRunner(
+        agent_name="synthetic-scar-importer",
+        json_schema=SIMPLE_ENGLISH_JSON_SCHEMA,
+        timeout_sec=5.0,
+    )
+    with patch(
+        "lib.scar_subagent.subprocess.Popen",
+        side_effect=FileNotFoundError("agy binary missing"),
+    ):
+      with self.assertRaises(AgySubagentError) as launch_ctx:
+        runner.run_json("prompt")
+    self.assertEqual(launch_ctx.exception.error_kind, "launch")
+    self.assertFalse(is_transient_agy_error(launch_ctx.exception))
+
+    # Runner sets error_kind='timeout' on TimeoutExpired -> transient (True)
+    with patch(
+        "lib.scar_subagent.subprocess.Popen",
+        return_value=FakePopen(timeout_exc=True),
+    ):
+      with self.assertRaises(AgySubagentError) as timeout_ctx:
+        runner.run_json("prompt")
+    self.assertEqual(timeout_ctx.exception.error_kind, "timeout")
+    self.assertEqual(timeout_ctx.exception.returncode, 124)
+    self.assertTrue(is_transient_agy_error(timeout_ctx.exception))
+
+    # Runner sets error_kind='exit' on non-zero returncode
+    with patch(
+        "lib.scar_subagent.subprocess.Popen",
+        return_value=FakePopen(stderr="HTTP 503 Service Unavailable", returncode=1),
+    ):
+      with self.assertRaises(AgySubagentError) as exit_ctx:
+        runner.run_json("prompt")
+    self.assertEqual(exit_ctx.exception.error_kind, "exit")
+    self.assertTrue(is_transient_agy_error(exit_ctx.exception))
+
+    # Transient exit patterns return True
+    transient_cases = [
+        AgySubagentError("timed out", returncode=124, stderr_text="timeout", error_kind="timeout"),
+        AgySubagentError("timeout exit", returncode=124, stderr_text=""),
+        AgySubagentError("rate limited", returncode=1, stderr_text="429 Too Many Requests"),
+        AgySubagentError("quota", returncode=1, stderr_text="RESOURCE_EXHAUSTED: rate limit"),
+        AgySubagentError("5xx", returncode=1, stderr_text="502 Bad Gateway"),
+        AgySubagentError("503", returncode=1, stderr_text="503 Service Unavailable"),
+        AgySubagentError("504", returncode=1, stderr_text="504 Gateway Timeout"),
+        AgySubagentError("network", returncode=1, stderr_text="ECONNRESET socket hang up"),
+        AgySubagentError("deadline", returncode=1, stderr_text="DEADLINE_EXCEEDED"),
+    ]
+    for exc in transient_cases:
+      with self.subTest(transient=str(exc)):
+        self.assertTrue(is_transient_agy_error(exc))
+
+    # Fatal errors return False
+    fatal_cases = [
+        AgySubagentError("launch fail", returncode=1, stderr_text="timeout", error_kind="launch"),
+        AgySubagentError("bad usage", returncode=2, stderr_text="bad model flag"),
+        AgySubagentError("usage with 503 text", returncode=2, stderr_text="503"),
+        AgySubagentError("unknown model", returncode=1, stderr_text="Unknown model: bogus-model"),
+        AgySubagentError("invalid model", returncode=1, stderr_text="Invalid model name"),
+        AgySubagentError("unknown flag", returncode=1, stderr_text="Unrecognized option --bogus"),
+        AgySubagentError("auth", returncode=1, stderr_text="401 Unauthorized: invalid API key"),
+        AgySubagentError("fatal 42", returncode=42, stderr_text="fatal importer cli error"),
+        AgySubagentError("fatal 43", returncode=43, stderr_text="fatal probe cli error"),
+    ]
+    for exc in fatal_cases:
+      with self.subTest(fatal=str(exc)):
+        self.assertFalse(is_transient_agy_error(exc))
+
+  def test_iter_bounded_worker_results_stop_stats_sequential_and_parallel(
+      self,
+  ) -> None:
+    """Verify stop_stats reports cancelled_unstarted and drained_in_flight for sequential and parallel early stop."""
+    # Sequential normal completion
+    seq_normal: dict = {}
+    items = list(
+        iter_bounded_worker_results(
+            rows=["a", "b", "c"],
+            workers=1,
+            worker_fn=lambda x: x.upper(),
+            should_stop=lambda: False,
+            stop_stats=seq_normal,
+        )
+    )
+    self.assertEqual(items, [("a", "A"), ("b", "B"), ("c", "C")])
+    self.assertEqual(seq_normal, {"cancelled_unstarted": 0, "drained_in_flight": 0})
+
+    # Sequential early stop via caller break after first item
+    seq_stop: dict = {}
+    seen = []
+    for row, res in iter_bounded_worker_results(
+        rows=["a", "b", "c", "d"],
+        workers=1,
+        worker_fn=lambda x: x.upper(),
+        should_stop=lambda: False,
+        stop_stats=seq_stop,
+    ):
+      seen.append((row, res))
+      break
+    self.assertEqual(seen, [("a", "A")])
+    self.assertEqual(seq_stop, {"cancelled_unstarted": 3, "drained_in_flight": 0})
+
+    # Parallel early stop: 2 workers, 5 items; item 1 triggers break while item 2 is in flight
+    par_stop: dict = {}
+    barrier = threading.Barrier(2)
+    release_sibling = threading.Event()
+    stop_flag = threading.Event()
+
+    def par_worker(item: str) -> str:
+      if item == "r1":
+        barrier.wait(timeout=5.0)
+        return "trip"
+      if item == "r2":
+        barrier.wait(timeout=5.0)
+        release_sibling.wait(timeout=5.0)
+        return "drained"
+      return f"ok:{item}"
+
+    yielded = []
+    for row, res in iter_bounded_worker_results(
+        rows=["r1", "r2", "r3", "r4", "r5"],
+        workers=2,
+        worker_fn=par_worker,
+        should_stop=stop_flag.is_set,
+        stop_stats=par_stop,
+    ):
+      yielded.append((row, res))
+      if res == "trip":
+        stop_flag.set()
+        release_sibling.set()
+        break
+
+    self.assertEqual(yielded, [("r1", "trip")])
+    self.assertEqual(par_stop["cancelled_unstarted"], 3)
+    self.assertEqual(par_stop["drained_in_flight"], 1)
+
+  def test_select_scar_row_by_id_and_format_saved_scar_row_json(self) -> None:
+    """Verify select_scar_row_by_id returns all 27 columns and format_saved_scar_row_json decodes list columns."""
+    from lib.scar_pipeline_runtime import format_saved_scar_row_json
+    from lib.scars_db import enrich_scars_cursor, select_scar_row_by_id
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "readback_test.db")
+      _seed_db(
+          db_path,
+          [
+              {
+                  "id": "SCAR-API-0099",
+                  "ss_id": "SCAR-API-99",
+                  "title": "Python SQLite Readback Test",
+                  "category": "API",
+                  "workflow_phases": '["Target 20: plan", "Target 30: tdd"]',
+                  "ss_targets": '["Target 20: plan"]',
+                  "mf_targets": "[20, 30]",
+                  "wound": "Simple wound text.",
+                  "trap": "Simple trap text.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex text.",
+                  "socratic_probe": "Did you check readback?",
+              }
+          ],
+      )
+      conn = sqlite3.connect(db_path)
+      cur = conn.cursor()
+      enrich_scars_cursor(cur, scar_ids=["SCAR-API-0099"])
+      conn.commit()
+
+      missing = select_scar_row_by_id(cur, "SCAR-DOES-NOT-EXIST")
+      self.assertIsNone(missing)
+
+      row = select_scar_row_by_id(cur, "SCAR-API-0099")
+      conn.close()
+
+      self.assertIsNotNone(row)
+      assert row is not None
+      self.assertEqual(len(row), 27)
+      self.assertEqual(row["id"], "SCAR-API-0099")
+      self.assertEqual(row["wound"], "Simple wound text.")
+      self.assertIsNone(row["circuit_breaker"])
+
+      formatted = format_saved_scar_row_json(row)
+      self.assertIn("\n  ", formatted)  # indented JSON
+      parsed = json.loads(formatted)
+      self.assertEqual(parsed["id"], "SCAR-API-0099")
+      self.assertIsNone(parsed["circuit_breaker"])
+      for list_col in (
+          "workflow_phases",
+          "ss_targets",
+          "mf_targets",
+          "keywords",
+          "languages",
+          "frameworks",
+          "diagnostic_codes",
+      ):
+        self.assertIsInstance(parsed[list_col], list, f"{list_col} must decode to JSON list")
+      self.assertEqual(parsed["mf_targets"], [20])
+      self.assertEqual(parsed["ss_targets"], ["Target 20: plan"])
+      self.assertIn("python", parsed["languages"])
+
+  def test_consecutive_error_breaker_reset_and_trip(self) -> None:
+    """Verify ConsecutiveErrorBreaker resets on commit and trips at exact max_errors threshold."""
+    from lib.scar_pipeline_runtime import ConsecutiveErrorBreaker
+
+    with self.assertRaises(ValueError):
+      ConsecutiveErrorBreaker(0)
+
+    breaker = ConsecutiveErrorBreaker(max_errors=2)
+    self.assertFalse(breaker.tripped)
+    self.assertFalse(breaker.record_transient_failure("SCAR-0001", "timeout 1"))
+    self.assertEqual(breaker.consecutive_errors, 1)
+    self.assertFalse(breaker.tripped)
+
+    # Intervening success resets streak to 0
+    breaker.record_success()
+    self.assertEqual(breaker.consecutive_errors, 0)
+
+    self.assertFalse(breaker.record_transient_failure("SCAR-0002", "timeout 2"))
+    self.assertEqual(breaker.consecutive_errors, 1)
+    self.assertTrue(breaker.record_transient_failure("SCAR-0003", "timeout 3"))
+    self.assertTrue(breaker.tripped)
+    self.assertEqual(breaker.consecutive_errors, 2)
+    self.assertEqual(breaker.last_scar_id, "SCAR-0003")
+    self.assertEqual(breaker.last_error, "timeout 3")
+
+  def test_cli_numeric_validators_and_parser_registration(self) -> None:
+    """Verify parse_positive_timeout, parse_non_negative_int, parse_positive_int, and add_scar_pipeline_cli_args."""
+    import argparse
+    from lib.base_script import ScriptArgumentError, ScriptArgumentParser
+    from lib.scar_pipeline_runtime import (
+        add_scar_pipeline_cli_args,
+        parse_non_negative_int,
+        parse_positive_int,
+        parse_positive_timeout,
+    )
+
+    self.assertEqual(parse_positive_timeout("45.5"), 45.5)
+    self.assertEqual(parse_positive_timeout("120"), 120.0)
+    for bad_timeout in ("0", "-5", "nan", "inf", "-inf", "abc"):
+      with self.subTest(bad_timeout=bad_timeout):
+        with self.assertRaises(argparse.ArgumentTypeError):
+          parse_positive_timeout(bad_timeout)
+
+    self.assertEqual(parse_non_negative_int("0"), 0)
+    self.assertEqual(parse_non_negative_int("3"), 3)
+    for bad_retries in ("-1", "-5", "1.5", "abc"):
+      with self.subTest(bad_retries=bad_retries):
+        with self.assertRaises(argparse.ArgumentTypeError):
+          parse_non_negative_int(bad_retries)
+
+    self.assertEqual(parse_positive_int("1"), 1)
+    self.assertEqual(parse_positive_int("4"), 4)
+    for bad_errors in ("0", "-2", "1.5", "abc"):
+      with self.subTest(bad_errors=bad_errors):
+        with self.assertRaises(argparse.ArgumentTypeError):
+          parse_positive_int(bad_errors)
+
+    parser = ScriptArgumentParser(prog="test_pipeline")
+    add_scar_pipeline_cli_args(parser)
+    parsed = parser.parse_args([
+        "--model",
+        "gemini-2.5-pro",
+        "--workers",
+        "4",
+        "--timeout",
+        "45.5",
+        "--max-retries",
+        "3",
+        "--max-errors",
+        "4",
+        "--verbose",
+        "--print-result",
+    ])
+    self.assertEqual(parsed.model, "gemini-2.5-pro")
+    self.assertEqual(parsed.workers, 4)
+    self.assertEqual(parsed.timeout, 45.5)
+    self.assertEqual(parsed.max_retries, 3)
+    self.assertEqual(parsed.max_errors, 4)
+    self.assertTrue(parsed.verbose)
+    self.assertTrue(parsed.print_result)
+
+    with self.assertRaises(ScriptArgumentError) as err_ctx:
+      parser.parse_args(["--timeout", "nan"])
+    self.assertEqual(err_ctx.exception.exit_code, 2)
+
+  def test_scar_attempt_trace_and_thread_safe_stream_writer(self) -> None:
+    """Verify ScarAttemptTrace buffers attempt details and ThreadSafeStreamWriter emits blocks atomically."""
+    from lib.scar_pipeline_runtime import ScarAttemptTrace, ThreadSafeStreamWriter
+
+    trace = ScarAttemptTrace(scar_id="SCAR-TRACE-0001", max_attempts=3)
+    trace.record_attempt(
+        attempt=1,
+        outcome="transient_error",
+        elapsed_sec=1.25,
+        detail="timeout after 5.0s",
+    )
+    trace.record_attempt(
+        attempt=2,
+        outcome="ok",
+        elapsed_sec=0.40,
+        detail="validated",
+    )
+    block = trace.render_block()
+    self.assertIn("SCAR-TRACE-0001", block)
+    self.assertIn("attempt 1/3", block)
+    self.assertIn("1.25s", block)
+    self.assertIn("timeout after 5.0s", block)
+    self.assertIn("attempt 2/3", block)
+    self.assertIn("0.40s", block)
+
+    buf = io.StringIO()
+    writer = ThreadSafeStreamWriter(buf)
+    writer.write_block(block)
+    self.assertTrue(buf.getvalue().endswith("\n"))
+    self.assertIn("SCAR-TRACE-0001", buf.getvalue())
+
+  def test_scar_attempt_trace_indents_multiline_detail_continuation_lines(
+      self,
+  ) -> None:
+    """NBO-2: ScarAttemptTrace.render_block indents multiline detail lines beneath the attempt line."""
+    from lib.scar_pipeline_runtime import ScarAttemptTrace
+
+    trace = ScarAttemptTrace(scar_id="SCAR-MULTI-0001", max_attempts=3)
+    trace.record_attempt(
+        attempt=1,
+        outcome="transient_error",
+        elapsed_sec=1.5,
+        detail="HTTP 503 Service Unavailable\r\nupstream overloaded\rretry-after: 5\n",
+    )
+    trace.record_attempt(
+        attempt=2,
+        outcome="validation_error",
+        elapsed_sec=0.25,
+        detail="first error\n\nthird line",
+    )
+    trace.record_attempt(
+        attempt=3,
+        outcome="ok",
+        elapsed_sec=0.5,
+        detail="validated",
+    )
+
+    block = trace.render_block()
+    self.assertEqual(
+        block.splitlines(),
+        [
+            "[verbose] SCAR-MULTI-0001 status=ok attempts=3/3 elapsed=2.25s",
+            "  [SCAR-MULTI-0001] attempt 1/3 transient_error (1.50s): HTTP 503 Service Unavailable",
+            "    upstream overloaded",
+            "    retry-after: 5",
+            "  [SCAR-MULTI-0001] attempt 2/3 validation_error (0.25s): first error",
+            "",
+            "    third line",
+            "  [SCAR-MULTI-0001] attempt 3/3 ok (0.50s): validated",
+        ],
+    )
+    self.assertTrue(block.endswith("\n"))
+
+
+class _RecordingTimeoutFakePopen(FakePopen):
+  """FakePopen subclass recording the timeout passed to communicate()."""
+
+  def __init__(self, *args, recorded_timeouts=None, **kwargs) -> None:
+    super().__init__(*args, **kwargs)
+    self._recorded_timeouts = recorded_timeouts
+
+  def communicate(self, input=None, timeout=None):
+    if self._recorded_timeouts is not None:
+      self._recorded_timeouts.append(timeout)
+    return super().communicate(input=input, timeout=timeout)
+
+
+class TestScarPipelineRetriesAndBreaker(unittest.TestCase):
+  """Hermetic boundary tests for GH-345 Slice 2: --timeout, --max-retries, --max-errors, and transient retries."""
+
+  def test_invalid_numeric_cli_args_fail_fast_with_exit_code_2(self) -> None:
+    """Scenario 2: Both scripts reject invalid --timeout, --max-retries, and --max-errors with exit 2 before DB or agy."""
+    bad_arg_cases = [
+        (["--timeout", "0"], "--timeout"),
+        (["--timeout", "-5"], "--timeout"),
+        (["--timeout", "nan"], "--timeout"),
+        (["--timeout", "inf"], "--timeout"),
+        (["--max-retries", "-1"], "--max-retries"),
+        (["--max-errors", "0"], "--max-errors"),
+    ]
+    for script_cls in (ImportSyntheticScarsScript, WriteScarProbesScript):
+      for cli_args, expected_flag in bad_arg_cases:
+        with self.subTest(script=script_cls.__name__, args=cli_args):
+          out = io.StringIO()
+          err = io.StringIO()
+          with patch(
+              "sqlite3.connect",
+              side_effect=AssertionError("SQLite must not open on invalid CLI args"),
+          ), patch(
+              "lib.scar_subagent.subprocess.Popen",
+              side_effect=AssertionError("agy must not spawn on invalid CLI args"),
+          ):
+            code = script_cls().execute(cli_args, stdout=out, stderr=err)
+          self.assertEqual(code, 2)
+          err_text = err.getvalue()
+          self.assertIn("Error:", err_text)
+          self.assertIn(expected_flag, err_text)
+          self.assertNotIn("unrecognized arguments", err_text.lower())
+
+  def test_timeout_passthrough_and_transient_retry_succeeds_in_both_scripts(
+      self,
+  ) -> None:
+    """Scenarios 1 & 3: --timeout forwards to communicate(), and transient timeout/503 retries succeed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer: attempt 1 times out, attempt 2 hits 503, attempt 3 hits 429, attempt 4 succeeds (--max-retries 3)
+      imp_db = os.path.join(tmpdir, "imp_retry_ok.db")
+      _seed_db(imp_db, [{"id": "SCAR-RET-0001"}])
+
+      imp_timeouts = []
+      imp_responses = [
+          _RecordingTimeoutFakePopen(
+              timeout_exc=True, recorded_timeouts=imp_timeouts
+          ),
+          _RecordingTimeoutFakePopen(
+              stderr="HTTP 503 Service Unavailable",
+              returncode=1,
+              recorded_timeouts=imp_timeouts,
+          ),
+          _RecordingTimeoutFakePopen(
+              stderr="429 Too Many Requests",
+              returncode=1,
+              recorded_timeouts=imp_timeouts,
+          ),
+          _RecordingTimeoutFakePopen(
+              stdout=json.dumps({
+                  "wound": "Simple wound after retry.",
+                  "trap": "Simple trap after retry.",
+                  "circuit_breaker": "",
+                  "reflex": "Simple reflex after retry.",
+              }),
+              recorded_timeouts=imp_timeouts,
+          ),
+      ]
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch(
+          "lib.scar_subagent.subprocess.Popen",
+          side_effect=lambda cmd, **kw: imp_responses.pop(0),
+      ):
+        imp_code = ImportSyntheticScarsScript().execute(
+            [
+                "--db-path",
+                imp_db,
+                "--timeout",
+                "45.5",
+                "--max-retries",
+                "3",
+                "--max-errors",
+                "4",
+            ],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 0, f"Unexpected stderr: {imp_err.getvalue()}")
+      self.assertEqual(imp_timeouts, [45.5, 45.5, 45.5, 45.5])
+      self.assertEqual(imp_err.getvalue(), "")
+
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT wound FROM scars WHERE id = 'SCAR-RET-0001'")
+      self.assertEqual(cur.fetchone()[0], "Simple wound after retry.")
+      conn.close()
+
+      # 2) Probe writer with --workers 2: Scar 1 times out on attempt 1 then succeeds; Scar 2 succeeds immediately
+      probe_db = os.path.join(tmpdir, "probe_retry_ok.db")
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": "SCAR-PRET-0001",
+                  "wound": "Simple wound one.",
+                  "trap": "Simple trap one.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex one.",
+                  "socratic_probe": None,
+              },
+              {
+                  "id": "SCAR-PRET-0002",
+                  "wound": "Simple wound two.",
+                  "trap": "Simple trap two.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex two.",
+                  "socratic_probe": None,
+              },
+          ],
+      )
+
+      probe_timeouts = []
+      probe_lock = threading.Lock()
+      probe_attempts = {}
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with probe_lock:
+          n = probe_attempts.get(scar_id, 0) + 1
+          probe_attempts[scar_id] = n
+        if scar_id == "SCAR-PRET-0001" and n == 1:
+          return _RecordingTimeoutFakePopen(
+              timeout_exc=True, recorded_timeouts=probe_timeouts
+          )
+        return _RecordingTimeoutFakePopen(
+            stdout=json.dumps({
+                "socratic_probe": f"Did {scar_id} recover after retry?"
+            }),
+            recorded_timeouts=probe_timeouts,
+        )
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            [
+                "--db-path",
+                probe_db,
+                "--workers",
+                "2",
+                "--timeout",
+                "30.25",
+                "--max-retries",
+                "2",
+            ],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 0, f"Unexpected stderr: {probe_err.getvalue()}")
+      self.assertEqual(probe_attempts, {"SCAR-PRET-0001": 2, "SCAR-PRET-0002": 1})
+      self.assertEqual(probe_timeouts, [30.25, 30.25, 30.25])
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      self.assertEqual(
+          dict(cur.fetchall()),
+          {
+              "SCAR-PRET-0001": "Did SCAR-PRET-0001 recover after retry?",
+              "SCAR-PRET-0002": "Did SCAR-PRET-0002 recover after retry?",
+          },
+      )
+      conn.close()
+
+  def test_max_retries_zero_executes_single_attempt_without_retries_both_scripts(
+      self,
+  ) -> None:
+    """NBO-3: End-to-end --max-retries 0 executes exactly 1 attempt with zero retries on transient failures."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer with --max-retries 0
+      imp_db = os.path.join(tmpdir, "imp_zero_retries.db")
+      _seed_db(imp_db, [{"id": "SCAR-ZR-0001"}, {"id": "SCAR-ZR-0002"}])
+
+      imp_calls = {}
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        imp_calls[scar_id] = imp_calls.get(scar_id, 0) + 1
+        if scar_id == "SCAR-ZR-0001":
+          return FakePopen(timeout_exc=True)
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": "Committed zero-retry wound.",
+                "trap": "Committed zero-retry trap.",
+                "circuit_breaker": "",
+                "reflex": "Committed zero-retry reflex.",
+            })
+        )
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db, "--max-retries", "0", "--max-errors", "2"],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 1)
+      self.assertEqual(imp_calls, {"SCAR-ZR-0001": 1, "SCAR-ZR-0002": 1})
+      self.assertIn(
+          "Transient agy failure for SCAR-ZR-0001 after 1 attempt(s)",
+          imp_err.getvalue(),
+      )
+      self.assertIn("committed=1 of 2, failed=1", imp_out.getvalue())
+
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+      self.assertEqual(
+          dict(cur.fetchall()),
+          {
+              "SCAR-ZR-0001": None,
+              "SCAR-ZR-0002": "Committed zero-retry wound.",
+          },
+      )
+      cur.execute(
+          "SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Committed zero-retry wound%'"
+      )
+      self.assertEqual(cur.fetchone()[0], 1)
+      conn.close()
+
+      # 2) Probe writer with --max-retries 0
+      probe_db = os.path.join(tmpdir, "probe_zero_retries.db")
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": f"Simple wound {sid}.",
+                  "trap": f"Simple trap {sid}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex {sid}.",
+                  "socratic_probe": None,
+              }
+              for sid in ("SCAR-PZR-0001", "SCAR-PZR-0002")
+          ],
+      )
+
+      probe_calls = {}
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        probe_calls[scar_id] = probe_calls.get(scar_id, 0) + 1
+        if scar_id == "SCAR-PZR-0001":
+          return FakePopen(stderr="503 Service Unavailable", returncode=1)
+        return FakePopen(
+            stdout=json.dumps({"socratic_probe": "Did zero-retry probe commit?"})
+        )
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--max-retries", "0", "--max-errors", "2"],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 1)
+      self.assertEqual(probe_calls, {"SCAR-PZR-0001": 1, "SCAR-PZR-0002": 1})
+      self.assertIn(
+          "Transient agy failure for SCAR-PZR-0001 after 1 attempt(s)",
+          probe_err.getvalue(),
+      )
+      self.assertIn("committed=1 of 2, failed=1", probe_out.getvalue())
+
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      self.assertEqual(
+          dict(cur.fetchall()),
+          {
+              "SCAR-PZR-0001": None,
+              "SCAR-PZR-0002": "Did zero-retry probe commit?",
+          },
+      )
+      cur.execute(
+          "SELECT COUNT(*) FROM scars_fts WHERE socratic_probe LIKE '%zero-retry probe commit%'"
+      )
+      self.assertEqual(cur.fetchone()[0], 1)
+      conn.close()
+
+  def test_single_scar_transient_exhaustion_below_max_errors_continues_batch(
+      self,
+  ) -> None:
+    """Scenario 4: Scar 1 exhausts transient retries below --max-errors while Scar 2 commits and DB finalizes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # Importer
+      imp_db = os.path.join(tmpdir, "imp_partial_transient.db")
+      _seed_db(imp_db, [{"id": "SCAR-TR-0001"}, {"id": "SCAR-TR-0002"}])
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        if scar_id == "SCAR-TR-0001":
+          return FakePopen(timeout_exc=True)
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": "Committed wound two.",
+                "trap": "Committed trap two.",
+                "circuit_breaker": "",
+                "reflex": "Committed reflex two.",
+            })
+        )
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db, "--max-retries", "1", "--max-errors", "3"],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 1)
+      self.assertIn("SCAR-TR-0001", imp_err.getvalue())
+      self.assertIn("committed=1 of 2, failed=1", imp_out.getvalue())
+
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+      by_id = dict(cur.fetchall())
+      self.assertIsNone(by_id["SCAR-TR-0001"])
+      self.assertEqual(by_id["SCAR-TR-0002"], "Committed wound two.")
+      cur.execute("SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Committed wound two%'")
+      self.assertEqual(cur.fetchone()[0], 1)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+      # Probe writer
+      probe_db = os.path.join(tmpdir, "probe_partial_transient.db")
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": f"Simple wound {sid}.",
+                  "trap": f"Simple trap {sid}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex {sid}.",
+                  "socratic_probe": None,
+              }
+              for sid in ("SCAR-PTR-0001", "SCAR-PTR-0002")
+          ],
+      )
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        if scar_id == "SCAR-PTR-0001":
+          return FakePopen(stderr="503 Service Unavailable", returncode=1)
+        return FakePopen(
+            stdout=json.dumps({"socratic_probe": "Did scar two commit?"})
+        )
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--max-retries", "1", "--max-errors", "3"],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 1)
+      self.assertIn("SCAR-PTR-0001", probe_err.getvalue())
+      self.assertIn("committed=1 of 2, failed=1", probe_out.getvalue())
+
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      p_by_id = dict(cur.fetchall())
+      self.assertIsNone(p_by_id["SCAR-PTR-0001"])
+      self.assertEqual(p_by_id["SCAR-PTR-0002"], "Did scar two commit?")
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+  def test_consecutive_transient_failures_reset_on_commit_and_trip_breaker(
+      self,
+  ) -> None:
+    """Scenario 5: Success resets streak; two consecutive exhausted transient failures trip --max-errors 2 and abort."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer: Scar 1 transient fail (streak=1), Scar 2 ok (streak=0), Scar 3 fail (streak=1), Scar 4 fail (streak=2 -> TRIP), Scar 5 skipped
+      imp_db = os.path.join(tmpdir, "imp_breaker.db")
+      imp_ids = [f"SCAR-BRK-{idx:04d}" for idx in range(1, 6)]
+      _seed_db(imp_db, [{"id": sid} for sid in imp_ids])
+
+      imp_calls = {}
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        imp_calls[scar_id] = imp_calls.get(scar_id, 0) + 1
+        if scar_id == "SCAR-BRK-0002":
+          return FakePopen(
+              stdout=json.dumps({
+                  "wound": "Committed scar two.",
+                  "trap": "Trap scar two.",
+                  "circuit_breaker": "",
+                  "reflex": "Reflex scar two.",
+              })
+          )
+        return FakePopen(timeout_exc=True)
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db, "--max-retries", "1", "--max-errors", "2"],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertNotEqual(imp_code, 0)
+      self.assertEqual(imp_calls["SCAR-BRK-0001"], 2)
+      self.assertEqual(imp_calls["SCAR-BRK-0002"], 1)
+      self.assertEqual(imp_calls["SCAR-BRK-0003"], 2)
+      self.assertEqual(imp_calls["SCAR-BRK-0004"], 2)
+      self.assertNotIn("SCAR-BRK-0005", imp_calls)
+      self.assertIn("SCAR-BRK-0004", imp_err.getvalue())
+      self.assertIn("2", imp_err.getvalue())
+
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+      by_id = dict(cur.fetchall())
+      self.assertEqual(by_id["SCAR-BRK-0002"], "Committed scar two.")
+      for sid in ("SCAR-BRK-0001", "SCAR-BRK-0003", "SCAR-BRK-0004", "SCAR-BRK-0005"):
+        self.assertIsNone(by_id[sid])
+      cur.execute("SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Committed scar two%'")
+      self.assertEqual(cur.fetchone()[0], 1)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+      # 2) Probe writer mirror
+      probe_db = os.path.join(tmpdir, "probe_breaker.db")
+      probe_ids = [f"SCAR-PBRK-{idx:04d}" for idx in range(1, 6)]
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": f"Simple wound {sid}.",
+                  "trap": f"Simple trap {sid}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex {sid}.",
+                  "socratic_probe": None,
+              }
+              for sid in probe_ids
+          ],
+      )
+
+      probe_calls = {}
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        probe_calls[scar_id] = probe_calls.get(scar_id, 0) + 1
+        if scar_id == "SCAR-PBRK-0002":
+          return FakePopen(
+              stdout=json.dumps({"socratic_probe": "Did scar two reset the breaker?"})
+          )
+        return FakePopen(stderr="504 Gateway Timeout", returncode=1)
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--max-retries", "1", "--max-errors", "2"],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertNotEqual(probe_code, 0)
+      self.assertEqual(probe_calls["SCAR-PBRK-0001"], 2)
+      self.assertEqual(probe_calls["SCAR-PBRK-0002"], 1)
+      self.assertEqual(probe_calls["SCAR-PBRK-0003"], 2)
+      self.assertEqual(probe_calls["SCAR-PBRK-0004"], 2)
+      self.assertNotIn("SCAR-PBRK-0005", probe_calls)
+      self.assertIn("SCAR-PBRK-0004", probe_err.getvalue())
+
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      p_by_id = dict(cur.fetchall())
+      self.assertEqual(p_by_id["SCAR-PBRK-0002"], "Did scar two reset the breaker?")
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+  def test_parallel_breaker_trip_aborts_sibling_retries_drains_and_finalizes_both_scripts(
+      self,
+  ) -> None:
+    """NBO-3: Parallel --workers 2 breaker trip sets stop_event, aborts sibling retries, cancels unstarted, drains, finalizes DB, and logs --verbose drain counts."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer: 6 scars, --workers 2 --max-retries 1 --max-errors 2 --verbose
+      imp_db = os.path.join(tmpdir, "parallel_breaker_imp.db")
+      imp_ids = [f"SCAR-PBI-{idx:04d}" for idx in range(1, 7)]
+      _seed_db(imp_db, [{"id": sid} for sid in imp_ids])
+
+      imp_committed_one = threading.Event()
+      imp_trip_barrier = threading.Barrier(2)
+      imp_breaker_logged = threading.Event()
+      imp_lock = threading.Lock()
+      imp_calls = {}
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with imp_lock:
+          attempt_num = imp_calls.get(scar_id, 0) + 1
+          imp_calls[scar_id] = attempt_num
+
+        if scar_id == "SCAR-PBI-0001":
+          return FakePopen(
+              stdout=json.dumps({
+                  "wound": "Committed parallel breaker wound.",
+                  "trap": "Committed parallel breaker trap.",
+                  "circuit_breaker": "",
+                  "reflex": "Committed parallel breaker reflex.",
+              })
+          )
+
+        if scar_id == "SCAR-PBI-0002":
+          def wait_commit(_proc):
+            if attempt_num == 1:
+              if not imp_committed_one.wait(timeout=5.0):
+                raise TimeoutError("Timed out waiting for SCAR-PBI-0001 commit")
+
+          return FakePopen(timeout_exc=True, on_communicate=wait_commit)
+
+        if scar_id == "SCAR-PBI-0003":
+          def sibling_wait_breaker(_proc):
+            if attempt_num == 1:
+              imp_trip_barrier.wait(timeout=5.0)
+              if not imp_breaker_logged.wait(timeout=5.0):
+                raise TimeoutError("Timed out waiting for breaker trip log")
+
+          return FakePopen(
+              stderr="503 Service Unavailable",
+              returncode=1,
+              on_communicate=sibling_wait_breaker,
+          )
+
+        if scar_id == "SCAR-PBI-0004":
+          def tripper_sync(_proc):
+            if attempt_num == 1:
+              imp_trip_barrier.wait(timeout=5.0)
+
+          return FakePopen(timeout_exc=True, on_communicate=tripper_sync)
+
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": f"Unexpected wound {scar_id}.",
+                "trap": "Trap.",
+                "circuit_breaker": "",
+                "reflex": "Reflex.",
+            })
+        )
+
+      imp_out = _NotifyingStringIO("SCAR-PBI-0001", imp_committed_one)
+      imp_err = _NotifyingStringIO(
+          "Transient agy failure for SCAR-PBI-0004", imp_breaker_logged
+      )
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            [
+                "--db-path",
+                imp_db,
+                "--workers",
+                "2",
+                "--max-retries",
+                "1",
+                "--max-errors",
+                "2",
+                "--verbose",
+            ],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 1)
+      self.assertEqual(imp_calls.get("SCAR-PBI-0001"), 1)
+      self.assertEqual(imp_calls.get("SCAR-PBI-0002"), 2)
+      self.assertEqual(
+          imp_calls.get("SCAR-PBI-0003"),
+          1,
+          f"Sibling worker must abort retries on breaker stop_event, got calls={imp_calls}",
+      )
+      self.assertEqual(imp_calls.get("SCAR-PBI-0004"), 2)
+      self.assertNotIn("SCAR-PBI-0005", imp_calls)
+      self.assertNotIn("SCAR-PBI-0006", imp_calls)
+
+      imp_err_text = imp_err.getvalue()
+      self.assertIn(
+          "[verbose] Stopped early: reason=max_errors committed=1/6 failed=2 "
+          "cancelled_unstarted=2 drained_in_flight=1",
+          imp_err_text,
+      )
+      self.assertIn(
+          "Aborted batch after 2/2 consecutive transient error(s)",
+          imp_err_text,
+      )
+      self.assertIn("last scar=SCAR-PBI-0004", imp_err_text)
+      self.assertIn("cancelled_unstarted=2, drained_in_flight=1", imp_err_text)
+
+      conn = sqlite3.connect(imp_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, wound FROM scars ORDER BY id ASC")
+      imp_by_id = dict(cur.fetchall())
+      self.assertEqual(
+          imp_by_id["SCAR-PBI-0001"], "Committed parallel breaker wound."
+      )
+      for untouched in imp_ids[1:]:
+        self.assertIsNone(imp_by_id[untouched])
+      cur.execute(
+          "SELECT COUNT(*) FROM scars_fts WHERE wound LIKE '%Committed parallel breaker wound%'"
+      )
+      self.assertEqual(cur.fetchone()[0], 1)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+      # 2) Probe writer mirror: 6 scars, --workers 2 --max-retries 1 --max-errors 2 --verbose
+      probe_db = os.path.join(tmpdir, "parallel_breaker_probe.db")
+      probe_ids = [f"SCAR-PBP-{idx:04d}" for idx in range(1, 7)]
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": f"Simple wound {sid}.",
+                  "trap": f"Simple trap {sid}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex {sid}.",
+                  "socratic_probe": None,
+              }
+              for sid in probe_ids
+          ],
+      )
+
+      probe_committed_one = threading.Event()
+      probe_trip_barrier = threading.Barrier(2)
+      probe_breaker_logged = threading.Event()
+      probe_lock = threading.Lock()
+      probe_calls = {}
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with probe_lock:
+          attempt_num = probe_calls.get(scar_id, 0) + 1
+          probe_calls[scar_id] = attempt_num
+
+        if scar_id == "SCAR-PBP-0001":
+          return FakePopen(
+              stdout=json.dumps({
+                  "socratic_probe": "Did parallel breaker probe commit cleanly?"
+              })
+          )
+
+        if scar_id == "SCAR-PBP-0002":
+          def wait_commit(_proc):
+            if attempt_num == 1:
+              if not probe_committed_one.wait(timeout=5.0):
+                raise TimeoutError("Timed out waiting for SCAR-PBP-0001 commit")
+
+          return FakePopen(
+              stderr="504 Gateway Timeout",
+              returncode=1,
+              on_communicate=wait_commit,
+          )
+
+        if scar_id == "SCAR-PBP-0003":
+          def sibling_wait_breaker(_proc):
+            if attempt_num == 1:
+              probe_trip_barrier.wait(timeout=5.0)
+              if not probe_breaker_logged.wait(timeout=5.0):
+                raise TimeoutError("Timed out waiting for probe breaker trip log")
+
+          return FakePopen(
+              timeout_exc=True, on_communicate=sibling_wait_breaker
+          )
+
+        if scar_id == "SCAR-PBP-0004":
+          def tripper_sync(_proc):
+            if attempt_num == 1:
+              probe_trip_barrier.wait(timeout=5.0)
+
+          return FakePopen(
+              stderr="429 Too Many Requests",
+              returncode=1,
+              on_communicate=tripper_sync,
+          )
+
+        return FakePopen(
+            stdout=json.dumps({"socratic_probe": f"Unexpected {scar_id}?"})
+        )
+
+      probe_out = _NotifyingStringIO("SCAR-PBP-0001", probe_committed_one)
+      probe_err = _NotifyingStringIO(
+          "Transient agy failure for SCAR-PBP-0004", probe_breaker_logged
+      )
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            [
+                "--db-path",
+                probe_db,
+                "--workers",
+                "2",
+                "--max-retries",
+                "1",
+                "--max-errors",
+                "2",
+                "--verbose",
+            ],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 1)
+      self.assertEqual(probe_calls.get("SCAR-PBP-0001"), 1)
+      self.assertEqual(probe_calls.get("SCAR-PBP-0002"), 2)
+      self.assertEqual(
+          probe_calls.get("SCAR-PBP-0003"),
+          1,
+          f"Sibling probe worker must abort retries on breaker stop_event, got calls={probe_calls}",
+      )
+      self.assertEqual(probe_calls.get("SCAR-PBP-0004"), 2)
+      self.assertNotIn("SCAR-PBP-0005", probe_calls)
+      self.assertNotIn("SCAR-PBP-0006", probe_calls)
+
+      probe_err_text = probe_err.getvalue()
+      self.assertIn(
+          "[verbose] Stopped early: reason=max_errors committed=1/6 failed=2 "
+          "cancelled_unstarted=2 drained_in_flight=1",
+          probe_err_text,
+      )
+      self.assertIn(
+          "Aborted batch after 2/2 consecutive transient error(s)",
+          probe_err_text,
+      )
+      self.assertIn("last scar=SCAR-PBP-0004", probe_err_text)
+      self.assertIn("cancelled_unstarted=2, drained_in_flight=1", probe_err_text)
+
+      conn = sqlite3.connect(probe_db)
+      cur = conn.cursor()
+      cur.execute("SELECT id, socratic_probe FROM scars ORDER BY id ASC")
+      probe_by_id = dict(cur.fetchall())
+      self.assertEqual(
+          probe_by_id["SCAR-PBP-0001"],
+          "Did parallel breaker probe commit cleanly?",
+      )
+      for untouched in probe_ids[1:]:
+        self.assertIsNone(probe_by_id[untouched])
+      cur.execute(
+          "SELECT COUNT(*) FROM scars_fts WHERE socratic_probe LIKE '%parallel breaker probe commit%'"
+      )
+      self.assertEqual(cur.fetchone()[0], 1)
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      self.assertGreater(int(cur.fetchone()[0]), 0)
+      conn.close()
+
+  def test_fatal_errors_fail_fast_with_zero_retries_even_with_high_max_retries(
+      self,
+  ) -> None:
+    """Scenario 6: Fatal OSError, exit 2, unknown model, and exit 42 never retry even when --max-retries 3."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "fatal_zero_retry.db")
+      _seed_db(
+          db_path,
+          [
+              {
+                  "id": "SCAR-FAT-0001",
+                  "wound": None,
+                  "trap": None,
+                  "circuit_breaker": None,
+                  "reflex": None,
+              },
+              {
+                  "id": "SCAR-FAT-0002",
+                  "wound": "Simple wound.",
+                  "trap": "Simple trap.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex.",
+                  "socratic_probe": None,
+              },
+          ],
+      )
+
+      fatal_cases = [
+          ("launch", FileNotFoundError("missing agy"), 1),
+          ("exit2", FakePopen(stderr="invalid flag", returncode=2), 2),
+          ("unknown_model", FakePopen(stderr="Unknown model: foo", returncode=1), 1),
+          ("exit42", FakePopen(stderr="fatal crash", returncode=42), 42),
+      ]
+      for script_cls in (ImportSyntheticScarsScript, WriteScarProbesScript):
+        for label, effect, expected_code in fatal_cases:
+          with self.subTest(script=script_cls.__name__, case=label):
+            side_effect = (
+                effect
+                if isinstance(effect, Exception)
+                else (lambda cmd, e=effect, **kw: e)
+            )
+            with patch("lib.scar_subagent.subprocess.Popen", side_effect=side_effect) as mock_popen:
+              err = io.StringIO()
+              code = script_cls().execute(
+                  ["--db-path", db_path, "--max-retries", "3", "--max-errors", "5"],
+                  stdout=io.StringIO(),
+                  stderr=err,
+              )
+            self.assertEqual(code, expected_code)
+            self.assertEqual(mock_popen.call_count, 1)
+
+
+def _extract_json_objects_from_stdout(stdout_text: str):
+  """Parse all indented JSON objects embedded in script stdout."""
+  decoder = json.JSONDecoder()
+  objs = []
+  idx = 0
+  while idx < len(stdout_text):
+    brace = stdout_text.find("{", idx)
+    if brace == -1:
+      break
+    obj, end_idx = decoder.raw_decode(stdout_text, brace)
+    objs.append(obj)
+    idx = end_idx
+  return objs
+
+
+def _assert_non_interleaved_verbose_blocks(
+    test_case: unittest.TestCase,
+    stderr_text: str,
+    expected_scar_ids,
+) -> dict:
+  """Parse stderr [verbose] blocks and assert every scar's attempt lines are contiguous."""
+  lines = stderr_text.splitlines()
+  blocks = {}
+  current_scar = None
+  for line in lines:
+    header_match = re.match(r"^\[verbose\] (SCAR-[A-Z0-9-]+) status=", line)
+    if header_match:
+      current_scar = header_match.group(1)
+      test_case.assertNotIn(
+          current_scar,
+          blocks,
+          f"Duplicate verbose block for {current_scar} in stderr:\n{stderr_text}",
+      )
+      blocks[current_scar] = [line]
+      continue
+    attempt_match = re.match(r"^\s+\[(SCAR-[A-Z0-9-]+)\] attempt ", line)
+    if attempt_match:
+      attempt_scar = attempt_match.group(1)
+      test_case.assertEqual(
+          attempt_scar,
+          current_scar,
+          f"Interleaved attempt line for {attempt_scar} inside block for {current_scar}:\n{stderr_text}",
+      )
+      blocks[current_scar].append(line)
+      continue
+    if line.startswith("[verbose] ") or line.startswith("Error:") or line.startswith("Aborted"):
+      current_scar = None
+  for scar_id in expected_scar_ids:
+    test_case.assertIn(
+        scar_id,
+        blocks,
+        f"Missing verbose block for {scar_id} in stderr:\n{stderr_text}",
+    )
+  return blocks
+
+
+class TestScarPipelineVerboseAndPrintResult(unittest.TestCase):
+  """Hermetic boundary tests for GH-345 Slice 3: --verbose (stderr) and --print-result (stdout)."""
+
+  def test_verbose_buffered_non_interleaved_parallel_diagnostics_both_scripts(
+      self,
+  ) -> None:
+    """Scenario 7: --verbose buffers per-scar blocks with attempts, timing, and zero interleaving under --workers 2."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer with 2 concurrent scars: Scar 1 hits validation retry, Scar 2 hits transient timeout retry
+      imp_db = os.path.join(tmpdir, "verbose_imp.db")
+      _seed_db(imp_db, [{"id": "SCAR-VRB-0001"}, {"id": "SCAR-VRB-0002"}])
+
+      barrier = threading.Barrier(2)
+      lock = threading.Lock()
+      attempts = {}
+      tick_lock = threading.Lock()
+      tick_val = [100.0]
+
+      def fake_monotonic() -> float:
+        with tick_lock:
+          val = tick_val[0]
+          tick_val[0] += 0.5
+          return val
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with lock:
+          n = attempts.get(scar_id, 0) + 1
+          attempts[scar_id] = n
+
+        def sync_first(_proc):
+          if n == 1:
+            barrier.wait(timeout=5.0)
+
+        if scar_id == "SCAR-VRB-0001" and n == 1:
+          return FakePopen(
+              stdout=json.dumps({
+                  "wound": "It's a contraction error.",
+                  "trap": "Simple trap one.",
+                  "circuit_breaker": "",
+                  "reflex": "Simple reflex one.",
+              }),
+              on_communicate=sync_first,
+          )
+        if scar_id == "SCAR-VRB-0002" and n == 1:
+          return FakePopen(timeout_exc=True, on_communicate=sync_first)
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": f"Simple wound {scar_id}.",
+                "trap": f"Simple trap {scar_id}.",
+                "circuit_breaker": "",
+                "reflex": f"Simple reflex {scar_id}.",
+            })
+        )
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen), \
+           patch("lib.import_synthetic_scars.time.monotonic", side_effect=fake_monotonic):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db, "--workers", "2", "--verbose"],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 0)
+      self.assertNotIn("[verbose]", imp_out.getvalue())
+      err_text = imp_err.getvalue()
+      self.assertIn("[verbose] Starting synthetic-scar-importer", err_text)
+      blocks = _assert_non_interleaved_verbose_blocks(
+          self, err_text, ("SCAR-VRB-0001", "SCAR-VRB-0002")
+      )
+      # Each scar ran 2 attempts -> header + 2 attempt lines
+      self.assertEqual(len(blocks["SCAR-VRB-0001"]), 3)
+      self.assertIn("attempt 1/3", blocks["SCAR-VRB-0001"][1])
+      self.assertIn("contraction", blocks["SCAR-VRB-0001"][1].lower())
+      self.assertIn("attempt 2/3", blocks["SCAR-VRB-0001"][2])
+      self.assertIn("0.50s", blocks["SCAR-VRB-0001"][2])
+
+      self.assertEqual(len(blocks["SCAR-VRB-0002"]), 3)
+      self.assertIn("attempt 1/3", blocks["SCAR-VRB-0002"][1])
+      self.assertIn("timed out", blocks["SCAR-VRB-0002"][1].lower())
+      self.assertIn("attempt 2/3", blocks["SCAR-VRB-0002"][2])
+
+      # 2) Probe writer mirror with 2 concurrent scars
+      probe_db = os.path.join(tmpdir, "verbose_probe.db")
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": sid,
+                  "wound": f"Simple wound {sid}.",
+                  "trap": f"Simple trap {sid}.",
+                  "circuit_breaker": None,
+                  "reflex": f"Simple reflex {sid}.",
+                  "socratic_probe": None,
+              }
+              for sid in ("SCAR-PVRB-0001", "SCAR-PVRB-0002")
+          ],
+      )
+
+      p_barrier = threading.Barrier(2)
+      p_lock = threading.Lock()
+      p_attempts = {}
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        with p_lock:
+          n = p_attempts.get(scar_id, 0) + 1
+          p_attempts[scar_id] = n
+
+        def sync_first(_proc):
+          if n == 1:
+            p_barrier.wait(timeout=5.0)
+
+        if scar_id == "SCAR-PVRB-0001" and n == 1:
+          return FakePopen(
+              stdout=json.dumps({"socratic_probe": "Missing question mark."}),
+              on_communicate=sync_first,
+          )
+        if scar_id == "SCAR-PVRB-0002" and n == 1:
+          return FakePopen(
+              stderr="503 Service Unavailable",
+              returncode=1,
+              on_communicate=sync_first,
+          )
+        return FakePopen(
+            stdout=json.dumps({"socratic_probe": f"Did {scar_id} pass verbose check?"})
+        )
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen), \
+           patch("lib.write_scar_probes.time.monotonic", side_effect=fake_monotonic):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--workers", "2", "--verbose"],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 0)
+      self.assertNotIn("[verbose]", probe_out.getvalue())
+      p_err_text = probe_err.getvalue()
+      self.assertIn("[verbose] Starting socratic-probe-writer", p_err_text)
+      p_blocks = _assert_non_interleaved_verbose_blocks(
+          self, p_err_text, ("SCAR-PVRB-0001", "SCAR-PVRB-0002")
+      )
+      self.assertEqual(len(p_blocks["SCAR-PVRB-0001"]), 3)
+      self.assertEqual(len(p_blocks["SCAR-PVRB-0002"]), 3)
+      self.assertIn("503 Service Unavailable", p_blocks["SCAR-PVRB-0002"][1])
+
+  def test_verbose_early_stop_logs_cancelled_unstarted_and_drained_in_flight(
+      self,
+  ) -> None:
+    """Scenario 7: --verbose logs cancelled_unstarted and drained_in_flight on parallel early stop."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "verbose_stop.db")
+      _seed_db(db_path, [{"id": f"SCAR-STP-{i:04d}"} for i in range(1, 5)])
+
+      barrier = threading.Barrier(2)
+      fatal_logged = threading.Event()
+
+      def fake_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        if scar_id == "SCAR-STP-0001":
+          def fail_sync(_proc):
+            barrier.wait(timeout=5.0)
+          return FakePopen(
+              stderr="Unknown model: invalid-x",
+              returncode=1,
+              on_communicate=fail_sync,
+          )
+        def sibling_sync(_proc):
+          barrier.wait(timeout=5.0)
+          fatal_logged.wait(timeout=5.0)
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": "Simple wound.",
+                "trap": "Simple trap.",
+                "circuit_breaker": "",
+                "reflex": "Simple reflex.",
+            }),
+            on_communicate=sibling_sync,
+        )
+
+      err = _NotifyingStringIO("Unknown model: invalid-x", fatal_logged)
+      out = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=fake_popen):
+        code = ImportSyntheticScarsScript().execute(
+            ["--db-path", db_path, "--workers", "2", "--verbose"],
+            stdout=out,
+            stderr=err,
+        )
+
+      self.assertEqual(code, 1)
+      err_text = err.getvalue()
+      self.assertIn("cancelled_unstarted=2", err_text)
+      self.assertIn("drained_in_flight=1", err_text)
+
+  def test_print_result_and_combined_verbose_stream_separation_both_scripts(
+      self,
+  ) -> None:
+    """Scenario 8: --print-result prints indented JSON with decoded lists to stdout cleanly separated from stderr --verbose."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      # 1) Importer with --workers 2 --print-result --verbose
+      imp_db = os.path.join(tmpdir, "print_imp.db")
+      _seed_db(
+          imp_db,
+          [
+              {
+                  "id": "SCAR-JSON-0001",
+                  "title": "Python JSON Printing One",
+                  "workflow_phases": '["Target 20: plan"]',
+                  "ss_targets": '["Target 20: plan"]',
+              },
+              {
+                  "id": "SCAR-JSON-0002",
+                  "title": "Python JSON Printing Two",
+                  "workflow_phases": '["Target 30: tdd"]',
+                  "ss_targets": '["Target 30: tdd"]',
+              },
+          ],
+      )
+
+      def imp_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        return FakePopen(
+            stdout=json.dumps({
+                "wound": f"Simple wound {scar_id}.",
+                "trap": f"Simple trap {scar_id}.",
+                "circuit_breaker": "",
+                "reflex": f"Simple reflex {scar_id}.",
+            })
+        )
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=imp_popen):
+        imp_code = ImportSyntheticScarsScript().execute(
+            [
+                "--db-path",
+                imp_db,
+                "--workers",
+                "2",
+                "--print-result",
+                "--verbose",
+            ],
+            stdout=imp_out,
+            stderr=imp_err,
+        )
+
+      self.assertEqual(imp_code, 0)
+      imp_stdout = imp_out.getvalue()
+      imp_stderr = imp_err.getvalue()
+      self.assertNotIn("[verbose]", imp_stdout)
+      self.assertNotIn('"raw_wound"', imp_stderr)
+      self.assertIn("\n  \"id\":", imp_stdout)
+
+      imp_objs = _extract_json_objects_from_stdout(imp_stdout)
+      self.assertEqual({o["id"] for o in imp_objs}, {"SCAR-JSON-0001", "SCAR-JSON-0002"})
+      for obj in imp_objs:
+        self.assertEqual(obj["wound"], f"Simple wound {obj['id']}.")
+        self.assertIsNone(obj["circuit_breaker"])
+        for list_col in (
+            "workflow_phases",
+            "ss_targets",
+            "mf_targets",
+            "keywords",
+            "languages",
+            "frameworks",
+            "diagnostic_codes",
+        ):
+          self.assertIsInstance(obj[list_col], list)
+
+      # 2) Probe writer with --print-result only (stderr must stay empty)
+      probe_db = os.path.join(tmpdir, "print_probe.db")
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": "SCAR-PJSON-0001",
+                  "title": "Python Probe Printing One",
+                  "wound": "Simple wound one.",
+                  "trap": "Simple trap one.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex one.",
+                  "socratic_probe": None,
+              },
+              {
+                  "id": "SCAR-PJSON-0002",
+                  "title": "Python Probe Printing Two",
+                  "wound": "Simple wound two.",
+                  "trap": "Simple trap two.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex two.",
+                  "socratic_probe": None,
+              },
+          ],
+      )
+
+      def probe_popen(cmd, **kwargs):
+        scar_id = _extract_prompt_scar_id(cmd[-1])
+        return FakePopen(
+            stdout=json.dumps({"socratic_probe": f"Did {scar_id} print JSON?"})
+        )
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch("lib.scar_subagent.subprocess.Popen", side_effect=probe_popen):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db, "--workers", "2", "--print-result"],
+            stdout=probe_out,
+            stderr=probe_err,
+        )
+
+      self.assertEqual(probe_code, 0)
+      self.assertEqual(probe_err.getvalue(), "")
+      probe_objs = _extract_json_objects_from_stdout(probe_out.getvalue())
+      self.assertEqual(
+          {o["id"] for o in probe_objs}, {"SCAR-PJSON-0001", "SCAR-PJSON-0002"}
+      )
+      for obj in probe_objs:
+        self.assertEqual(obj["socratic_probe"], f"Did {obj['id']} print JSON?")
+        self.assertIsInstance(obj["keywords"], list)
+        self.assertIsInstance(obj["mf_targets"], list)
+
+  def test_default_output_unchanged_when_verbose_and_print_result_omitted(
+      self,
+  ) -> None:
+    """Scenario 9: Default output emits only completion lines + summary on stdout and empty stderr."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      imp_db = os.path.join(tmpdir, "default_imp.db")
+      _seed_db(imp_db, [{"id": "SCAR-DEF-0001"}])
+
+      imp_out = io.StringIO()
+      imp_err = io.StringIO()
+      with patch(
+          "lib.scar_subagent.subprocess.Popen",
+          return_value=FakePopen(
+              stdout=json.dumps({
+                  "wound": "Simple wound.",
+                  "trap": "Simple trap.",
+                  "circuit_breaker": "",
+                  "reflex": "Simple reflex.",
+              })
+          ),
+      ):
+        imp_code = ImportSyntheticScarsScript().execute(
+            ["--db-path", imp_db], stdout=imp_out, stderr=imp_err
+        )
+
+      self.assertEqual(imp_code, 0)
+      self.assertEqual(imp_err.getvalue(), "")
+      self.assertEqual(
+          imp_out.getvalue().splitlines(),
+          [
+              "Imported Simple English fields for SCAR-DEF-0001 (1/1).",
+              "Import summary: committed=1 of 1, failed=0.",
+          ],
+      )
+
+      probe_db = os.path.join(tmpdir, "default_probe.db")
+      _seed_db(
+          probe_db,
+          [
+              {
+                  "id": "SCAR-PDEF-0001",
+                  "wound": "Simple wound.",
+                  "trap": "Simple trap.",
+                  "circuit_breaker": None,
+                  "reflex": "Simple reflex.",
+                  "socratic_probe": None,
+              }
+          ],
+      )
+
+      probe_out = io.StringIO()
+      probe_err = io.StringIO()
+      with patch(
+          "lib.scar_subagent.subprocess.Popen",
+          return_value=FakePopen(
+              stdout=json.dumps({"socratic_probe": "Did default output stay clean?"})
+          ),
+      ):
+        probe_code = WriteScarProbesScript().execute(
+            ["--db-path", probe_db], stdout=probe_out, stderr=probe_err
+        )
+
+      self.assertEqual(probe_code, 0)
+      self.assertEqual(probe_err.getvalue(), "")
+      self.assertEqual(
+          probe_out.getvalue().splitlines(),
+          [
+              "Wrote Socratic probe for SCAR-PDEF-0001 (1/1).",
+              "Probe summary: committed=1 of 1, failed=0.",
+          ],
+      )
+
+
+class TestScarPipelineMakefileOptions(unittest.TestCase):
+  """Hermetic dry-run tests for GH-345 Slice 4: Makefile flag pass-through and help documentation."""
+
+  def test_makefile_import_and_probe_option_passthrough_dry_run(self) -> None:
+    """Scenario 10: Makefile forwards TIMEOUT, MAX_RETRIES, MAX_ERRORS, VERBOSE, and PRINT_RESULT accurately."""
+    makefile_path = os.path.join(_REPO_ROOT, "Makefile")
+    clean_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k
+        not in (
+            "WORKERS",
+            "MODEL",
+            "TIMEOUT",
+            "MAX_RETRIES",
+            "MAX_ERRORS",
+            "VERBOSE",
+            "PRINT_RESULT",
+        )
+    }
+
+    cases = []
+    for target in ("import-scars", "probe-scars"):
+      cases.extend([
+          (
+              [
+                  target,
+                  "MODEL=gemini-2.5-pro",
+                  "WORKERS=4",
+                  "TIMEOUT=45.5",
+                  "MAX_RETRIES=3",
+                  "MAX_ERRORS=4",
+                  "VERBOSE=1",
+                  "PRINT_RESULT=1",
+              ],
+              [
+                  '--model "gemini-2.5-pro"',
+                  '--workers "4"',
+                  '--timeout "45.5"',
+                  '--max-retries "3"',
+                  '--max-errors "4"',
+                  "--verbose",
+                  "--print-result",
+              ],
+              [],
+          ),
+          (
+              [target, "VERBOSE=true", "PRINT_RESULT=yes"],
+              ["--verbose", "--print-result"],
+              ["--timeout", "--max-retries", "--max-errors"],
+          ),
+          (
+              [target, "VERBOSE=0", "PRINT_RESULT=0"],
+              [],
+              [
+                  "--verbose",
+                  "--print-result",
+                  "--timeout",
+                  "--max-retries",
+                  "--max-errors",
+              ],
+          ),
+          (
+              [target, "VERBOSE=false", "PRINT_RESULT=no"],
+              [],
+              ["--verbose", "--print-result"],
+          ),
+          (
+              [target, "VERBOSE=NO", "PRINT_RESULT=FALSE"],
+              [],
+              ["--verbose", "--print-result"],
+          ),
+          (
+              [target],
+              [],
+              [
+                  "--model",
+                  "--workers",
+                  "--timeout",
+                  "--max-retries",
+                  "--max-errors",
+                  "--verbose",
+                  "--print-result",
+              ],
+          ),
+      ])
+
+    for make_args, expected_substrings, forbidden_substrings in cases:
+      with self.subTest(make_args=make_args):
+        res = subprocess.run(
+            ["make", "-n", "-f", makefile_path, *make_args],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=_REPO_ROOT,
+            env=clean_env,
+        )
+        for expected in expected_substrings:
+          self.assertIn(expected, res.stdout)
+        for forbidden in forbidden_substrings:
+          self.assertNotIn(forbidden, res.stdout)
+
+  def test_makefile_help_documents_scar_pipeline_variables(self) -> None:
+    """Scenario 10: make help documents TIMEOUT, MAX_RETRIES, MAX_ERRORS, VERBOSE, and PRINT_RESULT."""
+    makefile_path = os.path.join(_REPO_ROOT, "Makefile")
+    res = subprocess.run(
+        ["make", "-f", makefile_path, "help"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=_REPO_ROOT,
+    )
+    help_lines = res.stdout.splitlines()
+    import_line = next(
+        (line for line in help_lines if "make import-scars" in line), ""
+    )
+    probe_line = next(
+        (line for line in help_lines if "make probe-scars" in line), ""
+    )
+    self.assertTrue(import_line, "Missing 'make import-scars' entry in make help")
+    self.assertTrue(probe_line, "Missing 'make probe-scars' entry in make help")
+    for var_name in (
+        "MODEL",
+        "WORKERS",
+        "TIMEOUT",
+        "MAX_RETRIES",
+        "MAX_ERRORS",
+        "VERBOSE",
+        "PRINT_RESULT",
+    ):
+      self.assertIn(var_name, import_line)
+      self.assertIn(var_name, probe_line)
 
 
 if __name__ == "__main__":

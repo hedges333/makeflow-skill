@@ -25,6 +25,46 @@ _FENCED_JSON_RE = re.compile(
 _CLOSING_AIRLOCK_TAG_RE = re.compile(
     r"</untrusted_upstream_scar>", re.IGNORECASE
 )
+_FATAL_AGY_ERROR_RE = re.compile(
+    r"(?:unknown|invalid|bad)\s+(?:model|flag|option|argument)"
+    r"|model\s+not\s+found"
+    r"|unrecognized\s+(?:option|argument|flag)"
+    r"|invalid\s+api\s+key"
+    r"|authentication\s+failed"
+    r"|unauthorized"
+    r"|permission\s+denied"
+    r"|forbidden",
+    re.IGNORECASE,
+)
+_TRANSIENT_AGY_ERROR_RE = re.compile(
+    r"\b(?:429|500|502|503|504)\b"
+    r"|rate[\s_-]?limit"
+    r"|too\s+many\s+requests"
+    r"|resource[\s_-]?exhausted"
+    r"|quota\s+exceeded"
+    r"|overloaded"
+    r"|bad\s+gateway"
+    r"|service\s+unavailable"
+    r"|gateway\s+timeout"
+    r"|internal\s+server\s+error"
+    r"|server\s+error"
+    r"|temporarily\s+unavailable"
+    r"|deadline[\s_-]?exceeded"
+    r"|timed\s+out"
+    r"|timeout"
+    r"|econnreset"
+    r"|econnrefused"
+    r"|etimedout"
+    r"|eai_again"
+    r"|enotfound"
+    r"|connection\s+(?:reset|refused|aborted|closed)"
+    r"|broken\s+pipe"
+    r"|socket\s+hang\s+up"
+    r"|network\s+error"
+    r"|fetch\s+failed"
+    r"|transient",
+    re.IGNORECASE,
+)
 
 
 class AgySubagentError(RuntimeError):
@@ -35,17 +75,47 @@ class AgySubagentError(RuntimeError):
       message: str,
       returncode: Optional[int] = None,
       stderr_text: str = "",
+      error_kind: str = "exit",
   ) -> None:
-    """Initialize AgySubagentError with optional return code and stderr detail.
+    """Initialize AgySubagentError with optional return code, stderr, and error kind.
 
     Args:
       message: Actionable diagnostic message describing the CLI failure.
       returncode: Subprocess exit status code when available.
       stderr_text: Captured standard error text from the subprocess.
+      error_kind: Structured error category (``"launch"``, ``"timeout"``, or
+        ``"exit"``).
     """
     super().__init__(message)
     self.returncode = returncode
     self.stderr_text = stderr_text
+    self.error_kind = error_kind
+
+
+def is_transient_agy_error(exc: AgySubagentError) -> bool:
+  """Classify whether an AgySubagentError is transient and safe to retry.
+
+  Treats subprocess timeouts (``error_kind == "timeout"`` or exit code 124) and
+  known transient HTTP/network/rate-limit runtime exits as retryable. Treats
+  launch failures (``error_kind == "launch"``), CLI usage exits (status 2),
+  invalid model/flag/auth errors, and unrecognized fatal exits as fail-fast.
+
+  Args:
+    exc: Raised AgySubagentError instance from AgySubagentRunner.
+
+  Returns:
+    True when the error is transient and retryable, False when fatal.
+  """
+  if exc.error_kind == "launch":
+    return False
+  if exc.error_kind == "timeout" or exc.returncode == 124:
+    return True
+  if exc.returncode == 2:
+    return False
+  combined = f"{exc.stderr_text or ''}\n{exc}"
+  if _FATAL_AGY_ERROR_RE.search(combined):
+    return False
+  return bool(_TRANSIENT_AGY_ERROR_RE.search(combined))
 
 
 def wrap_untrusted_scar(fields: Sequence[Tuple[str, Any]]) -> List[str]:
@@ -226,6 +296,7 @@ class AgySubagentRunner:
           f"Failed to launch '{self.agy_bin}': {exc}",
           returncode=1,
           stderr_text=str(exc),
+          error_kind="launch",
       ) from exc
 
     if self.signal_trap is not None:
@@ -256,6 +327,7 @@ class AgySubagentRunner:
             f"agy agent '{self.agent_name}' timed out after {self.timeout_sec}s.",
             returncode=124,
             stderr_text="timeout",
+            error_kind="timeout",
         ) from exc
     finally:
       if self.signal_trap is not None:
@@ -267,6 +339,7 @@ class AgySubagentRunner:
           f"agy exited with status {proc.returncode}: {detail}",
           returncode=proc.returncode,
           stderr_text=detail,
+          error_kind="exit",
       )
 
     return extract_json_payload(stdout_text)
@@ -302,6 +375,7 @@ def iter_bounded_worker_results(
     workers: int,
     worker_fn: Callable[[_T], _R],
     should_stop: Callable[[], bool],
+    stop_stats: Optional[Dict[str, int]] = None,
 ) -> Iterator[Tuple[_T, _R]]:
   """Execute ``worker_fn`` over ``rows`` with bounded concurrency and main-thread yields.
 
@@ -317,6 +391,8 @@ def iter_bounded_worker_results(
     worker_fn: Pure per-item callable safe to execute on worker threads.
     should_stop: Zero-argument predicate polled on the calling thread to stop
       submitting new items on signal or fatal CLI error.
+    stop_stats: Optional mutable dictionary populated on exit with
+      ``cancelled_unstarted`` and ``drained_in_flight`` integer counts.
 
   Yields:
     ``(row, result)`` tuples on the calling thread as each item completes.
@@ -326,18 +402,30 @@ def iter_bounded_worker_results(
   """
   if workers < 1:
     raise ValueError(f"workers must be >= 1, got {workers}.")
+  if stop_stats is not None:
+    stop_stats["cancelled_unstarted"] = 0
+    stop_stats["drained_in_flight"] = 0
   if not rows:
     return
 
   if workers == 1:
-    for row in rows:
-      if should_stop():
-        break
-      yield row, worker_fn(row)
+    started_count = 0
+    try:
+      for row in rows:
+        if should_stop():
+          break
+        started_count += 1
+        yield row, worker_fn(row)
+    finally:
+      if stop_stats is not None:
+        stop_stats["cancelled_unstarted"] = max(0, len(rows) - started_count)
+        stop_stats["drained_in_flight"] = 0
     return
 
   row_iter = iter(rows)
-  max_workers = min(workers, len(rows))
+  total_rows = len(rows)
+  submitted_count = 0
+  max_workers = min(workers, total_rows)
   executor = ThreadPoolExecutor(max_workers=max_workers)
   pending: Dict[Future[_R], _T] = {}
   try:
@@ -348,6 +436,7 @@ def iter_bounded_worker_results(
         row = next(row_iter)
       except StopIteration:
         break
+      submitted_count += 1
       pending[executor.submit(worker_fn, row)] = row
 
     while pending:
@@ -361,9 +450,9 @@ def iter_bounded_worker_results(
       if not done:
         continue
       for fut in done:
-        row = pending.pop(fut)
         if should_stop():
           break
+        row = pending.pop(fut)
         result = fut.result()
         yield row, result
         if not should_stop():
@@ -371,6 +460,18 @@ def iter_bounded_worker_results(
             next_row = next(row_iter)
           except StopIteration:
             continue
+          submitted_count += 1
           pending[executor.submit(worker_fn, next_row)] = next_row
   finally:
+    cancelled_queued = 0
+    drained_in_flight = 0
+    for fut in list(pending.keys()):
+      if fut.cancel():
+        cancelled_queued += 1
+      else:
+        drained_in_flight += 1
+    if stop_stats is not None:
+      unsubmitted = max(0, total_rows - submitted_count)
+      stop_stats["cancelled_unstarted"] = unsubmitted + cancelled_queued
+      stop_stats["drained_in_flight"] = drained_in_flight
     executor.shutdown(wait=True, cancel_futures=True)
