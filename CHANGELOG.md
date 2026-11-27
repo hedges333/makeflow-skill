@@ -81,3 +81,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-316: Prevent same-turn denied-call pause-gate turn lockouts and T90 spoofing, clarify bundling denial messages, and add stage manual reminders.
 - GH-325: Prevent release-intake from resetting active or completed terminal titles, and format finished titles with DONE in make finish.
 - GH-336: Fix AgySubagentRunner.build_command() to place --agent ahead of attached --print=<prompt>.
+- GH-337: Split Target 15 BDD prompt so unset or ask asks for this turn's mode and a save choice, and concrete preferences run directly.

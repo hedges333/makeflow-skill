@@ -3366,5 +3366,26 @@
     "closes_issue": true,
     "tests_added": 1,
     "scars_earned": []
+  },
+  {
+    "id": "GH-337",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/337",
+    "title": "[BUG] split BDD choice to ask every time",
+    "request": "Split the Target 15 BDD prompt so that when planning.bddMode is unset or ask, the user answers which BDD mode to use in this turn and whether to save the choice, save ask, or not save any choice. If a concrete preference is configured, run it directly.",
+    "branch": "fix/337-split-bdd-choice-ask-every-time",
+    "subprojects": [
+      "lib",
+      "rules",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-27T18:21:09Z",
+    "completed_at": "2026-11-27T21:31:14Z",
+    "commit_sha": "b8896e7c7da8cd7a592b4379fa1129a4fa3fa35c",
+    "pr_number": 347,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/347",
+    "closes_issue": true,
+    "tests_added": 2,
+    "scars_earned": []
   }
 ]
