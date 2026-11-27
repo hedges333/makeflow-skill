@@ -25,20 +25,20 @@ The sync script performs four deterministic steps:
 
 ## 2. Write Simple English fields
 
-Run `make import-scars` to transform pending scars one scar at a time with `agy` (Antigravity CLI):
+Run `make import-scars` to transform pending scars one scar per call with `agy` (Antigravity CLI):
 
 ```bash
 make import-scars
 ```
 
-Pass `MODEL=<name>` or `--model <name>` to forward an explicit model override to `agy`:
+Pass `MODEL=<name>` or `--model <name>` to forward an explicit model override to `agy`. Pass `WORKERS=<n>` or `--workers <n>` to run bounded parallel single-scar calls:
 
 ```bash
-make import-scars MODEL=gemini-2.5-pro
-python3 scripts/import_synthetic_scars.py --model gemini-2.5-pro
+make import-scars MODEL=gemini-2.5-pro WORKERS=4
+python3 scripts/import_synthetic_scars.py --model gemini-2.5-pro --workers 4
 ```
 
-Python validates each JSON response with `ScarCandidateValidator`, retries validation failures, and commits each valid scar immediately. Press `Ctrl+C` between scars to stop cleanly while preserving committed rows and rebuilding `scars_fts`.
+Each worker processes one isolated scar per call. Python validates each JSON response with `ScarCandidateValidator` and retries validation failures. The main thread commits each valid scar to SQLite serially. If you press `Ctrl+C`, the script terminates active workers, preserves committed rows, and rebuilds `scars_fts`.
 
 ## 3. Write Socratic probes
 
@@ -48,14 +48,14 @@ Run `make probe-scars` to write `socratic_probe` (a short diagnostic question pr
 make probe-scars
 ```
 
-Pass `MODEL=<name>` or `--model <name>` to forward an explicit model override to `agy`:
+Pass `MODEL=<name>` or `--model <name>` to forward an explicit model override to `agy`. Pass `WORKERS=<n>` or `--workers <n>` to run bounded parallel single-scar calls:
 
 ```bash
-make probe-scars MODEL=gemini-2.5-pro
-python3 scripts/write_scar_probes.py --model gemini-2.5-pro
+make probe-scars MODEL=gemini-2.5-pro WORKERS=4
+python3 scripts/write_scar_probes.py --model gemini-2.5-pro --workers 4
 ```
 
-Python validates each probe with `validate_socratic_probe()`, enriches metadata, commits immediately, and rebuilds `scars_fts` on exit.
+Each worker processes one isolated scar per call. Python validates each probe with `validate_socratic_probe()` and retries validation failures. The main thread enriches metadata and commits each valid probe to SQLite serially. If you press `Ctrl+C`, the script terminates active workers, preserves committed rows, and rebuilds `scars_fts`.
 
 ## 4. Test and install updated scars
 

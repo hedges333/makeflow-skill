@@ -40,8 +40,8 @@ help:
 	@echo "  make test-sync-scars    - Test synthetic scars SQLite sync, query, and agy pipeline"
 	@echo "  make test-scar-candidate - Test synthetic scar candidate validator (GH-146)"
 	@echo "  make sync-scars         - Sync public synthetic scars registry into bundled package database"
-	@echo "  make import-scars       - Write Simple English scar fields with agy (optional MODEL=<name>)"
-	@echo "  make probe-scars        - Write Socratic probes for transformed scars with agy (optional MODEL=<name>)"
+	@echo "  make import-scars       - Write Simple English scar fields with agy (optional MODEL=<name> WORKERS=<n>)"
+	@echo "  make probe-scars        - Write Socratic probes for transformed scars with agy (optional MODEL=<name> WORKERS=<n>)"
 	@echo "  make test-compat        - Check Claude, Cursor, Copilot, and ChatGPT adapters"
 	@echo "  make test-compat-cwd    - Test arbitrary CWD subprocess timeout (GH-62)"
 	@echo "  make test-base-script   - Test BaseScript execution lifecycle (SCAR-ARCH-05)"
@@ -163,11 +163,11 @@ sync-scars:
 
 import-scars:
 	@echo "Importing Simple English scar fields with agy..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/import_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)
+	@$(PYTHON) "$(SCRIPTS_DIR)/import_synthetic_scars.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)$(if $(WORKERS), --workers "$(WORKERS)",)
 
 probe-scars:
 	@echo "Writing Socratic probes for transformed scars with agy..."
-	@$(PYTHON) "$(SCRIPTS_DIR)/write_scar_probes.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)
+	@$(PYTHON) "$(SCRIPTS_DIR)/write_scar_probes.py" --db-path "$(REPO_ROOT)/skills/makeflow/data/scars_registry.db"$(if $(MODEL), --model "$(MODEL)",)$(if $(WORKERS), --workers "$(WORKERS)",)
 
 test-scar-candidate:
 	@echo "Testing synthetic scar candidate validator..."

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -463,6 +464,336 @@ class TestSignalTrap(unittest.TestCase):
       reaped = SignalTrap.reap_zombies()
       self.assertEqual(reaped, [])
 
+
+class TestSignalTrapConcurrency(unittest.TestCase):
+  """Hermetic concurrency and shutdown-race tests for SignalTrap (GH-321)."""
+
+  def setUp(self) -> None:
+    self._orig_sigterm = signal.getsignal(signal.SIGTERM)
+    self._orig_sigint = signal.getsignal(signal.SIGINT)
+
+  def tearDown(self) -> None:
+    try:
+      signal.signal(signal.SIGTERM, self._orig_sigterm)
+    except (ValueError, OSError):
+      pass
+    try:
+      signal.signal(signal.SIGINT, self._orig_sigint)
+    except (ValueError, OSError):
+      pass
+
+  def test_concurrent_register_and_unregister_subprocess_thread_safety(
+      self,
+  ) -> None:
+    """Concurrent register/unregister across threads raises no dict mutation races."""
+    trap = SignalTrap(exit_on_signal=False)
+    self.assertTrue(
+        hasattr(trap, "_subprocesses_lock"),
+        "SignalTrap must guard _subprocesses with _subprocesses_lock",
+    )
+    errors = []
+    barrier = threading.Barrier(8)
+
+    def worker(worker_idx: int) -> None:
+      try:
+        barrier.wait(timeout=5.0)
+        for step in range(50):
+          proc = unittest.mock.MagicMock(name=f"proc-{worker_idx}-{step}")
+          proc.poll.return_value = 0
+          trap.register_subprocess(proc, timeout=0.5)
+          trap.unregister_subprocess(proc)
+      except Exception as exc:  # pylint: disable=broad-except
+        errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=(idx,)) for idx in range(8)
+    ]
+    for thread in threads:
+      thread.start()
+    for thread in threads:
+      thread.join(timeout=5.0)
+      self.assertFalse(thread.is_alive(), "Worker thread did not finish")
+
+    self.assertEqual(errors, [])
+    self.assertEqual(len(trap._subprocesses), 0)
+
+  def test_execute_cleanups_terminates_subprocesses_outside_lock(self) -> None:
+    """Terminating subprocesses during cleanup must not hold _subprocesses_lock."""
+    trap = SignalTrap(exit_on_signal=False)
+    other_proc = unittest.mock.MagicMock(name="other_proc")
+    other_proc.poll.return_value = 0
+    trap.register_subprocess(other_proc, timeout=1.0)
+
+    worker_done = threading.Event()
+    worker_errors = []
+
+    def concurrent_mutation() -> None:
+      try:
+        trap.unregister_subprocess(other_proc)
+        extra_proc = unittest.mock.MagicMock(name="extra_proc")
+        extra_proc.poll.return_value = 0
+        trap.register_subprocess(extra_proc, timeout=1.0)
+        trap.unregister_subprocess(extra_proc)
+      except Exception as exc:  # pylint: disable=broad-except
+        worker_errors.append(exc)
+      finally:
+        worker_done.set()
+
+    blocking_proc = unittest.mock.MagicMock(name="blocking_proc")
+    blocking_proc.poll.return_value = None
+    blocking_proc.wait.return_value = 0
+
+    def terminate_while_other_thread_mutates() -> None:
+      t = threading.Thread(target=concurrent_mutation)
+      t.start()
+      finished = worker_done.wait(timeout=2.0)
+      t.join(timeout=2.0)
+      if not finished:
+        raise TimeoutError(
+            "Deadlock detected: _subprocesses_lock was held during terminate()"
+        )
+
+    blocking_proc.terminate.side_effect = terminate_while_other_thread_mutates
+    trap.register_subprocess(blocking_proc, timeout=1.0)
+
+    errors = trap.execute_cleanups()
+    self.assertEqual(errors, [])
+    self.assertEqual(worker_errors, [])
+    self.assertTrue(worker_done.is_set())
+    blocking_proc.terminate.assert_called_once()
+
+  def test_late_subprocess_registration_after_signal_terminates_immediately(
+      self,
+  ) -> None:
+    """Subprocess registered after handle_signal shutdown starts is terminated immediately."""
+    trap = SignalTrap(exit_on_signal=False)
+    trap.handle_signal(signal.SIGINT, None)
+
+    late_proc = unittest.mock.MagicMock(name="late_proc")
+    late_proc.poll.return_value = None
+    late_proc.wait.return_value = -signal.SIGTERM
+
+    returned = trap.register_subprocess(late_proc, timeout=1.5)
+    self.assertIs(returned, late_proc)
+    late_proc.terminate.assert_called_once()
+    late_proc.wait.assert_called_once_with(timeout=1.5)
+    self.assertNotIn(late_proc, trap._subprocesses)
+
+  def test_exit_drains_residual_subprocesses_when_cleanups_already_executed(
+      self,
+  ) -> None:
+    """__exit__ must drain residual subprocesses even if _cleanups_executed is True."""
+    residual_proc = unittest.mock.MagicMock(name="residual_proc")
+    residual_proc.poll.return_value = None
+    residual_proc.wait.return_value = 0
+
+    with SignalTrap(exit_on_signal=False, cleanup_on_exit=True) as trap:
+      trap.execute_cleanups()
+      self.assertTrue(trap._cleanups_executed)
+      trap.register_subprocess(residual_proc, timeout=1.0)
+
+    residual_proc.terminate.assert_called_once()
+    residual_proc.wait.assert_called_once_with(timeout=1.0)
+    self.assertEqual(len(trap._subprocesses), 0)
+
+  def test_off_main_thread_restore_preserves_original_handlers_for_main_thread(
+      self,
+  ) -> None:
+    """Calling restore() off the main thread leaves _original_handlers intact for __exit__."""
+    def custom_handler(_sig, _frame):
+      pass
+
+    signal.signal(signal.SIGTERM, custom_handler)
+    with SignalTrap(exit_on_signal=False) as trap:
+      self.assertEqual(signal.getsignal(signal.SIGTERM), trap.handle_signal)
+      worker = threading.Thread(target=trap.restore)
+      worker.start()
+      worker.join(timeout=2.0)
+      self.assertFalse(worker.is_alive())
+      self.assertTrue(
+          trap.is_installed,
+          "Off-main-thread restore() must not clear installed state",
+      )
+      self.assertEqual(signal.getsignal(signal.SIGTERM), trap.handle_signal)
+
+    self.assertFalse(trap.is_installed)
+    self.assertEqual(signal.getsignal(signal.SIGTERM), custom_handler)
+
+  def test_drain_subprocesses_two_phase_parallel_broadcast_and_shared_deadline(
+      self,
+  ) -> None:
+    """Two-phase drain broadcasts SIGTERM to all live children before waiting under shared deadline."""
+    clock = [100.0]
+    events = []
+
+    def fake_monotonic() -> float:
+      return clock[0]
+
+    proc_oserr = unittest.mock.MagicMock(name="proc_oserr")
+    proc_oserr.poll.return_value = None
+
+    def oserr_terminate() -> None:
+      events.append(("terminate_err", "oserr"))
+      raise OSError("No such process")
+
+    proc_oserr.terminate.side_effect = oserr_terminate
+
+    proc_already_done = unittest.mock.MagicMock(name="proc_already_done")
+    proc_already_done.poll.side_effect = [None, 0]
+    proc_already_done.terminate.side_effect = lambda: events.append(
+        ("terminate", "already_done")
+    )
+
+    proc_clean = unittest.mock.MagicMock(name="proc_clean")
+    proc_clean.poll.return_value = None
+    proc_clean.terminate.side_effect = lambda: events.append(
+        ("terminate", "clean")
+    )
+
+    def clean_wait(timeout=None) -> int:
+      events.append(("wait", "clean", timeout))
+      clock[0] += 1.5
+      return 0
+
+    proc_clean.wait.side_effect = clean_wait
+
+    proc_timeout = unittest.mock.MagicMock(name="proc_timeout")
+    proc_timeout.poll.return_value = None
+    proc_timeout.terminate.side_effect = lambda: events.append(
+        ("terminate", "timeout")
+    )
+    timeout_wait_calls = [0]
+
+    def timeout_wait(timeout=None) -> int:
+      events.append(("wait", "timeout", timeout))
+      timeout_wait_calls[0] += 1
+      if timeout_wait_calls[0] == 1:
+        clock[0] += 0.5
+        raise subprocess.TimeoutExpired(cmd="timeout", timeout=timeout)
+      return -signal.SIGKILL
+
+    proc_timeout.wait.side_effect = timeout_wait
+    proc_timeout.kill.side_effect = lambda: events.append(("kill", "timeout"))
+
+    proc_stubborn = unittest.mock.MagicMock(name="proc_stubborn")
+    proc_stubborn.poll.return_value = None
+    proc_stubborn.terminate.side_effect = lambda: events.append(
+        ("terminate", "stubborn")
+    )
+
+    def stubborn_wait(timeout=None) -> int:
+      events.append(("wait", "stubborn", timeout))
+      raise subprocess.TimeoutExpired(cmd="stubborn", timeout=timeout)
+
+    proc_stubborn.wait.side_effect = stubborn_wait
+    proc_stubborn.kill.side_effect = lambda: events.append(("kill", "stubborn"))
+
+    trap = SignalTrap(exit_on_signal=False)
+    for proc in (
+        proc_oserr,
+        proc_already_done,
+        proc_clean,
+        proc_timeout,
+        proc_stubborn,
+    ):
+      trap.register_subprocess(proc, timeout=2.0)
+
+    with unittest.mock.patch(
+        "lib.signal_trap.time.monotonic", side_effect=fake_monotonic
+    ), unittest.mock.patch.object(
+        trap, "reap_zombies", return_value=[]
+    ) as mock_reap:
+      errors = trap.execute_cleanups()
+
+    self.assertEqual(errors, [])
+    self.assertEqual(len(trap._subprocesses), 0)
+
+    # Every live child receives terminate() BEFORE wait() is called on any child.
+    first_wait_idx = next(
+        idx for idx, ev in enumerate(events) if ev[0] == "wait"
+    )
+    terminate_indices = [
+        idx
+        for idx, ev in enumerate(events)
+        if ev[0] in ("terminate", "terminate_err")
+    ]
+    self.assertEqual(len(terminate_indices), 5)
+    self.assertTrue(
+        all(idx < first_wait_idx for idx in terminate_indices),
+        f"Expected all terminate() calls before first wait(), got events={events}",
+    )
+
+    # OSError child and already-exited child are neither waited nor killed.
+    proc_oserr.wait.assert_not_called()
+    proc_oserr.kill.assert_not_called()
+    proc_already_done.wait.assert_not_called()
+    proc_already_done.kill.assert_not_called()
+
+    # Clean child gets full remaining budget and is never killed.
+    proc_clean.wait.assert_called_once_with(timeout=2.0)
+    proc_clean.kill.assert_not_called()
+
+    # Shared deadline shrinks remaining wait budget for subsequent children.
+    self.assertEqual(
+        proc_timeout.wait.call_args_list,
+        [unittest.mock.call(timeout=0.5), unittest.mock.call(timeout=2.0)],
+    )
+    proc_timeout.kill.assert_called_once()
+
+    # Stubborn child gets 0.0 remaining wait, escalates to kill, and post-kill timeout is caught cleanly.
+    self.assertEqual(
+        proc_stubborn.wait.call_args_list,
+        [unittest.mock.call(timeout=0.0), unittest.mock.call(timeout=2.0)],
+    )
+    proc_stubborn.kill.assert_called_once()
+
+    # NBO-4: execute_cleanups() calls reap_zombies() exactly once.
+    mock_reap.assert_called_once()
+
+  def test_register_subprocess_main_thread_signal_reentrancy_no_deadlock(
+      self,
+  ) -> None:
+    """Main-thread signal arriving inside register_subprocess does not deadlock and terminates late child."""
+    trap = SignalTrap(exit_on_signal=False)
+
+    class _ReEntrantProc:
+      """Test double whose __hash__ triggers handle_signal on the main thread."""
+
+      def __init__(self) -> None:
+        self._triggered = False
+        self.terminated = False
+        self.killed = False
+        self.waited_timeouts = []
+
+      def __hash__(self) -> int:
+        if not self._triggered:
+          self._triggered = True
+          trap.handle_signal(signal.SIGINT, None)
+        return id(self)
+
+      def poll(self):
+        return None
+
+      def terminate(self) -> None:
+        self.terminated = True
+
+      def kill(self) -> None:
+        self.killed = True
+
+      def wait(self, timeout=None) -> int:
+        self.waited_timeouts.append(timeout)
+        return -signal.SIGTERM
+
+    proc = _ReEntrantProc()
+    returned = trap.register_subprocess(proc, timeout=1.25)
+
+    self.assertIs(returned, proc)
+    self.assertEqual(trap.last_signal, signal.SIGINT)
+    self.assertEqual(trap.signal_count, 1)
+    self.assertTrue(proc.terminated)
+    self.assertEqual(proc.waited_timeouts, [1.25])
+    self.assertFalse(proc.killed)
+    self.assertNotIn(proc, trap._subprocesses)
 
 
 if __name__ == "__main__":
