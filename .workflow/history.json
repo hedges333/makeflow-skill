@@ -3303,5 +3303,24 @@
     "closes_issue": true,
     "tests_added": 11,
     "scars_earned": []
+  },
+  {
+    "id": "GH-325",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/325",
+    "title": "Do not reset terminal title until make finish completes",
+    "request": "Prevent run_release_intake_gate in lib/intake_gates.py from resetting the terminal title while a ticket workflow is active or completed, recover canonical ticket_id in _finalize_completed_ticket in lib/state_machine.py to format finished titles as '{dir_name}/: {ticket_id} DONE' with '{dir_name}/' fallback, update release-intake CLI help text in lib/workflow_gates_cli.py, and add 4 hermetic unit tests.",
+    "branch": "fix/325-terminal-title-finish",
+    "subprojects": [
+      "lib",
+      "tests"
+    ],
+    "started_at": "2026-11-26T22:34:00Z",
+    "completed_at": "2026-11-27T07:41:49Z",
+    "commit_sha": "942d7a1f4721858e5654d429e4fd036ca8ce07a5",
+    "pr_number": 340,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/340",
+    "closes_issue": true,
+    "tests_added": 4,
+    "scars_earned": []
   }
 ]
