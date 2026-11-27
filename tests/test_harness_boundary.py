@@ -1023,6 +1023,45 @@ class TestBlackBoxHarnessBoundary(unittest.TestCase):
           )
           self.assertIn("[SCAR-ID: PROC-124]", reason_sup)
 
+  def test_plan_path_helpers_reexported_from_plan_validation(self):
+    """GH-331 / SCAR-API-0002: harness_boundary re-exports canonical plan helpers from lib.plan_validation."""
+    import lib.harness_boundary as hb
+    import lib.plan_validation as pv
+
+    self.assertIs(hb.plan_mentions_relpath, pv.plan_mentions_relpath)
+    self.assertIs(hb.plan_allows_edit_relpath, pv.plan_allows_edit_relpath)
+
+  def test_expanded_agent_plugin_caches_and_symlinks_detected(self):
+    """GH-331: Detects ~/.codex/plugins, ~/.cursor/plugins, ~/.copilot/plugins, and symlinks into them."""
+    with (
+        _isolated_env() as (_hook_cwd, fake_home),
+        tempfile.TemporaryDirectory() as ws_dir,
+    ):
+      for rel_cache in (
+          os.path.join(".codex", "plugins", "makeflow", "lib", "tdd_guard.py"),
+          os.path.join(".cursor", "plugins", "makeflow", "lib", "config.py"),
+          os.path.join(
+              ".copilot", "plugins", "makeflow", "scripts", "pre_tool_guard.py"
+          ),
+      ):
+        with self.subTest(rel_cache=rel_cache):
+          cache_file = os.path.join(fake_home, rel_cache)
+          _write_file(cache_file, "# installed plugin file\n")
+          self.assertTrue(
+              is_plugin_cache_path(cache_file),
+              f"Expected is_plugin_cache_path True for {cache_file}",
+          )
+          link_path = os.path.join(
+              ws_dir, f"link_{os.path.basename(cache_file)}"
+          )
+          if os.path.lexists(link_path):
+            os.unlink(link_path)
+          os.symlink(cache_file, link_path)
+          self.assertTrue(
+              is_plugin_cache_path(link_path),
+              f"Expected symlink {link_path} -> {cache_file} to be detected as plugin cache",
+          )
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -1410,6 +1410,83 @@ class TestNativeGitIndexPlumbing(unittest.TestCase):
       })
       self.assertEqual(res_sh["decision"], "deny")
 
+  def test_self_hosting_regression_receipt_protects_executing_plugin_toolchain(
+      self,
+  ) -> None:
+    """GH-331 Scenario 5: Self-hosting verify-regression passes and check-regression detects installed plugin tampering."""
+    import shutil
+    from lib.regression_gate import (
+        run_verify_regression,
+        verify_regression_receipt,
+    )
+    from lib.tdd_guard import CORE_GOVERNANCE_FILES
+    from lib.workflow_gates import REQUIRED_PLUGIN_FILES
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      installed_plugin = os.path.join(tmpdir, "installed_plugin")
+      workspace_repo = os.path.join(tmpdir, "makeflow_workspace")
+      os.makedirs(installed_plugin)
+      os.makedirs(workspace_repo)
+
+      # Seed installed plugin root (immutable runtime)
+      for rel_path in REQUIRED_PLUGIN_FILES:
+        _write_file(
+            os.path.join(installed_plugin, *rel_path.split("/")),
+            f"# marker {rel_path}\n",
+        )
+      for rel_path in CORE_GOVERNANCE_FILES:
+        src = os.path.join(REPO_ROOT, *rel_path.split("/"))
+        dst = os.path.join(installed_plugin, *rel_path.split("/"))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+
+      # Seed distinct Makeflow workspace checkout with a Target 30 governance edit
+      _init_git_repo(workspace_repo)
+      _write_file(
+          os.path.join(workspace_repo, ".git", "info", "exclude"),
+          ".workflow/state/\n",
+      )
+      _seed_two_test_files(workspace_repo, beta_passes=True)
+      for rel_path in REQUIRED_PLUGIN_FILES:
+        _write_file(
+            os.path.join(workspace_repo, *rel_path.split("/")),
+            f"# marker {rel_path}\n",
+        )
+      for rel_path in CORE_GOVERNANCE_FILES:
+        src = os.path.join(REPO_ROOT, *rel_path.split("/"))
+        dst = os.path.join(workspace_repo, *rel_path.split("/"))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(src, dst)
+      _git(workspace_repo, "add", "-A")
+      _git(workspace_repo, "commit", "-q", "-m", "chore: seed makeflow checkout")
+
+      # Apply a Target 30 edit to workspace lib/intake_gates.py before verify-regression
+      with open(
+          os.path.join(workspace_repo, "lib", "intake_gates.py"),
+          "a",
+          encoding="utf-8",
+      ) as f:
+        f.write("\n# TARGET_30_EDIT = True\n")
+
+      with mock.patch("lib.tdd_guard._DEFAULT_REPO_ROOT", installed_plugin):
+        ok_run, run_payload = run_verify_regression(workspace_repo)
+        self.assertTrue(ok_run, run_payload)
+
+        ok_chk, chk_payload = verify_regression_receipt(workspace_repo)
+        self.assertTrue(ok_chk, chk_payload)
+
+        # Tamper executing installed plugin (not workspace!) -> check-regression must fail
+        with open(
+            os.path.join(installed_plugin, "lib", "tdd_guard.py"),
+            "a",
+            encoding="utf-8",
+        ) as f:
+          f.write("\n# EXECUTING_PLUGIN_TAMPER = True\n")
+
+        ok_tamper, tamper_payload = verify_regression_receipt(workspace_repo)
+        self.assertFalse(ok_tamper)
+        self.assertEqual(tamper_payload["code"], "REGRESSION_RECEIPT_TAMPERED")
+
 
 if __name__ == "__main__":
   unittest.main()

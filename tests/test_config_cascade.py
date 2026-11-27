@@ -940,6 +940,105 @@ class TestScarLocationsAndConfigCascade(unittest.TestCase):
               "adaptive", "project-local", workspace_dir=ws_dir
           )
 
+  def test_is_plugin_dir_expanded_agent_caches_and_symlinks(self):
+    """GH-331: is_plugin_dir detects Codex/Cursor/Copilot plugin caches and symlinked targets."""
+    from lib.config import is_plugin_dir
+
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        tempfile.TemporaryDirectory() as ws_dir,
+    ):
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        for rel_dir in (
+            os.path.join(".codex", "plugins", "makeflow"),
+            os.path.join(".cursor", "plugins", "makeflow"),
+            os.path.join(".copilot", "plugins", "makeflow"),
+            os.path.join(".gemini", "config", "plugins", "makeflow"),
+        ):
+          with self.subTest(rel_dir=rel_dir):
+            plugin_dir = os.path.join(fake_home, rel_dir)
+            os.makedirs(plugin_dir, exist_ok=True)
+            self.assertTrue(
+                is_plugin_dir(plugin_dir),
+                f"Expected is_plugin_dir True for {plugin_dir}",
+            )
+            link_dir = os.path.join(
+                ws_dir, f"symlink_{rel_dir.replace(os.sep, '_')}"
+            )
+            os.symlink(plugin_dir, link_dir)
+            self.assertTrue(
+                is_plugin_dir(link_dir),
+                f"Expected is_plugin_dir True for symlink {link_dir} -> {plugin_dir}",
+            )
+
+        # Normal git-backed consumer directory stays False
+        os.makedirs(os.path.join(ws_dir, ".git"), exist_ok=True)
+        self.assertFalse(is_plugin_dir(ws_dir))
+
+  def test_is_plugin_dir_custom_non_git_symlink_subdir_and_git_worktree_file(
+      self,
+  ):
+    """GH-331 NBO-2: Detects symlinks into custom non-Git install subdirs and excludes Git worktree .git files."""
+    from lib.config import is_plugin_dir
+
+    with (
+        tempfile.TemporaryDirectory() as fake_home,
+        tempfile.TemporaryDirectory() as custom_root,
+        tempfile.TemporaryDirectory() as ws_dir,
+        tempfile.TemporaryDirectory() as worktree_dir,
+    ):
+      with mock.patch.dict(os.environ, _isolated_env(fake_home), clear=True):
+        # (a) Custom non-Git Makeflow install outside known cache prefixes
+        custom_install = os.path.join(custom_root, "custom_makeflow_install")
+        custom_subdir = os.path.join(custom_install, "skills", "makeflow")
+        os.makedirs(custom_subdir, exist_ok=True)
+        with open(
+            os.path.join(custom_install, "plugin.json"), "w", encoding="utf-8"
+        ) as fh:
+          json.dump({"name": "makeflow", "version": "1.0.0"}, fh)
+
+        # Consumer Git workspace containing a symlink into custom install subdir
+        os.makedirs(os.path.join(ws_dir, ".git"), exist_ok=True)
+        subdir_link = os.path.join(ws_dir, "linked_makeflow_skills")
+        os.symlink(custom_subdir, subdir_link)
+
+        self.assertTrue(
+            is_plugin_dir(custom_subdir),
+            "Direct subdirectory of custom non-Git Makeflow install should be True",
+        )
+        self.assertTrue(
+            is_plugin_dir(subdir_link),
+            "Symlink into subdirectory of custom non-Git Makeflow install should be True",
+        )
+
+        # (b) Git worktree checkout of Makeflow where .git is a regular file
+        wt_lib_dir = os.path.join(worktree_dir, "lib")
+        os.makedirs(wt_lib_dir, exist_ok=True)
+        with open(
+            os.path.join(worktree_dir, "plugin.json"), "w", encoding="utf-8"
+        ) as fh:
+          json.dump({"name": "makeflow", "version": "1.0.0"}, fh)
+        with open(
+            os.path.join(worktree_dir, ".git"), "w", encoding="utf-8"
+        ) as fh:
+          fh.write("gitdir: /tmp/fake-main-repo/.git/worktrees/gh-331\n")
+
+        wt_link = os.path.join(ws_dir, "linked_worktree_lib")
+        os.symlink(wt_lib_dir, wt_link)
+
+        self.assertFalse(
+            is_plugin_dir(worktree_dir),
+            "Git worktree checkout with regular .git file must return False",
+        )
+        self.assertFalse(
+            is_plugin_dir(wt_lib_dir),
+            "Subdirectory of Git worktree checkout must return False",
+        )
+        self.assertFalse(
+            is_plugin_dir(wt_link),
+            "Symlink into Git worktree checkout must return False",
+        )
+
 
 if __name__ == "__main__":
   unittest.main()

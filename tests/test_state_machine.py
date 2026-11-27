@@ -1922,6 +1922,24 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
           os.path.join(clone_dir, ".workflow", "state", "10_ticket.md"),
           "# 10_ticket: GH-219\n",
       )
+      # GH-331: 10_ticket.md alone without approved 20_plan.md stays denied
+      ticket_only_res = guard.evaluate_tool_call({
+          "workspacePaths": [clone_dir],
+          "toolCall": {
+              "name": "write_file",
+              "args": {"Path": "lib/state_machine.py", "Content": "# x\n"},
+          },
+      })
+      self.assertEqual(ticket_only_res["decision"], "deny", ticket_only_res)
+
+      _write_file(
+          os.path.join(clone_dir, ".workflow", "state", "20_plan.md"),
+          "### Specific Edits to Existing Files\n\n- `lib/state_machine.py`\n",
+      )
+      _write_file(
+          os.path.join(clone_dir, ".workflow", "state", "20_plan_approved.md"),
+          "APPROVED\n",
+      )
       active_res = guard.evaluate_tool_call({
           "workspacePaths": [clone_dir],
           "toolCall": {
@@ -1939,7 +1957,7 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       })
       self.assertEqual(active_mk["decision"], "deny")
 
-      # 2. Installed read-only plugin cache (no .git): always deny even if state active
+      # 2. Installed read-only plugin cache (no .git): always deny even if plan approved
       cache_dir = os.path.join(tmp, "plugin_cache")
       _write_file(
           os.path.join(cache_dir, "plugin.json"),
@@ -1948,6 +1966,14 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
       _write_file(
           os.path.join(cache_dir, ".workflow", "state", "10_ticket.md"),
           "# 10_ticket: GH-219\n",
+      )
+      _write_file(
+          os.path.join(cache_dir, ".workflow", "state", "20_plan.md"),
+          "### Specific Edits to Existing Files\n\n- `lib/state_machine.py`\n",
+      )
+      _write_file(
+          os.path.join(cache_dir, ".workflow", "state", "20_plan_approved.md"),
+          "APPROVED\n",
       )
       cache_res = guard.evaluate_tool_call({
           "workspacePaths": [cache_dir],
@@ -2906,6 +2932,31 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
               "has_tag": True,
               "session_substr": "found 2 state card(s)",
               "mcp_substr": "Found 2 state card(s)",
+              # GH-331: active ticket without approved 20_plan.md stays denied
+              "gov_decision": "deny",
+          },
+      )
+
+      # Approving a plan naming lib/state_machine.py unlocks planned governance writes
+      _write_file(
+          os.path.join(state_dir, "20_plan.md"),
+          "### Specific Edits to Existing Files\n\n- `lib/state_machine.py`\n",
+      )
+      _write_file(
+          os.path.join(state_dir, "20_plan_approved.md"), "APPROVED\n"
+      )
+      self._assert_seven_consumers(
+          repo,
+          state_dir,
+          lock_dir,
+          {
+              "active": True,
+              "session_active": True,
+              "t90": False,
+              "ticket_id": "GH-219",
+              "has_tag": True,
+              "session_substr": "found 4 state card(s)",
+              "mcp_substr": "Found 4 state card(s)",
               "gov_decision": "allow",
           },
       )
@@ -2958,8 +3009,8 @@ class TestFalsificationPrerequisitesMcpAndHooks(unittest.TestCase):
               "t90": True,
               "ticket_id": "GH-219",
               "has_tag": True,
-              "session_substr": "found 3 state card(s)",
-              "mcp_substr": "Found 3 state card(s)",
+              "session_substr": "found 5 state card(s)",
+              "mcp_substr": "Found 5 state card(s)",
               "gov_decision": "allow",
           },
       )
