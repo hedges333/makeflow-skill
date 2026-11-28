@@ -3406,5 +3406,27 @@
     "closes_issue": true,
     "tests_added": 8,
     "scars_earned": []
+  },
+  {
+    "id": "GH-343",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/343",
+    "title": "Add Target 75 BEHIND_CLEAN trial-merge gate, scar curation flags, and revise SCAR-GIT-0018",
+    "request": "Add active, vetted, and override curation columns in lib/scars_db.py and lib/sync_synthetic_scars.py, revise bundled SCAR-GIT-0018, implement ephemeral detached-worktree BEHIND_CLEAN trial-merge verification in lib/trial_merge.py and Target 75/80 gates, and document agy scar vetting in notes/sync_scars.md.",
+    "branch": "fix/343-behind-clean-trial-merge-and-scars",
+    "subprojects": [
+      ".workflow/scars",
+      "lib",
+      "notes",
+      "skills",
+      "tests"
+    ],
+    "started_at": "2026-11-27T20:31:41Z",
+    "completed_at": "2026-11-28T05:08:18Z",
+    "commit_sha": "46ccc281afa79e8ff35cebf0a446eef02b414224",
+    "pr_number": 351,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/351",
+    "closes_issue": true,
+    "tests_added": 22,
+    "scars_earned": []
   }
 ]
