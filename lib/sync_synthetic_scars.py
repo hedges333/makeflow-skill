@@ -90,13 +90,22 @@ class SyncSyntheticScarsScript(BaseScript):
       )
 
   def _emit_status_counts(self, cur: sqlite3.Cursor) -> None:
-    """Print explicit total, complete, importer-pending, and probe-pending counts."""
+    """Print explicit pipeline and curation counts.
+
+    Args:
+      cur: Open SQLite cursor on an initialized scars database.
+    """
     counts = count_scar_pipeline_status(cur)
     self.stdout.write(
         f"Total scars: {counts['total']}\n"
         f"Complete scars: {counts['complete']}\n"
         f"Scars needing synthetic-scar-importer: {counts['needs_importer']}\n"
         f"Scars needing socratic-probe-writer: {counts['needs_probe_writer']}\n"
+        f"Active scars: {counts['active']}\n"
+        f"Inactive scars: {counts['inactive']}\n"
+        f"Vetted scars: {counts['vetted']}\n"
+        f"Unvetted scars: {counts['unvetted']}\n"
+        f"Overridden scars: {counts['overridden']}\n"
     )
 
   def run(self) -> int:
@@ -178,23 +187,40 @@ class SyncSyntheticScarsScript(BaseScript):
     updated_count = 0
     inserted_count = 0
     modified = False
+    reset_notices: List[str] = []
     try:
       cur.execute(
-          "SELECT id, ss_id, raw_hash, source FROM scars"
+          "SELECT id, ss_id, raw_hash, source, active, vetted, override "
+          "FROM scars"
       )
       reserved_ids: Set[str] = set()
       existing_by_ss_id: Dict[str, Dict[str, Any]] = {}
-      for row_id, row_ss_id, row_hash, row_source in cur.fetchall():
+      for (
+          row_id,
+          row_ss_id,
+          row_hash,
+          row_source,
+          row_active,
+          row_vetted,
+          row_override,
+      ) in cur.fetchall():
         reserved_ids.add(row_id)
         src = (row_source or "upstream").strip().lower()
-        if src == "makeflow":
-          continue
-        ss_key = row_ss_id or row_id
-        existing_by_ss_id[ss_key] = {
+        row_info = {
             "id": row_id,
             "ss_id": row_ss_id,
             "raw_hash": row_hash,
+            "source": src,
+            "active": int(1 if row_active is None else row_active),
+            "vetted": int(0 if row_vetted is None else row_vetted),
+            "override": int(0 if row_override is None else row_override),
         }
+        if src == "makeflow":
+          if row_ss_id:
+            existing_by_ss_id[row_ss_id] = row_info
+          continue
+        ss_key = row_ss_id or row_id
+        existing_by_ss_id[ss_key] = row_info
 
       matched_items: List[Dict[str, Any]] = []
       unmatched_items: List[Dict[str, Any]] = []
@@ -215,6 +241,8 @@ class SyncSyntheticScarsScript(BaseScript):
       for item in matched_items:
         raw_upstream_id = str(item.get("id") or "").strip()
         existing = existing_by_ss_id[raw_upstream_id]
+        if existing["source"] == "makeflow":
+          continue
         raw_wound = str(item.get("wound", "") or "")
         raw_trap = str(item.get("trap", "") or "")
         raw_breaker = str(
@@ -233,6 +261,14 @@ class SyncSyntheticScarsScript(BaseScript):
             )
             modified = True
           continue
+
+        if existing["override"] == 1 or existing["active"] == 0:
+          reset_notices.append(
+              f"Notice: upstream change reset curation flags for "
+              f"{existing['id']} (ss_id={raw_upstream_id}, "
+              f"previous active={existing['active']}, "
+              f"override={existing['override']}).\n"
+          )
 
         title = str(item.get("title", "") or "")
         raw_category = str(item.get("category", "") or "")
@@ -287,6 +323,9 @@ class SyncSyntheticScarsScript(BaseScript):
                 circuit_breaker = NULL,
                 reflex = NULL,
                 socratic_probe = NULL,
+                active = 1,
+                vetted = 0,
+                override = 0,
                 keywords = ?,
                 languages = ?,
                 frameworks = ?,
@@ -391,14 +430,16 @@ class SyncSyntheticScarsScript(BaseScript):
                 graduation_status, raw_wound, raw_trap, raw_circuit_breaker,
                 raw_reflex, raw_hash, wound, trap, circuit_breaker, reflex,
                 socratic_probe, source, original_id,
-                keywords, languages, frameworks, diagnostic_codes
+                keywords, languages, frameworks, diagnostic_codes,
+                active, vetted, override
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, NULL, NULL, NULL, NULL,
                 NULL, 'upstream', NULL,
-                ?, ?, ?, ?
+                ?, ?, ?, ?,
+                1, 0, 0
             )
             """,
             (
@@ -472,6 +513,8 @@ class SyncSyntheticScarsScript(BaseScript):
       )
       return 1
 
+    for notice in reset_notices:
+      self.stdout.write(notice)
     self.stdout.write(
         f"Synchronized upstream registry into '{self.db_path}' "
         f"(inserted={inserted_count}, updated={updated_count}).\n"

@@ -1303,6 +1303,8 @@ class TestWorkflowGatesScript(unittest.TestCase):
               "has_conflicts": False,
               "conflicting_files": [],
               "working_tree_dirty": False,
+              "head_sha": None,
+              "upstream_sha": None,
           },
       )
       out_no_rem = io.StringIO()

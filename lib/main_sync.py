@@ -45,6 +45,8 @@ def _no_remote_sync_result() -> Dict[str, Any]:
   return {
       "status": "NO_REMOTE",
       "upstream_ref": None,
+      "head_sha": None,
+      "upstream_sha": None,
       "ahead_count": 0,
       "behind_count": 0,
       "has_conflicts": False,
@@ -197,10 +199,12 @@ def inspect_main_sync(
   )
   if ver_upstream.returncode != 0:
     return _no_remote_sync_result()
+  upstream_sha = (ver_upstream.stdout or "").strip() or None
 
   ver_head = _run_repo_git(repo_root, "rev-parse", "--verify", "-q", "HEAD")
   if ver_head.returncode != 0:
     return _no_remote_sync_result()
+  head_sha = (ver_head.stdout or "").strip() or None
 
   status_proc = _run_repo_git(
       repo_root, "--no-optional-locks", "status", "--porcelain"
@@ -230,6 +234,8 @@ def inspect_main_sync(
     return {
         "status": "UP_TO_DATE",
         "upstream_ref": upstream_ref,
+        "head_sha": head_sha,
+        "upstream_sha": upstream_sha,
         "ahead_count": ahead_count,
         "behind_count": 0,
         "has_conflicts": False,
@@ -243,6 +249,8 @@ def inspect_main_sync(
     return {
         "status": "BEHIND_CLEAN",
         "upstream_ref": upstream_ref,
+        "head_sha": head_sha,
+        "upstream_sha": upstream_sha,
         "ahead_count": ahead_count,
         "behind_count": behind_count,
         "has_conflicts": False,
@@ -278,6 +286,8 @@ def inspect_main_sync(
   return {
       "status": "CONFLICT" if has_conflicts else "BEHIND_CLEAN",
       "upstream_ref": upstream_ref,
+      "head_sha": head_sha,
+      "upstream_sha": upstream_sha,
       "ahead_count": ahead_count,
       "behind_count": behind_count,
       "has_conflicts": has_conflicts,

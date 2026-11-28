@@ -58,10 +58,12 @@ The `witness-red` gate writes `.workflow/state/30_tdd_receipt.json` with a crypt
 - `lib/report_renderers.py`
 - `lib/scar_locations.py`
 - `lib/shell_safety.py`
+- `lib/signal_trap.py`
 - `lib/state_makefile.py`
 - `lib/state_reports.py`
 - `lib/tdd_guard.py`
 - `lib/ticket_state.py`
+- `lib/trial_merge.py`
 - `lib/workflow_gates.py`
 - `lib/workflow_gates_cli.py`
 

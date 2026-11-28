@@ -35,6 +35,9 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-270: Add canonical plan validation, pause-gate ask_question blocking, configurable BDD planning modes, full plan ingestion, and SCAR-PROC-160 and SCAR-PROC-161.
 - GH-321: Add --workers parallel execution to import_synthetic_scars.py and write_scar_probes.py, single-writer SQLite commits, and two-phase broadcast SignalTrap shutdown.
 - GH-323: Add SCAR-LOCAL-DATA-0002 to project-local storage and generalized SCAR-DATA-0007 to the bundled SQLite registry for tiered registry shadowing.
+- GH-343: Add `lib/trial_merge.py` and the `verify-trial-merge` gate. At Target 75, if a branch is BEHIND_CLEAN, the gate merges `origin/main` in a temporary Git worktree and runs the regression command there. It never touches your branch, index, or `approved_tree.txt`. An interrupt stops the run and writes no receipt.
+- GH-343: Add `active`, `vetted`, and `override` scar curation columns. Scar queries skip inactive scars. Old databases migrate once on the first query. If the file is read-only, the query still returns rows and leaves the file unchanged.
+- GH-343: Rewrite SCAR-GIT-0018 so it requires the Target 75 trial merge before landing a BEHIND_CLEAN branch.
 
 ### Changed
 

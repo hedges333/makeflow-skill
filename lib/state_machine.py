@@ -61,6 +61,7 @@ from lib.main_sync import (
     fetch_and_inspect_main_sync,
     inspect_main_sync,
 )
+from lib.trial_merge import ensure_trial_merge_verified
 from lib.workspace_mutex import WorkspaceMutex
 
 NEXT_ACTION_FILENAME = "99_next_action.md"
@@ -772,6 +773,7 @@ def _evaluate_upstream_sync(
     next_t: str,
     workspace_dir: str,
     evidence: Dict[str, Any],
+    state_dir: str = "",
 ) -> Tuple[bool, str]:
   """Evaluates upstream origin/main sync status for a target transition.
 
@@ -780,6 +782,7 @@ def _evaluate_upstream_sync(
     next_t: Destination target ID.
     workspace_dir: Git repository root directory.
     evidence: Transition evidence dictionary.
+    state_dir: Optional .workflow/state directory for the trial-merge receipt.
 
   Returns:
     Tuple of (ok, error_or_notice_string).
@@ -821,7 +824,24 @@ def _evaluate_upstream_sync(
 
   if status != "BEHIND_CLEAN":
     return True, ""
-  return True, _format_behind_clean_notice(current, next_t, upstream_ref, behind)
+  notice = _format_behind_clean_notice(current, next_t, upstream_ref, behind)
+  if (current, next_t) not in (("T70", "T75"), ("T75", "T80")):
+    return True, notice
+  decision = ensure_trial_merge_verified(
+      workspace_dir,
+      explicit_cmd=str(evidence.get("regressionCmd") or "").strip(),
+      subproject=str(evidence.get("subproject") or "").strip() or ".",
+      state_dir=state_dir or None,
+      sync=sync,
+  )
+  delta = f"\n{decision.upstream_delta}" if decision.upstream_delta else ""
+  if decision.failure is not None:
+    failure = decision.failure
+    return False, (
+        f"BLOCKED: [SCAR-{failure.scar_id}] {failure.code} on transition"
+        f" {current} -> {next_t}: {failure.trigger} {failure.reflex}{delta}"
+    )
+  return True, f"{notice} {decision.notice}{delta}"
 
 
 def _format_behind_clean_notice(
@@ -861,7 +881,8 @@ def _format_behind_clean_notice(
     )
   return (
       f"{prefix} Per SCAR-GIT-18 and SCAR-GIT-25, do not rebase or force-push"
-      " an open pull request when mergeable is CLEAN."
+      " an open pull request when mergeable is CLEAN. T75 and T80 verify the"
+      " combined HEAD + upstream tree in an ephemeral trial-merge worktree."
   )
 
 
@@ -1400,7 +1421,9 @@ def advance_workflow_target(
 
   eff_ws = _resolve_effective_workspace(workspace_dir, state_dir)
 
-  sync_ok, sync_msg = _evaluate_upstream_sync(current, next_t, eff_ws, ev)
+  sync_ok, sync_msg = _evaluate_upstream_sync(
+      current, next_t, eff_ws, ev, state_dir=state_dir
+  )
   if not sync_ok:
     return False, sync_msg
 
@@ -1507,9 +1530,12 @@ def _resolve_make_advance_timeout(
 
   Returns:
     Timeout in seconds (30.0 by default, or regressionTimeoutSeconds + 5.0 when
-    running an explicit regression command during T30 -> T40).
+    running a regression command during T30 -> T40, T70 -> T75, or
+    T75 -> T80).
   """
-  if next_t == "T40" and str(ev.get("regressionCmd") or "").strip():
+  if next_t in ("T75", "T80") or (
+      next_t == "T40" and str(ev.get("regressionCmd") or "").strip()
+  ):
     ws = workspace_dir if workspace_dir and os.path.isdir(workspace_dir) else None
     cfg = resolve_workflow_config(workspace_dir=ws)
     testing_cfg = cfg.get("testing") if isinstance(cfg, dict) else None

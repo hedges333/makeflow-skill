@@ -34,6 +34,12 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REGISTRY_URL = "https://syntheticscars.org/registry.json"
 RAW_HASH_VERSION = "4fields-v1"
 
+_CURATION_COLUMN_DEFS: Tuple[Tuple[str, str], ...] = (
+    ("active", "INTEGER NOT NULL DEFAULT 1"),
+    ("vetted", "INTEGER NOT NULL DEFAULT 0"),
+    ("override", "INTEGER NOT NULL DEFAULT 0"),
+)
+
 _SCARS_COLUMN_DEFS: Tuple[Tuple[str, str], ...] = (
     ("id", "TEXT NOT NULL PRIMARY KEY"),
     ("ss_id", "TEXT"),
@@ -62,6 +68,7 @@ _SCARS_COLUMN_DEFS: Tuple[Tuple[str, str], ...] = (
     ("languages", "TEXT"),
     ("frameworks", "TEXT"),
     ("diagnostic_codes", "TEXT"),
+    *_CURATION_COLUMN_DEFS,
 )
 
 _SIMPLE_ENGLISH_COMPLETE_SQL = (
@@ -74,17 +81,19 @@ _SIMPLE_ENGLISH_COMPLETE_SQL = (
 )
 
 _NEEDS_IMPORTER_SQL = (
-    "wound IS NULL OR TRIM(wound) = '' "
+    "(wound IS NULL OR TRIM(wound) = '' "
     "OR trap IS NULL OR TRIM(trap) = '' "
     "OR reflex IS NULL OR TRIM(reflex) = '' "
     "OR (raw_circuit_breaker IS NOT NULL "
     "AND TRIM(raw_circuit_breaker) != '' "
-    "AND (circuit_breaker IS NULL OR TRIM(circuit_breaker) = ''))"
+    "AND (circuit_breaker IS NULL OR TRIM(circuit_breaker) = ''))) "
+    "AND COALESCE(active, 1) = 1 AND COALESCE(override, 0) = 0"
 )
 
 _NEEDS_PROBE_WRITER_SQL = (
     f"({_SIMPLE_ENGLISH_COMPLETE_SQL}) "
-    "AND (socratic_probe IS NULL OR TRIM(socratic_probe) = '')"
+    "AND (socratic_probe IS NULL OR TRIM(socratic_probe) = '') "
+    "AND COALESCE(active, 1) = 1 AND COALESCE(override, 0) = 0"
 )
 
 _COMPLETE_SCAR_SQL = (
@@ -1050,14 +1059,15 @@ def enrich_scars_database(db_path: str) -> Dict[str, Any]:
 
 
 def count_scar_pipeline_status(cur: sqlite3.Cursor) -> Dict[str, int]:
-  """Count total, complete, importer-pending, and probe-pending scars.
+  """Count total, complete, pipeline-pending, and curation-flagged scars.
 
   Args:
     cur: Open SQLite cursor on an initialized scars database.
 
   Returns:
-    Dictionary with keys ``total``, ``complete``, ``needs_importer``, and
-    ``needs_probe_writer``.
+    Dictionary with keys ``total``, ``complete``, ``needs_importer``,
+    ``needs_probe_writer``, ``active``, ``inactive``, ``vetted``,
+    ``unvetted``, and ``overridden``.
   """
   cur.execute("SELECT COUNT(*) FROM scars")
   total = int(cur.fetchone()[0])
@@ -1067,11 +1077,26 @@ def count_scar_pipeline_status(cur: sqlite3.Cursor) -> Dict[str, int]:
   needs_importer = int(cur.fetchone()[0])
   cur.execute(f"SELECT COUNT(*) FROM scars WHERE {_NEEDS_PROBE_WRITER_SQL}")
   needs_probe_writer = int(cur.fetchone()[0])
+  cur.execute("SELECT COUNT(*) FROM scars WHERE COALESCE(active, 1) = 1")
+  active = int(cur.fetchone()[0])
+  cur.execute("SELECT COUNT(*) FROM scars WHERE COALESCE(active, 1) = 0")
+  inactive = int(cur.fetchone()[0])
+  cur.execute("SELECT COUNT(*) FROM scars WHERE COALESCE(vetted, 0) = 1")
+  vetted = int(cur.fetchone()[0])
+  cur.execute("SELECT COUNT(*) FROM scars WHERE COALESCE(vetted, 0) = 0")
+  unvetted = int(cur.fetchone()[0])
+  cur.execute("SELECT COUNT(*) FROM scars WHERE COALESCE(override, 0) = 1")
+  overridden = int(cur.fetchone()[0])
   return {
       "total": total,
       "complete": complete,
       "needs_importer": needs_importer,
       "needs_probe_writer": needs_probe_writer,
+      "active": active,
+      "inactive": inactive,
+      "vetted": vetted,
+      "unvetted": unvetted,
+      "overridden": overridden,
   }
 
 
@@ -1253,6 +1278,32 @@ def _is_row_shadowed(
   return False
 
 
+def _migrate_missing_curation_columns(conn: sqlite3.Connection) -> bool:
+  """Add missing curation columns to a legacy ``scars`` table in place.
+
+  Args:
+    conn: Open SQLite connection on a scars database.
+
+  Returns:
+    True when one or more curation columns were added and committed, False
+    otherwise (including read-only connections).
+  """
+  try:
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(scars)")
+    existing_cols = {r[1] for r in cur.fetchall()}
+    added = False
+    for col_name, col_def in _CURATION_COLUMN_DEFS:
+      if col_name not in existing_cols:
+        cur.execute(f"ALTER TABLE scars ADD COLUMN {col_name} {col_def}")
+        added = True
+    if added:
+      conn.commit()
+    return added
+  except sqlite3.OperationalError:
+    return False
+
+
 def _query_scars_connection(
     conn: sqlite3.Connection,
     query: str = "",
@@ -1333,6 +1384,7 @@ def _query_scars_connection(
     def _append_filters(base_sql: str, params_list: List[Any]) -> Optional[str]:
       sql_out = (
           base_sql
+          + "AND COALESCE(s.active, 1) = 1 "
           + "AND s.wound IS NOT NULL AND TRIM(s.wound) != '' "
           + "AND s.trap IS NOT NULL AND TRIM(s.trap) != '' "
           + "AND s.reflex IS NOT NULL AND TRIM(s.reflex) != '' "
@@ -1486,6 +1538,22 @@ def _query_scars_connection(
 
       return sql_out
 
+    def _execute_query(sql_stmt: str, sql_params: List[Any]) -> None:
+      """Execute a scar query with one-shot legacy curation column migration."""
+      try:
+        cur.execute(sql_stmt, sql_params)
+      except sqlite3.OperationalError as exc:
+        if "no such column" not in str(exc).lower():
+          raise
+        if _migrate_missing_curation_columns(conn):
+          cur.execute(sql_stmt, sql_params)
+          return
+        fallback_sql = sql_stmt.replace("AND COALESCE(s.active, 1) = 1 ", "")
+        if fallback_sql != sql_stmt:
+          cur.execute(fallback_sql, sql_params)
+          return
+        raise
+
     has_fts = False
     cur.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='scars_fts'"
@@ -1516,7 +1584,7 @@ def _query_scars_connection(
           params.append(eff_limit)
 
         try:
-          cur.execute(filtered_sql, params)
+          _execute_query(filtered_sql, params)
           for r in cur:
             formatted = _format_scar_row(r)
             if has_shadow and _is_row_shadowed(
@@ -1606,7 +1674,7 @@ def _query_scars_connection(
       filtered_sql += "ORDER BY s.id ASC LIMIT ?"
       params.append(eff_limit)
 
-    cur.execute(filtered_sql, params)
+    _execute_query(filtered_sql, params)
     for r in cur:
       formatted = _format_scar_row(r)
       if has_shadow and _is_row_shadowed(
@@ -1636,7 +1704,13 @@ def _query_single_scars_db(
     exclude_categories: Optional[Iterable[str]] = None,
     shadowed_sets: Optional[Tuple[Set[str], Set[str], Set[str]]] = None,
 ) -> List[Dict[str, Any]]:
-  """Query a single file-backed SQLite scars database for complete processed scars only."""
+  """Query a single file-backed SQLite scars database for complete processed scars only.
+
+  Note:
+    The database opens read-write. A missing ``active``, ``vetted``, or
+    ``override`` column triggers a one-time ``ALTER TABLE`` migration on the
+    queried file.
+  """
   if not db_path or not os.path.isfile(db_path):
     return []
 
@@ -1734,6 +1808,13 @@ def query_scars(
   database never shadow one another. Between tiers, higher-precedence primary
   IDs shadow matching lower-precedence rows across all sources while upstream
   ``ss_id`` and Makeflow legacy ``original_id`` namespaces stay distinct.
+
+  Note:
+    Each database opens read-write. If a legacy ``scars`` table lacks the
+    ``active``, ``vetted``, or ``override`` columns, the first query runs a
+    one-time ``ALTER TABLE`` migration on the queried file. If that write
+    fails, the query runs without the ``active`` filter and leaves the file
+    unchanged.
 
   Args:
     db_path: Single SQLite database file path or ordered sequence of paths.

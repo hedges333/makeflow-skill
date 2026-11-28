@@ -37,3 +37,28 @@ Run `agy models` to list valid `MODEL` identifiers for `agy` (Antigravity CLI).
 - Each committed scar resets the consecutive transient error counter to zero.
 - Fatal launch, flag, model, and auth errors fail fast with zero retries.
 - If you press `Ctrl+C`, the script sends `SIGTERM` to active workers. It preserves committed rows and rebuilds `scars_fts` (the SQLite search index).
+
+## Vetting Scars in `agy`
+
+A scar vetting session reviews unvetted rows in `skills/makeflow/data/scars_registry.db` before release.
+Curation flags track review decisions: `vetted = 1` marks a reviewed scar, `override = 1` keeps custom local prose, and `active = 0` hides an ignored scar.
+
+1. Run `make sync-scars`, `make import-scars`, and `make probe-scars` first.
+2. Start an interactive `agy` session inside this repository.
+3. Paste the vetting prompt below into `agy`.
+4. For each unvetted scar, keep the row (`vetted = 1`), revise the prose (`vetted = 1, override = 1`), or ignore it (`vetted = 1, active = 0`).
+5. After vetting finishes, rebuild `scars_fts`, update `meta.db_size_bytes`, and run `make test-sync-scars test-scar-candidate`.
+
+### Copy-Paste Vetting Prompt
+
+```text
+Start an interactive scar vetting session on skills/makeflow/data/scars_registry.db.
+List scars where vetted = 0 ordered by id ASC in batches of 5.
+For each scar, show id, ss_id, title, wound, trap, reflex, and socratic_probe.
+Wait for my decision on each scar:
+- approve: set vetted = 1
+- rewrite: update Simple English prose, validate with ScarCandidateValidator and validate_socratic_probe, and set vetted = 1, override = 1
+- ignore: set vetted = 1, active = 0
+Keep source, ss_id, raw_* fields, and raw_hash unchanged.
+After updates, run enrich_scars_cursor on changed IDs, rebuild scars_fts with populate_scars_fts, vacuum, and call update_db_size_meta.
+```

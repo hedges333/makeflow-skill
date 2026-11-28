@@ -67,6 +67,7 @@ from lib.state_makefile import (
     generate_state_makefile as generate_state_makefile,
     refresh_state_makefile_if_ignored as refresh_state_makefile_if_ignored,
 )
+from lib.trial_merge import failure_from_blocked_message, verify_trial_merge_gate
 from lib.workflow_gates_cli import (
     _env_truthy as _env_truthy,
     hydrate_from_make_env,
@@ -361,14 +362,8 @@ class WorkflowGatesScript(BaseScript):
           rejected="Advancing past a human pause gate without explicit human approval in a new turn.",
           reflex="Stop tool calls, present the proposal in chat, and wait for a human USER_INPUT turn.",
       )
-    if "UPSTREAM_MAIN_CONFLICT" in msg:
-      return self._fail(
-          scar_id="GIT-20",
-          code="UPSTREAM_MAIN_CONFLICT",
-          trigger=msg,
-          rejected="Advancing a branch with unresolved 3-way merge conflicts against upstream main.",
-          reflex="Stop tool calls without altering Git state (SCAR-GIT-25) and ask the operator before rebasing or merging.",
-      )
+    if (tm_failure := failure_from_blocked_message(msg)) is not None:
+      return self._fail_from(tm_failure)
     if "UNAPPROVED_TREE_DRIFT" in msg:
       return self._fail(
           scar_id="GIT-25",
@@ -461,6 +456,10 @@ class WorkflowGatesScript(BaseScript):
     if self.as_json:
       self.stdout.write(json.dumps(payload) + "\n")
     return 0
+
+  def _verify_trial_merge(self) -> int:
+    """Runs Target 75 ephemeral trial-merge verification (GH-343)."""
+    return self._fail_from(gf) if (gf := verify_trial_merge_gate(self)) else 0
 
   def _check_regression(self, *, emit_stdout: bool = True) -> int:
     """Verifies 30_regression_receipt.json, running verify-regression on explicit command."""
@@ -782,6 +781,7 @@ class WorkflowGatesScript(BaseScript):
         "main-sync": self._check_main_sync,
         "verify-regression": self._verify_regression,
         "check-regression": self._check_regression,
+        "verify-trial-merge": self._verify_trial_merge,
         "repo-tree": self._repo_tree,
         "promote-review": self._promote_review,
         "park-session": self._park_session,

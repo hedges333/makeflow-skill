@@ -92,6 +92,8 @@ Target 75 is a mandatory human pause gate.
    - Test coverage.
 4. Stop tool calls (`tool_calls: []`) and wait for `human-landing-approval`. After approval, run `make -f .workflow/state/Makefile land APPROVED=1` (or `humanLandingApproved: true`) to advance to Target 80. Run `make -f .workflow/state/Makefile land APPROVED=1` in its own shell call without `&&`.
 5. If branch protection forbids direct push, commit ledger and `CHANGELOG.md` updates on the feature branch before requesting landing approval.
+6. If the pull request is `BEHIND_CLEAN`, the `ready-to-land` and `land` targets run a trial-merge of `HEAD` and `origin/main` (`SCAR-GIT-18`). You can also run `make -f .workflow/state/Makefile verify-trial-merge`. The gate uses a temporary detached `git worktree` and removes it when done. It seals `.workflow/state/75_trial_merge_receipt.json` for the pair of commit IDs. If `origin/main` moves, the receipt is stale and the gate runs again.
+7. The trial-merge needs a regression command. If none is set, the gate stops with `MISSING_REGRESSION_COMMAND`. If the tests fail, the gate stops with `TRIAL_MERGE_SEMANTIC_CONFLICT`. In both cases, ask the operator before you merge `origin/main`, then return to Target 30 and Target 40.
 
 ---
 

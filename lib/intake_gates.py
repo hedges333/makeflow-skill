@@ -357,6 +357,7 @@ def cleanup_tdd_receipt(
   json_artifacts = (
       "30_tdd_receipt.json",
       "30_regression_receipt.json",
+      "75_trial_merge_receipt.json",
       "loaded_scars.json",
   )
   existing = [

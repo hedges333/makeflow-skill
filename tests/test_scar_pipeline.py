@@ -2130,7 +2130,7 @@ class TestScarPipelineRuntimeAndErrors(unittest.TestCase):
     self.assertEqual(par_stop["drained_in_flight"], 1)
 
   def test_select_scar_row_by_id_and_format_saved_scar_row_json(self) -> None:
-    """Verify select_scar_row_by_id returns all 27 columns and format_saved_scar_row_json decodes list columns."""
+    """Verify select_scar_row_by_id returns all 30 columns and format_saved_scar_row_json decodes list columns."""
     from lib.scar_pipeline_runtime import format_saved_scar_row_json
     from lib.scars_db import enrich_scars_cursor, select_scar_row_by_id
 
@@ -2168,7 +2168,7 @@ class TestScarPipelineRuntimeAndErrors(unittest.TestCase):
 
       self.assertIsNotNone(row)
       assert row is not None
-      self.assertEqual(len(row), 27)
+      self.assertEqual(len(row), 30)
       self.assertEqual(row["id"], "SCAR-API-0099")
       self.assertEqual(row["wound"], "Simple wound text.")
       self.assertIsNone(row["circuit_breaker"])

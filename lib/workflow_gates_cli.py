@@ -240,6 +240,11 @@ def _register_regression_subparsers(subparsers: Any) -> None:
           "Example:\n  python3 scripts/workflow_gates.py --repo-root . verify-regression",
       ),
       (
+          "verify-trial-merge",
+          "Verify HEAD + origin/main in an ephemeral worktree and seal 75_trial_merge_receipt.json.",
+          "Example:\n  python3 scripts/workflow_gates.py --repo-root . verify-trial-merge",
+      ),
+      (
           "check-regression",
           "Verify .workflow/state/30_regression_receipt.json against live tree and approved_tree.txt.",
           "Example:\n  python3 scripts/workflow_gates.py --repo-root . check-regression",
@@ -857,7 +862,7 @@ def parse_workflow_gates_args(
     parser.error(
         "Specify a gate subcommand: init-makefile, plugin-files, skill-budget, "
         "intake, check-plan, approved-tree, commit-msg, post-commit, main-sync, "
-        "verify-regression, check-regression, repo-tree, promote-review, "
+        "verify-regression, check-regression, verify-trial-merge, repo-tree, promote-review, "
         "park-session, resume-parked, terminal-title, release-intake, "
         "release-lock, read-init-d, or advance."
     )
@@ -879,7 +884,11 @@ def parse_workflow_gates_args(
     target.no_fetch = bool(getattr(ns, "no_fetch", False))
     target.fail_on_behind = bool(getattr(ns, "fail_on_behind", False))
     target.allow_conflict = bool(getattr(ns, "allow_conflict", False))
-  elif ns.gate in ("verify-regression", "check-regression"):
+  elif ns.gate in (
+      "verify-regression",
+      "check-regression",
+      "verify-trial-merge",
+  ):
     target.regression_cmd = str(getattr(ns, "regression_cmd", "") or "").strip()
     raw_sub = getattr(ns, "subproject", None)
     target.subproject = str(raw_sub).strip() if raw_sub is not None else ""
