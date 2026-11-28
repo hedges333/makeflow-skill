@@ -15,7 +15,13 @@ import tempfile
 from typing import Any, Dict, List, Mapping, Optional
 
 from lib.active_state import ActiveStateStore, list_state_card_files
-from lib.agent_paths import AgentPathRegistry, PathContext, resolve_path_context
+from lib.agent_paths import (
+    AgentPathRegistry,
+    PathContext,
+    resolve_path_context,
+    safe_abspath,
+    safe_getcwd,
+)
 from lib.ticket_state import TICKET_JSON_FILENAME
 
 SCARS_ENV_VAR = "MAKEFILE_WORKFLOW_SCAR_DBS"
@@ -752,7 +758,7 @@ def _iter_cascaded_config_candidates(
   def _add(path, label, layer_kind):
     if not path:
       return
-    abs_path = os.path.abspath(expand_user_path(path, home_dir=home_dir))
+    abs_path = safe_abspath(expand_user_path(path, home_dir=home_dir))
     if abs_path not in seen_paths:
       seen_paths.add(abs_path)
       candidates.append((abs_path, label or abs_path, layer_kind))
@@ -765,8 +771,10 @@ def _iter_cascaded_config_candidates(
   local_candidates = []
   for ws in workspace_paths or []:
     local_candidates.append(os.path.join(ws, ".workflow", "config.json"))
-  if allow_cwd_fallback and not workspace_paths and not is_plugin_dir(os.getcwd()):
-    local_candidates.append(os.path.join(os.getcwd(), ".workflow", "config.json"))
+  if allow_cwd_fallback and not workspace_paths:
+    cwd = safe_getcwd()
+    if cwd and not is_plugin_dir(cwd):
+      local_candidates.append(os.path.join(cwd, ".workflow", "config.json"))
 
   for local_path in local_candidates:
     if os.path.isfile(local_path):
@@ -860,21 +868,25 @@ def load_default_config(plugin_root=None):
   if plugin_root:
     candidates = [
         os.path.join(
-            os.path.abspath(os.path.expanduser(plugin_root)),
+            safe_abspath(os.path.expanduser(plugin_root)),
             "default_config.json",
         )
     ]
   else:
     candidates = [
         os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            os.path.dirname(os.path.dirname(safe_abspath(__file__))),
             "default_config.json",
         ),
-        os.path.join(os.getcwd(), "default_config.json"),
+    ]
+    cwd = safe_getcwd()
+    if cwd:
+      candidates.append(os.path.join(cwd, "default_config.json"))
+    candidates.append(
         os.path.expanduser(
             "~/.gemini/config/plugins/makeflow/default_config.json"
-        ),
-    ]
+        )
+    )
   for path in candidates:
     if os.path.isfile(path):
       try:
@@ -1146,8 +1158,9 @@ def find_state_dir(workspace_paths, artifact_dir):
         return candidate
     return ""
 
-  if not is_plugin_dir(os.getcwd()):
-    cwd_state = os.path.join(os.getcwd(), ".workflow", "state")
+  cwd = safe_getcwd()
+  if cwd and not is_plugin_dir(cwd):
+    cwd_state = os.path.join(cwd, ".workflow", "state")
     if os.path.isdir(cwd_state):
       return cwd_state
 
@@ -1191,8 +1204,9 @@ def resolve_state_dir(payload):
   if workspace_paths:
     return os.path.join(workspace_paths[0], ".workflow", "state")
 
-  if not is_plugin_dir(os.getcwd()):
-    return os.path.join(os.getcwd(), ".workflow", "state")
+  cwd = safe_getcwd()
+  if cwd and not is_plugin_dir(cwd):
+    return os.path.join(cwd, ".workflow", "state")
 
   return ""
 
@@ -1204,9 +1218,10 @@ def resolve_workspace_dir(arguments):
   env_ws = os.getenv("MAKEFILE_WORKFLOW_WORKSPACE")
   if env_ws:
     return os.path.expanduser(env_ws)
-  if is_plugin_dir(os.getcwd()):
+  cwd = safe_getcwd()
+  if not cwd or is_plugin_dir(cwd):
     return None
-  return os.getcwd()
+  return cwd
 
 
 def map_to_agy_tier(model_value):

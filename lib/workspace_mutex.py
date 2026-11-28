@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from lib.active_state import ActiveStateStore
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.signal_trap import SignalTrap
 from lib.ticket_state import TicketStateStore
@@ -35,13 +36,13 @@ class WorkspaceMutex:
       repo_root: Optional[str] = None,
       lock_dir: Optional[str] = None,
   ) -> None:
-    self.repo_root: str = os.path.abspath(repo_root or os.getcwd())
+    self.repo_root: str = safe_abspath(repo_root or safe_getcwd())
     raw_lock_dir = (
         lock_dir
         or os.environ.get("WORKFLOW_LOCK_DIR")
         or _DEFAULT_LOCK_DIR
     )
-    self.lock_dir: str = os.path.abspath(os.path.expanduser(raw_lock_dir))
+    self.lock_dir: str = safe_abspath(os.path.expanduser(raw_lock_dir))
     self.last_remote_issue: Optional[Dict[str, Any]] = None
 
   def get_repo_hash(self) -> str:
@@ -209,11 +210,11 @@ class WorkspaceMutex:
     """
     os.makedirs(self.lock_dir, exist_ok=True)
     lp = self.lock_path(ticket_id)
-    ws = os.path.abspath(workspace_path or self.repo_root)
+    ws = safe_abspath(workspace_path or self.repo_root)
     p = os.getpid() if pid is None else int(pid)
 
     current_branch = branch_name
-    if current_branch is None:
+    if current_branch is None and ws:
       try:
         proc = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -262,7 +263,7 @@ class WorkspaceMutex:
 
         if session_data:
           existing_ws = session_data.get("workspace_path")
-          if existing_ws and os.path.abspath(existing_ws) == ws:
+          if existing_ws and safe_abspath(existing_ws) == ws:
             return {
                 "acquired": True,
                 "reentrant": True,
@@ -297,7 +298,7 @@ class WorkspaceMutex:
 
   def release_workspace(self, workspace_path: Optional[str] = None) -> List[str]:
     """Release all locks owned by the given workspace path."""
-    ws = os.path.abspath(workspace_path or self.repo_root)
+    ws = safe_abspath(workspace_path or self.repo_root)
     released = []
     if not os.path.isdir(self.lock_dir):
       return released
@@ -307,7 +308,7 @@ class WorkspaceMutex:
         if os.path.isdir(lp):
           sess = self._read_session(lp)
           sess_ws = sess.get("workspace_path")
-          if sess_ws and os.path.abspath(sess_ws) == ws:
+          if sess_ws and safe_abspath(sess_ws) == ws:
             ticket = sess.get("ticket_id", "")
             self._clean_lock_dir(lp)
             released.append(ticket or fname)
@@ -570,7 +571,7 @@ class WorkspaceMutexScript(BaseScript):
 
   def __init__(self) -> None:
     super().__init__()
-    self.repo_root: str = os.getcwd()
+    self.repo_root: str = safe_getcwd("") or ""
     self.lock_dir: Optional[str] = None
     self.ticket: str = ""
     self.branch: Optional[str] = None
@@ -749,10 +750,10 @@ class WorkspaceMutexScript(BaseScript):
       )
 
     self.subcommand = ns.subcommand
-    self.repo_root = os.path.abspath(
+    self.repo_root = safe_abspath(
         getattr(ns, "sub_repo_root", None)
         or getattr(ns, "repo_root", None)
-        or os.getcwd()
+        or safe_getcwd()
     )
     self.lock_dir = (
         getattr(ns, "sub_lock_dir", None)

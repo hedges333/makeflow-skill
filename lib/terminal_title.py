@@ -15,6 +15,7 @@ import sys
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple
 
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.ticket_state import TicketStateStore
 
@@ -247,11 +248,11 @@ def detect_project_name(
     env: Optional[Dict[str, str]] = None,
 ) -> str:
   """Detects project name from Git remote origin, local package manifests, or directory name."""
-  root = os.path.abspath(repo_root or os.getcwd())
+  root = safe_abspath(repo_root or safe_getcwd())
 
   # Check Git remote origin URL
   remote_url = git_remote_url
-  if remote_url is None:
+  if remote_url is None and root:
     try:
       proc = subprocess.run(
           ["git", "config", "--get", "remote.origin.url"],
@@ -280,6 +281,9 @@ def detect_project_name(
       candidate = parts[-1].strip()
       if candidate and not is_temporary_directory_name(candidate):
         return candidate
+
+  if not root:
+    return ""
 
   # Check local package manifests
   manifest_candidates = [
@@ -315,7 +319,9 @@ def detect_directory_name(repo_root: Optional[str] = None) -> str:
   Returns:
     Sanitized directory basename, or empty string for root or temporary paths.
   """
-  root = os.path.abspath(repo_root or os.getcwd())
+  root = safe_abspath(repo_root or safe_getcwd())
+  if not root:
+    return ""
   base = os.path.basename(root)
   cleaned = sanitize_terminal_title(base)
   if (
@@ -334,16 +340,17 @@ def detect_ticket_id(
     env: Optional[Dict[str, str]] = None,
 ) -> str:
   """Detects active ticket ID from 10_ticket.json or Git branch name."""
-  root = os.path.abspath(repo_root or os.getcwd())
+  root = safe_abspath(repo_root or safe_getcwd())
 
   # 1. Structured JSON state .workflow/state/10_ticket.json
-  meta = TicketStateStore.from_repo_root(root).load()
-  if meta is not None and meta.ticket_id:
-    return meta.ticket_id
+  if root:
+    meta = TicketStateStore.from_repo_root(root).load()
+    if meta is not None and meta.ticket_id:
+      return meta.ticket_id
 
   # 2. Git branch fallback
   current_branch = branch
-  if current_branch is None:
+  if current_branch is None and root:
     try:
       proc = subprocess.run(
           ["git", "branch", "--show-current"],
@@ -376,7 +383,7 @@ def detect_issue_tag(
     env: Optional[Dict[str, str]] = None,
 ) -> str:
   """Extracts active issue tag from 10_ticket.json or Git branch slug."""
-  root = os.path.abspath(repo_root or os.getcwd())
+  root = safe_abspath(repo_root or safe_getcwd())
 
   def _clean_tag(raw: str) -> str:
     if not raw:
@@ -388,17 +395,18 @@ def detect_issue_tag(
     return tag.strip(" -_")
 
   # 1. Structured JSON state .workflow/state/10_ticket.json
-  meta = TicketStateStore.from_repo_root(root).load()
-  if meta is not None and meta.has_distinct_title():
-    candidate = _clean_tag(meta.title)
-    if candidate and (
-        not meta.ticket_id or candidate.lower() != meta.ticket_id.strip().lower()
-    ):
-      return candidate
+  if root:
+    meta = TicketStateStore.from_repo_root(root).load()
+    if meta is not None and meta.has_distinct_title():
+      candidate = _clean_tag(meta.title)
+      if candidate and (
+          not meta.ticket_id or candidate.lower() != meta.ticket_id.strip().lower()
+      ):
+        return candidate
 
   # 2. Git branch slug fallback
   current_branch = branch
-  if current_branch is None:
+  if current_branch is None and root:
     try:
       proc = subprocess.run(
           ["git", "branch", "--show-current"],
@@ -771,7 +779,7 @@ def set_terminal_title(
     Tuple of (success: bool, applied_title: str).
   """
   target_env = os.environ if env is None else env
-  root = os.path.abspath(repo_root or os.getcwd())
+  root = safe_abspath(repo_root or safe_getcwd())
 
   if title:
     final_title = sanitize_terminal_title(title)
@@ -851,7 +859,7 @@ class TerminalTitleScript(BaseScript):
   def __init__(self) -> None:
     super().__init__()
     self.command: str = ""
-    self.repo_root: str = os.getcwd()
+    self.repo_root: str = safe_getcwd("") or ""
     self.ticket: Optional[str] = None
     self.directory: Optional[str] = None
     self.issue_tag: Optional[str] = None
@@ -1008,10 +1016,10 @@ class TerminalTitleScript(BaseScript):
 
     self.command = ns.command
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
-    self.repo_root = os.path.abspath(
+    self.repo_root = safe_abspath(
         getattr(ns, "sub_repo_root", None)
         or getattr(ns, "repo_root", None)
-        or os.getcwd()
+        or safe_getcwd()
     )
     self.ticket = getattr(ns, "ticket", None)
     self.directory = getattr(ns, "directory", None)

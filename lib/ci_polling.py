@@ -5,7 +5,7 @@ polls PR-scoped checks, review bot comments, peer review approvals, CODEOWNERS
 rules, and session parking readiness.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import datetime
 import json
 import os
@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 import urllib.parse
 
+from lib.agent_paths import PathContext
 from lib.config import (
     _parse_non_negative_int,
     _parse_positive_int,
@@ -887,6 +888,8 @@ def poll_ci_status(
     min_approvals: Optional[int] = None,
     require_code_owner_reviews: Optional[bool] = None,
     enable_session_parking: Optional[bool] = None,
+    *,
+    context: Optional[PathContext] = None,
 ) -> Dict[str, Any]:
   """Polls PR-scoped GitHub checks, bot comments, and opt-in peer reviews.
 
@@ -906,12 +909,30 @@ def poll_ci_status(
     min_approvals: Optional override for ``ci.minApprovals``.
     require_code_owner_reviews: Optional override for ``ci.requireCodeOwnerReviews``.
     enable_session_parking: Optional override for ``ci.enableSessionParking``.
+    context: Optional immutable ``PathContext`` threaded into
+      ``resolve_workflow_config``. When ``context.workspace_dir`` is ``None``,
+      ``ws`` is bound as the effective workspace directory.
 
   Returns:
     Dictionary describing CI completion, bot comments, peer review status,
     branch firewalling, session parking recommendation, and landing readiness.
+
+  Raises:
+    TypeError: If ``context`` is not ``None`` and not a ``PathContext`` instance.
   """
-  cfg = resolve_workflow_config(ws)
+  if context is not None:
+    if not isinstance(context, PathContext):
+      raise TypeError(
+          f"context must be a PathContext instance, got {type(context).__name__}."
+      )
+    effective_ctx = (
+        context
+        if context.workspace_dir is not None
+        else replace(context, workspace_dir=ws)
+    )
+    cfg = resolve_workflow_config(context=effective_ctx)
+  else:
+    cfg = resolve_workflow_config(ws)
   ci_cfg = cfg.get("ci", {})
   default_q = _parse_non_negative_int(ci_cfg.get("quiescenceSeconds"), 180)
   default_p = _parse_positive_int(ci_cfg.get("pollIntervalSeconds"), 30)

@@ -34,6 +34,7 @@ except ImportError:
   partition_session_scars = None
 
 from lib.active_state import list_state_card_files
+from lib.agent_paths import safe_abspath
 from lib.config import (
     PathContext,
     _normalize_str_list,
@@ -697,20 +698,24 @@ def _resolve_confined_state_dir(workspace_dir, raw_state_dir):
     symlink escape outside ``workspace_dir``, returns ``(None, error_str)``.
   """
   if raw_state_dir is None:
-    candidate = os.path.join(workspace_dir, ".workflow", "state")
+    candidate = safe_abspath(
+        os.path.join(".workflow", "state"), base_dir=workspace_dir
+    )
   elif isinstance(raw_state_dir, str) and raw_state_dir.strip():
     cleaned = raw_state_dir.strip()
     candidate = (
-        os.path.abspath(cleaned)
+        safe_abspath(cleaned)
         if os.path.isabs(cleaned)
-        else os.path.abspath(os.path.join(workspace_dir, cleaned))
+        else safe_abspath(cleaned, base_dir=workspace_dir)
     )
   else:
     return None, "Invalid 'stateDir' argument. Provide a non-empty path string."
 
-  abs_ws = os.path.abspath(workspace_dir)
-  real_ws = os.path.realpath(abs_ws)
-  real_candidate = os.path.realpath(candidate)
+  abs_ws = safe_abspath(workspace_dir)
+  real_ws = os.path.realpath(abs_ws) if os.path.isabs(abs_ws) else abs_ws
+  real_candidate = (
+      os.path.realpath(candidate) if os.path.isabs(candidate) else candidate
+  )
   try:
     if (
         os.path.commonpath([abs_ws, candidate]) != abs_ws
@@ -999,7 +1004,8 @@ def handle_tools_call(request_id, tool_name, arguments):
   elif tool_name == "workflow_safety_check":
     cmd = arguments.get("commandLine", "")
     ws = resolve_workspace_dir(arguments)
-    cfg = resolve_workflow_config(ws)
+    ctx = PathContext(workspace_dir=ws, plugin_root=_REPO_ROOT)
+    cfg = resolve_workflow_config(context=ctx)
     is_safe, reason = evaluate_database_safety(cmd, cfg.get("database"))
     if is_safe:
       explicit_ws = arguments.get("workspaceDir")
@@ -1079,6 +1085,7 @@ def handle_tools_call(request_id, tool_name, arguments):
           request_id,
           f"Invalid 'expectedBranch' argument '{raw_expected_branch}'. Provide a string.",
       )
+    ctx = PathContext(workspace_dir=ws, plugin_root=_REPO_ROOT)
     res = poll_ci_status(
         pr_number=pr_num,
         ws=ws,
@@ -1086,6 +1093,7 @@ def handle_tools_call(request_id, tool_name, arguments):
         poll_interval_sec=p_sec,
         max_wait_sec=max_wait,
         expected_branch=raw_expected_branch,
+        context=ctx,
     )
     return {
         "jsonrpc": "2.0",
@@ -1183,8 +1191,11 @@ def handle_tools_call(request_id, tool_name, arguments):
 
     ctx = PathContext(workspace_dir=ws, plugin_root=_REPO_ROOT)
     explicit_db = arguments.get("dbPath") or arguments.get("db_path")
+    explicit_abs = None
     if explicit_db:
-      explicit_abs = os.path.abspath(os.path.expanduser(explicit_db))
+      explicit_abs = safe_abspath(
+          os.path.expanduser(explicit_db), base_dir=ws
+      )
       if not os.path.isfile(explicit_abs):
         return {
             "jsonrpc": "2.0",
@@ -1249,8 +1260,8 @@ def handle_tools_call(request_id, tool_name, arguments):
     else:
       state_dir = None
     session_key = (
-        f"explicit:{os.path.abspath(explicit_db)}"
-        if explicit_db
+        f"explicit:{explicit_abs}"
+        if explicit_abs
         else f"ws:{ws or ''}"
     )
     loaded_ids = (

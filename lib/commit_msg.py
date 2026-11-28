@@ -16,6 +16,7 @@ import subprocess
 import sys
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.reflex import emit_reflex
 from lib.shell_safety import GIT_GLOBAL_VALUE_FLAGS, _unwrap_command_tokens
@@ -1037,7 +1038,7 @@ class CommitMsgScript(BaseScript):
     super().__init__()
     self.subcommand: str = ""
     self.file_path: Optional[str] = None
-    self.repo_root: str = os.getcwd()
+    self.repo_root: str = safe_getcwd("") or ""
     self.as_json: bool = False
     self.ticket: Optional[str] = None
     self.is_local: Optional[bool] = None
@@ -1069,7 +1070,7 @@ class CommitMsgScript(BaseScript):
     )
     parser.add_argument(
         "--repo-root",
-        default=os.getcwd(),
+        default=None,
         help="Repository root directory (defaults to current working directory).",
     )
     parser.add_argument(
@@ -1224,7 +1225,7 @@ class CommitMsgScript(BaseScript):
       parser.error("Specify a subcommand: validate or format.")
 
     self.subcommand = ns.subcommand
-    self.repo_root = os.path.abspath(ns.repo_root)
+    self.repo_root = safe_abspath(ns.repo_root or safe_getcwd())
     self.as_json = bool(ns.as_json or getattr(ns, "sub_json", False))
 
     if self.subcommand == "validate":

@@ -12,6 +12,7 @@ import os
 import subprocess
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Sequence, Set, Tuple
 
+from lib.agent_paths import safe_abspath
 from lib.config import is_ticket_active
 from lib.plan_validation import (
     plan_allows_edit_relpath,
@@ -159,7 +160,12 @@ def is_plugin_cache_path(abs_target: str) -> bool:
   if not abs_target or not isinstance(abs_target, str):
     return False
   all_prefixes = _plugin_cache_prefixes()
-  for cand in (abs_target, os.path.realpath(abs_target)):
+  cands = (
+      (abs_target, os.path.realpath(abs_target))
+      if os.path.isabs(abs_target)
+      else (abs_target,)
+  )
+  for cand in cands:
     if any(
         cand == pref or cand.startswith(pref + os.sep) for pref in all_prefixes
     ):
@@ -183,7 +189,10 @@ def find_makeflow_plugin_root(abs_target: str) -> Optional[str]:
   """
   if not abs_target or not isinstance(abs_target, str):
     return None
-  curr = os.path.dirname(os.path.abspath(abs_target))
+  norm_target = safe_abspath(abs_target)
+  if not os.path.isabs(norm_target):
+    return None
+  curr = os.path.dirname(norm_target)
   while curr and curr != os.path.dirname(curr):
     if os.path.realpath(curr) == MAKEFLOW_REPO_ROOT_REAL:
       return curr
@@ -263,19 +272,25 @@ def _resolve_target_candidates(
       if isinstance(ws, str) and ws.strip()
   ]
   if os.path.isabs(expanded):
-    abs_list = [os.path.abspath(expanded)]
+    abs_list = [safe_abspath(expanded)]
   elif non_empty_roots:
     abs_list = [
-        os.path.abspath(os.path.join(os.path.expanduser(ws), raw_path))
+        safe_abspath(raw_path, base_dir=os.path.expanduser(ws))
         for ws in non_empty_roots
     ]
   else:
-    abs_list = [os.path.abspath(expanded)]
+    resolved = safe_abspath(expanded)
+    abs_list = [resolved] if resolved else []
 
   seen: Set[str] = set()
   candidates: List[str] = []
   for abs_path in abs_list:
-    for cand in (abs_path, os.path.realpath(abs_path)):
+    pair = (
+        (abs_path, os.path.realpath(abs_path))
+        if os.path.isabs(abs_path)
+        else (abs_path,)
+    )
+    for cand in pair:
       if cand not in seen:
         seen.add(cand)
         candidates.append(cand)
@@ -343,13 +358,15 @@ def _match_runtime_lock_relpath(
   for rel in RUNTIME_LOCK_STATE_RELPATHS:
     if norm == rel or norm.endswith("/" + rel):
       return rel
-  if state_dir:
-    real_state_dir = os.path.realpath(state_dir)
-    real_cand = os.path.realpath(cand)
-    if os.path.dirname(real_cand) == real_state_dir:
-      base = os.path.basename(real_cand)
-      if base in _RUNTIME_LOCK_BASENAMES:
-        return f".workflow/state/{base}"
+  if state_dir and os.path.isabs(cand):
+    abs_state = safe_abspath(state_dir)
+    if os.path.isabs(abs_state):
+      real_state_dir = os.path.realpath(abs_state)
+      real_cand = os.path.realpath(cand)
+      if os.path.dirname(real_cand) == real_state_dir:
+        base = os.path.basename(real_cand)
+        if base in _RUNTIME_LOCK_BASENAMES:
+          return f".workflow/state/{base}"
   return None
 
 

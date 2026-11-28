@@ -10,6 +10,7 @@ import re
 from typing import List, Optional, Tuple
 
 from lib.active_state import ActiveStateStore
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.commit_msg import (
     detect_commit_context,
@@ -98,8 +99,9 @@ def _resolve_effective_state_dir(state_dir=None):
   """Resolves workflow state directory while preserving plugin-dir isolation."""
   if state_dir is not None:
     return state_dir
-  if not is_plugin_dir(os.getcwd()):
-    cwd_state = os.path.join(os.getcwd(), ".workflow", "state")
+  cwd = safe_getcwd()
+  if cwd and not is_plugin_dir(cwd):
+    cwd_state = os.path.join(cwd, ".workflow", "state")
     if os.path.isdir(cwd_state):
       return cwd_state
   return None
@@ -162,7 +164,7 @@ def _derive_workspace_root(state_dir: str) -> str:
   Returns:
     Absolute workspace root directory path.
   """
-  abs_state = os.path.abspath(state_dir)
+  abs_state = safe_abspath(state_dir)
   parent = os.path.dirname(abs_state)
   if os.path.basename(abs_state) == "state" and os.path.basename(parent) == ".workflow":
     return os.path.dirname(parent)
@@ -592,12 +594,14 @@ def _extract_cd_roots(cmd, base_roots):
     Deduplicated list of absolute directory paths referenced by cd or pushd.
   """
   active_roots = [
-      os.path.abspath(os.path.expanduser(ws))
+      safe_abspath(os.path.expanduser(ws))
       for ws in (base_roots or [])
       if ws
   ]
   if not active_roots:
-    active_roots = [os.getcwd()]
+    cwd = safe_getcwd()
+    if cwd:
+      active_roots = [cwd]
   seen_active = set(active_roots)
   extra = []
   seen_extra = set()
@@ -609,7 +613,7 @@ def _extract_cd_roots(cmd, base_roots):
         if pos:
           resolved = _resolve_direct_target_paths(pos[0], active_roots)
         else:
-          resolved = [os.path.abspath(os.path.expanduser("~"))]
+          resolved = [safe_abspath(os.path.expanduser("~"))]
         for path in resolved:
           if path not in seen_extra:
             seen_extra.add(path)
@@ -648,7 +652,12 @@ def _is_protected_governance_file(raw_token, search_roots):
   for abs_target in abs_candidates:
     if _is_plugin_cache_path(abs_target):
       return True
-    for cand in (abs_target, os.path.realpath(abs_target)):
+    cands = (
+        (abs_target, os.path.realpath(abs_target))
+        if os.path.isabs(abs_target)
+        else (abs_target,)
+    )
+    for cand in cands:
       if _is_state_governance_target(cand):
         return True
       plugin_root = _find_makeflow_plugin_root(cand)
@@ -691,7 +700,12 @@ def _is_protected_governance_dir(raw_token, search_roots):
   for abs_target in _resolve_direct_target_paths(cleaned, search_roots):
     if _is_plugin_cache_path(abs_target):
       return True
-    for cand in (abs_target, os.path.realpath(abs_target)):
+    cands = (
+        (abs_target, os.path.realpath(abs_target))
+        if os.path.isabs(abs_target)
+        else (abs_target,)
+    )
+    for cand in cands:
       if _is_state_governance_dir(cand):
         return True
       plugin_root = _find_makeflow_plugin_root(cand)
@@ -748,7 +762,11 @@ def evaluate_self_modification_safety(cmd, workspace_paths=None):
 
   cd_roots = _extract_cd_roots(cmd, workspace_paths)
   if cd_roots:
-    base = list(workspace_paths) if workspace_paths else [os.getcwd()]
+    if workspace_paths:
+      base = list(workspace_paths)
+    else:
+      cwd = safe_getcwd()
+      base = [cwd] if cwd else []
     search_roots = base + cd_roots
   else:
     search_roots = workspace_paths
@@ -907,7 +925,7 @@ def _resolve_direct_target_paths(target_path, workspace_paths):
   """Resolves absolute candidate paths for a direct file write target.
 
   Filters blank, whitespace-only, and non-string entries from
-  ``workspace_paths`` and falls back to ``os.path.abspath(expanded)`` when no
+  ``workspace_paths`` and falls back to ``safe_abspath(expanded)`` when no
   valid workspace root remains.
 
   Args:
@@ -916,11 +934,11 @@ def _resolve_direct_target_paths(target_path, workspace_paths):
       payload.
 
   Returns:
-    List of normalized absolute candidate path strings.
+    List of normalized candidate path strings.
   """
   expanded = os.path.expanduser(target_path)
   if os.path.isabs(expanded):
-    return [os.path.abspath(expanded)]
+    return [safe_abspath(expanded)]
   non_empty_roots = [
       ws.strip()
       for ws in (workspace_paths or ())
@@ -928,10 +946,11 @@ def _resolve_direct_target_paths(target_path, workspace_paths):
   ]
   if non_empty_roots:
     return [
-        os.path.abspath(os.path.join(os.path.expanduser(ws), target_path))
+        safe_abspath(target_path, base_dir=os.path.expanduser(ws))
         for ws in non_empty_roots
     ]
-  return [os.path.abspath(expanded)]
+  resolved = safe_abspath(expanded)
+  return [resolved] if resolved else []
 
 
 def _is_plan_approved_governance_edit(
@@ -1012,13 +1031,17 @@ def _check_direct_file_governance(tool_name, args, workspace_paths, state_dir):
   if _is_state_governance_target(target_path):
     return deny_resp
 
-  norm_workspaces = {
-      os.path.realpath(os.path.abspath(os.path.expanduser(ws.strip())))
-      for ws in (workspace_paths or [])
-      if isinstance(ws, str) and ws.strip()
-  }
+  norm_workspaces = set()
+  for ws in workspace_paths or []:
+    if isinstance(ws, str) and ws.strip():
+      abs_ws = safe_abspath(os.path.expanduser(ws.strip()))
+      norm_workspaces.add(
+          os.path.realpath(abs_ws) if os.path.isabs(abs_ws) else abs_ws
+      )
   for abs_target in _resolve_direct_target_paths(target_path, workspace_paths):
-    real_target = os.path.realpath(abs_target)
+    real_target = (
+        os.path.realpath(abs_target) if os.path.isabs(abs_target) else abs_target
+    )
     if _is_state_governance_target(abs_target) or _is_state_governance_target(
         real_target
     ):
