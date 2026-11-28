@@ -2489,7 +2489,10 @@ class TestMcpMainSyncTransitions(unittest.TestCase):
               "currentTarget": "T70",
               "nextTarget": "T75",
               "workspaceDir": clone1,
-              "evidence": {"skipMainFetch": True},
+              "evidence": {
+                  "skipMainFetch": True,
+                  "regressionCmd": "python3 -c 'import sys; sys.exit(0)'",
+              },
           },
       )
       self.assertFalse(resp_t70_t75["result"].get("isError"))

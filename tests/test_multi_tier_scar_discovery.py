@@ -494,6 +494,67 @@ class TestMultiTierSqliteScarDiscovery(unittest.TestCase):
       )
       self.assertEqual(query_scars(ordered, query="SCAR-ARCH-01", limit=5), [])
 
+  def test_higher_tier_inactive_row_is_omitted_and_shadows_lower_tier(self):
+    """Verifies a higher-tier active=0 row omits itself while shadowing matching lower-tier scar IDs (GH-343)."""
+    with tempfile.TemporaryDirectory() as tmp_root:
+      fs = _build_mock_fs_root(tmp_root)
+      _seed_db(
+          fs["bundled_db"],
+          [
+              _scar_dict(
+                  "SCAR-ARCH-0001",
+                  ss_id="SCAR-ARCH-01",
+                  title="Bundled Shadowed Guard",
+                  category="ARCH",
+                  wound="Bundled quantum_shadow wound.",
+                  reflex="Bundled quantum_shadow reflex.",
+                  socratic_probe="Did you check bundled quantum_shadow?",
+                  source="upstream",
+              ),
+              _scar_dict(
+                  "SCAR-ARCH-0002",
+                  ss_id="SCAR-ARCH-02",
+                  title="Bundled Surviving Guard",
+                  category="ARCH",
+                  wound="Bundled quantum_shadow survivor wound.",
+                  reflex="Bundled quantum_shadow survivor reflex.",
+                  socratic_probe="Did you check bundled survivor?",
+                  source="upstream",
+              ),
+          ],
+      )
+      _seed_db(
+          fs["project_db"],
+          [
+              _scar_dict(
+                  "SCAR-ARCH-0001",
+                  ss_id="SCAR-ARCH-01",
+                  title="Project Suppressed Guard",
+                  category="ARCH",
+                  wound="Project quantum_shadow wound.",
+                  reflex="Project quantum_shadow reflex.",
+                  socratic_probe="Did you check project suppression?",
+                  source="local",
+              ),
+          ],
+      )
+      conn = sqlite3.connect(fs["project_db"])
+      conn.execute(
+          "UPDATE scars SET active = 0, vetted = 1 WHERE id = 'SCAR-ARCH-0001'"
+      )
+      conn.commit()
+      conn.close()
+
+      ordered = [fs["project_db"], fs["bundled_db"]]
+      by_query = query_scars(ordered, query="quantum_shadow", limit=10)
+      self.assertEqual([r["id"] for r in by_query], ["SCAR-ARCH-0002"])
+
+      by_id = query_scars(ordered, query="SCAR-ARCH-0001", limit=10)
+      self.assertEqual(by_id, [])
+
+      by_cat = query_scars(ordered, category="ARCH", limit=10)
+      self.assertEqual([r["id"] for r in by_cat], ["SCAR-ARCH-0002"])
+
   def test_accurate_limit_budget_under_shadowing(self):
     """Verifies limit=N returns N distinct scars even when higher tiers shadow lower-tier top matches."""
     with tempfile.TemporaryDirectory() as tmp_root:

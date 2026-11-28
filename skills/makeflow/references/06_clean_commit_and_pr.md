@@ -38,6 +38,8 @@ Both `.workflow/state/Makefile` targets and the `workflow_advance_target` MCP to
 3. If `origin/main` introduces merge conflicts at any transition, stop tool calls immediately without altering Git state (`SCAR-GIT-25`).
 4. Report the conflicting files in chat and wait for explicit operator direction.
 5. At Target 70 and Target 75, never rebase an open pull request (`SCAR-GIT-18`, `SCAR-GIT-25`). If conflicts arise on an open pull request, request operator approval to merge `origin/main` and return to Target 30.
+6. If the open pull request is `BEHIND_CLEAN`, a clean merge does not prove the combined code works (`SCAR-GIT-18`). Target 75 and Target 80 run an ephemeral trial-merge. The gate merges `origin/main` into a temporary detached `git worktree` and runs the regression command there. It never changes your branch, workspace, or `approved_tree.txt`. Read the `git log --oneline --stat HEAD..origin/main` summary that the gate prints.
+7. If the trial-merge fails, stop and ask the operator to approve `git merge origin/main`. Fix the break at Target 30, then return to Target 40 for critic review.
 
 ## 2. Human Push Approval Gate
 

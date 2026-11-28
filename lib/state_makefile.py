@@ -152,7 +152,7 @@ def generate_state_makefile(repo_root: str) -> str:
       "commit push bot-quiescence ready-to-land land "
       "codified-scars-consolidated finish advance "
       "check-intake release-intake check-plan check-approved-tree check-commit-msg "
-      "check-post-commit check-main-sync verify-regression check-regression "
+      "check-post-commit check-main-sync verify-regression check-regression verify-trial-merge "
       "repo-tree promote-review park-session resume-parked "
       "witness-red verify-green verify-citation ast-lint"
   )
@@ -211,6 +211,8 @@ def generate_state_makefile(repo_root: str) -> str:
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} verify-regression --make-env\n\n"
       "check-regression:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} check-regression --make-env\n\n"
+      "verify-trial-merge:\n"
+      f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} verify-trial-merge --make-env\n\n"
       "repo-tree:\n"
       f"\t@$(PYTHON) {gates_script} --repo-root {quoted_root} repo-tree --make-env\n\n"
       "promote-review:\n"

@@ -26,6 +26,7 @@ if _REPO_ROOT not in sys.path:
   sys.path.insert(0, _REPO_ROOT)
 
 from lib.base_script import BaseScript
+from lib.scar_candidate import ScarCandidateValidator, validate_socratic_probe
 from lib.scar_ontology import (
     DOMAIN_CATEGORY_ONTOLOGY,
     UPSTREAM_CATEGORY_MAP,
@@ -40,6 +41,7 @@ from lib.scars_db import (
     RAW_HASH_VERSION,
     backfill_raw_hashes_if_needed,
     compute_raw_fields_hash,
+    count_scar_pipeline_status,
     enrich_scars_database,
     extract_protected_spans,
     init_scars_db_schema,
@@ -49,6 +51,8 @@ from lib.scars_db import (
     resolve_scars_db_path,
     resolve_scars_db_paths,
     save_session_scars,
+    select_scars_needing_importer,
+    select_scars_needing_probe_writer,
     verify_scar_transformation,
 )
 from lib.sync_synthetic_scars import SyncSyntheticScarsScript
@@ -598,6 +602,232 @@ class TestSyncSyntheticScarsCliContract(unittest.TestCase):
       self.assertEqual(code_bad, 1)
       self.assertIn("Error:", err_bad.getvalue())
 
+  def test_sync_reconciles_curation_flags_resets_on_raw_change_and_deduplicates_makeflow_ssid(
+      self,
+  ) -> None:
+    """Verify makeflow ss_id deduplication, unchanged-hash preservation, changed-hash reset+notice, and curation counts (GH-343)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "sync_curation.db")
+      conn = sqlite3.connect(db_path)
+      init_scars_db_schema(conn)
+
+      # 1. Makeflow-owned row claiming an upstream ss_id -> never duplicated or overwritten
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-GIT-0099",
+          ss_id="SCAR-GIT-99",
+          title="Makeflow Owned Git Rule",
+          category="GIT",
+          raw_wound="MF wound.",
+          raw_trap="MF trap.",
+          raw_reflex="MF reflex.",
+          wound="MF simple wound.",
+          trap="MF simple trap.",
+          reflex="MF simple reflex.",
+          socratic_probe="Did you keep makeflow rule?",
+          source="makeflow",
+      )
+      conn.execute(
+          "UPDATE scars SET active = 1, vetted = 1, override = 1 WHERE id = 'SCAR-GIT-0099'"
+      )
+
+      # 2. Upstream row with override=1, vetted=1, unchanged raw_hash -> preserved
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-GIT-0018",
+          ss_id="SCAR-GIT-18",
+          title="Overridden Unchanged Scar",
+          category="GIT",
+          raw_wound="Stable raw wound.",
+          raw_trap="Stable raw trap.",
+          raw_reflex="Stable raw reflex.",
+          wound="Vetted custom wound.",
+          trap="Vetted custom trap.",
+          reflex="Vetted custom reflex.",
+          socratic_probe="Did you keep vetted override?",
+          source="upstream",
+      )
+      conn.execute(
+          "UPDATE scars SET active = 1, vetted = 1, override = 1 WHERE id = 'SCAR-GIT-0018'"
+      )
+
+      # 3. Upstream row with active=0, vetted=1, changed raw_hash -> reset + stdout notice
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0010",
+          ss_id="SCAR-API-10",
+          title="Inactive Changed Scar",
+          category="API",
+          raw_wound="Old inactive wound.",
+          raw_trap="Old inactive trap.",
+          raw_reflex="Old inactive reflex.",
+          wound="Old simple wound.",
+          trap="Old simple trap.",
+          reflex="Old simple reflex.",
+          socratic_probe="Old probe?",
+          source="upstream",
+      )
+      conn.execute(
+          "UPDATE scars SET active = 0, vetted = 1, override = 0 WHERE id = 'SCAR-API-0010'"
+      )
+
+      # 4. Upstream row with override=1, vetted=1, changed raw_hash -> reset + stdout notice
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0011",
+          ss_id="SCAR-API-11",
+          title="Overridden Changed Scar",
+          category="API",
+          raw_wound="Old override wound.",
+          raw_trap="Old override trap.",
+          raw_reflex="Old override reflex.",
+          wound="Custom override wound.",
+          trap="Custom override trap.",
+          reflex="Custom override reflex.",
+          socratic_probe="Custom override probe?",
+          source="upstream",
+      )
+      conn.execute(
+          "UPDATE scars SET active = 1, vetted = 1, override = 1 WHERE id = 'SCAR-API-0011'"
+      )
+
+      backfill_raw_hashes_if_needed(conn)
+      conn.close()
+
+      upstream_payload = json.dumps({
+          "scars": [
+              _make_upstream_scar(
+                  ss_id="SCAR-GIT-99",
+                  title="Upstream Attempt To Duplicate Makeflow",
+                  category="GIT",
+                  wound="Upstream changed wound.",
+                  trap="Upstream changed trap.",
+                  reflex="Upstream changed reflex.",
+              ),
+              _make_upstream_scar(
+                  ss_id="SCAR-GIT-18",
+                  title="Overridden Unchanged Scar",
+                  category="GIT",
+                  wound="Stable raw wound.",
+                  trap="Stable raw trap.",
+                  reflex="Stable raw reflex.",
+              ),
+              _make_upstream_scar(
+                  ss_id="SCAR-API-10",
+                  title="Inactive Changed Scar Updated",
+                  category="API",
+                  wound="New upstream wound for inactive.",
+                  trap="Old inactive trap.",
+                  reflex="Old inactive reflex.",
+              ),
+              _make_upstream_scar(
+                  ss_id="SCAR-API-11",
+                  title="Overridden Changed Scar Updated",
+                  category="API",
+                  wound="New upstream wound for override.",
+                  trap="Old override trap.",
+                  reflex="Old override reflex.",
+              ),
+              _make_upstream_scar(
+                  ss_id="SCAR-API-12",
+                  title="Brand New Upstream Scar",
+                  category="API",
+                  wound="New raw wound.",
+                  trap="New raw trap.",
+                  reflex="New raw reflex.",
+              ),
+          ]
+      })
+
+      out = io.StringIO()
+      err = io.StringIO()
+      with patch(
+          "urllib.request.urlopen",
+          return_value=MockHTTPResponse(upstream_payload),
+      ):
+        code = SyncSyntheticScarsScript().execute(
+            ["--db-path", db_path], stdout=out, stderr=err
+        )
+
+      self.assertEqual(code, 0, f"Unexpected stderr: {err.getvalue()}")
+      output = out.getvalue()
+
+      conn = sqlite3.connect(db_path)
+      cur = conn.cursor()
+
+      # No duplicate inserted for makeflow ss_id='SCAR-GIT-99'
+      cur.execute(
+          "SELECT id, source, title, wound, active, vetted, override "
+          "FROM scars WHERE ss_id = 'SCAR-GIT-99'"
+      )
+      mf_rows = cur.fetchall()
+      self.assertEqual(
+          mf_rows,
+          [("SCAR-GIT-0099", "makeflow", "Makeflow Owned Git Rule", "MF simple wound.", 1, 1, 1)],
+      )
+
+      # Unchanged upstream override preserved verbatim
+      cur.execute(
+          "SELECT wound, trap, reflex, socratic_probe, active, vetted, override "
+          "FROM scars WHERE id = 'SCAR-GIT-0018'"
+      )
+      self.assertEqual(
+          cur.fetchone(),
+          (
+              "Vetted custom wound.",
+              "Vetted custom trap.",
+              "Vetted custom reflex.",
+              "Did you keep vetted override?",
+              1,
+              1,
+              1,
+          ),
+      )
+
+      # Changed previously inactive row reset to active=1, vetted=0, override=0 + NULL prose
+      cur.execute(
+          "SELECT raw_wound, wound, trap, circuit_breaker, reflex, socratic_probe, "
+          "active, vetted, override FROM scars WHERE id = 'SCAR-API-0010'"
+      )
+      self.assertEqual(
+          cur.fetchone(),
+          ("New upstream wound for inactive.", None, None, None, None, None, 1, 0, 0),
+      )
+
+      # Changed previously overridden row reset to active=1, vetted=0, override=0 + NULL prose
+      cur.execute(
+          "SELECT raw_wound, wound, trap, circuit_breaker, reflex, socratic_probe, "
+          "active, vetted, override FROM scars WHERE id = 'SCAR-API-0011'"
+      )
+      self.assertEqual(
+          cur.fetchone(),
+          ("New upstream wound for override.", None, None, None, None, None, 1, 0, 0),
+      )
+
+      # New upstream row inserted with defaults active=1, vetted=0, override=0
+      cur.execute(
+          "SELECT active, vetted, override FROM scars WHERE ss_id = 'SCAR-API-12'"
+      )
+      self.assertEqual(cur.fetchone(), (1, 0, 0))
+      conn.close()
+
+      # Explicit stdout reset notices for both previously inactive and overridden rows
+      self.assertIn("SCAR-API-0010", output)
+      self.assertIn("SCAR-API-10", output)
+      self.assertIn("SCAR-API-0011", output)
+      self.assertIn("SCAR-API-11", output)
+
+      # Existing 4 lines + appended curation count lines
+      self.assertIn("Total scars: 5", output)
+      self.assertIn("Complete scars: 2", output)
+      self.assertIn("Scars needing synthetic-scar-importer: 3", output)
+      self.assertIn("Scars needing socratic-probe-writer: 0", output)
+      self.assertIn("Active scars: 5", output)
+      self.assertIn("Inactive scars: 0", output)
+      self.assertIn("Vetted scars: 2", output)
+      self.assertIn("Unvetted scars: 3", output)
+      self.assertIn("Overridden scars: 2", output)
+
 
 class TestQueryScarsCircuitBreakerAndFilters(unittest.TestCase):
   """Verify query_scars() conditional circuit_breaker filter, FTS5/LIKE, stacking, and session ledger."""
@@ -801,6 +1031,336 @@ class TestQueryScarsCircuitBreakerAndFilters(unittest.TestCase):
     self.assertTrue(verify_scar_transformation(raw_row, bad))
 
 
+class TestScarCurationFlagsSchemaAndQueries(unittest.TestCase):
+  """Verify active, vetted, and override curation columns, selectors, counts, and query filtering (GH-343)."""
+
+  def test_init_scars_db_schema_migrates_curation_columns_idempotently(self) -> None:
+    """Verify init_scars_db_schema adds active, vetted, and override with defaults without altering rows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "legacy_schema.db")
+      conn = sqlite3.connect(db_path)
+      conn.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT NOT NULL PRIMARY KEY,
+              ss_id TEXT,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              raw_wound TEXT,
+              raw_trap TEXT,
+              raw_circuit_breaker TEXT,
+              raw_reflex TEXT,
+              raw_hash TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT,
+              source TEXT DEFAULT 'upstream',
+              original_id TEXT
+          )
+          """
+      )
+      conn.execute(
+          """
+          INSERT INTO scars (
+              id, ss_id, title, category, category_slug, visibility,
+              workflow_phases, applies_when, graduation_status,
+              raw_wound, raw_trap, raw_circuit_breaker, raw_reflex, raw_hash,
+              wound, trap, circuit_breaker, reflex, socratic_probe, source
+          ) VALUES (
+              'SCAR-ARCH-0001', 'SCAR-ARCH-01', 'Existing Scar', 'ARCH', 'arch',
+              'public', '["Target 30: tdd"]', 'Python', 'graduated',
+              'Raw wound.', 'Raw trap.', '', 'Raw reflex.', 'hash-1',
+              'Simple wound.', 'Simple trap.', '', 'Simple reflex.',
+              'Did you check?', 'upstream'
+          )
+          """
+      )
+      conn.commit()
+
+      init_scars_db_schema(conn)
+      # Second call must be strictly idempotent.
+      init_scars_db_schema(conn)
+
+      cur = conn.cursor()
+      cur.execute("PRAGMA table_info(scars)")
+      col_info = {row[1]: row for row in cur.fetchall()}
+      self.assertIn("active", col_info)
+      self.assertIn("vetted", col_info)
+      self.assertIn("override", col_info)
+      self.assertEqual(col_info["active"][4], "1")
+      self.assertEqual(col_info["vetted"][4], "0")
+      self.assertEqual(col_info["override"][4], "0")
+
+      cur.execute(
+          "SELECT title, wound, active, vetted, override FROM scars WHERE id = 'SCAR-ARCH-0001'"
+      )
+      self.assertEqual(
+          cur.fetchone(), ("Existing Scar", "Simple wound.", 1, 0, 0)
+      )
+      conn.close()
+
+  def test_query_scars_filters_inactive_rows_and_auto_migrates_legacy_db(
+      self,
+  ) -> None:
+    """Verify query_scars omits active=0 on FTS5/LIKE paths and auto-migrates legacy DBs lacking active."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "curation_query.db")
+      conn = sqlite3.connect(db_path)
+      init_scars_db_schema(conn)
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-ARCH-0001",
+          ss_id="SCAR-ARCH-01",
+          title="Active Nebula Guard",
+          category="ARCH",
+          wound="Active nebula failure.",
+          trap="Active nebula trap.",
+          reflex="Apply active nebula guard.",
+          socratic_probe="Did you apply active nebula guard?",
+      )
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-ARCH-0002",
+          ss_id="SCAR-ARCH-02",
+          title="Ignored Nebula Guard",
+          category="ARCH",
+          wound="Ignored nebula failure.",
+          trap="Ignored nebula trap.",
+          reflex="Apply ignored nebula guard.",
+          socratic_probe="Did you apply ignored nebula guard?",
+      )
+      conn.execute(
+          "UPDATE scars SET active = 0, vetted = 1 WHERE id = 'SCAR-ARCH-0002'"
+      )
+      conn.commit()
+      conn.close()
+      enrich_scars_database(db_path)
+
+      # FTS5 path excludes active = 0.
+      fts_res = query_scars(db_path, query="Nebula", limit=10)
+      self.assertEqual([r["id"] for r in fts_res], ["SCAR-ARCH-0001"])
+
+      # LIKE / filter-only path excludes active = 0.
+      filter_res = query_scars(db_path, category="ARCH", limit=10)
+      self.assertEqual([r["id"] for r in filter_res], ["SCAR-ARCH-0001"])
+
+      # Legacy DB without active/vetted/override columns auto-migrates on query.
+      legacy_path = os.path.join(tmpdir, "legacy_missing_curation.db")
+      lconn = sqlite3.connect(legacy_path)
+      lconn.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT PRIMARY KEY,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT
+          )
+          """
+      )
+      lconn.execute(
+          """
+          INSERT INTO scars VALUES (
+              'SCAR-LEG-99', 'Legacy Auto Migrate Scar', 'ARCH', 'arch', 'public',
+              '["Target 30: tdd"]', 'Python', 'graduated',
+              'Legacy wound.', 'Legacy trap.', '', 'Legacy reflex.', 'Did you migrate?'
+          )
+          """
+      )
+      lconn.commit()
+      lconn.close()
+
+      legacy_res = query_scars(legacy_path, query="Migrate", limit=5)
+      self.assertEqual([r["id"] for r in legacy_res], ["SCAR-LEG-99"])
+
+      verify_conn = sqlite3.connect(legacy_path)
+      verify_cur = verify_conn.cursor()
+      verify_cur.execute("PRAGMA table_info(scars)")
+      migrated_cols = {row[1] for row in verify_cur.fetchall()}
+      self.assertTrue({"active", "vetted", "override"}.issubset(migrated_cols))
+      verify_cur.execute(
+          "SELECT active, vetted, override FROM scars WHERE id = 'SCAR-LEG-99'"
+      )
+      self.assertEqual(verify_cur.fetchone(), (1, 0, 0))
+      verify_conn.close()
+
+  def test_query_scars_falls_back_without_active_filter_on_read_only_legacy_db(
+      self,
+  ) -> None:
+    """Verify an unmigratable read-only legacy DB still returns rows and stays unmodified (SCAR-TEST-24)."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+      self.skipTest("root bypasses read-only file permissions")
+    with tempfile.TemporaryDirectory() as tmpdir:
+      legacy_path = os.path.join(tmpdir, "legacy_read_only.db")
+      lconn = sqlite3.connect(legacy_path)
+      lconn.execute(
+          """
+          CREATE TABLE scars (
+              id TEXT PRIMARY KEY,
+              title TEXT,
+              category TEXT,
+              category_slug TEXT,
+              visibility TEXT,
+              workflow_phases TEXT,
+              applies_when TEXT,
+              graduation_status TEXT,
+              wound TEXT,
+              trap TEXT,
+              circuit_breaker TEXT,
+              reflex TEXT,
+              socratic_probe TEXT
+          )
+          """
+      )
+      lconn.execute(
+          """
+          INSERT INTO scars VALUES (
+              'SCAR-LEG-98', 'Read Only Legacy Scar', 'ARCH', 'arch', 'public',
+              '[\"Target 30: tdd\"]', 'Python', 'graduated',
+              'Legacy wound.', 'Legacy trap.', '', 'Legacy reflex.', 'Did you read?'
+          )
+          """
+      )
+      lconn.commit()
+      lconn.close()
+      with open(legacy_path, "rb") as fh:
+        before_bytes = fh.read()
+      os.chmod(legacy_path, 0o444)
+
+      try:
+        res = query_scars(legacy_path, category="ARCH", limit=5)
+      finally:
+        os.chmod(legacy_path, 0o644)
+
+      self.assertEqual([r["id"] for r in res], ["SCAR-LEG-98"])
+      with open(legacy_path, "rb") as fh:
+        self.assertEqual(fh.read(), before_bytes)
+      verify_conn = sqlite3.connect(legacy_path)
+      cols = {r[1] for r in verify_conn.execute("PRAGMA table_info(scars)")}
+      verify_conn.close()
+      self.assertFalse({"active", "vetted", "override"} & cols)
+
+  def test_selectors_skip_overridden_and_inactive_and_counts_report_curation(
+      self,
+  ) -> None:
+    """Verify importer/probe selectors skip override=1 or active=0 rows and status counts include curation keys."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+      db_path = os.path.join(tmpdir, "selectors.db")
+      conn = sqlite3.connect(db_path)
+      init_scars_db_schema(conn)
+      # 1. Pending importer (active=1, vetted=0, override=0) -> INCLUDED by importer
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0001",
+          ss_id="SCAR-API-01",
+          wound=None,
+          trap=None,
+          reflex=None,
+          socratic_probe=None,
+      )
+      # 2. Missing prose but override=1 (vetted=1) -> SKIPPED by importer
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0002",
+          ss_id="SCAR-API-02",
+          wound=None,
+          trap="Trap.",
+          reflex="Reflex.",
+          socratic_probe=None,
+      )
+      conn.execute(
+          "UPDATE scars SET override = 1, vetted = 1 WHERE id = 'SCAR-API-0002'"
+      )
+      # 3. Missing prose and active=0 (vetted=1) -> SKIPPED by importer
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0003",
+          ss_id="SCAR-API-03",
+          wound=None,
+          trap=None,
+          reflex=None,
+          socratic_probe=None,
+      )
+      conn.execute(
+          "UPDATE scars SET active = 0, vetted = 1 WHERE id = 'SCAR-API-0003'"
+      )
+      # 4. Pending probe writer (active=1, override=0) -> INCLUDED by probe writer
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0004",
+          ss_id="SCAR-API-04",
+          socratic_probe=None,
+      )
+      # 5. Missing probe but override=1 -> SKIPPED by probe writer
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0005",
+          ss_id="SCAR-API-05",
+          socratic_probe=None,
+      )
+      conn.execute(
+          "UPDATE scars SET override = 1, vetted = 1 WHERE id = 'SCAR-API-0005'"
+      )
+      # 6. Missing probe and active=0 -> SKIPPED by probe writer
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0006",
+          ss_id="SCAR-API-06",
+          socratic_probe=None,
+      )
+      conn.execute(
+          "UPDATE scars SET active = 0, vetted = 0 WHERE id = 'SCAR-API-0006'"
+      )
+      # 7. Complete active vetted row
+      _insert_scar_row(
+          conn,
+          scar_id="SCAR-API-0007",
+          ss_id="SCAR-API-07",
+      )
+      conn.execute(
+          "UPDATE scars SET active = 1, vetted = 1, override = 0 WHERE id = 'SCAR-API-0007'"
+      )
+      conn.commit()
+
+      cur = conn.cursor()
+      importer_ids = [r["id"] for r in select_scars_needing_importer(cur)]
+      probe_ids = [r["id"] for r in select_scars_needing_probe_writer(cur)]
+      counts = count_scar_pipeline_status(cur)
+      conn.close()
+
+      self.assertEqual(importer_ids, ["SCAR-API-0001"])
+      self.assertEqual(probe_ids, ["SCAR-API-0004"])
+      self.assertEqual(
+          counts,
+          {
+              "total": 7,
+              "complete": 1,
+              "needs_importer": 1,
+              "needs_probe_writer": 1,
+              "active": 5,
+              "inactive": 2,
+              "vetted": 4,
+              "unvetted": 3,
+              "overridden": 2,
+          },
+      )
+
+
 class TestScarOntologyAndBundledDb(unittest.TestCase):
   """Verify ontology invariants and read-only bundled DB preservation."""
 
@@ -855,6 +1415,61 @@ class TestScarOntologyAndBundledDb(unittest.TestCase):
       conn.close()
       self.assertGreaterEqual(len(mf_ids), 1)
       self.assertIn("Total scars:", out.getvalue())
+
+  def test_bundled_scar_git_0018_vetted_override_and_vetting_notes(self) -> None:
+    """Verify bundled SCAR-GIT-0018 override prose, flags, FTS5, metadata, and notes/sync_scars.md vetting prompt (GH-343)."""
+    bundled = os.path.join(
+        _REPO_ROOT, "skills", "makeflow", "data", "scars_registry.db"
+    )
+    self.assertTrue(os.path.isfile(bundled))
+    conn = sqlite3.connect(f"file:{bundled}?mode=ro", uri=True)
+    try:
+      conn.row_factory = sqlite3.Row
+      cur = conn.cursor()
+      cur.execute("SELECT * FROM scars WHERE id = 'SCAR-GIT-0018'")
+      row_obj = cur.fetchone()
+      self.assertIsNotNone(row_obj)
+      row = dict(row_obj)
+
+      cur.execute("SELECT value FROM meta WHERE key = 'db_size_bytes'")
+      size_row = cur.fetchone()
+      self.assertIsNotNone(size_row)
+      self.assertGreater(int(size_row[0]), 0)
+    finally:
+      conn.close()
+
+    self.assertEqual(row["source"], "upstream")
+    self.assertEqual(row["ss_id"], "SCAR-GIT-18")
+    self.assertEqual(
+        row["raw_hash"],
+        "d3e088e236bc0c46a86e1fda6620caea288c5a135e9c181404144bb012525d68",
+    )
+    self.assertEqual(row["active"], 1)
+    self.assertEqual(row["vetted"], 1)
+    self.assertEqual(row["override"], 1)
+    self.assertNotIn("zero technical risk", (row["trap"] or "").lower())
+    self.assertIn("trial-merge", (row["reflex"] or "").lower())
+    self.assertIn("ephemeral", (row["reflex"] or "").lower())
+    self.assertIn("worktree", (row["socratic_probe"] or "").lower())
+    self.assertEqual(ScarCandidateValidator().validate(row), [])
+    self.assertEqual(
+        validate_socratic_probe(row["socratic_probe"], "SCAR-GIT-0018"), []
+    )
+
+    # FTS5 query discovers updated SCAR-GIT-0018 by new combined-tree terms and ss_id
+    by_trial = query_scars(bundled, query="trial-merge", limit=10)
+    self.assertIn("SCAR-GIT-0018", [r["id"] for r in by_trial])
+    by_ssid = query_scars(bundled, query="SCAR-GIT-18", limit=5)
+    self.assertIn("SCAR-GIT-0018", [r["id"] for r in by_ssid])
+
+    # notes/sync_scars.md documents vetting session instructions and copy-paste agy prompt
+    notes_path = os.path.join(_REPO_ROOT, "notes", "sync_scars.md")
+    with open(notes_path, "r", encoding="utf-8") as fh:
+      notes_text = fh.read()
+    self.assertIn("vetted = 1", notes_text)
+    self.assertIn("override = 1", notes_text)
+    self.assertIn("active = 0", notes_text)
+    self.assertIn("agy", notes_text)
 
 
 if __name__ == "__main__":
