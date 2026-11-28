@@ -14,7 +14,7 @@ import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
-from lib.agent_paths import PathContext, resolve_path_context
+from lib.agent_paths import PathContext, resolve_path_context, safe_abspath
 from lib.config import expand_user_path
 from lib.scar_locations import resolve_scar_locations
 from lib.scar_metadata import (
@@ -167,11 +167,11 @@ def resolve_scars_db_path(
       package_root=package_root,
   )
   if db_path:
-    return os.path.abspath(expand_user_path(db_path, home_dir=ctx.home_dir))
+    return safe_abspath(expand_user_path(db_path, home_dir=ctx.home_dir))
 
   env_path = os.getenv("MAKEFLOW_SCARS_DB")
   if env_path:
-    return os.path.abspath(expand_user_path(env_path, home_dir=ctx.home_dir))
+    return safe_abspath(expand_user_path(env_path, home_dir=ctx.home_dir))
 
   effective_ctx = replace(ctx, plugin_root=ctx.plugin_root or _REPO_ROOT)
   try:
@@ -251,7 +251,7 @@ def resolve_scars_db_paths(
       package_root=package_root,
   )
   if db_path:
-    norm_explicit = os.path.abspath(
+    norm_explicit = safe_abspath(
         expand_user_path(db_path, home_dir=ctx.home_dir)
     )
     return [norm_explicit] if os.path.isfile(norm_explicit) else []
@@ -538,15 +538,43 @@ def detect_active_ticket_id(state_dir: Optional[str]) -> str:
   return meta.ticket_id if meta is not None else ""
 
 
+def _normalize_session_key(
+    state_dir: Optional[str],
+    session_key: Optional[str],
+) -> str:
+  """Normalize the in-memory scar session ledger key without touching CWD.
+
+  Normalizes filesystem ``state_dir`` paths via ``safe_abspath`` while keeping
+  logical ``session_key`` tokens (such as ``ws:<path>`` or ``explicit:<path>``)
+  verbatim so deleted working directories never trigger ``FileNotFoundError``.
+
+  Args:
+    state_dir: Optional filesystem path to ``.workflow/state``.
+    session_key: Optional logical session key string.
+
+  Returns:
+    Normalized dictionary key for ``_IN_MEMORY_LOADED_SCARS``.
+  """
+  if state_dir:
+    return safe_abspath(state_dir)
+  if session_key:
+    return str(session_key)
+  return "default"
+
+
 def load_session_scars(
     state_dir: Optional[str] = None,
     session_key: Optional[str] = None,
 ) -> Set[str]:
   """Load scar IDs already returned during the current ticket session.
 
+  Reads persistent ``<state_dir>/loaded_scars.json`` when ``state_dir`` exists;
+  otherwise falls back to the in-memory session ledger keyed by normalized
+  ``state_dir`` or verbatim logical ``session_key``.
+
   Args:
     state_dir: Optional ``.workflow/state`` directory for persistent ledger.
-    session_key: Optional fallback key for in-memory session storage.
+    session_key: Optional fallback logical key for in-memory session storage.
 
   Returns:
     Set of previously loaded scar IDs.
@@ -569,7 +597,7 @@ def load_session_scars(
         return set()
     return set()
 
-  key = os.path.abspath(state_dir or session_key or "default")
+  key = _normalize_session_key(state_dir, session_key)
   return set(_IN_MEMORY_LOADED_SCARS.get(key, set()))
 
 
@@ -580,13 +608,16 @@ def save_session_scars(
 ) -> None:
   """Persist loaded scar IDs to ``<state_dir>/loaded_scars.json`` or memory.
 
+  Preserves logical ``session_key`` tokens verbatim when ``state_dir`` is not
+  supplied so in-memory persistence remains resilient under deleted CWDs.
+
   Args:
     loaded_ids: Iterable of scar IDs loaded during the current ticket session.
     state_dir: Optional ``.workflow/state`` directory for disk persistence.
-    session_key: Optional fallback key for in-memory session storage.
+    session_key: Optional fallback logical key for in-memory session storage.
   """
   clean_ids = sorted({str(x).strip() for x in loaded_ids if str(x).strip()})
-  key = os.path.abspath(state_dir or session_key or "default")
+  key = _normalize_session_key(state_dir, session_key)
   _IN_MEMORY_LOADED_SCARS[key] = set(clean_ids)
 
   if state_dir and os.path.isdir(state_dir):

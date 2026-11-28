@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from lib.agent_paths import AgentPathRegistry, PathContext
+from lib.agent_paths import AgentPathRegistry, PathContext, safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, ScriptArgumentParser
 from lib.config import (
     DEFAULT_SCAR_DATABASES,
@@ -843,7 +843,7 @@ class ScarMinerScript(BaseScript):
     ns = self.parsed_args
     registry = AgentPathRegistry(home_dir=ns.home)
     ws_abs = (
-        os.path.abspath(expand_user_path(ns.workspace, home_dir=ns.home))
+        safe_abspath(expand_user_path(ns.workspace, home_dir=ns.home))
         if ns.workspace
         else None
     )
@@ -863,7 +863,11 @@ class ScarMinerScript(BaseScript):
   def _run_save(self) -> int:
     ns = self.parsed_args
     if ns.tier == "project":
-      ws = ns.workspace or os.getcwd()
+      ws = ns.workspace or safe_getcwd()
+      if not ws:
+        raise ValueError(
+            "--workspace is required when --tier is 'project' and current working directory is unavailable."
+        )
       locations = resolve_scar_locations(
           context=PathContext(
               workspace_dir=ws,
@@ -895,7 +899,7 @@ class ScarMinerScript(BaseScript):
     registry = AgentPathRegistry(home_dir=ns.home)
     ws = ns.workspace
     if ns.scope in ("project-local", "both") and not ws:
-      ws = os.getcwd()
+      ws = safe_getcwd()
     receipt = ScarConfigStore(registry=registry).add_scar_database(
         ns.database,
         scope=ns.scope,

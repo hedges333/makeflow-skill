@@ -15,6 +15,7 @@ import re
 import subprocess
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.workspace_mutex import WorkspaceMutex
 
@@ -36,7 +37,7 @@ class LocalTicketStore:
       repo_root: Optional[str] = None,
       lock_dir: Optional[str] = None,
   ) -> None:
-    self.repo_root: str = os.path.abspath(repo_root or os.getcwd())
+    self.repo_root: str = safe_abspath(repo_root or safe_getcwd())
     self.lock_dir: Optional[str] = lock_dir
     self.tickets_dir: str = os.path.join(self.repo_root, ".workflow", "tickets")
 
@@ -362,7 +363,7 @@ class LocalTicketScript(BaseScript):
 
   def __init__(self) -> None:
     super().__init__()
-    self.repo_root: str = os.getcwd()
+    self.repo_root: str = safe_getcwd("") or ""
     self.lock_dir: Optional[str] = None
     self.as_json: bool = False
     self.subcommand: str = ""
@@ -538,10 +539,10 @@ class LocalTicketScript(BaseScript):
       parser.error("Specify a subcommand: next-id, create, list, view, or close.")
 
     self.subcommand = ns.subcommand
-    self.repo_root = os.path.abspath(
+    self.repo_root = safe_abspath(
         getattr(ns, "sub_repo_root", None)
         or getattr(ns, "repo_root", None)
-        or os.getcwd()
+        or safe_getcwd()
     )
     self.lock_dir = (
         getattr(ns, "sub_lock_dir", None)

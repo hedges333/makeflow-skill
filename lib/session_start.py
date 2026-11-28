@@ -9,6 +9,7 @@ import os
 from typing import Any, Dict, List, Optional, Sequence, TextIO
 
 from lib.active_state import list_state_card_files
+from lib.agent_paths import safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.config import (
     find_state_dir,
@@ -81,11 +82,11 @@ class SessionStartScript(BaseScript):
     Returns:
       List of human-readable status note strings to inject into the session.
     """
-    candidate_roots = (
-        workspace_paths
-        if workspace_paths
-        else ([os.getcwd()] if not is_plugin_dir(os.getcwd()) else [])
-    )
+    if workspace_paths:
+      candidate_roots = workspace_paths
+    else:
+      cwd = safe_getcwd()
+      candidate_roots = [cwd] if (cwd and not is_plugin_dir(cwd)) else []
     for root in candidate_roots:
       refresh_state_makefile_if_ignored(root)
 
@@ -112,8 +113,9 @@ class SessionStartScript(BaseScript):
             "'make -f .workflow/state/Makefile resume-parked' at Target 00 "
             "to re-check status."
         )
-      ws_root = workspace_paths[0] if workspace_paths else os.getcwd()
-      set_dynamic_terminal_title(ws_root)
+      ws_root = workspace_paths[0] if workspace_paths else safe_getcwd()
+      if ws_root:
+        set_dynamic_terminal_title(ws_root)
     else:
       notes.append(
           "Makefile Workflow: Workspace is clean and ready for Target 10 intake."

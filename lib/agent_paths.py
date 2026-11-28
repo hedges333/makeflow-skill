@@ -8,7 +8,72 @@ scar registries.
 
 from dataclasses import dataclass
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+
+def safe_getcwd(fallback: Optional[str] = None) -> Optional[str]:
+  """Return the process current working directory or ``fallback`` on ``OSError``.
+
+  Calls ``os.getcwd()`` directly so existing tests patching ``os.getcwd`` remain
+  compatible. Guards against ``FileNotFoundError`` (ENOENT) and permission
+  errors when a long-lived process's working directory is unlinked during a
+  plugin upgrade.
+
+  Args:
+    fallback: Value returned when ``os.getcwd()`` raises ``OSError``. Defaults
+      to ``None``.
+
+  Returns:
+    Current working directory path string, or ``fallback`` when unavailable.
+  """
+  try:
+    return os.getcwd()
+  except OSError:
+    return fallback
+
+
+def safe_abspath(
+    path: Optional[Union[str, os.PathLike]],
+    base_dir: Optional[Union[str, os.PathLike]] = None,
+) -> str:
+  """Normalize ``path`` to an absolute path without raising on a deleted CWD.
+
+  When ``path`` is already absolute, normalizes it via ``os.path.normpath``
+  without querying ``os.getcwd()``. When ``path`` is relative or empty, anchors
+  it against ``base_dir`` (when supplied) or ``safe_getcwd()``; if no live base
+  directory is available, returns ``os.path.normpath(path)`` (or ``""`` when
+  empty) instead of raising ``FileNotFoundError``.
+
+  Args:
+    path: Filesystem path string, ``os.PathLike``, or ``None``.
+    base_dir: Optional directory used to anchor relative or empty paths before
+      falling back to the process working directory.
+
+  Returns:
+    Normalized absolute path string when an anchor is available, normalized
+    relative path when no anchor exists, or ``""`` when ``path`` and anchors
+    are empty.
+  """
+  raw = os.fspath(path) if path is not None else ""
+  if not raw:
+    if base_dir:
+      return safe_abspath(base_dir)
+    cwd = safe_getcwd()
+    return os.path.normpath(cwd) if cwd else ""
+  if os.path.isabs(raw):
+    return os.path.normpath(raw)
+  if base_dir:
+    raw_base = os.fspath(base_dir)
+    if os.path.isabs(raw_base):
+      return os.path.normpath(os.path.join(raw_base, raw))
+    cwd = safe_getcwd()
+    if cwd:
+      return os.path.normpath(os.path.join(cwd, raw_base, raw))
+    return os.path.normpath(os.path.join(raw_base, raw))
+  cwd = safe_getcwd()
+  if cwd:
+    return os.path.normpath(os.path.join(cwd, raw))
+  return os.path.normpath(raw)
 
 SUPPORTED_AGENTS: Tuple[str, ...] = (
     "gemini",
@@ -186,7 +251,7 @@ class AgentPathRegistry:
       home_dir: Optional home directory override. Defaults to ``os.path.expanduser("~")``.
     """
     raw_home = home_dir if home_dir is not None else os.path.expanduser("~")
-    self.home_dir = os.path.abspath(os.path.expanduser(raw_home))
+    self.home_dir = safe_abspath(os.path.expanduser(raw_home))
     legacy_path = os.path.join(
         self.home_dir, ".gemini", "config", "makeflow.json"
     )
@@ -287,7 +352,7 @@ class AgentPathRegistry:
     """
     profile = self.get_profile(agent)
     ws_abs = (
-        os.path.abspath(os.path.expanduser(workspace_dir))
+        safe_abspath(os.path.expanduser(workspace_dir))
         if workspace_dir
         else None
     )

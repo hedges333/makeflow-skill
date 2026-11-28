@@ -13,6 +13,7 @@ import subprocess
 import sys
 from typing import Iterable, List, Optional, Sequence, TextIO, Tuple, Union
 
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.python_files import (
     SKIP_SCAN_DIRS,
@@ -253,7 +254,7 @@ class StaticCheckScript(BaseScript):
     """Initializes script state with default repository root and target list."""
     super().__init__()
     self.targets: List[str] = []
-    self.repo_root: str = os.getcwd()
+    self.repo_root: str = safe_getcwd("") or ""
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     """Parses CLI options and positional targets.
@@ -275,7 +276,7 @@ class StaticCheckScript(BaseScript):
     )
     parser.add_argument(
         "--repo-root",
-        default=os.getcwd(),
+        default=None,
         help="Repository root directory to scan when targets are omitted.",
     )
     parser.add_argument(
@@ -284,7 +285,7 @@ class StaticCheckScript(BaseScript):
         help="Python files or directories to check (defaults to --repo-root).",
     )
     parsed = parser.parse_args(self.raw_args)
-    self.repo_root = os.path.abspath(parsed.repo_root)
+    self.repo_root = safe_abspath(parsed.repo_root or safe_getcwd())
     self.targets = list(parsed.targets or [])
 
   def run(self) -> int:

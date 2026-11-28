@@ -20,6 +20,7 @@ import re
 import subprocess
 from typing import List, Optional, Set
 
+from lib.agent_paths import safe_abspath, safe_getcwd
 from lib.base_script import BaseScript, SilentArgumentParser
 from lib.python_files import (
     SKIP_SCAN_DIRS,
@@ -713,7 +714,7 @@ class AstScrubScript(BaseScript):
     self.strict: bool = False
     self.as_json: bool = False
     self.all_files: bool = False
-    self.repo_root: str = os.getcwd()
+    self.repo_root: str = safe_getcwd("") or ""
 
   def parse_args(self, args: Optional[List[str]] = None) -> None:
     super().parse_args(args)
@@ -753,7 +754,7 @@ class AstScrubScript(BaseScript):
     )
     parser.add_argument(
         "--repo-root",
-        default=os.getcwd(),
+        default=None,
         help="Repository root directory.",
     )
 
@@ -763,7 +764,7 @@ class AstScrubScript(BaseScript):
     self.strict = parsed.strict
     self.as_json = parsed.as_json
     self.all_files = parsed.all_files
-    self.repo_root = os.path.abspath(parsed.repo_root)
+    self.repo_root = safe_abspath(parsed.repo_root or safe_getcwd())
 
   def _resolve_directory_targets(self, src_abs: str) -> List[str]:
     """Resolves Python target files inside src_abs via --all, Git diff, or walk.
