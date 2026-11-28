@@ -86,3 +86,4 @@ Historical ticket records before the first tagged release live in `.workflow/his
 - GH-325: Prevent release-intake from resetting active or completed terminal titles, and format finished titles with DONE in make finish.
 - GH-336: Fix AgySubagentRunner.build_command() to place --agent ahead of attached --print=<prompt>.
 - GH-337: Split Target 15 BDD prompt so unset or ask asks for this turn's mode and a save choice, and concrete preferences run directly.
+- GH-328: Guard `os.getcwd` and relative `os.path.abspath` calls across MCP servers, config, scars, hooks, and CLI utilities against deleted working directories.

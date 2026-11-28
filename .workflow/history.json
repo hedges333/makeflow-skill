@@ -3428,5 +3428,25 @@
     "closes_issue": true,
     "tests_added": 22,
     "scars_earned": []
+  },
+  {
+    "id": "GH-328",
+    "issue_url": "https://github.com/hedges333/makeflow-skill/issues/328",
+    "title": "[BUG] MCP workflow_query_scars fails with ENOENT inside subagent runtime",
+    "request": "Add safe_getcwd and safe_abspath in lib/agent_paths.py to prevent FileNotFoundError (ENOENT) under deleted CWD across MCP tools, config/scar resolution, hooks, and CLI utilities, preserve logical session_key strings in lib/scars_db.py, thread PathContext into poll_ci_status and workflow_safety_check, and add 21 hermetic tests.",
+    "branch": "fix/328-safe-getcwd-mcp-enoent",
+    "subprojects": [
+      "lib",
+      "mcp",
+      "tests"
+    ],
+    "started_at": "2026-11-27T09:07:25Z",
+    "completed_at": "2026-11-28T05:23:00Z",
+    "commit_sha": "9ee2b0af9a73c73c1f9c4e2d2857e03c3112a947",
+    "pr_number": 352,
+    "pr_url": "https://github.com/hedges333/makeflow-skill/pull/352",
+    "closes_issue": true,
+    "tests_added": 21,
+    "scars_earned": []
   }
 ]
